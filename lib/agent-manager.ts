@@ -3732,6 +3732,8 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `fi\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/plans/plan-agent-${agentId}.json" "$d/locks/${agentId}.pid"\n` +
     `rm -rf "$d/locks/${agentId}.pid.lockdir" "$d/locks/${agentId}.chain.lock"\n` +
+    // PlanSpec executor v20: the 2nd-concurrent-CLI-branch lock (+ its starttime record).
+    `rm -rf "$d/locks/${agentId}.fanout.pid" "$d/locks/${agentId}.fanout.pid.lockdir"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
     // Phase 1 memory lives under memory/<id>; drop it with the agent so a deleted
     // agent leaves no orphaned memory behind (the Vault mirror is left in place

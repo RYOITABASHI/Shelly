@@ -78,6 +78,8 @@ describe('agent deletion tombstones', () => {
     const calls = mockTerminalEmulator.execCommand.mock.calls as unknown as Array<[string, number?]>;
     const command = calls[0]?.[0] ?? '';
     expect(command).toContain('if [ -s "$d/logs/agent-x/agent-driver-audit.jsonl" ]; then');
+    // PlanSpec executor v20 fan-out lock dies with the agent.
+    expect(command).toContain('rm -rf "$d/locks/agent-x.fanout.pid" "$d/locks/agent-x.fanout.pid.lockdir"');
     expect(command).toContain('mkdir -p "$d/audits"');
     expect(command).toContain('cp "$d/logs/agent-x/agent-driver-audit.jsonl" "$d/audits/agent-x-agent-driver-audit.jsonl"');
     expect(command).not.toContain('cp "$d/logs/agent-x/agent-driver-audit.jsonl" "$d/audits/agent-x-agent-driver-audit.jsonl" 2>/dev/null || true');

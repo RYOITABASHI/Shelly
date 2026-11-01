@@ -161,7 +161,7 @@ function runExecutor(
   home: string,
   driver: string,
   recordDir: string,
-  opts: { origin?: string; unattended?: boolean; extraArgs?: string[]; procRoot?: string } = {},
+  opts: { origin?: string; unattended?: boolean; extraArgs?: string[]; procRoot?: string; extraEnv?: Record<string, string> } = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver]
@@ -174,6 +174,7 @@ function runExecutor(
       SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN,
       SHELLY_RUN_ORIGIN: opts.origin === undefined ? 'user' : opts.origin,
       SHELLY_PLAN_EXECUTOR_PROC_ROOT: opts.procRoot || EMPTY_PROC_ROOT,
+      ...(opts.extraEnv || {}),
     };
     delete env.ANTHROPIC_API_KEY;
     const child = spawn(process.execPath, args, { env: env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -646,6 +647,119 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       expect(await waitFor(() => !procAlive(driverPid) && !procAlive(grandchild), 3000)).toBe(true);
       expect(requests).toEqual([]); // the final step never ran
     }, 30000);
+    it('a stale <id>.fanout.pid (+ lockdir) left by a dead run is removed once this run holds the agent lock', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      fs.mkdirSync(path.join(locksOf(home), `${AGENT_ID}.fanout.pid.lockdir`), { recursive: true });
+      const stale = path.join(locksOf(home), `${AGENT_ID}.fanout.pid`);
+      fs.writeFileSync(stale, `${process.pid}\n`); // a live (recycled) pid: removeFanoutLock alone would keep it
+      fs.writeFileSync(`${stale}.lockdir/starttime`, '1\n');
+      writeDriverConfig(recordDir, { locksDir: locksOf(home), agentId: AGENT_ID, codex: { answer: 'CODEX_REVIEW all good, ship it.' } });
+      const steps: Step[] = [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, { instruction: 'finalize' }];
+      const result = await runExecutor(writePlan(home, port, steps), home, driver, recordDir);
+      expect(result.status).toBe(0);
+      const [call] = readCalls(recordDir);
+      expect(call.fanoutStart.pid).toBeNull(); // already gone when the CLI step started
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(fs.existsSync(`${stale}.lockdir`)).toBe(false);
+      expect(readRunLog(home).status).toBe('success');
+    }, 60000);
+
+    it('native 30-min ceiling: a CLI step with too little run time left fails visibly without starting the driver', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { codex: { answer: 'should never run' } });
+      const steps: Step[] = [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, { instruction: 'finalize' }];
+      const result = await runExecutor(writePlan(home, port, steps), home, driver, recordDir, {
+        extraEnv: { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: '30000', SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS: '60000' },
+      });
+      expect(result.status).toBe(0);
+      expect(readCalls(recordDir)).toEqual([]);
+      expect(requests).toEqual([]);
+      expect(readAudit(home).filter((e) => e.event === 'cli_run_time_exhausted').map((e) => e.waitedMs)).toEqual([0]);
+      expect(readProgress(home).some((e) => e.kind === 'tail' && /not enough run time left/.test(e.tail))).toBe(true);
+      const log = readRunLog(home);
+      expect(log.status).toBe('error');
+      expect(log.steps[0].outputPreview).toMatch(/not enough run time left/);
+    }, 60000);
+
+    it('native 30-min ceiling: a serialized CLI branch stops waiting when the run would run out, and the running branch\'s timers are clamped to the run', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { codex: { answer: 'CODEX_REVIEW: the loop in parse() is off by one.', delayMs: 4500 } });
+      // deadline = start + 20s - 2s; a branch needs 15s, so waiting ends at ~start + 3s.
+      const result = await runExecutor(writePlan(home, port, twoCodexSteps), home, driver, recordDir, {
+        extraEnv: { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: '20000', SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS: '15000' },
+      });
+      expect(result.status).toBe(0);
+      const calls = readCalls(recordDir);
+      expect(calls).toHaveLength(1); // the waiting branch never spawned a driver
+      const timeoutMs = Number(calls[0].argv[calls[0].argv.indexOf('--timeout-ms') + 1]);
+      expect(timeoutMs).toBeGreaterThan(5000);
+      expect(timeoutMs).toBeLessThan(18000);
+      const audit = readAudit(home);
+      expect(audit.filter((e) => e.event === 'cli_slot_wait').map((e) => e.reason)).toEqual(['engine']);
+      const exhausted = audit.filter((e) => e.event === 'cli_run_time_exhausted');
+      expect(exhausted).toHaveLength(1);
+      expect(exhausted[0].waitedMs).toBeGreaterThan(0);
+      expect(requests).toEqual([]); // the group failed fast
+      const log = readRunLog(home);
+      expect(log.status).toBe('error');
+      expect(log.steps.map((s: any) => s.status).slice(0, 2).sort()).toEqual(['error', 'success']);
+    }, 60000);
+
+    it('cliBranchTimeouts: unclamped = 20 min / driver 19.5 min; near the ceiling both shrink to the time left', () => {
+      const far = executor.cliBranchTimeouts({ deadlineMs: Date.now() + 60 * 60_000, minRunMs: 1 });
+      expect(far.branchMs).toBe(20 * 60_000);
+      expect(far.driverMs).toBe(executor.CLI_DRIVER_TIMEOUT_MS);
+      const near = executor.cliBranchTimeouts({ deadlineMs: Date.now() + 5 * 60_000, minRunMs: 1 });
+      expect(near.branchMs).toBeLessThanOrEqual(5 * 60_000);
+      expect(near.branchMs).toBeGreaterThan(5 * 60_000 - 1000);
+      expect(near.driverMs).toBe(near.branchMs - 30_000);
+    });
+
+    (process.platform === 'linux' ? it : it.skip)('stopLiveCliChildrenSync never walks / kills the descendants of a driver that already exited (recycled pid)', async () => {
+      const bystander = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+      await delay(300);
+      // An exited driver whose pid now names this jest worker (the bystander's parent).
+      const exited: any = { pid: process.pid, exitCode: 0, signalCode: null, kill: () => true };
+      executor.liveCliChildren.set(exited, []);
+      executor.stopLiveCliChildrenSync(0);
+      await delay(200);
+      expect(procAlive(bystander.pid!)).toBe(true);
+      bystander.kill('SIGKILL');
+    }, 20000);
+
+    (process.platform === 'linux' ? it : it.skip)('the tree-kill spares llama-server (pid file or cmdline) and everything below it, like STOP-ALL', async () => {
+      const home = makeHome();
+      fs.mkdirSync(path.join(home, 'models'), { recursive: true });
+      // root -> [spared-by-pidfile -> its child], [named llama-server], [plain victim]
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-tree-'));
+      const script = `
+        const { spawn } = require('child_process');
+        const fs = require('fs');
+        const keep = (args) => spawn(process.execPath, args, { stdio: 'ignore' });
+        const watcher = keep(['-e', "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});setInterval(()=>{},1000)"]);
+        const llama = spawn('bash', ['-c', 'exec -a llama-server-fake ${process.execPath} -e "setInterval(()=>{},1000)"'], { stdio: 'ignore' });
+        const victim = keep(['-e', 'setInterval(()=>{},1000)']);
+        fs.writeFileSync(${JSON.stringify(path.join(dir, 'pids.json'))}, JSON.stringify({ watcher: watcher.pid, llama: llama.pid, victim: victim.pid }));
+        setInterval(() => {}, 1000);`;
+      const root = spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+      expect(await waitFor(() => fs.existsSync(path.join(dir, 'pids.json')))).toBe(true);
+      await delay(500);
+      const pids = JSON.parse(fs.readFileSync(path.join(dir, 'pids.json'), 'utf8'));
+      fs.writeFileSync(path.join(home, 'models/llama-server-watcher.pid'), `${pids.watcher}\n`);
+      const found = executor.listDescendantProcs(root.pid, home).map((p: any) => p.pid);
+      expect(found).toContain(pids.victim);
+      expect(found).not.toContain(pids.watcher);
+      expect(found).not.toContain(pids.llama);
+      expect(found).toHaveLength(1); // the watcher's own child is spared with it
+      const watcherKids = executor.listDescendantProcs(pids.watcher, '').map((p: any) => p.pid);
+      expect(watcherKids).toHaveLength(1);
+      for (const pid of [root.pid, pids.watcher, ...watcherKids, pids.llama, pids.victim]) {
+        try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+      }
+    }, 20000);
   });
 
   it('a driver failure (non-zero exit / empty answer) fails the branch, the group fails fast', async () => {

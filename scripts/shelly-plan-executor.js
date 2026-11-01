@@ -2360,13 +2360,36 @@ function procStartTime(pid) {
 // /proc is unavailable. Collected BEFORE signalling: once the driver dies its
 // codex_tui / claude / tool-command grandchildren are reparented and can no
 // longer be found from it. `start` lets killProcSnapshot spare a recycled pid.
-function listDescendantProcs(rootPid) {
+// The shared local-LLM processes are spared with everything below them, as in
+// STOP-ALL (haltInflightRunsCommand): llama-server ($HOME/models/
+// llama-server.pid or a cmdline naming it) and its idle watcher
+// ($HOME/models/llama-server-watcher.pid) are meant to outlive a run.
+function sparedLocalLlmPids(home) {
+  const out = new Set();
+  if (!home) return out;
+  for (const name of ['llama-server.pid', 'llama-server-watcher.pid']) {
+    const pid = Number(readFile(path.join(home, 'models', name)).trim());
+    if (Number.isInteger(pid) && pid > 0) out.add(pid);
+  }
+  return out;
+}
+
+function procCmdline(pid) {
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+  } catch (_) {
+    return '';
+  }
+}
+
+function listDescendantProcs(rootPid, home) {
   let names;
   try {
     names = fs.readdirSync('/proc');
   } catch (_) {
     return [];
   }
+  const spare = sparedLocalLlmPids(home === undefined ? cliSlots.home : home);
   const children = new Map();
   const starts = new Map();
   for (const name of names) {
@@ -2386,6 +2409,8 @@ function listDescendantProcs(rootPid) {
     for (const child of children.get(pid) || []) {
       if (seen.has(child)) continue;
       seen.add(child);
+      // Spared together with its whole subtree (never queued).
+      if (spare.has(child) || procCmdline(child).includes('llama-server')) continue;
       out.push({ pid: child, start: starts.get(child) || '' });
       queue.push(child);
     }
@@ -2441,7 +2466,7 @@ const CLI_SLOTS_TOTAL = 2;
 const CLI_SLOTS_PER_ENGINE = 1;
 const PHANTOM_PROCESS_CEILING = 28;
 const CLI_BRANCH_PROCESS_COST = 8;
-const cliSlots = { total: 0, perEngine: new Map(), waiters: [], paths: null };
+const cliSlots = { total: 0, perEngine: new Map(), waiters: [], paths: null, home: '' };
 
 // Test-only override (SHELLY_PLAN_EXECUTOR_PROC_ROOT) for the phantom-headroom
 // count, ignored on Android (linker64 present) like --agent-driver.
@@ -2543,15 +2568,36 @@ function takeCliSlot(paths, engine) {
 // Resolves once a slot is held; onWait(reason) is called when it has to wait.
 // A branch held back by another agent / headroom waits for the running CLI
 // branch to finish (with none running it always starts), so this never
-// deadlocks.
-function acquireCliSlot(paths, engine, onWait) {
+// deadlocks. giveUpAtMs (epoch ms): a waiter still waiting then leaves the
+// queue WITHOUT a slot and resolves 'expired' (the run has too little time
+// left before native's ceiling to start a CLI turn). Resolves false (started
+// at once), true (waited, slot held) or 'expired' (no slot).
+function acquireCliSlot(paths, engine, onWait, giveUpAtMs) {
   const blocker = cliSlotBlocker(paths, engine);
   if (!blocker) {
     takeCliSlot(paths, engine);
     return Promise.resolve(false);
   }
   if (typeof onWait === 'function') onWait(blocker);
-  return new Promise((resolve) => cliSlots.waiters.push({ engine, resolve }));
+  return new Promise((resolve) => {
+    let timer = null;
+    const waiter = {
+      engine,
+      resolve: (value) => {
+        if (timer) clearTimeout(timer);
+        resolve(value);
+      },
+    };
+    cliSlots.waiters.push(waiter);
+    if (Number.isFinite(giveUpAtMs)) {
+      timer = setTimeout(() => {
+        const k = cliSlots.waiters.indexOf(waiter);
+        if (k === -1) return; // already handed a slot
+        cliSlots.waiters.splice(k, 1);
+        resolve('expired');
+      }, Math.max(0, giveUpAtMs - Date.now()));
+    }
+  });
 }
 
 function releaseCliSlot(paths, engine) {
@@ -2587,7 +2633,9 @@ const CLI_SLOT_WAIT_REASONS = {
 function stopLiveCliChildrenSync(graceMs) {
   const entries = Array.from(liveCliChildren.entries());
   liveCliChildren.clear();
-  const trees = entries.map(([child]) => (child.pid ? listDescendantProcs(child.pid) : []));
+  // Only from a driver that is still running: an exited one's pid may already
+  // name an unrelated process (its own children were reparented anyway).
+  const trees = entries.map(([child]) => (child.pid && childStillRunning(child) ? listDescendantProcs(child.pid) : []));
   for (const [child] of entries) {
     try {
       child.kill('SIGTERM');
@@ -3268,6 +3316,18 @@ function acquireLock(paths) {
     } catch (_) {}
   }
   writeAtomic(paths.lockFile, `${process.pid}\n`);
+  // v20 (review): holding this agent's lock means any <id>.fanout.pid left on
+  // disk belongs to an earlier run that died (SIGKILL / native timeout) before
+  // removing it; a recycled pid in it would keep counting for .sh
+  // ACTIVE_COUNT. Drop it unconditionally.
+  if (paths.fanoutLockFile) {
+    try {
+      fs.rmSync(paths.fanoutLockFile, { force: true });
+    } catch (_) {}
+    try {
+      fs.rmSync(`${paths.fanoutLockFile}.lockdir`, { recursive: true, force: true });
+    } catch (_) {}
+  }
   return true;
 }
 
@@ -5415,7 +5475,43 @@ const CLI_STEP_ENGINES = new Set(['codex', 'claude']);
 const CLI_STEP_LABELS = { codex: 'Codex', claude: 'Claude Code' };
 const CLI_STEP_TIMEOUT_MS = 20 * 60 * 1000;
 const CLI_STEP_KILL_GRACE_MS = CLI_STEP_SIGTERM_GRACE_MS;
-const CLI_DRIVER_TIMEOUT_MS = CLI_STEP_TIMEOUT_MS - 30 * 1000;
+const CLI_DRIVER_TIMEOUT_MARGIN_MS = 30 * 1000;
+const CLI_DRIVER_TIMEOUT_MS = CLI_STEP_TIMEOUT_MS - CLI_DRIVER_TIMEOUT_MARGIN_MS;
+// v20 (review): native kills the whole executor at AgentRuntime.kt
+// DEFAULT_TIMEOUT_MS (30 min, execSubprocess timeout) counted from the launch
+// of the cmd-file bash, i.e. a moment before this node process started. A CLI
+// branch's slot wait and its own timer are clamped to that ceiling (minus a
+// margin for the final step / action / run log), and a branch that would get
+// less than CLI_BRANCH_MIN_RUN_MS fails visibly instead of being cut by
+// native's kill mid-turn. Serialized CLI branches (same engine, another agent,
+// low headroom) are what can run into it.
+const NATIVE_RUN_CEILING_MS = 30 * 60 * 1000;
+const NATIVE_RUN_CEILING_MARGIN_MS = 60 * 1000;
+const CLI_BRANCH_MIN_RUN_MS = 2 * 60 * 1000;
+const PROCESS_STARTED_AT_MS = Date.now() - Math.round(process.uptime() * 1000);
+const CLI_RUN_TIME_EXHAUSTED_MESSAGE = 'not enough run time left before the 30-minute run limit to start this CLI step';
+
+// Test-only overrides (ignored on Android, like --agent-driver):
+// SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS / SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS.
+function cliRunLimits() {
+  const host = !fs.existsSync('/system/bin/linker64');
+  const num = (name, fallback) => {
+    const v = host ? Number(process.env[name]) : NaN;
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  };
+  const ceiling = num('SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS', NATIVE_RUN_CEILING_MS);
+  return {
+    deadlineMs: PROCESS_STARTED_AT_MS + ceiling - Math.min(NATIVE_RUN_CEILING_MARGIN_MS, Math.floor(ceiling / 10)),
+    minRunMs: num('SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS', CLI_BRANCH_MIN_RUN_MS),
+  };
+}
+
+// The branch timer and the driver's --timeout-ms for a CLI turn starting now.
+function cliBranchTimeouts(limits) {
+  const branchMs = Math.max(1, Math.min(CLI_STEP_TIMEOUT_MS, limits.deadlineMs - Date.now()));
+  const margin = Math.min(CLI_DRIVER_TIMEOUT_MARGIN_MS, Math.floor(branchMs / 4));
+  return { branchMs, driverMs: Math.max(1, branchMs - margin) };
+}
 const CLI_STEP_STDOUT_TAIL_MAX = 8192;
 const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude Code step, and a CLI step (Codex/Claude Code) runs only with Run now. Open Shelly and tap Run now to run it.';
 
@@ -5510,22 +5606,34 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
   if (!cliStepAttended(args) || !CLI_STEP_ENGINES.has(engine)) {
     return runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt); // refuses
   }
+  const limits = cliRunLimits();
+  const exhausted = (waitedMs) => {
+    const remainingMs = Math.max(0, limits.deadlineMs - Date.now());
+    progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`${CLI_STEP_LABELS[engine]} step not started: ${CLI_RUN_TIME_EXHAUSTED_MESSAGE}.`) });
+    cliStepAudit(paths, plan, 'cli_run_time_exhausted', { stepIndex, engine, remainingMs, minRunMs: limits.minRunMs, waitedMs });
+    return new PlanFailure(`${CLI_STEP_LABELS[engine]} step not started: ${CLI_RUN_TIME_EXHAUSTED_MESSAGE}`);
+  };
+  if (limits.deadlineMs - Date.now() < limits.minRunMs) throw exhausted(0);
   const waitStartedMs = Date.now();
   const waited = await acquireCliSlot(paths, engine, (reason) => {
     const why = CLI_SLOT_WAIT_REASONS[reason] || reason;
     progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`Waiting for CLI slot: ${why}.`) });
     cliStepAudit(paths, plan, 'cli_slot_wait', { stepIndex, engine, reason });
-  });
+  }, limits.deadlineMs - limits.minRunMs);
+  if (waited === 'expired') throw exhausted(Date.now() - waitStartedMs);
   try {
     if (waited) cliStepAudit(paths, plan, 'cli_slot_acquired', { stepIndex, engine, waitedMs: Date.now() - waitStartedMs });
     if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
-    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt);
+    if (limits.deadlineMs - Date.now() < limits.minRunMs) throw exhausted(Date.now() - waitStartedMs);
+    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, cliBranchTimeouts(limits));
   } finally {
     releaseCliSlot(paths, engine);
   }
 }
 
-async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt) {
+async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, timeouts) {
+  const branchTimeoutMs = timeouts ? timeouts.branchMs : CLI_STEP_TIMEOUT_MS;
+  const driverTimeoutMs = timeouts ? timeouts.driverMs : CLI_DRIVER_TIMEOUT_MS;
   const engine = step && step.tool ? String(step.tool.cli || '') : '';
   const attended = cliStepAttended(args);
   if (!attended) {
@@ -5578,7 +5686,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     '--escalation-timeout-action', 'queue',
     // v20: the driver's own turn timeout (default 300 s) would cut a long
     // turn; it ends just before the branch timeout so it reports first.
-    '--timeout-ms', String(CLI_DRIVER_TIMEOUT_MS),
+    '--timeout-ms', String(driverTimeoutMs),
     '--audit-log', auditLog,
     '--answer-file', answerFile,
     '--prompt-file', promptFile,
@@ -5661,7 +5769,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
         if (lineBuf.length > CLI_STEP_STDOUT_TAIL_MAX) lineBuf = lineBuf.slice(-CLI_STEP_STDOUT_TAIL_MAX);
       });
       child.stderr.on('data', () => {}); // drained; the driver audits its own stderr
-      const timeout = setTimeout(() => terminate('timeout'), CLI_STEP_TIMEOUT_MS);
+      const timeout = setTimeout(() => terminate('timeout'), branchTimeoutMs);
       if (typeof timeout.unref === 'function') timeout.unref();
       // STOP-ALL: the event loop is free while the driver runs, so poll the
       // sentinel and stop the driver (TERM, then KILL after the grace period).
@@ -5719,7 +5827,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step could not start: ${redact(outcome.error.message || String(outcome.error))}`);
     }
     if (outcome.terminateReason === 'timeout') {
-      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step timed out after ${Math.round(CLI_STEP_TIMEOUT_MS / 60000)} minutes`);
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step timed out after ${Math.max(1, Math.round(branchTimeoutMs / 60000))} minutes`);
     }
     if (outcome.status !== 0) {
       const lastLine = String(outcome.stdoutTail || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
@@ -6511,6 +6619,8 @@ async function run(args) {
     // v19: shelly-agent-driver.js for CLI steps (see resolveAgentDriverPath).
     agentDriver: resolveAgentDriverPath(args, paths),
   };
+  // v20: the tree-kill spares $HOME/models/llama-server(-watcher).pid.
+  cliSlots.home = paths.home;
   ensureDir(paths.tmpDir);
   ensureDir(paths.locksDir);
   ensureDir(paths.logDir);
@@ -7302,6 +7412,8 @@ module.exports = {
   PHANTOM_PROCESS_CEILING,
   CLI_BRANCH_PROCESS_COST,
   CLI_DRIVER_TIMEOUT_MS,
+  cliBranchTimeouts,
+  acquireLock,
   makeSignedApprovalNonceStore,
   ensureSignedApprovalVerifierKey,
   // Project owner directive 2026-07-14 (runtime approval default-off) —
