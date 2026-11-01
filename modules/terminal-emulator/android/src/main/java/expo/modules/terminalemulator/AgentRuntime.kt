@@ -509,7 +509,14 @@ object AgentRuntime {
     // executor dispatches a CLI-pinned step through shelly-agent-driver.js on an
     // attended user run (fails it visibly otherwise) and requires a signed
     // action-approval reply for plans with CLI steps.
-    private const val CURRENT_EXECUTOR_VERSION = 19
+    // CURRENT_EXECUTOR_VERSION 20 (2026-11-01, parallel CLI steps Inc2): CLI
+    // branches share a slot pool (2 total, 1 per engine; a 2nd waits while
+    // another agent's lock is live or phantom-process headroom is low), two
+    // overlapping CLI branches publish locks/<id>.fanout.pid (pid + lockdir
+    // starttime, so .sh MAX_CONCURRENT and STOP-ALL see them), a stopped CLI
+    // driver's process tree is killed, and the driver gets --timeout-ms.
+    // JS-only change.
+    private const val CURRENT_EXECUTOR_VERSION = 20
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

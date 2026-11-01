@@ -26,6 +26,9 @@ const executor = require(scriptCopy);
 
 const AGENT_ID = 'agent-cli-steps';
 const PIN = 'a'.repeat(64);
+// v20: the phantom-headroom check counts own-uid processes; tests pin it to
+// an empty fake /proc unless they exercise it (a busy CI host would serialize).
+const EMPTY_PROC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-fake-proc-'));
 
 const FAKE_DRIVER = `'use strict';
 const fs = require('fs');
@@ -41,8 +44,24 @@ const prompt = fs.readFileSync(promptFile, 'utf8');
 let promptMode = null;
 try { promptMode = fs.statSync(promptFile).mode & 0o777; } catch (_) {}
 const startedAt = Date.now();
+if (behavior.grandchild) {
+  // v20 tree-kill: a child of the driver (stands in for codex_tui / claude).
+  const gc = require('child_process').spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(recordDir, 'grandchild-' + engine + '.pid'), String(gc.pid));
+}
+const fanoutFile = cfg.locksDir ? path.join(cfg.locksDir, cfg.agentId + '.fanout.pid') : '';
+const fanoutAt = (when) => {
+  if (!fanoutFile) return null;
+  let pid = null;
+  try { pid = fs.readFileSync(fanoutFile, 'utf8').trim(); } catch (_) {}
+  return { when, pid, starttime: fs.existsSync(fanoutFile + '.lockdir/starttime') };
+};
+const fanoutStart = fanoutAt('start');
 const finish = () => {
   const record = {
+    ppid: process.ppid,
+    fanoutStart,
+    fanoutEnd: fanoutAt('end'),
     argv,
     engine,
     prompt,
@@ -142,7 +161,7 @@ function runExecutor(
   home: string,
   driver: string,
   recordDir: string,
-  opts: { origin?: string; unattended?: boolean; extraArgs?: string[] } = {},
+  opts: { origin?: string; unattended?: boolean; extraArgs?: string[]; procRoot?: string } = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver]
@@ -154,6 +173,7 @@ function runExecutor(
       FAKE_DRIVER_RECORD_DIR: recordDir,
       SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN,
       SHELLY_RUN_ORIGIN: opts.origin === undefined ? 'user' : opts.origin,
+      SHELLY_PLAN_EXECUTOR_PROC_ROOT: opts.procRoot || EMPTY_PROC_ROOT,
     };
     delete env.ANTHROPIC_API_KEY;
     const child = spawn(process.execPath, args, { env: env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -243,7 +263,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       const flags = argv.filter((a) => a.startsWith('--'));
       expect(flags).toEqual([
         '--engine', '--cwd', '--approval-policy', '--policy-json', '--agent-id',
-        '--escalation-public-key-sha256', '--escalation-timeout-action', '--audit-log',
+        '--escalation-public-key-sha256', '--escalation-timeout-action', '--timeout-ms', '--audit-log',
         '--answer-file', '--prompt-file', ...(engine === 'claude' ? ['--usage-file'] : []),
       ]);
       expect(value('--engine')).toBe(engine);
@@ -251,6 +271,10 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       expect(value('--agent-id')).toBe(AGENT_ID);
       expect(value('--escalation-public-key-sha256')).toBe(PIN);
       expect(value('--escalation-timeout-action')).toBe('queue');
+      // v20: the driver's turn timeout ends just under the branch timeout.
+      expect(Number(value('--timeout-ms'))).toBe(executor.CLI_DRIVER_TIMEOUT_MS);
+      expect(executor.CLI_DRIVER_TIMEOUT_MS).toBeGreaterThan(300000);
+      expect(executor.CLI_DRIVER_TIMEOUT_MS).toBeLessThan(20 * 60 * 1000);
       expect(value('--audit-log')).toBe(path.join(logDir(home), `agent-driver-audit-s${index}.jsonl`));
       expect(value('--cwd')).toBe(home); // content-project default missing -> HOME
       // Invariant 2: unattended always explicit.
@@ -432,7 +456,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       const planFile = writePlan(home, port, parallelSteps);
       const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver];
       const child = spawn(process.execPath, args, {
-        env: { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN, SHELLY_RUN_ORIGIN: 'user' },
+        env: { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN, SHELLY_RUN_ORIGIN: 'user', SHELLY_PLAN_EXECUTOR_PROC_ROOT: EMPTY_PROC_ROOT },
         stdio: 'ignore',
       });
       const closed = new Promise<number | null>((resolve) => child.on('close', (s) => resolve(s)));
@@ -451,6 +475,176 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       pids.forEach((pid) => expect(alive(pid)).toBe(false));
       expect(fs.readdirSync(path.join(home, '.shelly/tmp')).filter((n) => n.startsWith('plan-cli-'))).toEqual([]);
       expect(readRunLog(home).status).toBe('skipped');
+    }, 30000);
+  });
+
+  describe('CLI slot pool (v20, Inc2): total 2 / per engine 1 / other agents / phantom headroom / fan-out lock / tree-kill', () => {
+    const locksOf = (home: string) => path.join(home, '.shelly/agents/locks');
+    const overlap = (a: any, b: any) => Math.max(a.startedAt, b.startedAt) < Math.min(a.endedAt, b.endedAt);
+    const fanoutSeen = (calls: any[]) => calls.flatMap((c) => [c.fanoutStart, c.fanoutEnd]).filter((f) => f && f.pid);
+    const slotWaits = (home: string) => readAudit(home).filter((e) => e.event === 'cli_slot_wait');
+    const fanoutLeft = (home: string) => (fs.existsSync(locksOf(home)) ? fs.readdirSync(locksOf(home)).filter((n) => n.includes('fanout')) : []);
+    function procAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+      } catch (_) {
+        return false;
+      }
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const state = stat.charAt(stat.lastIndexOf(')') + 2);
+        return state !== 'Z' && state !== 'X';
+      } catch (_) {
+        return true;
+      }
+    }
+    async function waitFor(check: () => boolean, ms = 10000): Promise<boolean> {
+      for (let waited = 0; waited < ms; waited += 50) {
+        if (check()) return true;
+        await delay(50);
+      }
+      return check();
+    }
+    const twoCodexSteps: Step[] = [
+      { instruction: 'review the parser with Codex', parallelGroup: 'g1', tool: { type: 'cli', cli: 'codex' } },
+      { instruction: 'review the renderer with Codex', parallelGroup: 'g1', tool: { type: 'cli', cli: 'codex' } },
+      { instruction: 'combine both reviews' },
+    ];
+    const reviewers = (delayMs: number) => ({
+      codex: { answer: 'CODEX_REVIEW: the loop in parse() is off by one.', delayMs },
+      claude: { answer: 'CLAUDE_REVIEW: rename the helper for clarity.', delayMs },
+    });
+
+    it('different engines overlap; locks/<id>.fanout.pid (executor pid + starttime record) exists only during the overlap', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { locksDir: locksOf(home), agentId: AGENT_ID, ...reviewers(1200) });
+      const result = await runExecutor(writePlan(home, port, parallelSteps), home, driver, recordDir);
+      expect(result.status).toBe(0);
+      const calls = readCalls(recordDir);
+      expect(calls).toHaveLength(2);
+      expect(overlap(calls[0], calls[1])).toBe(true);
+      const seen = fanoutSeen(calls);
+      expect(seen.length).toBeGreaterThan(0);
+      for (const f of seen) {
+        expect(f.pid).toBe(String(calls[0].ppid)); // the executor itself
+        if (process.platform === 'linux') expect(f.starttime).toBe(true);
+      }
+      expect(slotWaits(home)).toEqual([]);
+      expect(fanoutLeft(home)).toEqual([]);
+      expect(readRunLog(home).status).toBe('success');
+    }, 60000);
+
+    it('two branches of the same engine run one after the other (MONITOR tail "Waiting for CLI slot"), no fan-out lock', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { locksDir: locksOf(home), agentId: AGENT_ID, ...reviewers(800) });
+      const result = await runExecutor(writePlan(home, port, twoCodexSteps), home, driver, recordDir);
+      expect(result.status).toBe(0);
+      const calls = readCalls(recordDir);
+      expect(calls.map((c) => c.engine)).toEqual(['codex', 'codex']);
+      expect(overlap(calls[0], calls[1])).toBe(false);
+      expect(slotWaits(home).map((e) => e.reason)).toEqual(['engine']);
+      expect(readAudit(home).filter((e) => e.event === 'cli_slot_acquired')).toHaveLength(1);
+      expect(readProgress(home).some((e) => e.kind === 'tail' && /^Waiting for CLI slot/.test(e.tail))).toBe(true);
+      expect(fanoutSeen(calls)).toEqual([]);
+      expect(fanoutLeft(home)).toEqual([]);
+      const log = readRunLog(home);
+      expect(log.status).toBe('success');
+      expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success']);
+    }, 60000);
+
+    it('another agent holding a live locks/*.pid serializes the CLI branches (the .sh MAX_CONCURRENT=2 would be exceeded)', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      fs.mkdirSync(locksOf(home), { recursive: true });
+      const otherLock = path.join(locksOf(home), 'agent-other.pid');
+      fs.writeFileSync(otherLock, `${process.pid}\n`); // a live pid that is not the executor
+      fs.writeFileSync(path.join(locksOf(home), 'agent-dead.pid'), '999999999\n'); // stale: not counted
+      writeDriverConfig(recordDir, { locksDir: locksOf(home), agentId: AGENT_ID, ...reviewers(800) });
+      const result = await runExecutor(writePlan(home, port, parallelSteps), home, driver, recordDir);
+      expect(result.status).toBe(0);
+      const calls = readCalls(recordDir);
+      expect(calls).toHaveLength(2);
+      expect(overlap(calls[0], calls[1])).toBe(false);
+      expect(slotWaits(home).map((e) => e.reason)).toEqual(['other-agents']);
+      expect(fanoutSeen(calls)).toEqual([]);
+      expect(fs.existsSync(otherLock)).toBe(true); // never touched
+      expect(readRunLog(home).status).toBe('success');
+    }, 60000);
+
+    it('no phantom-process headroom (own-uid processes + 8 > 28) serializes the CLI branches', async () => {
+      const busyProc = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-busy-proc-'));
+      for (let pid = 100; pid < 121; pid += 1) fs.mkdirSync(path.join(busyProc, String(pid)));
+      fs.mkdirSync(path.join(busyProc, 'self'));
+      fs.mkdirSync(path.join(busyProc, 'sys'));
+      expect(executor.countOwnUidProcesses(busyProc)).toBe(21);
+      expect(executor.countOwnUidProcesses(path.join(busyProc, 'missing'))).toBe(0);
+      expect(21 + executor.CLI_BRANCH_PROCESS_COST).toBeGreaterThan(executor.PHANTOM_PROCESS_CEILING);
+
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { locksDir: locksOf(home), agentId: AGENT_ID, ...reviewers(800) });
+      const result = await runExecutor(writePlan(home, port, parallelSteps), home, driver, recordDir, { procRoot: busyProc });
+      expect(result.status).toBe(0);
+      const calls = readCalls(recordDir);
+      expect(calls).toHaveLength(2);
+      expect(overlap(calls[0], calls[1])).toBe(false);
+      expect(slotWaits(home).map((e) => e.reason)).toEqual(['phantom']);
+      expect(fanoutSeen(calls)).toEqual([]);
+      expect(readRunLog(home).status).toBe('success');
+    }, 60000);
+
+    // Windows cannot deliver a catchable SIGTERM to the executor and has no
+    // /proc to walk; CI (Linux) runs these.
+    (process.platform === 'linux' ? it : it.skip)('executor SIGTERM during the overlap removes the fan-out lock and KILLs a TERM-ignoring driver\'s child', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, {
+        locksDir: locksOf(home),
+        agentId: AGENT_ID,
+        codex: { hang: 'exit-on-term' },
+        claude: { hang: 'ignore-term', grandchild: true },
+      });
+      const planFile = writePlan(home, port, parallelSteps);
+      const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver];
+      const child = spawn(process.execPath, args, {
+        env: { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN, SHELLY_RUN_ORIGIN: 'user', SHELLY_PLAN_EXECUTOR_PROC_ROOT: EMPTY_PROC_ROOT },
+        stdio: 'ignore',
+      });
+      const closed = new Promise<number | null>((resolve) => child.on('close', (s) => resolve(s)));
+      const fanout = path.join(locksOf(home), `${AGENT_ID}.fanout.pid`);
+      expect(await waitFor(() => ['started-codex.json', 'started-claude.json', 'grandchild-claude.pid'].every((n) => fs.existsSync(path.join(recordDir, n))))).toBe(true);
+      expect(await waitFor(() => fs.existsSync(fanout))).toBe(true);
+      expect(fs.readFileSync(fanout, 'utf8').trim()).toBe(String(child.pid));
+      const startRecord = fs.readFileSync(`${fanout}.lockdir/starttime`, 'utf8').trim();
+      const ownStat = fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+      expect(startRecord).toBe(ownStat.slice(ownStat.lastIndexOf(')') + 2).trim().split(/\s+/)[19]);
+      const grandchild = Number(fs.readFileSync(path.join(recordDir, 'grandchild-claude.pid'), 'utf8'));
+      expect(procAlive(grandchild)).toBe(true);
+      child.kill('SIGTERM');
+      expect(await closed).toBe(0);
+      expect(fs.existsSync(fanout)).toBe(false);
+      expect(fs.existsSync(`${fanout}.lockdir`)).toBe(false);
+      expect(await waitFor(() => !procAlive(grandchild), 3000)).toBe(true);
+      expect(readRunLog(home).status).toBe('skipped');
+    }, 30000);
+
+    (process.platform === 'linux' ? it : it.skip)('STOP-ALL (.halted) mid-turn: a TERM-ignoring driver is KILLed together with its child (no orphaned codex/claude)', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { codex: { hang: 'ignore-term', grandchild: true } });
+      const steps: Step[] = [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, { instruction: 'finalize' }];
+      const running = runExecutor(writePlan(home, port, steps), home, driver, recordDir);
+      expect(await waitFor(() => fs.existsSync(path.join(recordDir, 'grandchild-codex.pid')) && fs.existsSync(path.join(recordDir, 'started-codex.json')))).toBe(true);
+      const driverPid = JSON.parse(fs.readFileSync(path.join(recordDir, 'started-codex.json'), 'utf8')).pid as number;
+      const grandchild = Number(fs.readFileSync(path.join(recordDir, 'grandchild-codex.pid'), 'utf8'));
+      expect(executor.listDescendantProcs(driverPid).map((p: any) => p.pid)).toContain(grandchild);
+      fs.writeFileSync(path.join(home, '.shelly/agents/.halted'), 'test\n');
+      const result = await running;
+      expect(result.status).toBe(0);
+      expect(await waitFor(() => !procAlive(driverPid) && !procAlive(grandchild), 3000)).toBe(true);
+      expect(requests).toEqual([]); // the final step never ran
     }, 30000);
   });
 

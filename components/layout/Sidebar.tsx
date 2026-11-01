@@ -406,6 +406,9 @@ export function Sidebar() {
     const result = await TerminalEmulator.execCommand(
       `for f in "$HOME"/.shelly/agents/locks/*.pid; do ` +
         `[ -f "$f" ] || continue; ` +
+        // <id>.fanout.pid: a PlanSpec executor's 2nd concurrent CLI branch
+        // (scripts/shelly-plan-executor.js writeFanoutLock), not an agent.
+        `case "$f" in *.fanout.pid) continue;; esac; ` +
         `pid="$(cat "$f" 2>/dev/null || true)"; ` +
         `[ -n "$pid" ] || continue; ` +
         `if kill -0 "$pid" 2>/dev/null; then ` +

@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=19
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=20
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -63,7 +63,15 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // run instead of silently running on plan.tool; a plan with CLI steps only
 // accepts a Keystore-signed action-approval reply (native format). Bumped so a
 // stale v18 copy (silent plan.tool substitution, unsigned replies) is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 19;
+// v20 (2026-11-01, parallel CLI steps Inc2): CLI branches share a CLI slot
+// pool (2 total, 1 per engine); a 2nd concurrent CLI branch waits while
+// another agent holds a live lock or the own-uid process count leaves no
+// phantom-process headroom; two overlapping CLI branches publish
+// locks/<id>.fanout.pid so the .sh MAX_CONCURRENT accounting sees 2 runs; a
+// stopped CLI driver's whole process tree is killed; the driver gets
+// --timeout-ms under the branch timeout. Bumped so a stale v19 copy (no CLI
+// concurrency limit, orphaned codex/claude grandchildren) is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 20;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -492,6 +500,9 @@ function runtimePaths(home, agentId) {
     haltSentinel: path.join(agentsDir, '.halted'),
     resultFile: path.join(tmpDir, `agent-result-${agentId}.md`),
     lockFile: path.join(locksDir, `${agentId}.pid`),
+    // v20: present only while two CLI branches of this run overlap (see
+    // writeFanoutLock) so the .sh's global ACTIVE_COUNT counts this run twice.
+    fanoutLockFile: path.join(locksDir, `${agentId}.fanout.pid`),
     notifyFile: path.join(logDir, 'native-result-notification.json'),
     brokerAuditFile: path.join(logDir, 'agent-driver-audit.jsonl'),
     planAuditFile: path.join(logDir, 'plan-executor-audit.jsonl'),
@@ -2328,12 +2339,255 @@ function childStillRunning(child) {
   return true;
 }
 
+// v20: /proc/<pid>/stat fields after "pid (comm) " (comm may contain spaces /
+// parens, so split after the last ')'): [0]=state [1]=ppid [19]=starttime.
+function procStatFields(pid, procRoot) {
+  try {
+    const stat = fs.readFileSync(path.join(procRoot || '/proc', String(pid), 'stat'), 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+  } catch (_) {
+    return null;
+  }
+}
+
+function procStartTime(pid) {
+  const fields = procStatFields(pid);
+  return fields && /^\d+$/.test(fields[19] || '') ? fields[19] : '';
+}
+
+// v20: every live descendant of rootPid as {pid, start} (Linux/Android /proc
+// ppid walk, the same approach as the driver's listDescendantPids); [] where
+// /proc is unavailable. Collected BEFORE signalling: once the driver dies its
+// codex_tui / claude / tool-command grandchildren are reparented and can no
+// longer be found from it. `start` lets killProcSnapshot spare a recycled pid.
+function listDescendantProcs(rootPid) {
+  let names;
+  try {
+    names = fs.readdirSync('/proc');
+  } catch (_) {
+    return [];
+  }
+  const children = new Map();
+  const starts = new Map();
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    const fields = procStatFields(name);
+    if (!fields) continue;
+    const ppid = Number(fields[1]);
+    if (!children.has(ppid)) children.set(ppid, []);
+    children.get(ppid).push(Number(name));
+    starts.set(Number(name), fields[19] || '');
+  }
+  const out = [];
+  const seen = new Set([rootPid]);
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    for (const child of children.get(pid) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      out.push({ pid: child, start: starts.get(child) || '' });
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
+function mergeProcSnapshot(into, more) {
+  const known = new Set(into.map((p) => p.pid));
+  for (const p of more) {
+    if (!known.has(p.pid)) {
+      into.push(p);
+      known.add(p.pid);
+    }
+  }
+  return into;
+}
+
+// SIGKILL each snapshotted process that is still the same process (start time
+// unchanged). Never this executor itself.
+function killProcSnapshot(snapshot) {
+  for (const { pid, start } of snapshot) {
+    if (!pid || pid === process.pid || !start) continue;
+    if (procStartTime(pid) !== start) continue;
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v20 (parallel CLI steps Inc2): CLI slot pool. A CLI branch (dispatchCliStep)
+// holds one slot for as long as its driver runs, on top of the branch permit
+// (withBranchPermit). At most CLI_SLOTS_TOTAL drivers run at once and at most
+// CLI_SLOTS_PER_ENGINE of one engine (two Codex / two Claude Code turns in one
+// workspace would fight over it, and each engine's login / proxy is single).
+// A SECOND concurrent CLI branch is additionally held back (it runs after the
+// first one instead) when
+//  - another agent holds a live locks/*.pid: the .sh's global MAX_CONCURRENT=2
+//    counts live pid files, and this run already counts as one — with the
+//    fan-out lock below it would be 3; or
+//  - the own-uid process count leaves no phantom-process headroom: Android
+//    trims an app's child processes past ~32 (PhantomProcessRecord), and a
+//    CLI branch costs ~CLI_BRANCH_PROCESS_COST processes (driver, linker64
+//    shells, codex_tui / claude, gate helpers, tool commands).
+// While two CLI drivers overlap, locks/<id>.fanout.pid (own pid, plus the .sh
+// lock's `<pidfile>.lockdir/starttime` record) is published so .sh
+// ACTIVE_COUNT sees this run as two, and STOP-ALL (haltInflightRunsCommand's
+// is_run: starttime record or shelly-plan-executor cmdline) still resolves it
+// to this executor. Removed as soon as the overlap ends, by releaseLock, on
+// SIGTERM and on process exit.
+const CLI_SLOTS_TOTAL = 2;
+const CLI_SLOTS_PER_ENGINE = 1;
+const PHANTOM_PROCESS_CEILING = 28;
+const CLI_BRANCH_PROCESS_COST = 8;
+const cliSlots = { total: 0, perEngine: new Map(), waiters: [], paths: null };
+
+// Test-only override (SHELLY_PLAN_EXECUTOR_PROC_ROOT) for the phantom-headroom
+// count, ignored on Android (linker64 present) like --agent-driver.
+function phantomProcRoot() {
+  const override = process.env.SHELLY_PLAN_EXECUTOR_PROC_ROOT || '';
+  if (override && !fs.existsSync('/system/bin/linker64')) return override;
+  return '/proc';
+}
+
+// Processes of this app's uid. On Android /proc is mounted hidepid, so the
+// listing already holds only them; the uid check covers hosts without it.
+// 0 when /proc is unreadable (non-Linux hosts).
+function countOwnUidProcesses(procRoot) {
+  let names;
+  try {
+    names = fs.readdirSync(procRoot);
+  } catch (_) {
+    return 0;
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  let count = 0;
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    if (uid === null) {
+      count += 1;
+      continue;
+    }
+    try {
+      if (fs.statSync(path.join(procRoot, name)).uid === uid) count += 1;
+    } catch (_) {}
+  }
+  return count;
+}
+
+// Live locks/*.pid of OTHER runs (this run's own <id>.pid / <id>.fanout.pid
+// excluded), counted exactly like the .sh ACTIVE_COUNT: the pid answers kill 0.
+function otherLiveAgentLocks(paths) {
+  let names;
+  try {
+    names = fs.readdirSync(paths.locksDir);
+  } catch (_) {
+    return 0;
+  }
+  const own = new Set([path.basename(paths.lockFile), path.basename(paths.fanoutLockFile)]);
+  let count = 0;
+  for (const name of names) {
+    if (!name.endsWith('.pid') || own.has(name)) continue;
+    const pid = Number(readFile(path.join(paths.locksDir, name)).trim());
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+    try {
+      process.kill(pid, 0);
+      count += 1;
+    } catch (_) {}
+  }
+  return count;
+}
+
+function writeFanoutLock(paths) {
+  if (!paths || !paths.fanoutLockFile) return;
+  const file = paths.fanoutLockFile;
+  try {
+    // starttime first, so the pid file never appears without its record.
+    ensureDir(`${file}.lockdir`);
+    const start = procStartTime(process.pid);
+    if (start) writeAtomic(path.join(`${file}.lockdir`, 'starttime'), `${start}\n`);
+    writeAtomic(file, `${process.pid}\n`);
+  } catch (_) {}
+}
+
+function removeFanoutLock(paths) {
+  if (!paths || !paths.fanoutLockFile) return;
+  const file = paths.fanoutLockFile;
+  try {
+    if (readFile(file).trim() === String(process.pid)) fs.unlinkSync(file);
+  } catch (_) {}
+  try {
+    if (!fs.existsSync(file)) fs.rmSync(`${file}.lockdir`, { recursive: true, force: true });
+  } catch (_) {}
+}
+
+// '' when a CLI branch of `engine` may start now, else why it must wait.
+function cliSlotBlocker(paths, engine) {
+  if (cliSlots.total >= CLI_SLOTS_TOTAL) return 'total';
+  if ((cliSlots.perEngine.get(engine) || 0) >= CLI_SLOTS_PER_ENGINE) return 'engine';
+  if (cliSlots.total >= 1) {
+    if (otherLiveAgentLocks(paths) >= 1) return 'other-agents';
+    if (countOwnUidProcesses(phantomProcRoot()) + CLI_BRANCH_PROCESS_COST > PHANTOM_PROCESS_CEILING) return 'phantom';
+  }
+  return '';
+}
+
+function takeCliSlot(paths, engine) {
+  cliSlots.total += 1;
+  cliSlots.perEngine.set(engine, (cliSlots.perEngine.get(engine) || 0) + 1);
+  cliSlots.paths = paths;
+  if (cliSlots.total >= 2) writeFanoutLock(paths);
+}
+
+// Resolves once a slot is held; onWait(reason) is called when it has to wait.
+// A branch held back by another agent / headroom waits for the running CLI
+// branch to finish (with none running it always starts), so this never
+// deadlocks.
+function acquireCliSlot(paths, engine, onWait) {
+  const blocker = cliSlotBlocker(paths, engine);
+  if (!blocker) {
+    takeCliSlot(paths, engine);
+    return Promise.resolve(false);
+  }
+  if (typeof onWait === 'function') onWait(blocker);
+  return new Promise((resolve) => cliSlots.waiters.push({ engine, resolve }));
+}
+
+function releaseCliSlot(paths, engine) {
+  cliSlots.total = Math.max(0, cliSlots.total - 1);
+  const left = (cliSlots.perEngine.get(engine) || 0) - 1;
+  if (left > 0) cliSlots.perEngine.set(engine, left);
+  else cliSlots.perEngine.delete(engine);
+  if (cliSlots.total < 2) removeFanoutLock(paths);
+  for (let k = 0; k < cliSlots.waiters.length;) {
+    const waiter = cliSlots.waiters[k];
+    if (cliSlotBlocker(paths, waiter.engine)) {
+      k += 1;
+      continue;
+    }
+    cliSlots.waiters.splice(k, 1);
+    takeCliSlot(paths, waiter.engine);
+    waiter.resolve(true);
+  }
+}
+
+const CLI_SLOT_WAIT_REASONS = {
+  total: 'two CLI steps are already running',
+  engine: 'another step of the same CLI is running',
+  'other-agents': 'another agent is running',
+  phantom: 'too many background processes are running',
+};
+
 // Synchronous (called from the SIGTERM handler right before process.exit):
 // TERM every CLI driver, wait up to CLI_STEP_SIGTERM_GRACE_MS, KILL whatever is
-// left, and remove each branch's prompt / answer / usage files.
+// left together with every descendant collected before the TERM (v20: the
+// driver's codex_tui / claude / tool commands), and remove each branch's
+// prompt / answer / usage files.
 function stopLiveCliChildrenSync(graceMs) {
   const entries = Array.from(liveCliChildren.entries());
   liveCliChildren.clear();
+  const trees = entries.map(([child]) => (child.pid ? listDescendantProcs(child.pid) : []));
   for (const [child] of entries) {
     try {
       child.kill('SIGTERM');
@@ -2341,12 +2595,17 @@ function stopLiveCliChildrenSync(graceMs) {
   }
   const deadline = Date.now() + Math.max(0, graceMs === undefined ? CLI_STEP_SIGTERM_GRACE_MS : graceMs);
   while (Date.now() < deadline && entries.some(([child]) => childStillRunning(child))) sleepMs(50);
-  for (const [child, files] of entries) {
+  entries.forEach(([child], k) => {
     if (childStillRunning(child)) {
+      mergeProcSnapshot(trees[k], listDescendantProcs(child.pid));
       try {
         child.kill('SIGKILL');
       } catch (_) {}
     }
+    killProcSnapshot(trees[k]);
+  });
+  removeFanoutLock(cliSlots.paths);
+  for (const [, files] of entries) {
     for (const file of files) {
       try {
         fs.unlinkSync(file);
@@ -3013,6 +3272,7 @@ function acquireLock(paths) {
 }
 
 function releaseLock(paths) {
+  removeFanoutLock(paths);
   try {
     if (readFile(paths.lockFile).trim() === String(process.pid)) fs.unlinkSync(paths.lockFile);
   } catch (_) {}
@@ -5155,6 +5415,7 @@ const CLI_STEP_ENGINES = new Set(['codex', 'claude']);
 const CLI_STEP_LABELS = { codex: 'Codex', claude: 'Claude Code' };
 const CLI_STEP_TIMEOUT_MS = 20 * 60 * 1000;
 const CLI_STEP_KILL_GRACE_MS = CLI_STEP_SIGTERM_GRACE_MS;
+const CLI_DRIVER_TIMEOUT_MS = CLI_STEP_TIMEOUT_MS - 30 * 1000;
 const CLI_STEP_STDOUT_TAIL_MAX = 8192;
 const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude Code step, and a CLI step (Codex/Claude Code) runs only with Run now. Open Shelly and tap Run now to run it.';
 
@@ -5241,7 +5502,30 @@ function cliStepAudit(paths, plan, event, fields) {
 
 // Runs one CLI step. Resolves to {resultText, usedTool, response:''} or throws
 // PlanFailure (refusal = TOOL_DENY so a sourced chain never papers over it).
+// v20: a runnable CLI step first takes a CLI slot (see cliSlots) — waiting,
+// with a MONITOR tail, while the slot pool holds it back — and gives it back
+// when the driver is done. The branch timeout starts once the slot is held.
 async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step, prompt) {
+  const engine = step && step.tool ? String(step.tool.cli || '') : '';
+  if (!cliStepAttended(args) || !CLI_STEP_ENGINES.has(engine)) {
+    return runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt); // refuses
+  }
+  const waitStartedMs = Date.now();
+  const waited = await acquireCliSlot(paths, engine, (reason) => {
+    const why = CLI_SLOT_WAIT_REASONS[reason] || reason;
+    progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`Waiting for CLI slot: ${why}.`) });
+    cliStepAudit(paths, plan, 'cli_slot_wait', { stepIndex, engine, reason });
+  });
+  try {
+    if (waited) cliStepAudit(paths, plan, 'cli_slot_acquired', { stepIndex, engine, waitedMs: Date.now() - waitStartedMs });
+    if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
+    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt);
+  } finally {
+    releaseCliSlot(paths, engine);
+  }
+}
+
+async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt) {
   const engine = step && step.tool ? String(step.tool.cli || '') : '';
   const attended = cliStepAttended(args);
   if (!attended) {
@@ -5292,6 +5576,9 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
     '--agent-id', plan.agent.id,
     '--escalation-public-key-sha256', escalationPin,
     '--escalation-timeout-action', 'queue',
+    // v20: the driver's own turn timeout (default 300 s) would cut a long
+    // turn; it ends just before the branch timeout so it reports first.
+    '--timeout-ms', String(CLI_DRIVER_TIMEOUT_MS),
     '--audit-log', auditLog,
     '--answer-file', answerFile,
     '--prompt-file', promptFile,
@@ -5333,17 +5620,24 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
       let settled = false;
       let killTimer = null;
       let terminateReason = '';
+      // v20: the driver's descendants (codex_tui / claude / tool commands),
+      // collected before every signal; KILLed with the driver after the grace
+      // period, and right away if the driver exits but leaves them behind.
+      const tree = [];
       const terminate = (why) => {
         if (child.exitCode !== null || child.signalCode !== null) return;
         terminateReason = terminateReason || why;
+        mergeProcSnapshot(tree, listDescendantProcs(child.pid));
         try {
           child.kill('SIGTERM');
         } catch (_) {}
         if (!killTimer) {
           killTimer = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) mergeProcSnapshot(tree, listDescendantProcs(child.pid));
             try {
               child.kill('SIGKILL');
             } catch (_) {}
+            killProcSnapshot(tree);
           }, CLI_STEP_KILL_GRACE_MS);
           if (typeof killTimer.unref === 'function') killTimer.unref();
         }
@@ -5382,6 +5676,7 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
         clearTimeout(timeout);
         clearInterval(haltPoll);
         if (killTimer) clearTimeout(killTimer);
+        if (terminateReason) killProcSnapshot(tree);
         if (lineBuf) onLine(lineBuf);
         resolve(Object.assign({ stdoutTail, terminateReason }, value));
       };
@@ -6324,6 +6619,9 @@ async function run(args) {
     process.exit(EXIT.OK);
   };
   process.once('SIGTERM', onSigterm);
+  // v20: the fan-out lock never outlives this process (an uncaught exit too).
+  const onExitRemoveFanout = () => removeFanoutLock(paths);
+  process.once('exit', onExitRemoveFanout);
 
   // Each run opens a fresh CAP-001 egress budget envelope. The broker's budget file
   // (cap-budget-<agentId>.json) is keyed per-agent and persists across runs; without
@@ -6456,6 +6754,7 @@ async function run(args) {
     return e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL;
   } finally {
     process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('exit', onExitRemoveFanout);
     // 'halted' (STOP-ALL) is recorded as an ordinary skipped iteration.
     continuousRecord(activeContinuous, progressStatus === 'halted' ? 'skipped' : progressStatus, progress && progress.runId);
     activeContinuous = null;
@@ -6996,6 +7295,13 @@ module.exports = {
   cliStepNeedingAttended,
   liveCliChildren,
   stopLiveCliChildrenSync,
+  listDescendantProcs,
+  countOwnUidProcesses,
+  CLI_SLOTS_TOTAL,
+  CLI_SLOTS_PER_ENGINE,
+  PHANTOM_PROCESS_CEILING,
+  CLI_BRANCH_PROCESS_COST,
+  CLI_DRIVER_TIMEOUT_MS,
   makeSignedApprovalNonceStore,
   ensureSignedApprovalVerifierKey,
   // Project owner directive 2026-07-14 (runtime approval default-off) —
