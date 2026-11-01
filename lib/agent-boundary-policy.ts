@@ -173,6 +173,75 @@ export function isWithinRoot(root: string, target: string): boolean {
  */
 const SHELL_SPECIAL_PARAM_RE = /^\$(?:\$|\?|#|@|\*|[0-9])$/;
 
+/**
+ * Longest run of leading flag letters after which an attached absolute /
+ * home / variable / parent value is still taken to be an option VALUE
+ * (`-o/x`, `-st/x`, `-xzf/x`, `-cvzf/x`). A longer letter run before the
+ * first non-letter is far more likely one option followed by a relative
+ * word (`-Iinclude/foo` = `-I include/foo`), which is checked as such.
+ */
+const MAX_ATTACHED_FLAG_LETTERS = 4;
+
+function stripQuotes(t: string): string {
+  return t.replace(/^['"`]+/, '').replace(/['"`]+$/, '');
+}
+
+/**
+ * Path candidates hidden inside an option token. Before 2026-11-02 every
+ * `-`-led token was discarded, so a path ATTACHED to an option was never
+ * boundary-checked: `cp -t/sdcard/Download a`, `sort -o/sdcard/x f`,
+ * `cp --target-directory=/sdcard/Download a`, `mv -t~/bin x`,
+ * `ln -st/sdcard a`, `grep --file=/secret` were all L2 auto-allow.
+ *
+ * Tool-agnostic and deliberately conservative (an extra candidate can only
+ * make the gate ask more, never less):
+ *  - `--opt=VALUE` / `-o=VALUE`: VALUE.
+ *  - `-XVALUE` (short options, value attached): the value may start after
+ *    any of the leading flag letters, and only the tool knows which. Every
+ *    start that could leave the workspace is a candidate: right after the
+ *    first letter (`-t~/bin` -> `~/bin`, `-o$HOME/x` -> `$HOME/x`), and
+ *    right after the whole letter run when it is short (`-st/sdcard` ->
+ *    `/sdcard`, see MAX_ATTACHED_FLAG_LETTERS).
+ * Candidates still go through the normal path-shape filter, so harmless
+ * options (`-la`, `-n1`, `-rf`, `--oneline`, `--color=auto`) yield nothing.
+ * Separate-argument forms (`-t /sdcard`) are already ordinary tokens.
+ */
+function optionPathCandidates(token: string): string[] {
+  if (token === '-' || token === '--') return [];
+  const out: string[] = [];
+  if (token.startsWith('--')) {
+    const eq = token.indexOf('=');
+    if (eq > 2) out.push(token.slice(eq + 1));
+    return out.map(stripQuotes);
+  }
+  const rest = token.slice(1);
+  const eq = rest.indexOf('=');
+  if (eq >= 0) out.push(rest.slice(eq + 1));
+  const letters = /^[A-Za-z]*/.exec(rest)![0].length;
+  if (letters === 0) {
+    out.push(rest); // `-/x`, `-~/x`, `-..`: take it all
+  } else {
+    out.push(rest.slice(1));
+    if (letters > 1 && letters <= MAX_ATTACHED_FLAG_LETTERS) out.push(rest.slice(letters));
+  }
+  return out.map(stripQuotes);
+}
+
+/**
+ * A redirect written without spaces stays inside one whitespace token:
+ * `echo hi>/sdcard/x`, `cat a>>~/.bashrc`. Before 2026-11-02 the whole token
+ * (`hi>/sdcard/x`) did not start with `/` or `~`, so it was judged a
+ * workspace-relative path and the write was L2 auto-allow. Split such a
+ * token at its redirection operators and check each target. `/dev/null` as
+ * an ATTACHED target (`2>/dev/null`) is skipped so this does not newly gate
+ * that idiom; the spaced form `2> /dev/null` is unchanged (still a path).
+ */
+function splitAttachedRedirects(token: string): string[] {
+  if (!/[<>]/.test(token)) return [token];
+  const [head, ...targets] = token.split(/\d*[<>]+[&|]?/);
+  return [head, ...targets.map(stripQuotes).filter((t) => t !== '/dev/null')];
+}
+
 /** Best-effort extraction of path-like argument tokens from a shell command. */
 export function extractPaths(command: string): string[] {
   return command
@@ -191,6 +260,8 @@ export function extractPaths(command: string): string[] {
         .replace(/^['"`]+/, '')
         .replace(/['"`]+$/, ''),
     )
+    .flatMap(splitAttachedRedirects)
+    .flatMap((t) => (t.startsWith('-') ? optionPathCandidates(t) : [t]))
     .filter(
       (t) =>
         t.length > 0 &&

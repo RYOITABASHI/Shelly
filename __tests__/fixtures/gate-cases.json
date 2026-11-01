@@ -229,5 +229,212 @@
       "workspaceRoot": "/root/app"
     },
     "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: cp -t/sdcard/Download a",
+    "command": "cp -t/sdcard/Download a",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: cp -t/sdcard/Download a",
+    "command": "cp -t/sdcard/Download a",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: sort -o/sdcard/x f",
+    "command": "sort -o/sdcard/x f",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: sort -o/sdcard/x f",
+    "command": "sort -o/sdcard/x f",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: cp --target-directory=/sdcard/Download a",
+    "command": "cp --target-directory=/sdcard/Download a",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: cp --target-directory=/sdcard/Download a",
+    "command": "cp --target-directory=/sdcard/Download a",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: mv -t~/bin x",
+    "command": "mv -t~/bin x",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: mv -t~/bin x",
+    "command": "mv -t~/bin x",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: ln -st/sdcard a",
+    "command": "ln -st/sdcard a",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: ln -st/sdcard a",
+    "command": "ln -st/sdcard a",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: grep --file=/secret x",
+    "command": "grep --file=/secret x",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: grep --file=/secret x",
+    "command": "grep --file=/secret x",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "option-attached out-of-root path L2 -> escalate: bash -lc 'cp -t/sdcard/Download a'",
+    "command": "bash -lc 'cp -t/sdcard/Download a'",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "option-attached out-of-root path L3 -> deny: bash -lc 'cp -t/sdcard/Download a'",
+    "command": "bash -lc 'cp -t/sdcard/Download a'",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "harmless/in-root option L2 -> allow: ls -la",
+    "command": "ls -la",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
+    "name": "harmless/in-root option L2 -> allow: git log -n1 --oneline",
+    "command": "git log -n1 --oneline",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
+    "name": "harmless/in-root option L2 -> allow: cp --target-directory=src/out a.ts",
+    "command": "cp --target-directory=src/out a.ts",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
+    "name": "harmless/in-root option L2 -> allow: sort -o./out.txt in.txt",
+    "command": "sort -o./out.txt in.txt",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
+    "name": "attached redirect out-of-root L2 -> escalate: echo hi>/sdcard/x",
+    "command": "echo hi>/sdcard/x",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "attached redirect out-of-root L3 -> deny: echo hi>/sdcard/x",
+    "command": "echo hi>/sdcard/x",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "attached redirect out-of-root L2 -> escalate: cat a>>~/.bashrc",
+    "command": "cat a>>~/.bashrc",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "attached redirect out-of-root L3 -> deny: cat a>>~/.bashrc",
+    "command": "cat a>>~/.bashrc",
+    "policy": {
+      "level": "L3",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "attached 2>/dev/null L2 -> allow",
+    "command": "ls src 2>/dev/null",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
   }
 ]

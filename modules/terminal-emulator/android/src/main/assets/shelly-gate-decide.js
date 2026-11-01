@@ -1013,10 +1013,39 @@ function isWithinRoot(root, target) {
   return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 var SHELL_SPECIAL_PARAM_RE = /^\$(?:\$|\?|#|@|\*|[0-9])$/;
+var MAX_ATTACHED_FLAG_LETTERS = 4;
+function stripQuotes(t) {
+  return t.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+}
+function optionPathCandidates(token) {
+  if (token === "-" || token === "--") return [];
+  const out = [];
+  if (token.startsWith("--")) {
+    const eq2 = token.indexOf("=");
+    if (eq2 > 2) out.push(token.slice(eq2 + 1));
+    return out.map(stripQuotes);
+  }
+  const rest = token.slice(1);
+  const eq = rest.indexOf("=");
+  if (eq >= 0) out.push(rest.slice(eq + 1));
+  const letters = /^[A-Za-z]*/.exec(rest)[0].length;
+  if (letters === 0) {
+    out.push(rest);
+  } else {
+    out.push(rest.slice(1));
+    if (letters > 1 && letters <= MAX_ATTACHED_FLAG_LETTERS) out.push(rest.slice(letters));
+  }
+  return out.map(stripQuotes);
+}
+function splitAttachedRedirects(token) {
+  if (!/[<>]/.test(token)) return [token];
+  const [head, ...targets] = token.split(/\d*[<>]+[&|]?/);
+  return [head, ...targets.map(stripQuotes).filter((t) => t !== "/dev/null")];
+}
 function extractPaths(command) {
   return command.split(/\s+/).map(
     (t) => t.replace(/^[<>|&]+/, "").replace(/[;,]+$/, "").replace(/^['"`]+/, "").replace(/['"`]+$/, "")
-  ).filter(
+  ).flatMap(splitAttachedRedirects).flatMap((t) => t.startsWith("-") ? optionPathCandidates(t) : [t]).filter(
     (t) => t.length > 0 && !t.startsWith("-") && (t.includes("/") || t.startsWith("~") || t === "." || t === ".." || // Fable5 review 2026-08-25: a bare `..` (no `/`) matched
     // none of the conditions below, so `cd ..` was invisible
     // to isWithinRoot entirely — see hasUnsafeCd() for the
