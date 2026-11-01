@@ -267,7 +267,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       const flags = argv.filter((a) => a.startsWith('--'));
       expect(flags).toEqual([
         '--engine', '--cwd', '--approval-policy', '--policy-json', '--agent-id',
-        '--escalation-public-key-sha256', '--escalation-timeout-action', '--timeout-ms', '--audit-log',
+        '--escalation-public-key-sha256', '--escalation-timeout-action', '--escalation-timeout-ms', '--timeout-ms', '--audit-log',
         // v22: every engine gets the usage sidecar (Codex included).
         '--answer-file', '--prompt-file', '--usage-file',
       ]);
@@ -280,6 +280,11 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       expect(Number(value('--timeout-ms'))).toBe(executor.CLI_DRIVER_TIMEOUT_MS);
       expect(executor.CLI_DRIVER_TIMEOUT_MS).toBeGreaterThan(300000);
       expect(executor.CLI_DRIVER_TIMEOUT_MS).toBeLessThan(20 * 60 * 1000);
+      // v23: the ask waits 10 min (not the driver's 120 s default), under
+      // the turn timeout.
+      expect(Number(value('--escalation-timeout-ms'))).toBe(executor.CLI_ESCALATION_TIMEOUT_MS);
+      expect(executor.CLI_ESCALATION_TIMEOUT_MS).toBe(10 * 60 * 1000);
+      expect(executor.CLI_ESCALATION_TIMEOUT_MS).toBeLessThan(executor.CLI_DRIVER_TIMEOUT_MS);
       expect(value('--audit-log')).toBe(path.join(logDir(home), `agent-driver-audit-s${index}.jsonl`));
       expect(value('--cwd')).toBe(home); // content-project default missing -> HOME
       // Invariant 2: unattended always explicit.
@@ -711,6 +716,10 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       const timeoutMs = Number(calls[0].argv[calls[0].argv.indexOf('--timeout-ms') + 1]);
       expect(timeoutMs).toBeGreaterThan(5000);
       expect(timeoutMs).toBeLessThan(18000);
+      // v23: a clamped turn clamps the approval wait under it too.
+      const escalationMs = Number(calls[0].argv[calls[0].argv.indexOf('--escalation-timeout-ms') + 1]);
+      expect(escalationMs).toBe(executor.cliEscalationTimeoutMs(timeoutMs));
+      expect(escalationMs).toBeLessThan(timeoutMs);
       const audit = readAudit(home);
       expect(audit.filter((e) => e.event === 'cli_slot_wait').map((e) => e.reason)).toEqual(['engine']);
       const exhausted = audit.filter((e) => e.event === 'cli_run_time_exhausted');
