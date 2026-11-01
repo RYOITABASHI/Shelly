@@ -716,9 +716,12 @@ export type EscalationAutoApproveOpts = {
  *                                   |   …, .git/hooks|config and .env* stay
  *                                   |   HARD
  *   expansion ($ / backticks)       | HARD, re-checked: only $HOME / ${HOME}
- *                                   |   resolve, and a QUOTED heredoc body
- *                                   |   (<<'EOF') written by cat / tee into
- *                                   |   the workspace is literal text
+ *                                   |   / $TMPDIR / ${TMPDIR} at the start of
+ *                                   |   a word resolve ($TMPDIR = $HOME/tmp),
+ *                                   |   `$` inside '…' is text, and a QUOTED
+ *                                   |   heredoc body (<<'EOF') written by
+ *                                   |   cat / tee into the workspace or a
+ *                                   |   scratch dir is literal text
  *   indirect (<( >( <<)             | process substitution HARD; a heredoc
  *                                   |   body is skipped only when plain
  *                                   |   cat / tee writes it into a file
@@ -747,15 +750,24 @@ export type EscalationAutoApproveOpts = {
  *     *.jks/*.keystore, auth.json, credentials) · protected-path ·
  *     shelly-control-path (~/<dot-dir>, ~/bin, ~/lib, ~/usr, ~/etc,
  *     ~/models, ~/storage, ~/shelly-*) · unresolved-path (a path that cannot
- *     be resolved: `~user/…`, a glob in the top home entry) · home-root (the
- *     home itself, or a glob directly in it) · outside-home (a path outside
- *     the app home that is not inside the trusted workspace root) ·
+ *     be resolved: `~user/…`, a glob in the top home entry, `$TMPDIR/..`, a
+ *     brace list / dot glob) · home-root (the home itself, or a glob
+ *     directly in it) · temp-root (`/tmp` / `$TMPDIR` itself, written) ·
+ *     outside-home (a path outside the app home that is not inside the
+ *     trusted workspace root or a scratch dir: `/tmp`, `$HOME/tmp`) ·
+ *     heredoc (one not plainly written by cat / tee into the workspace or a
+ *     scratch dir) · option:ln / option:cp (relative symlink targets,
+ *     `cp -s`) · unbalanced-quote ·
  *     cwd-outside-home · dir-change-unknown · script-exec (running a file by
  *     path) · tool:<x> (not a file tool) · system-tool:<x> (am / pm / cmd /
  *     settings / svc / content / setprop / su / sudo / reboot / input / kill
  *     / pkill / killall / crontab / shelly) · network-tool (git push / fetch
  *     / pull / clone / remote / send-email / ls-remote / submodule, npm|pnpm|
  *     yarn publish) · expansion · indirect.
+ *
+ * The command is read by lexAllLevelScript (quote-aware: a quoted `|` / `;`
+ * / `&&` / `<<` / `<` / `>` is part of a word), and cwd changes are followed
+ * with every directory a failed / skipped `cd` could leave (2026-11-02).
  *
  * Residual (accepted with the opt-in, DEFERRED.md): the checks are lexical;
  * a file tool cannot run code, but e.g. a `cp` into a place a later,
@@ -855,10 +867,353 @@ function homeRelative(path: string, homes: readonly string[]): string | null {
   return null;
 }
 
-/** `$HOME` / `${HOME}` are the only expansions the "all" level resolves. */
+/** `$HOME` / `${HOME}` are the only expansions a heredoc body may hold. */
 function withoutHomeVars(text: string): string {
   return text.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, '');
 }
+
+// ── Quote-aware lexing for the "all" level (2026-11-02, build 2790) ───────
+//
+// The "all" level used to dequote the script and THEN split it on `|` / `;`
+// / `&&`, so a quoted `|` (`grep -c "a\|b" f`) split the command and `b`
+// was judged as a program (reason tool:<b>). It also matched heredocs, `$`
+// and `<` / `>` on dequoted text, which let quoting hide structure: a quoted
+// `"<<EOF"` was read as a heredoc whose "body" (real commands) was skipped,
+// and a quoted word with `<` / `>` in it was never path-checked. The lexer
+// below reads the script the way the shell does — '…', "…" (with its
+// backslash escapes), backslashes, `#` comments, operators, redirections
+// and heredocs — and refuses whatever it does not model.
+
+type LexSep = '' | '&&' | '||' | ';' | '\n' | '|' | '&';
+
+/** One shell word, quotes removed. `redir`: it starts with an UNQUOTED
+ *  redirection operator (`>f`, `2>>f`, `<f`, `>&2`, `<<`, `<<<s`). */
+export type LexWord = { text: string; redir: boolean; glob: boolean };
+export type LexHeredoc = { delim: string; quoted: boolean; body: string };
+export type LexSegment = {
+  words: LexWord[];
+  /** Part of a pipeline (`a | b`: both). */
+  piped: boolean;
+  /** Ended by a single `&` (runs in the background, in a subshell). */
+  background: boolean;
+  /** The operator before this segment ('' for the first). */
+  sep: LexSep;
+  heredocs: LexHeredoc[];
+};
+export type LexResult =
+  | { ok: true; segments: LexSegment[]; hasParen: boolean }
+  | { ok: false; reason: string };
+
+/** The only expansions the lexer accepts, and only at the start of a word
+ *  (or of an `--opt=` value): `$HOME`, `${HOME}`, `$TMPDIR`, `${TMPDIR}`. */
+const LEX_ALLOWED_VAR_RE = /^\$(?:\{(?:HOME|TMPDIR)\}|(?:HOME|TMPDIR)(?![A-Za-z0-9_]))/;
+const LEX_VAR_POSITION_RE = /^(?:--?[A-Za-z][\w-]*=)?$/;
+
+export function lexAllLevelScript(src: string): LexResult {
+  const s = String(src ?? '');
+  const segments: LexSegment[] = [];
+  const newSegment = (sep: LexSep, piped: boolean): LexSegment => ({ words: [], piped, background: false, sep, heredocs: [] });
+  let seg = newSegment('', false);
+  let word = '';
+  let inWord = false;
+  let quotedWord = false;
+  let redir = false;
+  let glob = false;
+  let hasParen = false;
+  const pending: Array<{ seg: LexSegment; delim: string; quoted: boolean }> = [];
+  const fail = (reason: string): LexResult => ({ ok: false, reason });
+
+  const endWord = () => {
+    if (inWord) seg.words.push({ text: word, redir, glob });
+    word = '';
+    inWord = false;
+    quotedWord = false;
+    redir = false;
+    glob = false;
+  };
+  const endSegment = (by: LexSep) => {
+    endWord();
+    if (by === '|') seg.piped = true;
+    if (by === '&') seg.background = true;
+    segments.push(seg);
+    seg = newSegment(by, by === '|');
+  };
+  const varAt = (i: number): string | null => {
+    const m = LEX_ALLOWED_VAR_RE.exec(s.slice(i));
+    return m && LEX_VAR_POSITION_RE.test(word) ? m[0] : null;
+  };
+  let i = 0;
+  // Heredoc bodies start after the next unquoted newline. A body ends at the
+  // FIRST line that, trimmed, equals the delimiter (and for an unquoted
+  // delimiter also at a backslash-joined line that does): never later than
+  // bash ends it, so nothing bash runs as a command is read as body text.
+  const consumeHeredocs = () => {
+    while (pending.length > 0) {
+      const h = pending.shift()!;
+      const lines: string[] = [];
+      let logical = '';
+      while (i < s.length) {
+        const nl = s.indexOf('\n', i);
+        const line = nl < 0 ? s.slice(i) : s.slice(i, nl);
+        i = nl < 0 ? s.length : nl + 1;
+        if (line.trim() === h.delim) break;
+        if (!h.quoted) {
+          const joined = logical + line;
+          if (logical && joined.trim() === h.delim) break;
+          logical = line.endsWith('\\') ? joined.slice(0, -1) : '';
+        }
+        lines.push(line);
+      }
+      h.seg.heredocs.push({ delim: h.delim, quoted: h.quoted, body: lines.join('\n') });
+    }
+  };
+
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\\') {
+      if (s[i + 1] === '\n') { i += 2; continue; }
+      if (i + 1 < s.length) word += s[i + 1];
+      inWord = true;
+      quotedWord = true;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = s.indexOf("'", i + 1);
+      if (end < 0) return fail('unbalanced-quote');
+      word += s.slice(i + 1, end);
+      inWord = true;
+      quotedWord = true;
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      i += 1;
+      inWord = true;
+      quotedWord = true;
+      let closed = false;
+      while (i < s.length) {
+        const c = s[i];
+        if (c === '"') { closed = true; i += 1; break; }
+        if (c === '\\' && i + 1 < s.length && '"\\$`\n'.includes(s[i + 1])) {
+          if (s[i + 1] !== '\n') word += s[i + 1];
+          i += 2;
+          continue;
+        }
+        if (c === '`') return fail('expansion');
+        if (c === '$') {
+          const v = varAt(i);
+          if (!v) return fail('expansion');
+          word += v;
+          i += v.length;
+          continue;
+        }
+        word += c;
+        i += 1;
+      }
+      if (!closed) return fail('unbalanced-quote');
+      continue;
+    }
+    if (ch === '`') return fail('expansion');
+    if (ch === '$') {
+      const v = varAt(i);
+      if (!v) return fail('expansion');
+      word += v;
+      inWord = true;
+      i += v.length;
+      continue;
+    }
+    if (ch === '#' && !inWord) {
+      while (i < s.length && s[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') { endWord(); i += 1; continue; }
+    if (ch === '\n') { endSegment('\n'); i += 1; consumeHeredocs(); continue; }
+    if (ch === ';') { endSegment(';'); i += 1; continue; }
+    if (ch === '&') {
+      if (s[i + 1] === '&') { endSegment('&&'); i += 2; continue; }
+      if (s[i + 1] === '>') {
+        endWord();
+        word = '&';
+        inWord = true;
+        redir = true;
+        i += 1;
+        continue;
+      }
+      endSegment('&');
+      i += 1;
+      continue;
+    }
+    if (ch === '|') {
+      if (s[i + 1] === '|') { endSegment('||'); i += 2; continue; }
+      endSegment('|');
+      i += s[i + 1] === '&' ? 2 : 1;
+      continue;
+    }
+    if (ch === '<' || ch === '>') {
+      if (s[i + 1] === '(') return fail('indirect');
+      const fdPrefix = inWord && !quotedWord && (/^\d+$/.test(word) || (word === '&' && redir && ch === '>'));
+      if (!fdPrefix) endWord();
+      inWord = true;
+      redir = true;
+      if (ch === '<' && s.startsWith('<<<', i)) { word += '<<<'; i += 3; continue; }
+      if (ch === '<' && s[i + 1] === '<') {
+        const dash = s[i + 2] === '-';
+        word += dash ? '<<-' : '<<';
+        i += dash ? 3 : 2;
+        endWord();
+        while (s[i] === ' ' || s[i] === '\t') i += 1;
+        let delim = '';
+        let quoted = false;
+        while (i < s.length && !/[\s;&|<>()]/.test(s[i])) {
+          const c = s[i];
+          if (c === "'") {
+            const end = s.indexOf("'", i + 1);
+            if (end < 0) return fail('unbalanced-quote');
+            delim += s.slice(i + 1, end);
+            quoted = true;
+            i = end + 1;
+            continue;
+          }
+          if (c === '"') {
+            const end = s.indexOf('"', i + 1);
+            if (end < 0) return fail('unbalanced-quote');
+            const inner = s.slice(i + 1, end);
+            if (/[\\$`]/.test(inner)) return fail('heredoc');
+            delim += inner;
+            quoted = true;
+            i = end + 1;
+            continue;
+          }
+          if (c === '\\') {
+            if (i + 1 < s.length) delim += s[i + 1];
+            quoted = true;
+            i += 2;
+            continue;
+          }
+          if (c === '$' || c === '`') return fail('expansion');
+          delim += c;
+          i += 1;
+        }
+        if (!delim) return fail('heredoc');
+        pending.push({ seg, delim, quoted });
+        continue;
+      }
+      const next = s[i + 1];
+      if ((ch === '<' && (next === '>' || next === '&')) || (ch === '>' && (next === '>' || next === '&' || next === '|'))) {
+        word += ch + next;
+        i += 2;
+        continue;
+      }
+      word += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '(' || ch === ')') hasParen = true;
+    if (ch === '*' || ch === '?' || ch === '[' || ch === '{') glob = true;
+    word += ch;
+    inWord = true;
+    i += 1;
+  }
+  endSegment('');
+  consumeHeredocs();
+  return { ok: true, segments, hasParen };
+}
+
+/** True when `text` is exactly one shell word (`'…'`, `"…"`, plain, or a
+ *  concatenation of those): the argument of a `bash -lc <word>` wrapper. */
+function isSingleShellWord(text: string): boolean {
+  const s = text.trim();
+  if (!s) return false;
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'") {
+      const end = s.indexOf("'", i + 1);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    if (c === '"') {
+      i += 1;
+      while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1;
+      if (i >= s.length) return false;
+      i += 1;
+      continue;
+    }
+    if (/[\s;&|<>()`$]/.test(c)) return false;
+    i += 1;
+  }
+  return true;
+}
+
+/** sed / grep-family / rg: which word is the pattern or script (data, not a
+ *  path). Any `-e` / `-f` / `--regexp` / `--expression` / `--file` (also as
+ *  a long-option prefix or inside a short cluster) means the patterns come
+ *  from options: the first operand is then a FILE, so nothing is skipped
+ *  except the word right after an `e` that ends a short cluster / `-e`. */
+const PATTERN_TOOLS = new Set(['sed', 'grep', 'egrep', 'fgrep', 'rg']);
+const PATTERN_LONG_OPTIONS = ['regexp', 'expression', 'file'];
+function patternWordIndexes(words: readonly LexWord[]): Set<number> {
+  const out = new Set<number>();
+  if (!PATTERN_TOOLS.has(words[0]?.text ?? '')) return out;
+  let explicit = false;
+  let firstOperand = -1;
+  let endOfOptions = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w.redir) {
+      if (/^(?:\d+|&)?(?:>>?|>\||<>?)$/.test(w.text)) i += 1; // operator alone: next word is its target
+      continue;
+    }
+    const t = w.text;
+    if (!endOfOptions && t === '--') { endOfOptions = true; continue; }
+    if (!endOfOptions && t.startsWith('--')) {
+      const name = t.slice(2).replace(/=.*$/, '');
+      if (name && PATTERN_LONG_OPTIONS.some((o) => o.startsWith(name) || name.startsWith(o))) {
+        explicit = true;
+        if (!t.includes('=') && ('regexp'.startsWith(name) || 'expression'.startsWith(name))) out.add(i + 1);
+      }
+      continue;
+    }
+    if (!endOfOptions && t.startsWith('-') && t.length > 1) {
+      const cluster = t.slice(1);
+      if (/[ef]/.test(cluster)) {
+        explicit = true;
+        if (cluster.endsWith('e')) out.add(i + 1);
+      }
+      continue;
+    }
+    if (firstOperand < 0) firstOperand = i;
+  }
+  if (!explicit && firstOperand > 0) out.add(firstOperand);
+  return out;
+}
+/** A pattern / script word is skipped by the path checks only when it holds
+ *  regex / sed syntax, names no `..` component and was not an unquoted glob
+ *  (which the shell would expand to real paths). */
+const PATTERN_SYNTAX_RE = /[<>\\^$*+?()[\]{}|;, '"]/;
+
+/** Tools whose arguments are printed, never opened (redirect targets still
+ *  are checked). */
+const PRINT_ONLY_TOOLS = new Set(['echo', 'printf']);
+
+/** sed commands that run a program or write a file: `e` / `w` / `W` after an
+ *  address (`1e cmd`, `$w f`, `/x/,/y/W f`) or an `s` flag set (`s/a/b/ge`). */
+const SED_EXEC_OR_WRITE_ADDR_RE = /(?:^|[\s;{}!$,/0-9~+])[ewW](?:[\s;}]|$)/;
+
+/** Scratch directories the "all" level treats like the workspace for file
+ *  tools and syntax checks: literal `/tmp`, and the app TMPDIR — `$HOME/tmp`
+ *  (HomeInitializer .bashrc `export TMPDIR="$HOME/tmp"`, the driver's
+ *  default, the Claude runner's `${TMPDIR:-$HOME/tmp}`), which is what
+ *  `$TMPDIR` / `${TMPDIR}` resolve to. Inside them: no dot component, no
+ *  Shelly / Codex runtime file (`shelly-*`, `codex-rc-*`), no glob directly
+ *  under the scratch root and no write of the root itself. */
+const TEMP_ROOT_LITERAL = '/tmp';
+const TEMP_RUNTIME_ENTRY_RE = /^(?:shelly|codex-rc)/i;
+/** Tools that may name a scratch root itself (`ls $TMPDIR`, `mkdir -p $TMPDIR`). */
+const TEMP_ROOT_OK_TOOLS = new Set([...HOME_ROOT_OK_TOOLS, 'mkdir']);
 
 /**
  * The "all" level's own verdict for an attended escalation the standard
@@ -881,7 +1236,11 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
   const payload = shellPayload(raw);
   const once = dequoteShellWords(payload);
   const twice = dequoteShellWords(once);
-  for (const text of [raw, payload, once, twice]) {
+  // The script the shell runs: the single argument word of a `bash -lc …`
+  // wrapper, dequoted once; otherwise the text itself — quotes intact, so the
+  // lexer can tell a quoted `|` / `;` / `&&` / `<<` from a real one.
+  const shellText = payload !== raw && isSingleShellWord(payload) ? once : payload;
+  for (const text of [raw, payload, once, twice, shellText]) {
     if (checkCommandSafety(text).level === 'CRITICAL') return { ok: false, reason: 'safety:CRITICAL' };
   }
   for (const text of [raw, once, twice]) {
@@ -889,6 +1248,8 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     if (SECRET_PATH_TEXT_RE.test(text)) return { ok: false, reason: 'secret-file' };
     if (PUBLISH_RE.test(text)) return { ok: false, reason: 'network-tool' };
   }
+  // Process substitution anywhere, even quoted (over-refuses on purpose).
+  if (/<\(|>\(/.test(dequoteShellWords(shellText))) return { ok: false, reason: 'indirect' };
 
   const homePaths = (opts.homePaths ?? []).filter(Boolean);
   const homes = rootAliases('~', homePaths);
@@ -897,27 +1258,46 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
   const trusted = trustedRaw && validateWorkspaceRoot(trustedRaw, [...homePaths]).ok
     ? rootAliases(trustedRaw, homePaths).filter((r) => validateWorkspaceRoot(r, [...homePaths]).ok)
     : [];
+  const tempRoots = [TEMP_ROOT_LITERAL, ...homes.map((h) => `${h}/tmp`)];
   const inHome = (p: string) => homeRelative(p, homes) !== null;
   const inTrusted = (p: string) => trusted.some((r) => p === r || p.startsWith(`${r}/`));
+  const tempRelative = (p: string): string | null => homeRelative(p, tempRoots);
+  const inTemp = (p: string) => tempRelative(p) !== null;
 
   const cwdRaw = String(request.cwd ?? '').trim();
   const initialCwd: string | null = cwdRaw.startsWith('/') ? normalizePath(cwdRaw) : (trusted[0] ?? null);
-  if (!initialCwd || (!inHome(initialCwd) && !inTrusted(initialCwd))) return { ok: false, reason: 'cwd-outside-home' };
-  let cwd: string = initialCwd;
+  if (!initialCwd || (!inHome(initialCwd) && !inTrusted(initialCwd) && !inTemp(initialCwd))) {
+    return { ok: false, reason: 'cwd-outside-home' };
+  }
 
-  /** Resolve a path-ish word against the tracked cwd: absolute, `~`, `$HOME`
-   *  / `${HOME}`; null when it cannot be resolved (`~user/…`). */
+  /** Resolve a path-ish word against `base`: absolute, `~`, `$HOME` /
+   *  `${HOME}`, `$TMPDIR` / `${TMPDIR}` (→ $HOME/tmp; a `..` after it is
+   *  refused); null when it cannot be resolved (`~user/…`). */
   const resolve = (word: string, base: string): string | null => {
     const homeRel = /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)(.*)$/.exec(word);
     if (homeRel) return normalizePath(`${homes[0]}${homeRel[1]}`);
+    const tmpRel = /^(?:\$TMPDIR|\$\{TMPDIR\})(?=\/|$)(.*)$/.exec(word);
+    if (tmpRel) {
+      if (tmpRel[1].split('/').includes('..')) return null;
+      return normalizePath(`${homes[0]}/tmp${tmpRel[1]}`);
+    }
     if (word.startsWith('~') || word.startsWith('$')) return null;
     if (word.startsWith('/')) return normalizePath(word);
     return normalizePath(`${base}/${word}`);
   };
 
   /** Hard checks on one resolved path. */
-  const checkPath = (p: string, word: string): string | null => {
+  const checkPath = (p: string): string | null => {
     if (DEVICE_PSEUDO_FILE_RE.test(p)) return null;
+    const tmp = tempRelative(p);
+    if (tmp !== null) {
+      if (tmp === '') return 'temp-root';
+      const comps = tmp.split('/');
+      if (/[$`*?[\]{}]/.test(comps[0])) return 'unresolved-path';
+      if (comps.some((c) => c.startsWith('.') && c !== '..')) return 'protected-path';
+      if (TEMP_RUNTIME_ENTRY_RE.test(comps[0])) return 'shelly-control-path';
+      return null;
+    }
     const rel = homeRelative(p, homes);
     if (rel === null) {
       if (!inTrusted(p)) return 'outside-home';
@@ -935,68 +1315,33 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     if (gitIdx >= 0 && (comps[gitIdx + 1] === 'hooks' || comps[gitIdx + 1] === 'config')) return 'protected-path';
     return null;
   };
+  /** The home itself / a scratch root itself, named by a tool allowed to. */
+  const rootNameOk = (verdict: string, cmd: string): boolean => (
+    (verdict === 'home-root' && HOME_ROOT_OK_TOOLS.has(cmd)) || (verdict === 'temp-root' && TEMP_ROOT_OK_TOOLS.has(cmd))
+  );
+  const isRootDir = (p: string) => homeRelative(p, homes) === '' || tempRelative(p) === '';
 
-  // Heredocs: a body written by plain `cat` / `tee` into a file inside the
-  // trusted workspace is data — skipped by the word checks (an unquoted
-  // body must still hold no expansion). Any other heredoc stays in the text
-  // and every line of its body is judged as a command.
-  const hasDirChange = /(?:^|[\n;&|(]\s*)(?:cd|pushd|popd)(?=$|\s)/.test(once);
-  // The delimiter word must end where the shell word ends: `<<'EO'F` is the
-  // delimiter EOF to bash, so reading it as EO would run the body to the
-  // end of the script and skip the commands after the real terminator.
-  const heredocRe = /(^|[\n;&|(][ \t]*)([^\n;&|<]*)<<(-?)[ \t]*['"\\]*([A-Za-z_][A-Za-z0-9_]*)['"]*(?=[ \t;&|<>()\n]|$)([^\n]*)\n([\s\S]*?)(?:\n[ \t]*\4[ \t]*(?=\n|$)|$)/g;
-  let heredocRefusal: string | null = null;
-  const stripped = once.replace(heredocRe, (whole, lead: string, before: string, _dash: string, delim: string, after: string, body: string) => {
-    const writer = `${before} ${after}`.trim().split(/\s+/).filter(Boolean);
-    const cmd = writer[0] ?? '';
-    const plain = (cmd === 'cat' || cmd === 'tee') && !/[;&|]/.test(after);
-    let target: string | null = null;
-    if (plain && cmd === 'cat') {
-      const i = writer.findIndex((w) => /^\d?>>?$/.test(w) || /^\d?>>?\S/.test(w));
-      if (i >= 0) target = /^\d?>>?$/.test(writer[i]) ? (writer[i + 1] ?? null) : writer[i].replace(/^\d?>>?/, '');
-    } else if (plain && cmd === 'tee') {
-      target = writer.slice(1).find((w) => !w.startsWith('-') && !/^\d?>/.test(w)) ?? null;
-    }
-    const resolved = target ? resolve(target, initialCwd) : null;
-    const skip = plain && !hasDirChange && trusted.length > 0 && !!resolved && inTrusted(resolved) && checkPath(resolved, target ?? '') === null;
-    if (!skip) return whole;
-    const quoted = new RegExp(`<<-?[ \\t]*(?:['"\\\\]|'\\\\'')+${delim}\\b`).test(raw);
-    if (!quoted && /[$`]/.test(withoutHomeVars(body))) heredocRefusal = 'expansion';
-    return `${lead}${before}<< ${after}`;
-  });
-  if (heredocRefusal) return { ok: false, reason: heredocRefusal };
-
-  const script = dequoteShellWords(stripped)
-    .replace(/(^|\s)\d?>&\d(?=$|[\s;&|)}])/g, '$1')
-    .replace(/(^|\s)(?:\d|&)?>>?\s*\/dev\/null(?=$|[\s;&|)}])/g, '$1');
-  if (/<\(|>\(/.test(script)) return { ok: false, reason: 'indirect' };
-  if (/[$`]/.test(withoutHomeVars(script))) return { ok: false, reason: 'expansion' };
-
-  const segments = splitSegments(script)
-    .map((s) => s.split(/\s+/).filter(Boolean))
-    .map((tokens) => {
-      let t = tokens;
-      while (t[0] === '{' || t[0] === '(' || t[0] === '!') t = t.slice(1);
-      while (t.length > 0 && (t[t.length - 1] === '}' || t[t.length - 1] === ')')) t = t.slice(0, -1);
-      return t;
-    })
-    .filter((tokens) => tokens.length > 0);
-  if (segments.length === 0) return { ok: false, reason: 'no-command' };
+  const lexed = lexAllLevelScript(shellText);
+  if (lexed.ok === false) return { ok: false, reason: lexed.reason };
 
   /** `node --check F` / `node -c F` / `python3 -m py_compile F…` /
-   *  `bash|sh -n F`: every F a plain file inside the trusted workspace. */
-  const isSyntaxCheck = (tokens: string[]): boolean => {
+   *  `bash|sh -n F`: every F a plain file inside the trusted workspace or a
+   *  scratch directory, under every cwd the segment may run in. */
+  const isSyntaxCheck = (tokens: string[], cwds: readonly string[]): boolean => {
     const name = tokens[0];
     let files: string[] = [];
     if (/^node(?:js)?$/.test(name) && tokens.length === 3 && (tokens[1] === '--check' || tokens[1] === '-c')) files = [tokens[2]];
     else if (/^python3?(?:\.\d+)*$/.test(name) && tokens.length >= 4 && tokens[1] === '-m' && tokens[2] === 'py_compile') files = tokens.slice(3);
     else if (/^(?:ba)?sh$/.test(name) && tokens.length === 3 && tokens[1] === '-n') files = [tokens[2]];
     else return false;
-    if (trusted.length === 0) return false;
     return files.every((f) => {
-      if (!f || f.startsWith('-') || /[<>*?[\]{}]/.test(f)) return false;
-      const p = resolve(f, cwd);
-      return !!p && inTrusted(p) && checkPath(p, f) === null;
+      if (!f || f.startsWith('-') || /[<>*?[\]{}]/.test(f.replace(/^\$\{(?:HOME|TMPDIR)\}/, ''))) return false;
+      return cwds.every((c) => {
+        const p = resolve(f, c);
+        if (!p) return false;
+        if (inTemp(p)) return checkPath(p) === null;
+        return trusted.length > 0 && inTrusted(p) && checkPath(p) === null;
+      });
     });
   };
 
@@ -1006,19 +1351,54 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     tokens.length === 2 && tokens[1] === '--version' && VERSION_PROBE_TOOLS.has(tokens[0])
   );
 
-  // A pipe feeds or reads an interpreter: syntax checks only stand alone.
-  const hasPipe = /(?:^|[^|])\|(?!\|)/.test(script);
-  for (const tokens of segments) {
-    if (!hasPipe && isVersionProbe(tokens)) continue;
-    if ((hasPipe || tokens.some((t) => /^\d?[<>]/.test(t))) && INTERPRETER_RE.test(tokens[0].replace(/^.*\//, ''))) {
+  // cwd tracking. `cur`: the directories this segment may run in. A `cd`
+  // narrows it only for what follows through `&&` / `|`; after `;`, a
+  // newline, `||` or `&` — or anywhere after an `||` / a `!` — every
+  // directory seen so far is possible again (a failed or skipped `cd` keeps
+  // the old one), and each path must pass under all of them.
+  let cur: string[] = [initialCwd];
+  const seen = new Set<string>(cur);
+  let anyCwdUnsure = false;
+  let sawAnyCommand = false;
+
+  for (const seg of lexed.segments) {
+    if (anyCwdUnsure || seg.sep === ';' || seg.sep === '\n' || seg.sep === '||' || seg.sep === '&') cur = [...seen];
+    if (seg.sep === '||') anyCwdUnsure = true;
+    // Words, without the fd plumbing that names no file (`2>&1`, `>&2`,
+    // `2>/dev/null`, `> /dev/null`) and the bare `{ ( ! } )` grouping words.
+    const all = seg.words;
+    const words: LexWord[] = [];
+    for (let k = 0; k < all.length; k++) {
+      const w = all[k];
+      if (w.redir && /^(?:\d+|&)?[<>]&(?:\d+-?|-)$/.test(w.text)) continue;
+      if (w.redir && /^(?:\d+|&)?>>?\/dev\/null$/.test(w.text)) continue;
+      if (w.redir && /^(?:\d+|&)?>>?$/.test(w.text) && all[k + 1] && !all[k + 1].redir && all[k + 1].text === '/dev/null') { k += 1; continue; }
+      words.push(w);
+    }
+    while (words.length > 0 && !words[0].redir && ['{', '(', '!'].includes(words[0].text)) {
+      if (words[0].text === '!') anyCwdUnsure = true;
+      words.shift();
+    }
+    while (words.length > 0 && !words[words.length - 1].redir && ['}', ')'].includes(words[words.length - 1].text)) words.pop();
+    if (words.length === 0) {
+      if (seg.heredocs.length > 0) return { ok: false, reason: 'heredoc' };
+      continue;
+    }
+    sawAnyCommand = true;
+    const tokens = words.map((w) => w.text);
+    const hasRedirect = words.some((w) => w.redir);
+    const cmdWord = tokens[0];
+    if (words[0].redir) return { ok: false, reason: 'indirect' };
+
+    if (!seg.piped && !hasRedirect && isVersionProbe(tokens)) continue;
+    if ((seg.piped || hasRedirect || tokens.some((t) => /^\d?[<>]/.test(t))) && INTERPRETER_RE.test(cmdWord.replace(/^.*\//, ''))) {
       return { ok: false, reason: 'signal:opaque-script-exec' };
     }
-    if (tokens[0].includes('/')) return { ok: false, reason: 'script-exec' };
+    if (cmdWord.includes('/')) return { ok: false, reason: 'script-exec' };
     // `VAR=value cmd …` runs cmd with a changed environment (PATH, NODE_OPTIONS …).
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) return { ok: false, reason: 'env-assignment' };
-    const cmdWord = tokens[0];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cmdWord)) return { ok: false, reason: 'env-assignment' };
     if (INTERPRETER_RE.test(cmdWord)) {
-      if (!isSyntaxCheck(tokens)) return { ok: false, reason: 'signal:opaque-script-exec' };
+      if (seg.heredocs.length > 0 || !isSyntaxCheck(tokens, cur)) return { ok: false, reason: 'signal:opaque-script-exec' };
       continue;
     }
     if (ALL_LEVEL_SYSTEM_TOOLS.has(cmdWord)) return { ok: false, reason: `system-tool:${cmdWord}` };
@@ -1027,60 +1407,148 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     const args = tokens.slice(1);
     const banned = READ_BANNED_OPTIONS[cmdWord];
     if (banned && args.some((a) => banned.test(a))) return { ok: false, reason: `option:${cmdWord}` };
-    if (cmdWord === 'sed' && args.some((a) => a === '-f' || a.startsWith('--file') || a.startsWith('-f') || (!a.startsWith('-') && SED_EXEC_OR_WRITE_RE.test(a)))) {
-      return { ok: false, reason: 'option:sed' };
+    const patternIdx = patternWordIndexes(words);
+    if (cmdWord === 'sed') {
+      for (let k = 1; k < words.length; k++) {
+        const a = words[k].text;
+        if (words[k].redir) continue;
+        if (a === '-f' || a.startsWith('--file') || /^-[A-Za-z]*f/.test(a)) return { ok: false, reason: 'option:sed' };
+        if (/^-[A-Za-z]+$/.test(a)) continue; // a plain option cluster (-n, -i, -ne)
+        // Every other word may be a script (`--expression=…`, `-e1e`, the
+        // operand): the exec / write commands refuse wherever they appear.
+        const v = a.replace(/^--[\w-]+=/, '');
+        if (SED_EXEC_OR_WRITE_RE.test(v) || SED_EXEC_OR_WRITE_ADDR_RE.test(v)) return { ok: false, reason: 'option:sed' };
+      }
     }
     if (cmdWord === 'git') {
-      const sub = args.find((a, i) => !a.startsWith('-') && !(i > 0 && args[i - 1] === '-C'));
+      const sub = args.find((a, k) => !a.startsWith('-') && !(k > 0 && args[k - 1] === '-C'));
       if (sub && NETWORK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'network-tool' };
       if (!sub || (!WRITE_GIT_SUBCOMMANDS.has(sub) && !READ_GIT_SUBCOMMANDS.has(sub))) return { ok: false, reason: 'git-subcommand' };
     }
-    const isCd = cmdWord === 'cd';
-    if (isCd) {
+    // Symlinks: a relative link target resolves against the LINK's directory,
+    // not the cwd this check uses — `ln -s ../bin $TMPDIR/b` then
+    // `cp x $TMPDIR/b/git` would write ~/bin/git. Relative symbolic targets,
+    // `ln -t` and `cp -s` ask.
+    if (cmdWord === 'ln' && args.some((a) => a === '--symbolic' || /^-[A-Za-z]*s/.test(a))) {
+      if (args.some((a) => /^-[A-Za-z]*t/.test(a) || a.startsWith('--target-directory'))) return { ok: false, reason: 'option:ln' };
+      const operands = words.slice(1).filter((w) => !w.redir && !w.text.startsWith('-')).map((w) => w.text);
+      const targets = operands.length >= 2 ? operands.slice(0, -1) : operands;
+      if (targets.some((t) => !/^(?:\/|~|\$HOME|\$\{HOME\}|\$TMPDIR|\$\{TMPDIR\})/.test(t))) return { ok: false, reason: 'option:ln' };
+    }
+    if (cmdWord === 'cp' && args.some((a) => a === '--symbolic-link' || /^-[A-Za-z]*s/.test(a))) return { ok: false, reason: 'option:cp' };
+
+    if (cmdWord === 'cd') {
+      if (seg.piped || seg.background || lexed.hasParen) return { ok: false, reason: 'dir-change-unknown' };
+      if (hasRedirect || seg.heredocs.length > 0) return { ok: false, reason: 'dir-change-unknown' };
       const target = args.filter((a) => a !== '-L' && a !== '-P');
-      if (target.length === 0) { cwd = homes[0]; continue; } // bare `cd` → $HOME
-      if (target.length > 1 || target[0] === '-' || target[0].startsWith('-')) return { ok: false, reason: 'dir-change-unknown' };
-      const next = resolve(target[0], cwd);
-      if (!next) return { ok: false, reason: 'dir-change-unknown' };
-      const v = checkPath(next, target[0]);
-      if (v && !(v === 'home-root' && homeRelative(next, homes) === '')) return { ok: false, reason: v };
-      cwd = next;
+      let next: string[];
+      if (target.length === 0) {
+        next = [homes[0]]; // bare `cd` → $HOME
+      } else {
+        if (target.length > 1 || target[0] === '-' || target[0].startsWith('-')) return { ok: false, reason: 'dir-change-unknown' };
+        next = [];
+        for (const c of cur) {
+          const n = resolve(target[0], c);
+          if (!n) return { ok: false, reason: 'dir-change-unknown' };
+          const v = checkPath(n);
+          if (v && !((v === 'home-root' || v === 'temp-root') && isRootDir(n))) return { ok: false, reason: v };
+          next.push(n);
+        }
+      }
+      cur = [...new Set(next)];
+      for (const n of cur) seen.add(n);
       continue;
     }
-    for (let i = 1; i < tokens.length; i++) {
-      // Leading redirect operators (`>file`, `2>>file`, `<file`), then
-      // `--opt=value` → value. A word that still holds `<` / `>` is markup
-      // or data (`</div>`), not a path.
-      let word = tokens[i].replace(/^(?:\d|&)?(?:>>?|<)&?/, '');
-      const optVal = /^--?[A-Za-z][\w-]*=(.*)$/.exec(word);
-      if (optVal) word = optVal[1];
-      word = word.replace(/^['"`(]+|['"`),;]+$/g, '');
-      if (!word || /[<>]/.test(word) || word.startsWith('-')) continue;
+
+    // Heredoc: a body written by plain `cat` / `tee` into a file inside the
+    // trusted workspace or a scratch directory is data (an unquoted body
+    // must still hold no expansion). Any other heredoc asks.
+    if (seg.heredocs.length > 0) {
+      if (!(cmdWord === 'cat' || cmdWord === 'tee') || seg.piped || seg.heredocs.length !== 1) return { ok: false, reason: 'heredoc' };
+      let target: string | null = null;
+      if (cmdWord === 'cat') {
+        for (let k = 1; k < words.length; k++) {
+          const m = /^(?:1)?>(?:>|\|)?(.*)$/.exec(words[k].redir ? words[k].text : '');
+          if (!m) continue;
+          target = m[1] || (words[k + 1] && !words[k + 1].redir ? words[k + 1].text : null);
+          break;
+        }
+      } else {
+        target = words.slice(1).find((w) => !w.redir && !w.text.startsWith('-'))?.text ?? null;
+      }
+      if (!target) return { ok: false, reason: 'heredoc' };
+      for (const c of cur) {
+        const p = resolve(target, c);
+        if (!p || !(inTemp(p) || inTrusted(p)) || checkPath(p) !== null) return { ok: false, reason: 'heredoc' };
+      }
+      const h = seg.heredocs[0];
+      if (!h.quoted && /[$`]/.test(withoutHomeVars(h.body))) return { ok: false, reason: 'expansion' };
+    }
+
+    const bareCwds = cur.filter(isRootDir);
+    let redirTargetNext = false;
+    for (let k = 1; k < words.length; k++) {
+      const w = words[k];
+      let word = w.text;
+      const isTarget = redirTargetNext;
+      redirTargetNext = false;
+      if (w.redir) {
+        const m = /^(?:\d+|&)?(<<<|<<-?|<>|>>|>\||>&|<&|>|<)/.exec(word);
+        const op = m ? m[1] : '';
+        if (op.startsWith('<<')) continue; // heredoc (handled above) / here-string data
+        word = word.slice(m ? m[0].length : 0);
+        if (!word) { redirTargetNext = true; continue; }
+      } else if (!isTarget) {
+        if (PRINT_ONLY_TOOLS.has(cmdWord)) continue;
+        if (patternIdx.has(k) && PATTERN_SYNTAX_RE.test(word) && !w.glob && !word.split('/').includes('..')) continue;
+      }
+      // `--opt=value` → value; a short option with an attached path
+      // (`-o/sdcard/x`, `-t~/bin`) → the path.
+      if (!w.redir && !isTarget) {
+        const optVal = /^--?[A-Za-z][\w-]*=(.*)$/.exec(word);
+        if (optVal) word = optVal[1];
+        else if (word.startsWith('-')) {
+          const attached = /^-[A-Za-z0-9]+([~/.$].*)$/.exec(word);
+          if (!attached) continue;
+          word = attached[1];
+        }
+      }
+      if (!word) continue;
+      // Expansions the lexical `..` normalization cannot follow: a brace
+      // list / sequence (`~/demo/sub/{x,../../bin}/git` is ~/bin/git to the
+      // shell) and a glob component starting with a dot (`.*` can match `..`).
+      if (w.glob && (/\{[^}]*(?:,|\.\.)[^}]*\}/.test(word) || /(?:^|\/)\.[^/]*[*?[]/.test(word))) {
+        return { ok: false, reason: 'unresolved-path' };
+      }
       if (SECRET_BASENAME_RE.test(word.replace(/\/+$/, '').replace(/^.*\//, ''))) return { ok: false, reason: 'secret-file' };
-      const pathish = word.includes('/') || word.startsWith('~') || /^\$\{?HOME\}?$/.test(word) || word.startsWith('.');
-      // Bare words: only checked when the cwd is the home itself (`cd ~ &&
-      // rm -rf bin`) — elsewhere a bare word names something in the cwd.
+      // Any word starting with `$` is a path to resolve (`$TMPDIRx` → null).
+      const pathish = word.includes('/') || word.startsWith('~') || word.startsWith('.') || word.startsWith('$');
+      // Bare words: only checked when a cwd is the home or a scratch root
+      // (`cd ~ && rm -rf bin`, `cd $TMPDIR && rm -f *`) — elsewhere a bare
+      // word names something in the cwd.
       if (!pathish) {
-        if (homeRelative(cwd, homes) === '') {
-          const v = checkPath(normalizePath(`${cwd}/${word}`), word);
-          if (v && v !== 'home-root') return { ok: false, reason: v };
+        for (const c of bareCwds) {
+          const v = checkPath(normalizePath(`${c}/${word}`));
+          if (v && v !== 'home-root' && v !== 'temp-root') return { ok: false, reason: v };
         }
         continue;
       }
       if (word.startsWith('//') || /^[a-z][a-z0-9+.-]*:\/\//i.test(word)) continue; // URL remnant
-      const resolved = resolve(word, cwd);
-      // M1: a target that cannot be resolved asks a human.
-      if (resolved === null) return { ok: false, reason: 'unresolved-path' };
-      const verdict = checkPath(resolved, word);
-      // `ls ~` names the home without writing it. A glob in the home
-      // (`ls ~/*`) still refuses.
-      const namesHomeOnly = verdict === 'home-root' && homeRelative(resolved, homes) === '';
-      if (verdict && !(namesHomeOnly && HOME_ROOT_OK_TOOLS.has(cmdWord))) return { ok: false, reason: verdict };
-      if (!verdict && homeRelative(resolved, homes) !== null && /[*?[]/.test(word) && homeRelative(resolved, homes)!.split('/').length === 1) {
-        return { ok: false, reason: 'home-root' };
+      for (const c of cur) {
+        const resolved = resolve(word, c);
+        // M1: a target that cannot be resolved asks a human.
+        if (resolved === null) return { ok: false, reason: 'unresolved-path' };
+        const verdict = checkPath(resolved);
+        // `ls ~` / `ls $TMPDIR` name a root without writing it. A glob in
+        // the home (`ls ~/*`) still refuses.
+        if (verdict && !(isRootDir(resolved) && rootNameOk(verdict, cmdWord))) return { ok: false, reason: verdict };
+        if (!verdict && homeRelative(resolved, homes) !== null && /[*?[]/.test(word) && homeRelative(resolved, homes)!.split('/').length === 1) {
+          return { ok: false, reason: 'home-root' };
+        }
       }
     }
   }
+  if (!sawAnyCommand) return { ok: false, reason: 'no-command' };
   return { ok: true, kind: 'all' };
 }
 

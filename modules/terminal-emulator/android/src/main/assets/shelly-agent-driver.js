@@ -290,6 +290,17 @@ function readPrompt(args) {
   throw new Error('missing --prompt or --prompt-file');
 }
 
+// 2026-11-02 (build 2790): workers verified their output with `node -e
+// '…new Function(…)'`, which runs code and therefore always asks a human —
+// even under "承認なしで実行（すべて）". `node --check <file>` on a file in the
+// workspace or $TMPDIR is a read-only syntax check that level answers. The
+// hint only steers the worker; the gate decides exactly as before.
+const WORKER_PROMPT_HINT = 'To check syntax, run `node --check <file>` (for an inline <script> in HTML, first copy the script into a .js file in the workspace or $TMPDIR); do not use `node -e`, `python -c`, or git for checks. Keep scratch files in the workspace or $TMPDIR.';
+
+function workerPrompt(prompt) {
+  return `${String(prompt)}\n\n${WORKER_PROMPT_HINT}`;
+}
+
 function ensureConfig(args) {
   if (args.help) return args;
   if (!args.cwd) throw new Error('missing --cwd');
@@ -1902,7 +1913,7 @@ async function runDriver(config) {
       approvalPolicy: config.approvalPolicy,
       approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
-      input: [{ type: 'text', text: config.prompt, text_elements: [] }],
+      input: [{ type: 'text', text: workerPrompt(config.prompt), text_elements: [] }],
     });
   };
 
@@ -3177,7 +3188,7 @@ async function runClaudeDriver(config) {
   send({
     type: 'user',
     session_id: '',
-    message: { role: 'user', content: [{ type: 'text', text: config.prompt }] },
+    message: { role: 'user', content: [{ type: 'text', text: workerPrompt(config.prompt) }] },
     parent_tool_use_id: null,
   });
 }
@@ -3207,6 +3218,8 @@ if (require.main === module) {
 
 // Exported for unit tests only (no behavior change to the CLI path).
 module.exports = {
+  WORKER_PROMPT_HINT,
+  workerPrompt,
   isUnattendedPolicy,
   preapprovalGrantSignatureMessage,
   verifyPreapprovalGrantSignature,

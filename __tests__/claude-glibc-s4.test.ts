@@ -314,7 +314,8 @@ describe('driver: Claude engine', () => {
     expect(r.answer).toBe('decisions: allow,deny,allow,deny,allow,deny');
     // API-key billed → USD is recorded too.
     expect(JSON.parse(r.usage!)).toEqual({ inputTokens: 115, outputTokens: 42, usd: 0.0123 });
-    expect(r.rec.prompt).toBe('S4-PROMPT-SENTINEL');
+    // The prompt over stdin, plus the driver's syntax-check hint (2026-11-02).
+    expect(r.rec.prompt).toBe(driver.workerPrompt('S4-PROMPT-SENTINEL'));
     expect(r.rec.claudeCodeShell).toBeNull();
     expect(r.rec.argv).toEqual(driver.claudeAgentArgs());
     expect(r.out).not.toContain('S4-PROMPT-SENTINEL');
