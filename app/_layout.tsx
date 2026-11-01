@@ -722,6 +722,16 @@ export default function RootLayout() {
       }
     })();
 
+    // In-app updater disk hygiene (DEFERRED.md P1 (p)): delete already-installed
+    // Shelly-android-*.apk downloads (~660MB each) from the app-owned download
+    // dir. Deferred so it never competes with boot work.
+    const staleApkCleanupTimer = setTimeout(() => {
+      if (disposed) return;
+      void import('@/components/layout/BuildsModal')
+        .then(({ cleanupStaleReleaseApksOnStartup }) => cleanupStaleReleaseApksOnStartup())
+        .catch((e: any) => logError('RootLayout', 'stale APK cleanup failed', e));
+    }, 15_000);
+
     // Background agents can complete while the JS bridge is asleep. Refresh
     // their on-disk logs when Shelly returns to foreground, and periodically
     // while it is open, so the sidebar/history reflects scheduled runs.
@@ -2855,6 +2865,7 @@ export default function RootLayout() {
       agentLogSub.remove();
       linkSub.remove();
       clearTimeout(agentLogStartTimer);
+      clearTimeout(staleApkCleanupTimer);
       clearInterval(queueInterval);
       clearInterval(commandQueueInterval);
       clearInterval(agentAddInterval);

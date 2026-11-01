@@ -39,6 +39,14 @@ import {
   resolveReleaseApkDir,
   toFileUri,
 } from '@/lib/release-apk-path';
+import {
+  cleanupLegacyUpdateDirs,
+  deleteApkFiles,
+  listDir,
+  selectStaleApksBeforeDownload,
+  selectStaleApksOnStartup,
+} from '@/lib/release-apk-cleanup';
+import { logInfo } from '@/lib/debug-logger';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
@@ -677,6 +685,7 @@ async function downloadReleaseApk(
     }
   }
   if (!downloadId) {
+    await deleteStaleApksBeforeDownload(update.apkAssetName);
     const started = await TerminalEmulator.enqueueApkDownload(
       update.apkUrl,
       `shelly-update-${safePathSegment(updateChannel(update))}-${update.versionCode}`,
@@ -830,6 +839,7 @@ async function downloadReleaseApkDirect(
   // real reason instead of letting downloadResumableStartAsync report a
   // misleading "Directory ... doesn't exist".
   await ensureDirectory(FileSystemLegacy, await releaseApkDir());
+  await deleteStaleApksBeforeDownload(update.apkAssetName);
   // Drop any partial file a prior DownloadManager attempt may have left at
   // this same path before starting a fresh direct download into it.
   await FileSystemLegacy.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
@@ -952,6 +962,66 @@ async function releaseApkDir(): Promise<string> {
     appDataDir: FileSystemLegacy.documentDirectory,
   });
   return cachedReleaseApkDir;
+}
+
+// APKs handed to the system package installer (or copied for the signing-key
+// migration) in this JS session. The installer may still be reading them, so
+// the stale-APK cleanup never touches these until the next app start.
+const handedOffApkPaths = new Set<string>();
+
+function markApkHandedOff(apkPath: string): void {
+  if (apkPath) handedOffApkPaths.add(apkPath);
+}
+
+/**
+ * Before a new APK download: delete every other `Shelly-android-*.apk` in the
+ * app-owned download dir (DEFERRED.md P1 (p): 50 files / 33GB piled up).
+ * Keeps the file about to be downloaded, the in-flight DownloadManager target
+ * and anything handed off to the installer this session. Best effort.
+ */
+async function deleteStaleApksBeforeDownload(keepAssetName: string): Promise<void> {
+  try {
+    const dir = await releaseApkDir();
+    const pending = await readPendingApkDownload();
+    const stale = selectStaleApksBeforeDownload(
+      await listDir(FileSystemLegacy, dir),
+      keepAssetName,
+      [...handedOffApkPaths, pending?.apkPath],
+    );
+    if (stale.length === 0) return;
+    const deleted = await deleteApkFiles(FileSystemLegacy, dir, stale);
+    logInfo('BuildsModal', `deleted ${deleted.length} stale APK(s) before download`);
+  } catch {
+    // Cleanup must never block an update.
+  }
+}
+
+/**
+ * App-start cleanup: delete release APKs whose versionCode is <= the installed
+ * one (already installed, or a downgrade Android refuses anyway), plus legacy
+ * `/sdcard/Download/shelly-update-*` dirs from the pre-targetSdk-36 updater.
+ * Newer APKs (an update the user has not installed yet) are kept.
+ */
+export async function cleanupStaleReleaseApksOnStartup(): Promise<void> {
+  try {
+    const installed = await TerminalEmulator.getAppVersionInfo();
+    const installedVersionCode = Number(installed?.versionCode);
+    if (!Number.isFinite(installedVersionCode) || installedVersionCode < 1) return;
+    const dir = await releaseApkDir();
+    const pending = await readPendingApkDownload();
+    const stale = selectStaleApksOnStartup(
+      await listDir(FileSystemLegacy, dir),
+      installedVersionCode,
+      [...handedOffApkPaths, pending?.apkPath],
+    );
+    const deleted = stale.length > 0 ? await deleteApkFiles(FileSystemLegacy, dir, stale) : [];
+    const legacy = await cleanupLegacyUpdateDirs(FileSystemLegacy, '/sdcard/Download', installedVersionCode);
+    if (deleted.length > 0 || legacy.length > 0) {
+      logInfo('BuildsModal', `startup cleanup: deleted ${deleted.length} APK(s), ${legacy.length} legacy dir(s)`);
+    }
+  } catch {
+    // best effort
+  }
 }
 
 async function releaseApkPath(update: AndroidUpdateManifest): Promise<string> {
@@ -1249,6 +1319,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   }, [t]);
 
   const openApkInstaller = useCallback((apkPath: string) => {
+    markApkHandedOff(apkPath);
     TerminalEmulator.installApk(apkPath).catch((e: any) => {
       Alert.alert(t('updates.install_failed_title'), String(e?.message || e));
     });
@@ -1277,6 +1348,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       ? t('updates.signing_migration_body_short')
       : t('updates.signing_migration_body', { versionCode: update.versionCode })}\n\n${verify}`;
     await AsyncStorage.setItem(SIGNING_MIGRATION_EXPLAINED_KEY, '1').catch(() => undefined);
+    markApkHandedOff(apkPath);
     const saveInstallerAndBackUp = async () => {
       const target = migrationApkCopyPath(update.versionCode);
       try {
