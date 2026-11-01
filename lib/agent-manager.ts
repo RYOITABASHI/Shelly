@@ -3737,6 +3737,23 @@ export async function deleteAgent(agentId: string): Promise<void> {
     // agent leaves no orphaned memory behind (the Vault mirror is left in place
     // for human review, like drafts/audits).
     `rm -rf "$d/memory/${agentId}"\n` +
+    // 2026-11-01: pending/queued approval asks of this agent die with it —
+    // a leftover escalations/req-*.json (driver timeout → "queued") or
+    // action-approvals/action-*.json otherwise re-notified on every launch.
+    // Matched by the exact agentId field inside the file (escalation runIds
+    // are random UUIDs; an action runId prefix is ambiguous between ids like
+    // agent-a / agent-a-b). Dropped, never answered.
+    `for f in "$d"/escalations/req-*.json; do\n` +
+    `  [ -f "$f" ] || continue\n` +
+    `  if grep -qF -e '"agentId":"${agentId}"' -e '"agentId": "${agentId}"' "$f" 2>/dev/null; then rm -f "$f"; fi\n` +
+    `done\n` +
+    `for f in "$d"/action-approvals/action-*.json; do\n` +
+    `  [ -f "$f" ] || continue\n` +
+    `  if grep -qF -e '"agentId":"${agentId}"' -e '"agentId": "${agentId}"' "$f" 2>/dev/null; then\n` +
+    `    b="$(basename "$f" .json)"\n` +
+    `    rm -f "$f" "$d/action-approval-replies/$b.reply.json"\n` +
+    `  fi\n` +
+    `done\n` +
     `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }\n` +
     `mkdir -p "$d/${DELETED_AGENT_MARKER_DIR}"\n` +
     `printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" > "$d/${DELETED_AGENT_MARKER_DIR}/${agentId}"`;

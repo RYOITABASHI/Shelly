@@ -17,7 +17,13 @@ import { useFonts } from "expo-font";
 import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fonts/jetbrains-mono";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
-import { loadAgentsFromDisk, syncAgentRunLogsFromDisk, captureBrowserExtractMemory } from "@/lib/agent-manager";
+import { loadAgentsFromDisk, syncAgentRunLogsFromDisk, captureBrowserExtractMemory, isSafeAgentId } from "@/lib/agent-manager";
+import {
+  actionApprovalStaleReason,
+  dropStaleApprovalRequest,
+  escalationStaleReason,
+  resolveAgentGone,
+} from '@/lib/agent-stale-approval';
 import { reconcileApiKeysToEnv } from "@/lib/agent-env-sync";
 import { useI18n, useTranslation } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
@@ -1193,6 +1199,23 @@ export default function RootLayout() {
     const joinActionFileUri = (dirUri: string, name: string) => `${trimActionFileUri(dirUri)}/${name}`;
     const safeActionFilePart = (value: string) =>
       value.replace(/[^A-Za-z0-9_.=-]/g, '_').slice(0, 160) || 'request';
+
+    // Stale-request screening (lib/agent-stale-approval.ts): both request
+    // dirs live directly under ~/.shelly/agents, so the agent JSON and the
+    // deleteAgent tombstone are resolved relative to the request dir's parent.
+    const isApprovalAgentGone = async (requestDirUri: string, agentId: string) => {
+      const agentsDirUri = trimActionFileUri(requestDirUri).replace(/\/[^/]+$/, '');
+      const state = useAgentStore.getState();
+      return resolveAgentGone(agentId, {
+        isSafeAgentId,
+        storeLoaded: state.isLoaded,
+        storeHasAgent: (id) => state.agents.some((a) => a.id === id),
+        pathExists: async (rel) => {
+          const info = await FileSystem.getInfoAsync(`${agentsDirUri}/${rel}`).catch(() => null);
+          return info ? info.exists : null;
+        },
+      });
+    };
 
     const parseActionApprovalRequest = (raw: unknown): AgentActionApprovalRequest | null => {
       const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
@@ -2371,6 +2394,28 @@ export default function RootLayout() {
             logError('AgentEscalation', `rejected invalid request ${name}`);
             continue;
           }
+          // 2026-11-01: a request of a deleted agent, an over-age one, or a
+          // live-state one whose driver is long gone is dropped (file deleted,
+          // notification cancelled) -- never answered, never re-asked.
+          const staleReason = escalationStaleReason(parsed, {
+            agentGone: await isApprovalAgentGone(requestDirUri, parsed.agentId),
+            nowMs: Date.now(),
+          });
+          if (staleReason) {
+            const stale = parsed;
+            await dropStaleApprovalRequest(`run=${stale.runId} req=${stale.reqId}`, staleReason, {
+              deleteRequestFile: () => FileSystem.deleteAsync(fileUri, { idempotent: true }),
+              cancelNotification: async () => {
+                await TerminalEmulator.cancelAgentEscalationApproval?.(stale.runId, stale.reqId);
+              },
+              noteGone: () => noteEscalationGone(stale.runId, stale.reqId, 'expired'),
+              log: (line) => logInfo('AgentEscalation', line),
+            });
+            for (const [k, record] of notifiedEscalations) {
+              if (record.runId === stale.runId && record.reqId === stale.reqId) notifiedEscalations.delete(k);
+            }
+            continue;
+          }
           const key = escalationKey(parsed);
           activeKeys.add(key);
           activeAnchors.add(`${parsed.runId}|${parsed.reqId}`);
@@ -2647,6 +2692,30 @@ export default function RootLayout() {
           }
           if (!parsed) {
             logError('AgentActionApproval', `rejected invalid request ${name}`);
+            continue;
+          }
+          // 2026-11-01: same stale screening as the escalation drain -- drop
+          // (delete + cancel), never resolve.
+          const staleActionReason = actionApprovalStaleReason(parsed, {
+            agentGone: await isApprovalAgentGone(requestDirUri, parsed.agentId),
+            nowMs: Date.now(),
+          });
+          if (staleActionReason) {
+            const stale = parsed;
+            await dropStaleApprovalRequest(`run=${stale.runId} action=${stale.actionType}`, staleActionReason, {
+              deleteRequestFile: () => FileSystem.deleteAsync(fileUri, { idempotent: true }),
+              cancelNotification: async () => {
+                await TerminalEmulator.cancelAgentActionApproval?.(stale.runId);
+              },
+              noteGone: () => {
+                noteActionApprovalGone(stale.runId);
+                noteAttendedApprovalResolved(stale.agentId);
+              },
+              log: (line) => logInfo('AgentActionApproval', line),
+            });
+            for (const [k, record] of notifiedActionApprovals) {
+              if (record.runId === stale.runId) notifiedActionApprovals.delete(k);
+            }
             continue;
           }
           if (parsed.expiresAt && parsed.expiresAt < Date.now()) {
