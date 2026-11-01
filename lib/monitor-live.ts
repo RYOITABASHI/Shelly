@@ -10,6 +10,7 @@
  *  - the provider chip is AUTO until the run's `tool` event says what ran;
  *  - money only when the provider reported it (usage.usd) — an API step with
  *    tokens but no usd shows tokens only, never an estimate;
+ *  - a step with no reported token usage shows "—", never "0 tok";
  *  - mission progress is step-based: DONE / FAILED count as finished, a
  *    running step counts half, a SKIPPED / STOPPED step counts half only if
  *    it had started (one stopped before doing any work counts 0), over the
@@ -231,6 +232,9 @@ function snapshotFor(
     const updatedAgoSec = updated === null ? undefined : secondsBetween(updated, nowMs);
     const usage = b.usage;
     const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    // No usage event at all (e.g. a CLI that never reports tokens) is "—",
+    // not "0 tok" — zero would read as a measured, free step.
+    const tokensReported = usage?.inputTokens !== undefined || usage?.outputTokens !== undefined;
     const lines = b.tail ? [b.tail] : [];
     const isActive = state === 'RUNNING' || state === 'APPROVAL';
     // A step that ended without finishing (SKIPPED / STOPPED) counts what it
@@ -251,6 +255,7 @@ function snapshotFor(
       logs: FINISHED.has(state) ? 2 : halfway ? 1 : 0,
       totalLogs: 2,
       tokens,
+      tokensReported,
       usd: usage?.usd !== undefined ? usage.usd : null,
       ...(elapsedSec !== undefined ? { elapsedSec } : {}),
       ...(updatedAgoSec !== undefined ? { updatedAgoSec } : {}),

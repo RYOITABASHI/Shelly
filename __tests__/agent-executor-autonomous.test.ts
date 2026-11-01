@@ -602,7 +602,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=76');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=77');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -878,7 +878,7 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     const elseIdx = s.indexOf('\nelse\n', driverExitIdx);
     expect(driverExitIdx).toBeGreaterThan(-1);
     expect(elseIdx).toBeGreaterThan(driverExitIdx);
-    expect(s).toContain('rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"\nfinish 0');
+    expect(s).toContain('rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag" "$RESULT_FILE.usage.json"\nfinish 0');
   });
 
   it('dispatches saved results by action without auto-running cli actions', () => {

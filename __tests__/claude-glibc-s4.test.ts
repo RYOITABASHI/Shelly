@@ -161,10 +161,21 @@ describe('run script generation', () => {
     for (const tool of [CODEX, { type: 'local' } as ToolChoice]) {
       const script = generateRunScript(agent({ tool }));
       expect(script).not.toContain('--engine');
-      expect(script).not.toContain('USAGE_FIELDS');
-      expect(script).not.toContain('usage.json');
       expect(script).not.toContain('ANTHROPIC_API_KEY');
     }
+    // v77 (MONITOR CLI tokens): Codex records the driver's usage sidecar too;
+    // a script with no driver call (local) still has nothing to record.
+    const local = generateRunScript(agent({ tool: { type: 'local' } }));
+    expect(local).not.toContain('USAGE_FIELDS');
+    expect(local).not.toContain('usage.json');
+  });
+
+  it('v77: a Codex agent passes --usage-file to the driver and records usage in the run log', () => {
+    const script = generateRunScript(agent({ tool: CODEX }));
+    expect(script).toContain('node "$HOME/.shelly-agent-driver.js" \\\n    --usage-file "$RESULT_FILE.usage.json" \\\n    --cwd "$DRIVER_CWD" \\');
+    expect(script).toContain('$USAGE_FIELDS}');
+    expect(script).toContain('USAGE_FIELDS=",\\"usage\\":$USAGE_RAW"');
+    expect(script).toContain('"$RESULT_FILE.response.json.diag" "$RESULT_FILE.usage.json"\nfinish 0');
   });
 
   it('unattended Claude keeps the unattended gate policy', () => {

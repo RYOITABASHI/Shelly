@@ -100,7 +100,9 @@ Options:
                              on-device Claude Code (glibc) headless through
                              $HOME/.shelly-claude-run.sh, answering its can_use_tool requests with
                              the SAME gate / grant / escalation path Codex approvals use.
-  --usage-file <path>        (claude) Write {"inputTokens","outputTokens"[,"usd"]} from the result.
+  --usage-file <path>        Write {"inputTokens","outputTokens"[,"usd"]} for the turn: claude from
+                             the stream-json result, codex from the app-server token usage
+                             notifications (tokens only, never usd).
   --claude-runner <path>     (claude) Runner script. Defaults to $HOME/.shelly-claude-run.sh.
   --claude-runner-interpreter <path>
                              (claude, host only) Interpreter for the runner. Defaults to "bash";
@@ -1768,6 +1770,7 @@ async function runDriver(config) {
   // for all verifies regardless of later on-disk tampering.
   ensureEscalationVerifierKey(config, audit);
   if (config.answerFile) unlinkIfExists(config.answerFile);
+  if (config.usageFile) unlinkIfExists(config.usageFile);
   const codexSpawn = codexAppServerSpawnSpec(config);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(codexSpawn.command, codexSpawn.args, {
@@ -1788,6 +1791,7 @@ async function runDriver(config) {
   let sawFailure = false;
   let answerText = '';
   let timeout = null;
+  const codexUsage = createCodexUsageAccumulator();
 
   const send = (message) => {
     const line = JSON.stringify(message);
@@ -2076,7 +2080,16 @@ async function runDriver(config) {
       return;
     }
 
+    if (codexUsage.observe(message)) return;
+
     if (message.method === 'turn/completed') {
+      const usageValue = codexUsage.value();
+      try {
+        const wroteUsage = writeUsageFile(config.usageFile, usageValue);
+        audit('usage_recorded', { usageFile: config.usageFile, wroteUsage, usage: usageValue });
+      } catch (error) {
+        audit('usage_write_error', { usageFile: config.usageFile, error: error.message });
+      }
       try {
         const wroteAnswer = writeAnswerFile(config.answerFile, answerText);
         audit('answer_file_written', {
@@ -2331,6 +2344,88 @@ function claudeUsageFromResult(result, apiKeySource) {
   const billed = typeof apiKeySource === 'string' && apiKeySource && apiKeySource !== 'none';
   if (usd !== null && billed) out.usd = usd;
   return Object.keys(out).length ? out : null;
+}
+
+// ─── Codex token usage (MONITOR) ───────────────────────────────────────────
+//
+// The Codex app-server reports token usage as notifications, not on
+// turn/completed. Two shapes are accepted (no Codex protocol sources are
+// vendored in this repo, so parsing is deliberately tolerant):
+//   v2:     {"method":"thread/tokenUsage/updated","params":{"threadId","turnId",
+//            "tokenUsage":{"total":{inputTokens,cachedInputTokens,outputTokens,
+//            reasoningOutputTokens,totalTokens},"last":{…},"modelContextWindow"}}}
+//   legacy: {"method":"codex/event/token_count","params":{"msg":{"type":"token_count",
+//            "info":{"total_token_usage":{input_tokens,…},"last_token_usage":{…}}}}}
+// (the same token_count info the Codex session JSONL carries — see
+// scouter/JsonlSessionParser.kt). `total` is cumulative for the thread, and
+// the driver runs one fresh thread per turn, so the latest total is the
+// turn's usage; `last` (one model response) is summed only when no total
+// was ever seen. Codex input_tokens already includes the cached part, and
+// output_tokens includes reasoning, so neither is added again.
+
+function codexTokenBreakdown(value) {
+  if (!value || typeof value !== 'object') return null;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const n = nonNegativeFinite(value[key]);
+      if (n !== null) return n;
+    }
+    return null;
+  };
+  const input = pick('inputTokens', 'input_tokens');
+  const output = pick('outputTokens', 'output_tokens');
+  if (input === null && output === null) return null;
+  const out = {};
+  if (input !== null) out.inputTokens = input;
+  if (output !== null) out.outputTokens = output;
+  return out;
+}
+
+/** {total, last} breakdowns from one app-server message, or null when the
+ *  message is not a token usage notification. */
+function codexTokenUsageFromNotification(message) {
+  if (!message || typeof message !== 'object' || typeof message.method !== 'string') return null;
+  const params = message.params && typeof message.params === 'object' ? message.params : null;
+  if (!params) return null;
+  let info = null;
+  if (message.method === 'thread/tokenUsage/updated') {
+    info = params.tokenUsage || params.token_usage || params.usage || null;
+  } else if (message.method === 'codex/event/token_count' || (params.msg && params.msg.type === 'token_count')) {
+    info = params.msg && typeof params.msg === 'object' ? params.msg.info : params.info;
+  } else {
+    return null;
+  }
+  if (!info || typeof info !== 'object') return null;
+  const total = codexTokenBreakdown(info.total || info.totalTokenUsage || info.total_token_usage);
+  const last = codexTokenBreakdown(info.last || info.lastTokenUsage || info.last_token_usage);
+  if (!total && !last) return null;
+  return { total, last };
+}
+
+/** Folds token usage notifications into the turn's usage-file value. */
+function createCodexUsageAccumulator() {
+  let total = null;
+  const lastSum = {};
+  let sawLast = false;
+  return {
+    /** True when the message was a token usage notification. */
+    observe(message) {
+      const usage = codexTokenUsageFromNotification(message);
+      if (!usage) return false;
+      if (usage.total) total = usage.total;
+      if (usage.last) {
+        sawLast = true;
+        for (const key of ['inputTokens', 'outputTokens']) {
+          if (usage.last[key] !== undefined) lastSum[key] = (lastSum[key] || 0) + usage.last[key];
+        }
+      }
+      return true;
+    },
+    value() {
+      if (total) return Object.assign({}, total);
+      return sawLast && Object.keys(lastSum).length ? Object.assign({}, lastSum) : null;
+    },
+  };
 }
 
 function writeUsageFile(usageFile, usageValue) {
@@ -2860,6 +2955,9 @@ module.exports = {
   codexPolicyEnvArgs,
   claudeToolToActions,
   claudeUsageFromResult,
+  codexTokenUsageFromNotification,
+  createCodexUsageAccumulator,
+  writeUsageFile,
   claudeAgentArgs,
   claudeAgentSettingsJson,
   claudeChildEnv,
