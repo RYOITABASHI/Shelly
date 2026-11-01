@@ -632,6 +632,8 @@ const ja: Record<string, string> = {
   'agentplan.tool_substituted_scope': '注意: {{from}} を指定しましたが、この自律エージェントは {{to}} で実行されます — 自律クラウド同意が {{from}} を許可するのは Web/リサーチ系タスク（ニュース・論文・「〜を調べて」など）だけです。',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
   'agentplan.run_without_approval_note': '⚠ 承認なしで実行: ON（プロジェクト外の読み取り（例: `cd ~/demo && git log`）、自分のワークスペース内の編集、下書き保存・通知の承認を自動で許可。ワークスペース外への書き込み・削除、危険なコマンド、外部への送信、レビュー必須の操作は引き続き確認します。エージェントを編集するとOFFに戻ります）',
+  'agentplan.antigravity_step_note': '⚠ Antigravity はエージェントの手順には使えないため、手順 {{n}} は {{engine}} で実行します。',
+  'agentplan.antigravity_task_note': '⚠ Antigravity はエージェントの手順には使えないため、このタスクは {{engine}} で実行します。',
   'agentplan.memory_note': '実行後に記憶: {{fact}}',
   'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',
   'agentplan.schedule_restate_hint': '⚠ 実行タイミングを確定できませんでした。時刻を含めて言い直してください（例:「毎日8時に」）。確定するまで登録できません。',

@@ -104,6 +104,9 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
     draft.llmExtracted === true ||
     !!draft.actionCaveat ||
     draft.oneShotImplicit === true ||
+    // 2026-11-01: the user named Antigravity, which never runs agent steps —
+    // they must see which engine runs instead before it registers.
+    !!draft.antigravityRequested ||
     // 2026-10-30: manual-only DEFAULTED (no schedule named) is an
     // interpretation too — one human confirm before it registers.
     (draft.triggerAssumed === true && isManualTriggerDraft(draft)) ||
@@ -523,6 +526,45 @@ export function toolSubstitutionKey(reason: 'no-consent' | 'scope'): string {
   return reason === 'no-consent' ? 'agentplan.tool_substituted_no_consent' : 'agentplan.tool_substituted_scope';
 }
 
+/**
+ * One "⚠ Antigravity can't run agent steps, so step N will run on {engine}"
+ * line per step that named Antigravity (ParsedAgentDraft.antigravityRequested),
+ * or one whole-task line for a single-step draft. {engine} is the step's own
+ * pin, else the engine the agent is stored with (describeDraftTool — the same
+ * resolver as the confirm boundary). `numbering`: 'display' numbers steps the
+ * way this summary's step list does (a parallel group is one line); 'index'
+ * uses the raw step position (AgentConfirmCard's per-step rows).
+ */
+export function antigravityNoticeLines(
+  draft: ParsedAgentDraft,
+  tl: (key: string, params?: Record<string, string | number>) => string,
+  cloudConsent: boolean,
+  numbering: 'display' | 'index',
+): string[] {
+  const req = draft.antigravityRequested;
+  if (!req) return [];
+  const agentEngine = describeDraftTool(draft, cloudConsent).label;
+  const steps = draft.orchestrationSteps;
+  if (!steps || steps.length < 2 || req.steps.length === 0) {
+    return [tl('agentplan.antigravity_task_note', { engine: agentEngine })];
+  }
+  let lineOf = (i: number) => i + 1;
+  if (numbering === 'display') {
+    const display = groupStepsForDisplay(steps);
+    let next = 0;
+    const entryIndices = display.entries.map((entry) => entry.items.map(() => next++));
+    lineOf = (i: number) => entryIndices.findIndex((members) => members.includes(i)) + 1 || i + 1;
+  }
+  return req.steps
+    .filter((i) => i >= 0 && i < steps.length)
+    .map((i) => {
+      const s = steps[i];
+      const pinned = typeof s === 'string' ? undefined : s.tool;
+      const engine = pinned ? toolChoiceToLabel(pinned) : agentEngine;
+      return tl('agentplan.antigravity_step_note', { n: lineOf(i), engine });
+    });
+}
+
 export function summarizeAgentDraftAsText(
   draft: ParsedAgentDraft,
   changedFields: ReadonlySet<string> = new Set(),
@@ -698,6 +740,10 @@ export function summarizeAgentDraftAsText(
     // the confirm boundary), not the raw pick.
     lines.push(markLine(tl('agentplan.summary_tool_changed', { tool: describeDraftTool(draft, opts.cloudConsent === true).label }), 'tool', changedFields));
   }
+
+  // 2026-11-01: a step the user asked to run on Antigravity runs on the normal
+  // engine instead — never silently (see ParsedAgentDraft.antigravityRequested).
+  lines.push(...antigravityNoticeLines(draft, tl, opts.cloudConsent === true, 'display'));
 
   // 2026-07-23: one or more fields above came from the hybrid LLM-extraction
   // fallback (see hasDraftAssumptions's doc comment) rather than the

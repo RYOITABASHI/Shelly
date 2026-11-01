@@ -24,6 +24,7 @@ import { ParsedAgentDraft, isManualTriggerDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { antigravityNoticeLines } from '@/lib/agent-plan-summary';
 import { credentialClass } from '@/lib/agent-credential-policy';
 import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
@@ -610,6 +611,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       {draft.actionCaveat && (
         <Text style={[styles.warn, { color: colors.warning }]}>{draft.actionCaveat}</Text>
       )}
+      {/* Antigravity was named but never runs agent steps — say which engine
+          does (lib/agent-plan-summary.ts antigravityNoticeLines). */}
+      {antigravityNoticeLines(draft, t, cloudConsent, 'index').map((line, i) => (
+        <Text key={`agy-${i}`} style={[styles.warn, { color: colors.warning }]}>{line}</Text>
+      ))}
 
       {/* Name */}
       <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.name')}</Text>
