@@ -62,7 +62,15 @@ const finish = () => {
   if (behavior.usage && get('--usage-file')) fs.writeFileSync(get('--usage-file'), JSON.stringify(behavior.usage));
   process.exit(behavior.exit || 0);
 };
-if (behavior.escalate) {
+if (behavior.hang) {
+  fs.writeFileSync(path.join(recordDir, 'started-' + engine + '.json'), JSON.stringify({ pid: process.pid }));
+  process.on('SIGTERM', () => {
+    if (behavior.hang !== 'exit-on-term') return; // 'ignore-term'
+    fs.writeFileSync(path.join(recordDir, 'term-' + engine), 'TERM');
+    setTimeout(() => process.exit(0), 100);
+  });
+  setInterval(() => {}, 1000);
+} else if (behavior.escalate) {
   process.stdout.write('ESCALATE human_required command="rm -rf build" reqId="r1" requestPath="/x" replyChannel="native" action=wait\\n');
   setTimeout(() => {
     process.stdout.write('ESCALATE_RESOLVED reqId="r1" decision="accept" elapsedMs=1\\n');
@@ -312,24 +320,139 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     ['--unattended run', { unattended: true }],
     ['scheduled origin', { origin: 'schedule' }],
     ['missing origin', { origin: '' }],
-  ])('%s: a CLI step fails visibly and the driver is never spawned (no plan.tool substitution)', async (_label, opts) => {
+  ])('%s: the run is SKIPPED visibly before any step, the driver is never spawned (no plan.tool substitution)', async (_label, opts) => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver();
     writeDriverConfig(recordDir, { codex: { answer: 'should never run' } });
     const steps: Step[] = [
+      { instruction: 'collect notes' }, // a non-CLI step BEFORE the CLI one never runs either
       { instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } },
       { instruction: 'finalize' },
     ];
     const result = await runExecutor(writePlan(home, port, steps), home, driver, recordDir, opts as any);
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(0); // exit 0: native never records a hard failure for it
     expect(readCalls(recordDir)).toEqual([]);
-    expect(requests).toEqual([]); // not run on plan.tool either
+    expect(requests).toEqual([]); // no step ran, not on plan.tool either
     const log = readRunLog(home);
-    expect(log.status).toBe('error');
-    expect(log.steps).toHaveLength(1);
-    expect(log.steps[0].outputPreview).toContain(executor.CLI_STEP_ATTENDED_ONLY_MESSAGE);
-    expect(readAudit(home).some((e) => e.event === 'cli_branch_refused')).toBe(true);
+    // 'skipped', never 'error': native's softFailure (latest run log status
+    // == "error") and the RN circuit breaker (only 'error' counts) ignore it.
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toContain(executor.CLI_STEP_ATTENDED_ONLY_MESSAGE);
+    // The user sees why: native result notification + MONITOR progress.
+    const notify = JSON.parse(fs.readFileSync(path.join(logDir(home), 'native-result-notification.json'), 'utf8'));
+    expect(notify.status).toBe('skipped');
+    expect(notify.preview).toContain('runs only with Run now');
+    const events = readProgress(home);
+    expect(events[events.length - 1]).toMatchObject({ kind: 'run_end', status: 'skipped' });
+    expect(events.some((e) => e.kind === 'tail' && e.stepIndex === 1 && /runs only with Run now/.test(e.tail))).toBe(true);
+    expect(events.filter((e) => e.kind === 'branch_state' && e.state === 'SKIPPED').map((e) => e.stepIndex).sort()).toEqual([0, 1, 2]);
+    expect(readAudit(home).some((e) => e.event === 'cli_branch_refused' && e.stepIndex === 1)).toBe(true);
   }, 60000);
+
+  it('repeated refused scheduled fires never trip the failure backoff or the circuit breaker', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { consecutiveFailures, shouldTripCircuitBreaker } = require('@/lib/agent-circuit-breaker');
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    writeDriverConfig(recordDir, {});
+    const steps: Step[] = [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, { instruction: 'finalize' }];
+    const planFile = writePlan(home, port, steps);
+    for (let i = 0; i < 4; i += 1) {
+      const result = await runExecutor(planFile, home, driver, recordDir, { unattended: true, origin: 'schedule' });
+      expect(result.status).toBe(0);
+      await delay(1100); // run logs are keyed by epoch second
+    }
+    const logs = fs.readdirSync(logDir(home)).filter((n) => /^\d+\.json$/.test(n)).sort()
+      .map((n) => JSON.parse(fs.readFileSync(path.join(logDir(home), n), 'utf8')));
+    expect(logs.length).toBeGreaterThanOrEqual(4);
+    expect(logs.every((l) => l.status === 'skipped')).toBe(true);
+    // RN (lib/agent-circuit-breaker.ts, A4 auto-disable): no streak.
+    expect(consecutiveFailures(logs)).toBe(0);
+    expect(shouldTripCircuitBreaker(logs)).toBe(false);
+    // Native (AgentRuntime.kt runPlanAgent): a hard failure is only exit != 0
+    // or an unattended exit 0 whose latest run log is "error" — pin that the
+    // PlanSpec path still keys on exactly those, so 'skipped' + exit 0 never
+    // reaches recordNativeHardFailure / NATIVE_FAILURE_BACKOFF_THRESHOLD.
+    const kotlin = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt'), 'utf8');
+    const planAgent = kotlin.slice(kotlin.indexOf('private fun runPlanAgent('), kotlin.indexOf('private fun ensureLocalLlmServerBeforePlanExecutor'));
+    expect(planAgent).toContain('val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"');
+    expect(planAgent).toContain('if (exitCode == 0 && !softFailure) {');
+    expect(planAgent).toContain('resetNativeFailureCount(homeDir, agentId)');
+  }, 60000);
+
+  describe('SIGTERM (STOP-ALL) stops CLI drivers TERM -> grace -> KILL and removes their temp files', () => {
+    function spawnChild(script: string): import('child_process').ChildProcess {
+      return spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+    }
+    function alive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+      } catch (_) {
+        return false;
+      }
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const state = stat.charAt(stat.lastIndexOf(')') + 2);
+        return state !== 'Z' && state !== 'X';
+      } catch (_) {
+        return true;
+      }
+    }
+
+    it('stopLiveCliChildrenSync: a TERM-respecting driver exits in the grace period, an ignoring one is KILLed, files are unlinked', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-cli-stop-'));
+      const marker = path.join(dir, 'term-seen');
+      const polite = spawnChild(`process.on('SIGTERM',()=>{require('fs').writeFileSync(${JSON.stringify(marker)},'1');process.exit(0)});setInterval(()=>{},1000)`);
+      const stubborn = spawnChild(`process.on('SIGTERM',()=>{});setInterval(()=>{},1000)`);
+      await delay(800); // let both install their handlers
+      const files = ['a.prompt', 'a.answer', 'b.prompt', 'b.usage.json'].map((n) => path.join(dir, n));
+      files.forEach((f) => fs.writeFileSync(f, 'x'));
+      executor.liveCliChildren.set(polite, files.slice(0, 2));
+      executor.liveCliChildren.set(stubborn, files.slice(2));
+      const t0 = Date.now();
+      executor.stopLiveCliChildrenSync(1500);
+      const elapsed = Date.now() - t0;
+      expect(executor.liveCliChildren.size).toBe(0);
+      expect(files.filter((f) => fs.existsSync(f))).toEqual([]);
+      await delay(300);
+      expect(alive(polite.pid!)).toBe(false);
+      expect(alive(stubborn.pid!)).toBe(false);
+      if (process.platform !== 'win32') {
+        expect(fs.existsSync(marker)).toBe(true); // got TERM, not an immediate KILL
+        expect(elapsed).toBeGreaterThanOrEqual(1400); // waited the grace for the stubborn one
+        expect(elapsed).toBeLessThan(4000);
+      }
+    }, 20000);
+
+    // Windows cannot deliver a catchable SIGTERM to the executor; CI (Linux) runs it.
+    (process.platform === 'win32' ? it.skip : it)('executor SIGTERM while a CLI branch runs: driver gets TERM, tmp plan-cli-* files are removed', async () => {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, { codex: { hang: 'exit-on-term' }, claude: { hang: 'ignore-term' } });
+      const planFile = writePlan(home, port, parallelSteps);
+      const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver];
+      const child = spawn(process.execPath, args, {
+        env: { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256: PIN, SHELLY_RUN_ORIGIN: 'user' },
+        stdio: 'ignore',
+      });
+      const closed = new Promise<number | null>((resolve) => child.on('close', (s) => resolve(s)));
+      for (let i = 0; i < 200; i += 1) {
+        if (fs.existsSync(path.join(recordDir, 'started-codex.json')) && fs.existsSync(path.join(recordDir, 'started-claude.json'))) break;
+        await delay(50);
+      }
+      const pids = ['codex', 'claude'].map((e) => JSON.parse(fs.readFileSync(path.join(recordDir, `started-${e}.json`), 'utf8')).pid as number);
+      expect(fs.readdirSync(path.join(home, '.shelly/tmp')).some((n) => n.startsWith('plan-cli-') && n.endsWith('.prompt'))).toBe(true);
+      const t0 = Date.now();
+      child.kill('SIGTERM');
+      expect(await closed).toBe(0);
+      expect(Date.now() - t0).toBeLessThan(6000);
+      expect(fs.existsSync(path.join(recordDir, 'term-codex'))).toBe(true);
+      await delay(300);
+      pids.forEach((pid) => expect(alive(pid)).toBe(false));
+      expect(fs.readdirSync(path.join(home, '.shelly/tmp')).filter((n) => n.startsWith('plan-cli-'))).toEqual([]);
+      expect(readRunLog(home).status).toBe('skipped');
+    }, 30000);
+  });
 
   it('a driver failure (non-zero exit / empty answer) fails the branch, the group fails fast', async () => {
     for (const behavior of [{ exit: 3, answer: 'partial' }, { answer: '' }]) {

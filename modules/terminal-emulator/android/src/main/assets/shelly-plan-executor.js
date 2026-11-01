@@ -207,6 +207,18 @@ class RunHalted extends ActionSkipped {
   }
 }
 
+// v19: the plan has a CLI step (Codex / Claude Code) and this run is not an
+// attended user run. A configuration state, not a failure: the run ends
+// 'skipped' (exit 0) so neither native's failure backoff (latest run log
+// status 'error') nor the RN circuit breaker (only 'error' counts) counts it,
+// and run() still notifies + logs the reason like any other skip.
+class CliStepNeedsAttended extends ActionSkipped {
+  constructor(message) {
+    super(message);
+    this.name = 'CliStepNeedsAttended';
+  }
+}
+
 function redact(text) {
   let out = String(text == null ? '' : text);
   for (const pattern of REDACT_PATTERNS) out = out.replace(pattern, '<redacted>');
@@ -2291,6 +2303,56 @@ function killLiveBrokerChildren() {
     } catch (_) {}
   }
   liveBrokerChildren.clear();
+}
+
+// v19: running CLI-step driver children (dispatchCliStep) -> their per-branch
+// temp files. Kept apart from the brokers: a driver gets SIGTERM and a short
+// grace period first so it can stop its own codex/claude child.
+const liveCliChildren = new Map();
+const CLI_STEP_SIGTERM_GRACE_MS = 3000;
+
+function childStillRunning(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  try {
+    process.kill(child.pid, 0);
+  } catch (_) {
+    return false;
+  }
+  // Unreaped (zombie) children still answer kill(0) while this handler blocks
+  // the event loop; Linux/Android /proc tells them apart.
+  try {
+    const stat = fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+    const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+    if (state === 'Z' || state === 'X') return false;
+  } catch (_) {}
+  return true;
+}
+
+// Synchronous (called from the SIGTERM handler right before process.exit):
+// TERM every CLI driver, wait up to CLI_STEP_SIGTERM_GRACE_MS, KILL whatever is
+// left, and remove each branch's prompt / answer / usage files.
+function stopLiveCliChildrenSync(graceMs) {
+  const entries = Array.from(liveCliChildren.entries());
+  liveCliChildren.clear();
+  for (const [child] of entries) {
+    try {
+      child.kill('SIGTERM');
+    } catch (_) {}
+  }
+  const deadline = Date.now() + Math.max(0, graceMs === undefined ? CLI_STEP_SIGTERM_GRACE_MS : graceMs);
+  while (Date.now() < deadline && entries.some(([child]) => childStillRunning(child))) sleepMs(50);
+  for (const [child, files] of entries) {
+    if (childStillRunning(child)) {
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {}
+    }
+    for (const file of files) {
+      try {
+        fs.unlinkSync(file);
+      } catch (_) {}
+    }
+  }
 }
 
 function isHalted(paths) {
@@ -5092,9 +5154,17 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
 const CLI_STEP_ENGINES = new Set(['codex', 'claude']);
 const CLI_STEP_LABELS = { codex: 'Codex', claude: 'Claude Code' };
 const CLI_STEP_TIMEOUT_MS = 20 * 60 * 1000;
-const CLI_STEP_KILL_GRACE_MS = 5000;
+const CLI_STEP_KILL_GRACE_MS = CLI_STEP_SIGTERM_GRACE_MS;
 const CLI_STEP_STDOUT_TAIL_MAX = 8192;
-const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'CLI step (Codex/Claude Code) runs only with Run now';
+const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude Code step, and a CLI step (Codex/Claude Code) runs only with Run now. Open Shelly and tap Run now to run it.';
+
+// Whole-run preflight (before any step / model call): the first CLI step of a
+// plan that is not on an attended user run, or -1.
+function cliStepNeedingAttended(plan, args) {
+  if (cliStepAttended(args)) return -1;
+  const list = plan && plan.steps && Array.isArray(plan.steps.list) ? plan.steps.list : [];
+  return list.findIndex((step) => isCliStep(step));
+}
 
 function cliStepAttended(args) {
   return !argTruthy(args && args.unattended) && process.env.SHELLY_RUN_ORIGIN === 'user';
@@ -5182,7 +5252,8 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
       unattended: argTruthy(args && args.unattended),
       origin: String(process.env.SHELLY_RUN_ORIGIN || '').slice(0, 32),
     });
-    throw new PlanFailure(CLI_STEP_ATTENDED_ONLY_MESSAGE, { exitCode: EXIT.TOOL_DENY });
+    // Normally caught by runOrchestrationChain's preflight first.
+    throw new CliStepNeedsAttended(CLI_STEP_ATTENDED_ONLY_MESSAGE);
   }
   if (!CLI_STEP_ENGINES.has(engine)) {
     cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine: engine.slice(0, 40), reason: 'unsupported CLI worker' });
@@ -5254,7 +5325,9 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
         resolve({ status: null, error, stdoutTail: '' });
         return;
       }
-      liveBrokerChildren.add(child);
+      // SIGTERM (STOP-ALL) stops it via stopLiveCliChildrenSync: TERM, a
+      // short grace, KILL, then these files are removed.
+      liveCliChildren.set(child, [promptFile, answerFile, usageFile]);
       let stdoutTail = '';
       let lineBuf = '';
       let settled = false;
@@ -5305,7 +5378,7 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
       const finish = (value) => {
         if (settled) return;
         settled = true;
-        liveBrokerChildren.delete(child);
+        liveCliChildren.delete(child);
         clearTimeout(timeout);
         clearInterval(haltPoll);
         if (killTimer) clearTimeout(killTimer);
@@ -5377,6 +5450,22 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // with the same non-undefined group id dispatch concurrently below; every
   // branch still sees only the pre-group snapshot (contextResults below).
   const parallelPlan = planParallelGroups(plan.steps.list);
+  // v19: a CLI step on a run that cannot start it skips the WHOLE run before
+  // any step runs (no paid call is made for a chain that cannot finish), as
+  // 'skipped' rather than 'error' — see CliStepNeedsAttended.
+  const refusedCliStep = cliStepNeedingAttended(plan, args);
+  if (refusedCliStep !== -1) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', {
+      stepIndex: refusedCliStep,
+      engine: String(plan.steps.list[refusedCliStep].tool.cli || '').slice(0, 40),
+      reason: 'not an attended user run',
+      unattended: argTruthy(args && args.unattended),
+      origin: String(process.env.SHELLY_RUN_ORIGIN || '').slice(0, 32),
+    });
+    // MONITOR: the CLI step carries the reason; the rest settle SKIPPED.
+    progressState(activeProgress, refusedCliStep, 'SKIPPED', CLI_STEP_ATTENDED_ONLY_MESSAGE);
+    throw new CliStepNeedsAttended(CLI_STEP_ATTENDED_ONLY_MESSAGE);
+  }
   const priorResults = [];
   const records = [];
   let priorFailed = false;
@@ -6203,6 +6292,9 @@ async function run(args) {
   let runLogWritten = false;
   const onSigterm = () => {
     killLiveBrokerChildren();
+    // v19: CLI drivers get TERM -> <=3s grace -> KILL (they stop their own
+    // codex/claude child on TERM), and their temp files are removed.
+    stopLiveCliChildrenSync();
     if (runLogWritten) {
       releaseLock(paths);
       process.exit(EXIT.OK);
@@ -6901,6 +6993,9 @@ module.exports = {
   planHasCliSteps,
   cliStepAttended,
   CLI_STEP_ATTENDED_ONLY_MESSAGE,
+  cliStepNeedingAttended,
+  liveCliChildren,
+  stopLiveCliChildrenSync,
   makeSignedApprovalNonceStore,
   ensureSignedApprovalVerifierKey,
   // Project owner directive 2026-07-14 (runtime approval default-off) —
