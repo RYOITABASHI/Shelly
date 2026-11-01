@@ -82,6 +82,7 @@ import {
   MONITOR_MAX_SHOWN_ASKS,
   monitorAskIdentity,
   pendingApprovalsForAgent,
+  pendingApprovalsForRun,
   pickMonitorApprovalTarget,
   subscribePendingApprovals,
   withPendingApprovals,
@@ -298,11 +299,17 @@ export default function MonitorPane() {
     () => (isLive ? pendingApprovalsForAgent(allPendingApprovals, liveRun.agentId) : []),
     [isLive, allPendingApprovals, liveRun?.agentId],
   );
+  const runAskCount = useMemo(
+    () => (isLive ? pendingApprovalsForRun(liveAsks, liveRun.startedAt).length : 0),
+    [isLive, liveAsks, liveRun?.startedAt],
+  );
   const snap: MonitorSnapshot = useMemo(() => {
     if (!liveSource) return run.source.snapshot(playT, inputs);
     // A step blocked on a pending approval is waiting for you, not stuck.
-    return withPendingApprovals(liveSource.snapshot(now, []), liveAsks.length);
-  }, [liveSource, run.source, now, playT, inputs, liveAsks.length]);
+    // Review L4: only asks of THIS run count (a previous run's leftover must
+    // not make a really-running sibling read as waiting, or the reverse).
+    return withPendingApprovals(liveSource.snapshot(now, []), runAskCount);
+  }, [liveSource, run.source, now, playT, inputs, runAskCount]);
   const summary = summarize(source.agents, snap);
 
   // Playback clock (JS, coarse) — drives the DEMO timeline only.

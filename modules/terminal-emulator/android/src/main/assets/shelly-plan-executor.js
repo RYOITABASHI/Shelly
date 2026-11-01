@@ -5530,6 +5530,12 @@ function cliStepNeedingAttended(plan, args) {
   return list.findIndex((step) => isCliStep(step));
 }
 
+// v21 review H1: refusal text of a CLI step that would get web research
+// results (untrusted text) in its prompt.
+const CLI_STEP_TAINTED_INPUT_MESSAGE =
+  'This Codex/Claude Code step comes after a web research step, so its input would contain text from the web. ' +
+  'Shelly does not give web text to a CLI worker that can run commands. Make this step a text-only step (no Codex/Claude Code), or move it before the research.';
+
 // v21: usage the CLI workers of THIS run reported (Claude Code's result
 // message: tokens, and usd only for an API-key-billed run; Codex reports
 // none). Summed per run and written into the run log's `usage` (one executor
@@ -6265,7 +6271,19 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         ? undefined
         : (contextResults.length ? contextResults[contextResults.length - 1] : undefined);
       let attempt;
-      if (cliStep) {
+      if (cliStep && (synthesis || (sourcingActive && researchStepsDone > 0))) {
+        // v21 review H1 (defense in depth; lib/agent-attended-route.ts already
+        // keeps such a chain on the serial chain, which runs this step
+        // text-only on local): a step after web research of a sourced chain
+        // gets untrusted web text (the research results / evidence) in its
+        // prompt. Never hand that to an exec-capable CLI worker.
+        cliStepAudit(paths, plan, 'cli_branch_refused', {
+          stepIndex: i,
+          engine: String(step.tool.cli || '').slice(0, 40),
+          reason: 'tainted web research input',
+        });
+        throw new PlanFailure(CLI_STEP_TAINTED_INPUT_MESSAGE, { exitCode: EXIT.TOOL_DENY });
+      } else if (cliStep) {
         // v19: never marked inModel, so a provider-override restart never
         // SIGKILLs a driver mid-turn (overrides cannot target a CLI step).
         attempt = await dispatchCliStep(paths, stepOpts, stepPlan, config, args, i, step, stepPrompt);

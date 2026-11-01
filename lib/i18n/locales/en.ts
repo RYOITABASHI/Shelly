@@ -2738,6 +2738,7 @@ const en: Record<string, string> = {
   // (lib/agent-action-chat-approval.ts). Plain text, answered by typing.
   'agent_action_chat.ask': '{{name}} is waiting for your OK — {{what}}\n{{detail}}Reply "OK" to allow or "NO" to decline. The notification works too; whichever answers first counts. [{{hash}}]',
   'agent_action_chat.ask_review': '{{name}} is waiting for your OK — {{what}}\n{{detail}}Reply "OK" to open the review screen (this kind of action is never allowed without it) or "NO" to decline. The notification works too. [{{hash}}]',
+  'agent_action_chat.ambiguous_bare_reply': 'More than one request is waiting for your OK, so a plain OK / NO was not applied to any of them. Answer the one you mean with its code: {{hashes}} (or "no <code>" to decline).',
   'agent_action_chat.ask_concurrent': '{{name}} is waiting for your OK — {{what}}\n{{detail}}Another request of this agent is waiting too, so answer this one by its code: reply "OK {{hash}}" to allow or "NO {{hash}}" to decline. The notification works too; whichever answers first counts. [{{hash}}]',
   'agent_action_chat.ask_review_concurrent': '{{name}} is waiting for your OK — {{what}}\n{{detail}}Another request of this agent is waiting too, so answer this one by its code: reply "OK {{hash}}" to open the review screen (this kind of action is never allowed without it) or "NO {{hash}}" to decline. The notification works too. [{{hash}}]',
   'agent_action_chat.what.draft': 'it wants to save a draft',

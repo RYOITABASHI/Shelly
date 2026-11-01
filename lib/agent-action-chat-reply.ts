@@ -164,6 +164,11 @@ export function findActionApprovalReplyTarget(params: {
     }
     return null;
   }
+  // Review M1 (parallel CLI steps): with two or more answerable asks in the
+  // thread a bare reply is ambiguous — it would land on the latest line,
+  // which may not be the one the user meant. Resolve nothing; the caller
+  // asks for the code (findAmbiguousBareApprovalReply).
+  if (answerablePendingHashes(messages, now).length >= 2) return null;
   // Bare reply: the latest assistant line must be the ask.
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -173,6 +178,47 @@ export function findActionApprovalReplyTarget(params: {
     return inWindow(p) ? { messageId: m.id, marker: p, decision: reply.decision } : null;
   }
   return null;
+}
+
+/** hash8 of every answerable pending ask line in the last 30 messages,
+ *  oldest first. */
+function answerablePendingHashes(messages: ReadonlyArray<MarkerMessage>, now: number): string[] {
+  const out: string[] = [];
+  for (let i = messages.length - 1, seen = 0; i >= 0 && seen < 30; i--, seen++) {
+    const m = messages[i];
+    const p = m.role === 'assistant' ? m.pendingActionApproval : undefined;
+    if (p && isPendingMarkerAnswerable(p, now) && !out.includes(p.hash8)) out.unshift(p.hash8);
+  }
+  return out;
+}
+
+/**
+ * Review M1: a bare OK / NO typed while two or more asks of this thread are
+ * pending, in the exact situation where a single pending ask would have been
+ * answered (no other question open, the latest assistant line is an ask).
+ * Returns the codes to name ("ok <hash8>"), oldest first; null otherwise —
+ * a reply naming a code, or any other text, is never caught here.
+ */
+export function findAmbiguousBareApprovalReply(params: {
+  text: string;
+  messages: ReadonlyArray<MarkerMessage>;
+  now: number;
+  otherPromptOpen: boolean;
+}): { hashes: string[] } | null {
+  if (params.otherPromptOpen) return null;
+  const reply = parseActionApprovalChatReply(params.text);
+  if (!reply || reply.hash8) return null;
+  const { messages, now } = params;
+  let latestIsAsk = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant') continue;
+    latestIsAsk = !!m.pendingActionApproval;
+    break;
+  }
+  if (!latestIsAsk) return null;
+  const hashes = answerablePendingHashes(messages, now);
+  return hashes.length >= 2 ? { hashes } : null;
 }
 
 /** What the request looks like when re-read natively at decision time. */

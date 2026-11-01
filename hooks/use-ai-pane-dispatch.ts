@@ -73,7 +73,7 @@ import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-r
 import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
-import { findActionApprovalReplyTarget, resolveActionApprovalFromChat } from '@/lib/agent-action-chat-approval';
+import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, resolveActionApprovalFromChat } from '@/lib/agent-action-chat-approval';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
@@ -1021,14 +1021,31 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingClosePawShell'].some(
             (k) => !!freshest[k],
           );
+        const replyParams = {
+          text: userText,
+          messages: conv.messages,
+          now: Date.now(),
+          otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,
+        };
         const target = !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
           ? null
-          : findActionApprovalReplyTarget({
-              text: userText,
-              messages: conv.messages,
-              now: Date.now(),
-              otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,
-            });
+          : findActionApprovalReplyTarget(replyParams);
+        // Review M1 (parallel CLI steps): two asks pending → a bare OK / NO
+        // resolves nothing; ask the user to name the one they mean. Same
+        // typed-composer-only gate as `target`.
+        const ambiguous = target || !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
+          ? null
+          : findAmbiguousBareApprovalReply(replyParams);
+        if (ambiguous) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: t('agent_action_chat.ambiguous_bare_reply', { hashes: ambiguous.hashes.map((h) => `"ok ${h}"`).join(' / ') }),
+            timestamp: Date.now(),
+          });
+          return;
+        }
         if (target) {
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           // Reply in the app language: the ask line was posted in it, and a

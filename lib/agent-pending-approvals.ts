@@ -224,11 +224,24 @@ export function chatAskTextKey(reviewRequired: boolean, otherPendingForAgent: nu
 }
 
 /** How many pending asks MONITOR shows at once (parallel CLI steps Inc3: two
- *  CLI branches can each ask; a 3rd+ is counted as "n more"). */
+ *  CLI branches can each ask; a 3rd+ is counted as "n more"). [0] answers a
+ *  bare OK / NO (after MONITOR_ASK_MIN_SHOWN_MS on screen), every other one
+ *  only "ok <hash8>". */
 export const MONITOR_MAX_SHOWN_ASKS = 2;
 
-/** The asks MONITOR shows, oldest first: [0] answers a bare OK / NO (after
- *  MONITOR_ASK_MIN_SHOWN_MS on screen), every other one only "ok <hash8>". */
-export function monitorShownAsks(asks: readonly PendingApprovalAsk[]): PendingApprovalAsk[] {
-  return asks.slice(0, MONITOR_MAX_SHOWN_ASKS);
+/**
+ * Review L4: the asks that belong to the run MONITOR is showing. An ask's
+ * marker carries the driver / action runId, not the executor's progress
+ * runId, so the run is matched by time: an ask posted before this run
+ * started is a previous run's leftover (the drain retires it) and must not
+ * count toward withPendingApprovals' "every ask is accounted for" decision.
+ * Unparsable start time → all asks (unchanged behavior).
+ */
+export function pendingApprovalsForRun(
+  asks: readonly PendingApprovalAsk[],
+  runStartedAt: string | number | null | undefined,
+): PendingApprovalAsk[] {
+  const start = typeof runStartedAt === 'number' ? runStartedAt : runStartedAt ? Date.parse(runStartedAt) : NaN;
+  if (!Number.isFinite(start)) return [...asks];
+  return asks.filter((a) => a.marker.createdAt >= start);
 }

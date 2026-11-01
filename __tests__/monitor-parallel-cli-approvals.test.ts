@@ -11,15 +11,20 @@
  */
 import { cliBranchOverlap, parseProgressJsonl, type MonitorRun } from '@/lib/agent-progress';
 import { createLiveSource } from '@/lib/monitor-live';
-import type { PendingActionApprovalMarker } from '@/lib/agent-action-chat-reply';
+import {
+  ACTION_CHAT_REPLY_MIN_AGE_MS,
+  findActionApprovalReplyTarget,
+  findAmbiguousBareApprovalReply,
+  type PendingActionApprovalMarker,
+} from '@/lib/agent-action-chat-reply';
 import {
   MONITOR_ASK_MIN_SHOWN_MS,
   MONITOR_MAX_SHOWN_ASKS,
   chatAskTextKey,
   monitorAskIdentity,
-  monitorShownAsks,
   pendingApprovalKey,
   pendingApprovalsForAgent,
+  pendingApprovalsForRun,
   pickMonitorApprovalTarget,
   snapshotApprovalAgentIds,
   withPendingApprovals,
@@ -132,7 +137,7 @@ describe('MONITOR: two asks shown, hash8 targets the 2nd', () => {
 
   it('shows the two oldest; a 3rd+ is only counted', () => {
     expect(MONITOR_MAX_SHOWN_ASKS).toBe(2);
-    expect(monitorShownAsks(asks).map((a) => a.marker.hash8)).toEqual(['aaaaaaaa', 'bbbbbbbb']);
+    expect(asks.slice(0, MONITOR_MAX_SHOWN_ASKS).map((a) => a.marker.hash8)).toEqual(['aaaaaaaa', 'bbbbbbbb']);
   });
 
   const now = T0 + 10_000;
@@ -170,6 +175,70 @@ describe('MONITOR: two asks shown, hash8 targets the 2nd', () => {
   });
 });
 
+describe('review L4: only asks of the shown run count', () => {
+  const run = runFrom([
+    start(100),
+    state(0, 'RUNNING', 101), cliTool(0, 'codex', 101),
+    state(1, 'RUNNING', 101), cliTool(1, 'claude', 101),
+    state(0, 'WAITING_APPROVAL', 103),
+  ]);
+  const leftover = ask('eeeeeeee', T0 + 10_000); // posted during an earlier run
+  const current = ask('aaaaaaaa', T0 + 103_000);
+
+  it('pendingApprovalsForRun drops asks posted before the run started', () => {
+    expect(pendingApprovalsForRun([leftover, current], run.startedAt).map((a) => a.marker.hash8)).toEqual(['aaaaaaaa']);
+    expect(pendingApprovalsForRun([leftover, current], undefined)).toHaveLength(2);
+  });
+
+  it('a leftover ask no longer makes the really-running sibling read as waiting', () => {
+    const base = createLiveSource(run).snapshot(T0 + 300_000, []);
+    const counted = pendingApprovalsForRun([leftover, current], run.startedAt).length;
+    expect(withPendingApprovals(base, counted).agents.s1.awaitingApproval).toBeUndefined();
+    // (with the leftover counted it would have been marked)
+    expect(withPendingApprovals(base, 2).agents.s1.awaitingApproval).toBe(true);
+  });
+});
+
+describe('review M1: chat bare OK / NO with two pending asks', () => {
+  const m = (hex: string, createdAt: number) => ({
+    id: `m-${hex}`,
+    role: 'assistant',
+    pendingActionApproval: ask(hex, createdAt).marker,
+  });
+  const now = T0 + ACTION_CHAT_REPLY_MIN_AGE_MS + 5_000;
+  const two = [m('aaaaaaaa', T0), { id: 'u1', role: 'user' }, m('bbbbbbbb', T0 + 500)];
+
+  it('a bare reply resolves nothing and names both codes, oldest first', () => {
+    for (const text of ['ok', 'NO', 'はい']) {
+      expect(findActionApprovalReplyTarget({ text, messages: two, now, otherPromptOpen: false })).toBeNull();
+      expect(findAmbiguousBareApprovalReply({ text, messages: two, now, otherPromptOpen: false })).toEqual({ hashes: ['aaaaaaaa', 'bbbbbbbb'] });
+    }
+  });
+
+  it('"ok <hash8>" still answers exactly that one, older or latest', () => {
+    expect(findActionApprovalReplyTarget({ text: 'ok aaaaaaaa', messages: two, now, otherPromptOpen: false })).toMatchObject({ messageId: 'm-aaaaaaaa', decision: 'accept' });
+    expect(findActionApprovalReplyTarget({ text: 'no bbbbbbbb', messages: two, now, otherPromptOpen: false })).toMatchObject({ messageId: 'm-bbbbbbbb', decision: 'decline' });
+    expect(findAmbiguousBareApprovalReply({ text: 'ok aaaaaaaa', messages: two, now, otherPromptOpen: false })).toBeNull();
+  });
+
+  it('one pending ask: unchanged (bare OK answers it, no ambiguity)', () => {
+    const one = [m('aaaaaaaa', T0)];
+    expect(findActionApprovalReplyTarget({ text: 'ok', messages: one, now, otherPromptOpen: false })).toMatchObject({ messageId: 'm-aaaaaaaa' });
+    expect(findAmbiguousBareApprovalReply({ text: 'ok', messages: one, now, otherPromptOpen: false })).toBeNull();
+  });
+
+  it('not caught when another question is open, the latest line is not an ask, or the text is not a reply', () => {
+    expect(findAmbiguousBareApprovalReply({ text: 'ok', messages: two, now, otherPromptOpen: true })).toBeNull();
+    expect(findAmbiguousBareApprovalReply({ text: 'ok', messages: [...two, { id: 'x', role: 'assistant' }], now, otherPromptOpen: false })).toBeNull();
+    expect(findAmbiguousBareApprovalReply({ text: 'make it shorter', messages: two, now, otherPromptOpen: false })).toBeNull();
+  });
+
+  it('an expired / too-fresh 2nd marker does not count', () => {
+    const fresh = [m('aaaaaaaa', T0), m('bbbbbbbb', now - 100)];
+    expect(findAmbiguousBareApprovalReply({ text: 'ok', messages: fresh, now, otherPromptOpen: false })).toBeNull();
+  });
+});
+
 describe('chat ask text for a concurrent 2nd ask', () => {
   it('picks the "answer by its code" variant only while another ask of the agent is pending', () => {
     expect(chatAskTextKey(false, 0)).toBe('agent_action_chat.ask');
@@ -180,6 +249,7 @@ describe('chat ask text for a concurrent 2nd ask', () => {
 
   it('both locales tell the user to reply OK / NO followed by the code', () => {
     for (const dict of [en, ja] as Array<Record<string, string>>) {
+      expect(dict['agent_action_chat.ambiguous_bare_reply']).toContain('{{hashes}}');
       for (const key of ['agent_action_chat.ask_concurrent', 'agent_action_chat.ask_review_concurrent', 'monitor.live.approval_ask_other']) {
         const text = dict[key];
         expect(typeof text).toBe('string');

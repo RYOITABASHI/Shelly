@@ -161,6 +161,29 @@ describe('decideAttendedRoute — CLI steps (Inc3)', () => {
     expect(decideAttendedRoute({ agent, planText: JSON.stringify(plan), env: ENV }).route).toBe('serial');
   });
 
+  it('review H1: a CLI step after web research (sourced chain) → serial, with the reason', () => {
+    // Perplexity research step, then a CLI step whose prompt would carry the
+    // research results (web text) — the serial chain runs it text-only.
+    const agent = makeAgent([
+      { instruction: 'research the latest AI papers', tool: { type: 'perplexity' }, toolPinned: true },
+      { instruction: 'review the open pull request in the repo', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' }, toolPinned: true },
+      { instruction: 'write unit tests for the parser', parallelGroup: 'g', tool: { type: 'cli', cli: 'claude' }, toolPinned: true },
+      'merge both results into one memo',
+    ]);
+    const r = decideAttendedRoute({ agent, planText: planFor(agent), env: ENV });
+    expect(r.route).toBe('serial');
+    expect(r.reason).toMatch(/step 2 is a CLI step after web research step 1/);
+  });
+
+  it('review H1: CLI steps BEFORE the research step stay eligible for the route check', () => {
+    const agent = makeAgent([
+      { instruction: 'review the open pull request in the repo', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' }, toolPinned: true },
+      { instruction: 'write unit tests for the parser', parallelGroup: 'g', tool: { type: 'cli', cli: 'claude' }, toolPinned: true },
+      'merge both results into one memo',
+    ]);
+    expect(decideAttendedRoute({ agent, planText: planFor(agent), env: ENV }).reason).not.toMatch(/after web research/);
+  });
+
   it('a stale plan (built before the CLI pin) → serial', () => {
     const agent = makeAgent();
     const old = makeAgent([

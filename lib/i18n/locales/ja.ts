@@ -2699,6 +2699,7 @@ const ja: Record<string, string> = {
   // (lib/agent-action-chat-approval.ts)。文字で答える。
   'agent_action_chat.ask': '{{name}} があなたの OK を待っています — {{what}}\n{{detail}}許可するなら「OK」、やめるなら「NO」と返信してください。通知からも答えられます（先に答えた方が有効）。[{{hash}}]',
   'agent_action_chat.ask_review': '{{name}} があなたの OK を待っています — {{what}}\n{{detail}}「OK」と返信すると確認画面が開きます（この種類は確認画面なしでは許可されません）。やめるなら「NO」。通知からも答えられます。[{{hash}}]',
+  'agent_action_chat.ambiguous_bare_reply': 'OK を待っている依頼が複数あるため、コードなしの OK / NO はどれにも適用していません。答えたい依頼をコード付きで返信してください: {{hashes}}（やめるなら「no <コード>」）。',
   'agent_action_chat.ask_concurrent': '{{name}} があなたの OK を待っています — {{what}}\n{{detail}}このエージェントの別の依頼も待っているので、これにはコード付きで答えてください: 許可するなら「OK {{hash}}」、やめるなら「NO {{hash}}」。通知からも答えられます（先に答えた方が有効）。[{{hash}}]',
   'agent_action_chat.ask_review_concurrent': '{{name}} があなたの OK を待っています — {{what}}\n{{detail}}このエージェントの別の依頼も待っているので、これにはコード付きで答えてください:「OK {{hash}}」で確認画面が開きます（この種類は確認画面なしでは許可されません）。やめるなら「NO {{hash}}」。通知からも答えられます。[{{hash}}]',
   'agent_action_chat.what.draft': '下書きを保存しようとしています',

@@ -150,7 +150,19 @@ function describe(req: ActionApprovalAskRequest, l: Locale): { what: string; det
 
 /** Where each pending ask line lives (for retiring it later), keyed by
  *  pendingApprovalKey(): `action:<runId>` / `escalation:<runId>|<reqId>`. */
-const asks = new Map<string, { agentId: string; messageId: string; requestSha256: string; hash8: string }>();
+const asks = new Map<
+  string,
+  {
+    agentId: string;
+    messageId: string;
+    requestSha256: string;
+    hash8: string;
+    /** Review M1: rebuilds this line's text as the "answer by its code"
+     *  variant once a 2nd ask of the same agent arrives. */
+    concurrentText?: () => string;
+    concurrent?: boolean;
+  }
+>();
 
 function retireAsk(askKey: string, closingKey: string | null, l: Locale): void {
   removePendingApproval(askKey);
@@ -275,13 +287,27 @@ function postAsk(p: {
   // Parallel CLI steps Inc3: two branches of one run can ask at once. When
   // another ask of this agent is still pending, this line asks for its code
   // ("OK <hash8>"), so neither answer depends on which line is the latest.
-  const othersPending = [...asks.entries()].filter(([k, a]) => k !== askKey && a.agentId === p.agentId).length;
-  const content = tFor(l, chatAskTextKey(p.reviewRequired, othersPending), {
-    name,
-    what: p.what,
-    detail: p.detail ? `${p.detail}\n` : '',
-    hash: hash8,
-  });
+  const others = [...asks.entries()].filter(([k, a]) => k !== askKey && a.agentId === p.agentId);
+  const textFor = (concurrent: boolean) =>
+    tFor(l, chatAskTextKey(p.reviewRequired, concurrent ? 1 : 0), {
+      name,
+      what: p.what,
+      detail: p.detail ? `${p.detail}\n` : '',
+      hash: hash8,
+    });
+  const content = textFor(others.length > 0);
+  // Review M1: the EARLIER ask line(s) of this agent switch to the same
+  // "answer by its code" text, so no line still says a bare "OK" works.
+  // Edited in place (same message, same marker) — nothing is resolved here.
+  const thread = agentThreadKey(p.agentId);
+  for (const [, other] of others) {
+    if (other.concurrent || !other.concurrentText) continue;
+    try {
+      if (useAIPaneStore.getState().updateMessage(thread, other.messageId, { content: other.concurrentText() })) other.concurrent = true;
+    } catch {
+      // best-effort: the bare-reply refusal (findActionApprovalReplyTarget) still holds
+    }
+  }
   const marker: PendingActionApprovalMarker = {
     runId: p.runId,
     requestSha256: sha,
@@ -300,7 +326,14 @@ function postAsk(p: {
     timestamp: Date.now(),
     pendingActionApproval: marker,
   });
-  asks.set(askKey, { agentId: p.agentId, messageId: id, requestSha256: sha, hash8 });
+  asks.set(askKey, {
+    agentId: p.agentId,
+    messageId: id,
+    requestSha256: sha,
+    hash8,
+    concurrentText: () => textFor(true),
+    concurrent: others.length > 0,
+  });
   upsertPendingApproval({ key: askKey, kind: p.kind, agentId: p.agentId, messageId: id, marker, what: p.what, detail: p.detail });
 }
 

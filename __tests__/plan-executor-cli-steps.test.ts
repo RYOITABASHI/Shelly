@@ -214,9 +214,11 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
   let server: http.Server;
   let port = 0;
   let requests: string[];
+  let serverReply: string | null = null;
 
   beforeEach((done) => {
     requests = [];
+    serverReply = null;
     server = http.createServer((req, res) => {
       let body = '';
       req.setEncoding('utf8');
@@ -225,7 +227,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
         const content = JSON.parse(body).messages[0].content as string;
         requests.push(content);
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ choices: [{ message: { content: 'Final digest built from both reviews.' } }] }));
+        res.end(JSON.stringify({ choices: [{ message: { content: serverReply ?? 'Final digest built from both reviews.' } }] }));
       });
     });
     server.listen(0, '127.0.0.1', () => {
@@ -815,6 +817,31 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
         expect(step.outputPreview).toContain('unattended');
       }
     }
+  }, 60000);
+
+  it('review H1: a CLI step after web research gets no driver — TOOL_DENY with the tainted-input reason', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    writeDriverConfig(recordDir, { codex: { answer: 'should never run' } });
+    serverReply = [
+      '- OpenAI ships a new model — https://example.com/news/a',
+      '- A new benchmark is out — https://example.com/news/b',
+      '',
+      '## Sources',
+      '1. https://example.com/news/a',
+      '2. https://example.com/news/b',
+    ].join('\n');
+    const steps: Step[] = [
+      { instruction: 'search the web for the latest AI news' },
+      { instruction: 'turn the findings into a review with Codex', tool: { type: 'cli', cli: 'codex' } },
+      { instruction: 'finalize' },
+    ];
+    await runExecutor(writePlan(home, port, steps), home, driver, recordDir);
+    expect(readCalls(recordDir)).toEqual([]);
+    const log = readRunLog(home);
+    expect(log.steps[1].status).toBe('error');
+    expect(log.steps[1].outputPreview).toContain('comes after a web research step');
+    expect(readAudit(home).some((e) => e.event === 'cli_branch_refused' && e.reason === 'tainted web research input')).toBe(true);
   }, 60000);
 
   it('a plan without cliWorker (built before CLI steps) fails closed', async () => {

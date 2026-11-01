@@ -47,6 +47,7 @@ import type { Agent, ToolChoice } from '@/store/types';
 import { normalizeSteps, planParallelGroups, type NormalizedStep } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, buildAgentPlanSpec, toPlanTool, type BuildAgentPlanSpecOptions } from './agent-plan-spec';
+import { isResearchStep } from './agent-sources';
 
 /** Mirror of scripts/shelly-plan-executor.js STEP_TOOL_DISPATCHABLE_TYPES. */
 export const EXECUTOR_DISPATCHABLE_TOOL_TYPES: ReadonlySet<string> = new Set(['local', 'gemini-api', 'perplexity', 'cerebras', 'groq']);
@@ -215,6 +216,32 @@ export function decideAttendedRoute(args: {
   const isolation = isRecord(plan.steps) && Array.isArray(plan.steps.isolation) ? (plan.steps.isolation as unknown[]) : [];
   if (isolation.some((x) => isRecord(x) && typeof x.blocked === 'string')) {
     return serial('on-disk PlanSpec isolation blocks a step');
+  }
+
+  // ── sourced chain: no CLI step after web research (review H1) ────────────
+  // A step after a web research step of a sourced chain gets untrusted web
+  // text (research results / evidence) in its prompt. The serial chain runs
+  // such a step text-only (runLadderAttempts textOnly drops cli/auto → local);
+  // the executor would hand it to an exec-capable CLI worker. Research is
+  // judged like BOTH chains do (executor: effective tool, CLI never research;
+  // attended: step tool ?? agent tool) — either one counts.
+  const firstResearch = steps.findIndex((s, idx) => {
+    if (idx === steps.length - 1 || s.apiCall) return false;
+    const disk = list[idx];
+    const diskTool = isRecord(disk) ? disk.tool : undefined;
+    const diskType = typeOf(diskTool);
+    const executorType = diskType && EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(diskType) ? diskType : planToolType;
+    const executorResearch = !(diskType && EXECUTOR_CLI_TOOL_TYPES.has(diskType)) && isResearchStep(s.instruction, executorType);
+    const attendedResearch = isResearchStep(s.instruction, (s.tool ?? agent.tool)?.type);
+    return executorResearch || attendedResearch;
+  });
+  if (firstResearch !== -1) {
+    const lateCli = steps.findIndex((s, idx) => idx > firstResearch && !!s.tool && EXECUTOR_CLI_TOOL_TYPES.has(s.tool.type));
+    if (lateCli !== -1) {
+      return serial(
+        `step ${lateCli + 1} is a CLI step after web research step ${firstResearch + 1} (its input would carry web text; the serial chain runs it text-only)`,
+      );
+    }
   }
 
   // ── per step: attended provider == executor effective provider ───────────
