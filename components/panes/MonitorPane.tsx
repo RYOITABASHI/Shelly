@@ -7,10 +7,14 @@
  *  - LIVE (lib/monitor-live.ts): a real agent run, read from its
  *    progress.jsonl by the poller (hooks/use-monitor-live-poller.ts) into
  *    agent-store `liveRuns`. Default whenever any run is known: the most
- *    recent running run, else the most recent finished one.
+ *    recent running run, else the most recent finished one. The last run
+ *    shown is kept (agent-store `monitorLastRun`) so its final state stays on
+ *    the wall after it ends, even once its agent is deleted ("run once now").
  *  - DEMO (lib/monitor-demo.ts): the built-in playback, labelled DEMO
  *    everywhere costs or states could be mistaken for a real run; shown when
- *    there is no run at all, or when the user picks it.
+ *    no real run was seen this session, or when the user picks it. Its
+ *    scripted ask is tagged as a sample and only takes replies when the user
+ *    picked DEMO (as the automatic stand-in it is read-only).
  *  - DRAFT (lib/monitor-team-source.ts): your own team in the MAP editor,
  *    shown still — no playback, no sample costs.
  * A small "LIVE ▸ <agent> / DEMO / DRAFT" selector switches between them.
@@ -68,9 +72,9 @@ import {
   type MonitorSnapshot,
   type MonitorSource,
 } from '@/lib/monitor-source';
-import { createLiveSource, liveLoopText, pickDefaultLiveRun, type LiveAgentInfo } from '@/lib/monitor-live';
+import { createLiveSource, liveLoopText, pickMonitorRun, type LiveAgentInfo } from '@/lib/monitor-live';
 import type { MonitorRun } from '@/lib/agent-progress';
-import type { Agent } from '@/store/types';
+import type { Agent, ToolChoice } from '@/store/types';
 import { useMonitorLivePoller } from '@/hooks/use-monitor-live-poller';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { multiPaneSlotOps } from '@/lib/pane-focus';
@@ -192,6 +196,15 @@ function agentStepLabels(agent: Agent | undefined): string[] | undefined {
   return steps.map((s) => (typeof s === 'string' ? s : s?.instruction ?? ''));
 }
 
+/** Each step's planned tool (plan order), for the engine label before the
+ *  step reports what it ran on (lib/monitor-live.ts plannedCliProvider). */
+function agentStepTools(agent: Agent | undefined): (ToolChoice | undefined)[] | undefined {
+  const steps = agent?.orchestration?.steps;
+  if (!steps || !steps.length) return undefined;
+  const tools = steps.map((s) => (typeof s === 'string' ? undefined : s?.tool));
+  return tools.some(Boolean) ? tools : undefined;
+}
+
 function latestRun(list: { run: MonitorRun }[] | undefined): MonitorRun | undefined {
   return list && list.length ? list[list.length - 1].run : undefined;
 }
@@ -217,8 +230,15 @@ export default function MonitorPane() {
     })),
   );
   const { t: playT, speed, view, selectedId, auto, inputs, runId, sourceMode, liveAgentId } = monitor;
-  const { liveRuns, agents, runningAgentIds, liveLoops } = useAgentStore(
-    useShallow((s) => ({ liveRuns: s.liveRuns, agents: s.agents, runningAgentIds: s.runningAgentIds, liveLoops: s.liveLoops })),
+  const { liveRuns, agents, runningAgentIds, liveLoops, monitorLastRun, setMonitorLastRun } = useAgentStore(
+    useShallow((s) => ({
+      liveRuns: s.liveRuns,
+      agents: s.agents,
+      runningAgentIds: s.runningAgentIds,
+      liveLoops: s.liveLoops,
+      monitorLastRun: s.monitorLastRun,
+      setMonitorLastRun: s.setMonitorLastRun,
+    })),
   );
 
   // A MONITOR widget tap that found no free slot borrowed this one: offer BACK.
@@ -252,23 +272,50 @@ export default function MonitorPane() {
       const chosen = latestRun(liveRuns[liveAgentId]);
       if (chosen) return chosen;
     }
-    return pickDefaultLiveRun(
+    // The last real run shown stays a candidate after it ended and after its
+    // agent was deleted (an ephemeral "run once now" agent): once a real run
+    // was seen, the wall keeps it instead of falling back to the DEMO.
+    return pickMonitorRun(
       liveAgentOrder.map((id) => latestRun(liveRuns[id])!),
+      monitorLastRun,
       runningAgentIds,
       now,
     );
-  }, [sourceMode, liveAgentId, liveRuns, liveAgentOrder, runningAgentIds, now, standbyAgent]);
+  }, [sourceMode, liveAgentId, liveRuns, liveAgentOrder, runningAgentIds, now, standbyAgent, monitorLastRun]);
   const isLive = liveRun !== null;
   const liveAgent = isLive ? agents.find((a) => a.id === liveRun.agentId) : undefined;
-  const liveAgentName = liveAgent?.name ?? liveRun?.agentId ?? '';
-  const liveEntry = isLive ? liveRuns[liveRun.agentId]?.find((e) => e.run.runId === liveRun.runId) : undefined;
+  // The retained run of an agent that no longer exists: what the pane knew then.
+  const retainedInfo =
+    isLive && !liveAgent && monitorLastRun?.run.runId === liveRun.runId ? monitorLastRun.info : undefined;
+  const liveAgentName = liveAgent?.name ?? retainedInfo?.name ?? liveRun?.agentId ?? '';
+  const liveEntry = isLive
+    ? liveRuns[liveRun.agentId]?.find((e) => e.run.runId === liveRun.runId) ??
+      (monitorLastRun?.run.runId === liveRun.runId && monitorLastRun.savedPath
+        ? { run: liveRun, savedPath: monitorLastRun.savedPath }
+        : undefined)
+    : undefined;
   const stepLabels = useMemo(() => agentStepLabels(liveAgent), [liveAgent]);
   const stepGroups = useMemo(() => agentStepGroups(liveAgent), [liveAgent]);
-  const liveSource = useMemo(() => {
+  const stepTools = useMemo(() => agentStepTools(liveAgent), [liveAgent]);
+  const liveInfo: LiveAgentInfo | null = useMemo(() => {
     if (!liveRun) return null;
-    const info: LiveAgentInfo = { name: liveAgentName, steps: stepLabels, groups: stepGroups };
-    return createLiveSource(liveRun, info);
-  }, [liveRun, liveAgentName, stepLabels, stepGroups]);
+    if (retainedInfo) return retainedInfo;
+    return { name: liveAgentName, steps: stepLabels, groups: stepGroups, tools: stepTools };
+  }, [liveRun, retainedInfo, liveAgentName, stepLabels, stepGroups, stepTools]);
+  const liveSource = useMemo(
+    () => (liveRun && liveInfo ? createLiveSource(liveRun, liveInfo) : null),
+    [liveRun, liveInfo],
+  );
+  // Remember the run being shown (with its agent's info) for when it is gone.
+  const liveSavedPathForRetain = liveEntry?.savedPath;
+  useEffect(() => {
+    if (!liveRun || !liveInfo || !liveAgent) return;
+    setMonitorLastRun({
+      run: liveRun,
+      info: liveInfo,
+      ...(liveSavedPathForRetain ? { savedPath: liveSavedPathForRetain } : {}),
+    });
+  }, [liveRun, liveInfo, liveAgent, liveSavedPathForRetain, setMonitorLastRun]);
 
   // The demo is dated "today" and its wall clock starts at RESTART.
   const run = useMemo(() => {
@@ -624,6 +671,9 @@ export default function MonitorPane() {
   };
   // The question the source is waiting on (latest ask line in the chat).
   const pendingAsk = snap.approvalPending ? [...snap.chat].reverse().find((m) => m.ask) : undefined;
+  // The DEMO only takes replies when the user picked it: as the automatic
+  // stand-in (no real run seen yet) its scripted ask is read-only.
+  const demoReplyLocked = source.isDemo && sourceMode !== 'demo';
   // Folded screens show only the MAP while it is open; wide keeps the wall.
   const showWall = view !== 'map' || isWide;
 
@@ -658,9 +708,11 @@ export default function MonitorPane() {
             label={
               standbyAgent
                 ? t('monitor.source.live', { name: standbyAgent.name })
-                : liveAgentOrder.length
-                  ? t('monitor.source.live', { name: isLive ? liveAgentName : agents.find((a) => a.id === liveAgentOrder[0])?.name ?? liveAgentOrder[0] })
-                  : t('monitor.source.live_none')
+                : isLive
+                  ? t('monitor.source.live', { name: liveAgentName })
+                  : liveAgentOrder.length
+                    ? t('monitor.source.live', { name: agents.find((a) => a.id === liveAgentOrder[0])?.name ?? liveAgentOrder[0] })
+                    : t('monitor.source.live_none')
             }
             pressed={isLive || !!standbyAgent}
             onPress={pickLive}
@@ -915,26 +967,39 @@ export default function MonitorPane() {
       )}
       {snap.approvalPending && !isLive && (
         <View style={[styles.pinned, styles.pinnedWrap]} testID="monitor-pinned-approval">
-          <Text style={[styles.pinnedAsk, styles.pinnedAskWrap]} numberOfLines={2}>
+          {/* The DEMO's ask is scripted: say so, so it never reads as a real
+              pending approval (e.g. in a screen recording). */}
+          {source.isDemo && (
+            <Text style={styles.demoAskTag} testID="monitor-demo-ask-tag">
+              {t('monitor.demo.ask_tag')}
+            </Text>
+          )}
+          <Text style={[styles.pinnedAsk, styles.pinnedAskWrap, source.isDemo && styles.demoAsk]} numberOfLines={2}>
             {pendingAsk
               ? (pendingAsk.text ?? translateMonitorText(t, pendingAsk.message))
               : t('monitor.waiting_for_you')}
           </Text>
-          <View style={[styles.row, styles.pinnedReply]}>
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              onSubmitEditing={send}
-              placeholder={t('monitor.pinned_placeholder')}
-              placeholderTextColor={MON.muted}
-              accessibilityLabel={t('monitor.pinned_a11y')}
-              style={styles.input}
-              returnKeyType="send"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Key label={t('monitor.send')} onPress={send} a11y={t('monitor.pinned_send_a11y')} />
-          </View>
+          {demoReplyLocked ? (
+            <Text style={styles.hintLine} testID="monitor-demo-input-locked">
+              {t('monitor.demo.input_locked')}
+            </Text>
+          ) : (
+            <View style={[styles.row, styles.pinnedReply]}>
+              <TextInput
+                value={draft}
+                onChangeText={setDraft}
+                onSubmitEditing={send}
+                placeholder={t('monitor.pinned_placeholder')}
+                placeholderTextColor={MON.muted}
+                accessibilityLabel={t('monitor.pinned_a11y')}
+                style={styles.input}
+                returnKeyType="send"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Key label={t('monitor.send')} onPress={send} a11y={t('monitor.pinned_send_a11y')} />
+            </View>
+          )}
         </View>
       )}
       </View>
@@ -1114,10 +1179,16 @@ export default function MonitorPane() {
                 {m.who === 'you' ? t('monitor.who_you') : t('monitor.who_shelly')}
               </Text>
               {'  '}
+              {m.ask && <Text style={styles.demoAskTag}>{`${t('monitor.demo.ask_tag')}  `}</Text>}
               {m.text ?? translateMonitorText(t, m.message)}
             </Text>
           ))}
         </View>
+        {demoReplyLocked ? (
+          <Text style={styles.hintLine} numberOfLines={1} testID="monitor-demo-chat-locked">
+            {t('monitor.demo.input_locked')}
+          </Text>
+        ) : (
         <View style={styles.row}>
           <TextInput
             value={draft}
@@ -1133,6 +1204,7 @@ export default function MonitorPane() {
           />
           <Key label={t('monitor.send')} onPress={send} />
         </View>
+        )}
       </View>}
       </View>
     </ScrollView>
@@ -1203,6 +1275,9 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   pinnedAsk: { fontSize: 13, color: MON.amber, lineHeight: 18 },
+  // DEMO's scripted ask: muted, so it never reads as a real pending approval.
+  demoAsk: { color: MON.muted },
+  demoAskTag: { fontFamily: MON_FONT_OSD, fontSize: 12, color: MON.amber, letterSpacing: 0.5 },
   pinnedAskInline: { flex: 1, minWidth: 0 },
   // DEMO strip: the question and the reply box share one row when wide.
   pinnedWrap: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10 },

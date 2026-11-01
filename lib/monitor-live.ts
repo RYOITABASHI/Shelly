@@ -31,6 +31,8 @@ import type {
 import type { MonitorProvider, MonitorProviderKind, MonitorTeam, MonitorTeamNode } from './monitor-team';
 import { MONITOR_PROVIDER_LABEL } from './monitor-team';
 import { AGENT_CLI_WORKERS, isAgentCliId } from './agent-cli-workers';
+import type { MonitorProvider as MonitorRunProvider } from './agent-progress';
+import type { ToolChoice } from '@/store/types';
 import { continuousStopReasonKey, type ContinuousCheckpointView } from './agent-continuous';
 
 /** A RUNNING step with no event for this long gets the stale indicator. */
@@ -48,6 +50,12 @@ export interface LiveAgentInfo {
   /** Parallel group per step in plan order (agent-orchestration
    *  planParallelGroups(...).group), for steps that reported no event yet. */
   groups?: (string | undefined)[];
+  /** Tool per step in plan order (AgentOrchestrationStep.tool). A CLI tool
+   *  labels the step's camera before the step reports its own provider, so a
+   *  Claude Code step waiting behind a Codex step reads "Claude Code", not
+   *  "AUTO · Auto". Only CLI tools are used: a CLI pick names one concrete
+   *  worker, other picks may still be resolved differently at run time. */
+  tools?: (ToolChoice | undefined)[];
 }
 
 const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
@@ -116,8 +124,16 @@ function stepName(run: MonitorRun, b: MonitorBranch, info: LiveAgentInfo): strin
   return `STEP ${b.stepIndex + 1}`;
 }
 
+/** The run provider a step's planned CLI tool names (null for any other tool). */
+export function plannedCliProvider(tool: ToolChoice | undefined | null): MonitorRunProvider | null {
+  if (!tool || tool.type !== 'cli') return null;
+  const cli = (tool as { cli?: unknown }).cli;
+  return typeof cli === 'string' && isAgentCliId(cli) ? { kind: 'CLI', name: `cli:${cli}` } : null;
+}
+
 function defFor(run: MonitorRun, b: MonitorBranch, info: LiveAgentInfo): MonitorAgentDef {
-  const p = b.provider;
+  // The run's own report wins; until then a step planned on a CLI shows it.
+  const p = b.provider ?? plannedCliProvider(info.tools?.[b.stepIndex]) ?? undefined;
   const kind: MonitorProviderKind = p ? p.kind : 'AUTO';
   return {
     id: liveDefId(b.stepIndex),
@@ -380,6 +396,33 @@ export function liveLoopText(
   const iteration = translate('monitor.live.loop_iteration', { n: view.iteration });
   if (!view.stoppedReason) return iteration;
   return `${iteration} · ${translate('monitor.live.loop_stopped', { reason: translate(continuousStopReasonKey(view.stoppedReason)) })}`;
+}
+
+/** The last real run the MONITOR showed, kept with what the pane knew about
+ *  its agent at the time — so the wall can keep showing its final state after
+ *  the agent is gone (a "run once now" agent is deleted as soon as it ends). */
+export interface RetainedLiveRun {
+  run: MonitorRun;
+  info: LiveAgentInfo;
+  /** Where the run saved its output (its run log), when known. */
+  savedPath?: string;
+}
+
+/**
+ * Default LIVE pick with the retained last run as one more candidate: the
+ * newest active run, else the newest run of all (the retained one included,
+ * even when its agent no longer exists). A candidate with the retained run's
+ * runId replaces it (the store copy is fresher). null only when no real run
+ * was ever seen — the one case where the DEMO wall may stand in.
+ */
+export function pickMonitorRun(
+  runs: readonly MonitorRun[],
+  retained: RetainedLiveRun | null | undefined,
+  runningAgentIds: readonly string[],
+  nowMs: number,
+): MonitorRun | null {
+  const all = retained && !runs.some((r) => r.runId === retained.run.runId) ? [...runs, retained.run] : runs;
+  return pickDefaultLiveRun(all, runningAgentIds, nowMs);
 }
 
 /** Default LIVE pick: the most recently started active run, else the most
