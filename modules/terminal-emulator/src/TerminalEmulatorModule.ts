@@ -155,6 +155,19 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   }>;
   removeApkDownload(downloadId: number): Promise<void>;
   /**
+   * Stale updater APK cleanup (lib/release-apk-cleanup.ts). Names of direct,
+   * regular-file (non-symlink) children of getExternalFilesDir(DOWNLOADS)
+   * matching ^Shelly-android-[A-Za-z0-9._-]+\.apk$. Optional: older native
+   * builds lack it.
+   */
+  listReleaseApks?(): Promise<string[]>;
+  /** Delete one such child by name; false if the name/file is not eligible or delete failed. */
+  deleteReleaseApk?(name: string): Promise<boolean>;
+  /** Legacy public Downloads `shelly-update-*` dirs and their entries (non-regular files report isDirectory=true). */
+  listLegacyUpdateDirs?(): Promise<{ name: string; entries: { name: string; isDirectory: boolean }[] }[]>;
+  /** Delete a legacy dir only if it holds nothing but plain `.apk` files (re-checked natively). */
+  deleteLegacyUpdateDir?(name: string): Promise<boolean>;
+  /**
    * On-demand optional-tool pack download (Fable5 roadmap item #6, dormant
    * infra — see lib/optional-packs.ts / lib/optional-pack-installer.ts).
    * Same DownloadManager mechanism as enqueueApkDownload

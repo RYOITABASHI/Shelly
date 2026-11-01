@@ -41,12 +41,12 @@ import {
 } from '@/lib/release-apk-path';
 import {
   cleanupLegacyUpdateDirs,
-  deleteApkFiles,
-  listDir,
+  cleanupReleaseApks,
+  describeCleanupResult,
   selectStaleApksBeforeDownload,
   selectStaleApksOnStartup,
 } from '@/lib/release-apk-cleanup';
-import { logInfo } from '@/lib/debug-logger';
+import { logError, logInfo } from '@/lib/debug-logger';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
@@ -981,18 +981,15 @@ function markApkHandedOff(apkPath: string): void {
  */
 async function deleteStaleApksBeforeDownload(keepAssetName: string): Promise<void> {
   try {
-    const dir = await releaseApkDir();
     const pending = await readPendingApkDownload();
-    const stale = selectStaleApksBeforeDownload(
-      await listDir(FileSystemLegacy, dir),
-      keepAssetName,
-      [...handedOffApkPaths, pending?.apkPath],
+    const protectedPaths = [...handedOffApkPaths, pending?.apkPath];
+    const result = await cleanupReleaseApks(TerminalEmulator, (names) =>
+      selectStaleApksBeforeDownload(names, keepAssetName, protectedPaths),
     );
-    if (stale.length === 0) return;
-    const deleted = await deleteApkFiles(FileSystemLegacy, dir, stale);
-    logInfo('BuildsModal', `deleted ${deleted.length} stale APK(s) before download`);
-  } catch {
+    logInfo('BuildsModal', describeCleanupResult('stale APK cleanup before download', result));
+  } catch (e) {
     // Cleanup must never block an update.
+    logError('BuildsModal', 'stale APK cleanup before download failed', e);
   }
 }
 
@@ -1006,21 +1003,20 @@ export async function cleanupStaleReleaseApksOnStartup(): Promise<void> {
   try {
     const installed = await TerminalEmulator.getAppVersionInfo();
     const installedVersionCode = Number(installed?.versionCode);
-    if (!Number.isFinite(installedVersionCode) || installedVersionCode < 1) return;
-    const dir = await releaseApkDir();
-    const pending = await readPendingApkDownload();
-    const stale = selectStaleApksOnStartup(
-      await listDir(FileSystemLegacy, dir),
-      installedVersionCode,
-      [...handedOffApkPaths, pending?.apkPath],
-    );
-    const deleted = stale.length > 0 ? await deleteApkFiles(FileSystemLegacy, dir, stale) : [];
-    const legacy = await cleanupLegacyUpdateDirs(FileSystemLegacy, '/sdcard/Download', installedVersionCode);
-    if (deleted.length > 0 || legacy.length > 0) {
-      logInfo('BuildsModal', `startup cleanup: deleted ${deleted.length} APK(s), ${legacy.length} legacy dir(s)`);
+    if (!Number.isFinite(installedVersionCode) || installedVersionCode < 1) {
+      logInfo('BuildsModal', `startup APK cleanup skipped: installed versionCode=${String(installed?.versionCode)}`);
+      return;
     }
-  } catch {
-    // best effort
+    const pending = await readPendingApkDownload();
+    const protectedPaths = [...handedOffApkPaths, pending?.apkPath];
+    const apks = await cleanupReleaseApks(TerminalEmulator, (names) =>
+      selectStaleApksOnStartup(names, installedVersionCode, protectedPaths),
+    );
+    logInfo('BuildsModal', describeCleanupResult(`startup APK cleanup (installed=${installedVersionCode})`, apks));
+    const legacy = await cleanupLegacyUpdateDirs(TerminalEmulator, installedVersionCode);
+    logInfo('BuildsModal', describeCleanupResult('startup legacy shelly-update-* cleanup', legacy));
+  } catch (e) {
+    logError('BuildsModal', 'startup APK cleanup failed', e);
   }
 }
 

@@ -110,85 +110,126 @@ export function legacyDirContentsRemovable(entries: readonly { name: string; isD
   return entries.every((e) => !e.isDirectory && /^[A-Za-z0-9._-]+\.apk$/i.test(e.name));
 }
 
-/** Minimal file-system surface (expo-file-system/legacy compatible), injectable for tests. */
-export type CleanupFs = {
-  readDirectoryAsync(uri: string): Promise<string[]>;
-  getInfoAsync(uri: string): Promise<{ exists: boolean; isDirectory?: boolean }>;
-  deleteAsync(uri: string, options?: { idempotent?: boolean }): Promise<void>;
+/**
+ * Native file surface (TerminalEmulator module), injectable for tests.
+ *
+ * Listing and deletion are native because expo-file-system/legacy cannot
+ * delete files under getExternalFilesDir(): its deleteAsync() requires WRITE
+ * on `<file>/..`, and for paths outside filesDir/cacheDir that check is
+ * File("<file>.apk/..").canWrite(), i.e. access() on a path through a regular
+ * file -> ENOTDIR -> "isn't deletable". On build 2789 every delete was
+ * rejected and the swallowed error made the cleanup a silent no-op.
+ *
+ * The native side only ever touches direct regular-file (non-symlink)
+ * children whose names match the same patterns; JS decides which ones.
+ */
+export type CleanupBridge = {
+  listReleaseApks?(): Promise<string[]>;
+  deleteReleaseApk?(name: string): Promise<boolean>;
+  listLegacyUpdateDirs?(): Promise<{ name: string; entries: { name: string; isDirectory: boolean }[] }[]>;
+  deleteLegacyUpdateDir?(name: string): Promise<boolean>;
 };
 
-function dirUri(dir: string): string {
-  const d = dir.replace(/\/+$/, '');
-  return d.startsWith('file://') ? d : `file://${d}`;
+export type ApkCleanupResult = {
+  /** Release APK names listed in the download dir. */
+  found: number;
+  /** Names the selector picked for deletion. */
+  selected: number;
+  /** Names actually deleted. */
+  deleted: string[];
+  /** Per-file / listing errors (message only), for logging. */
+  errors: string[];
+  /** True when the native methods are missing (older native build). */
+  unsupported?: boolean;
+};
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
-function joinUri(dir: string, name: string): string {
-  return `${dirUri(dir)}/${name}`;
+/** List release APK names via the native bridge. Throws on native failure. */
+export async function listReleaseApks(bridge: CleanupBridge): Promise<string[] | null> {
+  if (typeof bridge.listReleaseApks !== 'function') return null;
+  const names = await bridge.listReleaseApks();
+  return Array.isArray(names) ? names.filter((n) => typeof n === 'string') : [];
 }
 
 /**
- * Delete the given names from `dir`, skipping anything that is not a plain
- * file. Best effort: individual failures are swallowed. Returns deleted names.
+ * Delete the given names (re-filtered through RELEASE_APK_NAME_RE as defense
+ * in depth). Individual failures are recorded, never thrown.
  */
-export async function deleteApkFiles(fs: CleanupFs, dir: string, names: readonly string[]): Promise<string[]> {
+export async function deleteReleaseApks(
+  bridge: CleanupBridge,
+  names: readonly string[],
+): Promise<{ deleted: string[]; errors: string[] }> {
   const deleted: string[] = [];
+  const errors: string[] = [];
+  if (typeof bridge.deleteReleaseApk !== 'function') {
+    return { deleted, errors: names.length > 0 ? ['deleteReleaseApk unavailable'] : [] };
+  }
   for (const name of names) {
-    // Defense in depth: never let a caller-supplied name escape the dir.
     if (!isReleaseApkFileName(name)) continue;
-    const uri = joinUri(dir, name);
     try {
-      const info = await fs.getInfoAsync(uri);
-      if (!info.exists || info.isDirectory) continue;
-      await fs.deleteAsync(uri, { idempotent: true });
-      deleted.push(name);
-    } catch {
-      // best effort
+      if (await bridge.deleteReleaseApk(name)) deleted.push(name);
+      else errors.push(`${name}: not deleted`);
+    } catch (e) {
+      errors.push(`${name}: ${errorMessage(e)}`);
     }
   }
-  return deleted;
+  return { deleted, errors };
 }
 
-export async function listDir(fs: CleanupFs, dir: string): Promise<string[]> {
+/** List -> select -> delete. Never throws. */
+export async function cleanupReleaseApks(
+  bridge: CleanupBridge,
+  select: (names: string[]) => string[],
+): Promise<ApkCleanupResult> {
+  let names: string[] | null;
   try {
-    return await fs.readDirectoryAsync(dirUri(dir));
-  } catch {
-    return [];
+    names = await listReleaseApks(bridge);
+  } catch (e) {
+    return { found: 0, selected: 0, deleted: [], errors: [`list: ${errorMessage(e)}`] };
   }
+  if (names == null) return { found: 0, selected: 0, deleted: [], errors: [], unsupported: true };
+  const stale = select(names);
+  const { deleted, errors } = stale.length > 0 ? await deleteReleaseApks(bridge, stale) : { deleted: [], errors: [] };
+  return { found: names.length, selected: stale.length, deleted, errors };
 }
 
-/** Remove stale legacy `shelly-update-*` dirs under `publicDownloadDir`. */
+/** Remove stale legacy public-Downloads `shelly-update-*` dirs. Never throws. */
 export async function cleanupLegacyUpdateDirs(
-  fs: CleanupFs,
-  publicDownloadDir: string,
+  bridge: CleanupBridge,
   installedVersionCode: number,
-): Promise<string[]> {
-  const removed: string[] = [];
-  const candidates = selectStaleLegacyUpdateDirs(await listDir(fs, publicDownloadDir), installedVersionCode);
-  for (const dirName of candidates) {
-    const legacyUri = joinUri(publicDownloadDir, dirName);
+): Promise<ApkCleanupResult> {
+  if (typeof bridge.listLegacyUpdateDirs !== 'function' || typeof bridge.deleteLegacyUpdateDir !== 'function') {
+    return { found: 0, selected: 0, deleted: [], errors: [], unsupported: true };
+  }
+  let dirs: { name: string; entries: { name: string; isDirectory: boolean }[] }[];
+  try {
+    dirs = (await bridge.listLegacyUpdateDirs()) ?? [];
+  } catch (e) {
+    return { found: 0, selected: 0, deleted: [], errors: [`list: ${errorMessage(e)}`] };
+  }
+  const byName = new Map(dirs.map((d) => [d.name, d.entries ?? []]));
+  const candidates = selectStaleLegacyUpdateDirs([...byName.keys()], installedVersionCode).filter((name) =>
+    legacyDirContentsRemovable(byName.get(name) ?? []),
+  );
+  const deleted: string[] = [];
+  const errors: string[] = [];
+  for (const name of candidates) {
     try {
-      const info = await fs.getInfoAsync(legacyUri);
-      if (!info.exists || !info.isDirectory) continue;
-      const childNames = await fs.readDirectoryAsync(legacyUri);
-      const children: { name: string; isDirectory: boolean }[] = [];
-      for (const name of childNames) {
-        const ci = await fs.getInfoAsync(`${legacyUri}/${name}`);
-        children.push({ name, isDirectory: !!ci.isDirectory });
-      }
-      if (!legacyDirContentsRemovable(children)) continue;
-      for (const child of children) {
-        await fs.deleteAsync(`${legacyUri}/${child.name}`, { idempotent: true });
-      }
-      // Remove the dir itself only once it is verifiably empty (never a
-      // recursive delete of the dir).
-      const remaining = await fs.readDirectoryAsync(legacyUri).catch(() => ['?']);
-      if (remaining.length === 0) {
-        await fs.deleteAsync(legacyUri, { idempotent: true });
-      }
-      removed.push(dirName);
-    } catch {
-      // best effort
+      if (await bridge.deleteLegacyUpdateDir(name)) deleted.push(name);
+      else errors.push(`${name}: not deleted`);
+    } catch (e) {
+      errors.push(`${name}: ${errorMessage(e)}`);
     }
   }
-  return removed;
+  return { found: dirs.length, selected: candidates.length, deleted, errors };
+}
+
+/** One-line log summary of a cleanup result. */
+export function describeCleanupResult(label: string, r: ApkCleanupResult): string {
+  if (r.unsupported) return `${label}: native cleanup methods unavailable (old native build)`;
+  const err = r.errors.length > 0 ? ` errors=${r.errors.length} [${r.errors.slice(0, 3).join('; ')}]` : '';
+  return `${label}: found=${r.found} selected=${r.selected} deleted=${r.deleted.length}${err}`;
 }

@@ -1,13 +1,14 @@
 import {
   cleanupLegacyUpdateDirs,
-  deleteApkFiles,
+  cleanupReleaseApks,
+  describeCleanupResult,
   isReleaseApkFileName,
   legacyDirContentsRemovable,
   releaseApkVersionCode,
   selectStaleApksBeforeDownload,
   selectStaleApksOnStartup,
   selectStaleLegacyUpdateDirs,
-  type CleanupFs,
+  type CleanupBridge,
 } from '@/lib/release-apk-cleanup';
 
 const DIR = '/storage/emulated/0/Android/data/dev.shelly.terminal/files/Download';
@@ -74,60 +75,93 @@ describe('legacy shelly-update dirs', () => {
   });
 });
 
-function fakeFs(tree: Record<string, 'file' | 'dir'>): CleanupFs & { deleted: string[] } {
-  const strip = (uri: string) => uri.replace(/^file:\/\//, '').replace(/\/+$/, '');
-  const deleted: string[] = [];
-  return {
-    deleted,
-    async readDirectoryAsync(uri) {
-      const d = strip(uri);
-      if (tree[d] !== 'dir') throw new Error('not a dir');
-      return Object.keys(tree)
-        .filter((p) => p.startsWith(`${d}/`) && !p.slice(d.length + 1).includes('/'))
-        .map((p) => p.slice(d.length + 1));
-    },
-    async getInfoAsync(uri) {
-      const kind = tree[strip(uri)];
-      return { exists: !!kind, isDirectory: kind === 'dir' };
-    },
-    async deleteAsync(uri) {
-      const p = strip(uri);
-      deleted.push(p);
-      delete tree[p];
-    },
+function fakeBridge(opts: {
+  apks?: string[];
+  legacy?: { name: string; entries: { name: string; isDirectory: boolean }[] }[];
+  failDelete?: string[];
+  throwList?: boolean;
+}) {
+  const deletedApks: string[] = [];
+  const deletedDirs: string[] = [];
+  const bridge: CleanupBridge = {
+    listReleaseApks: jest.fn(async () => {
+      if (opts.throwList) throw new Error('boom');
+      return [...(opts.apks ?? [])];
+    }),
+    deleteReleaseApk: jest.fn(async (name: string) => {
+      if (opts.failDelete?.includes(name)) throw new Error('EACCES');
+      deletedApks.push(name);
+      return true;
+    }),
+    listLegacyUpdateDirs: jest.fn(async () => opts.legacy ?? []),
+    deleteLegacyUpdateDir: jest.fn(async (name: string) => {
+      deletedDirs.push(name);
+      return true;
+    }),
   };
+  return { bridge, deletedApks, deletedDirs };
 }
 
-describe('deleteApkFiles', () => {
-  it('deletes only plain release-APK files and ignores unsafe names', async () => {
-    const fs = fakeFs({
-      [DIR]: 'dir',
-      [`${DIR}/${apk(2600)}`]: 'file',
-      [`${DIR}/Shelly-android-dir.apk`]: 'dir',
-      [`${DIR}/packs`]: 'dir',
-    });
-    const out = await deleteApkFiles(fs, DIR, [apk(2600), 'Shelly-android-dir.apk', 'packs', '../x.apk']);
-    expect(out).toEqual([apk(2600)]);
-    expect(fs.deleted).toEqual([`${DIR}/${apk(2600)}`]);
+describe('cleanupReleaseApks (native bridge)', () => {
+  it('lists, selects and deletes via the native methods, reporting counts', async () => {
+    const { bridge, deletedApks } = fakeBridge({ apks: [apk(2600), apk(2789), apk(2800)] });
+    const r = await cleanupReleaseApks(bridge, (names) => selectStaleApksOnStartup(names, 2789));
+    expect(deletedApks).toEqual([apk(2600), apk(2789)]);
+    expect(r).toEqual({ found: 3, selected: 2, deleted: [apk(2600), apk(2789)], errors: [] });
+    expect(describeCleanupResult('startup', r)).toBe('startup: found=3 selected=2 deleted=2');
+  });
+
+  it('never passes unsafe names to the native delete even if a selector returns them', async () => {
+    const { bridge } = fakeBridge({ apks: [apk(2600)] });
+    const r = await cleanupReleaseApks(bridge, () => [apk(2600), '../x.apk', 'packs', 'sub/Shelly-android-x.apk']);
+    expect(bridge.deleteReleaseApk).toHaveBeenCalledTimes(1);
+    expect(bridge.deleteReleaseApk).toHaveBeenCalledWith(apk(2600));
+    expect(r.deleted).toEqual([apk(2600)]);
+  });
+
+  it('records per-file errors without throwing and keeps going', async () => {
+    const { bridge, deletedApks } = fakeBridge({ apks: [apk(2600), apk(2650)], failDelete: [apk(2600)] });
+    const r = await cleanupReleaseApks(bridge, (names) => names);
+    expect(deletedApks).toEqual([apk(2650)]);
+    expect(r.errors).toEqual([`${apk(2600)}: EACCES`]);
+    expect(describeCleanupResult('x', r)).toContain('errors=1');
+  });
+
+  it('reports listing errors and missing native methods', async () => {
+    const { bridge } = fakeBridge({ throwList: true });
+    const r = await cleanupReleaseApks(bridge, (n) => n);
+    expect(r.errors).toEqual(['list: boom']);
+    const old = await cleanupReleaseApks({}, (n) => n);
+    expect(old.unsupported).toBe(true);
+    expect(describeCleanupResult('x', old)).toContain('unavailable');
+  });
+
+  it('does not call delete when nothing is selected', async () => {
+    const { bridge } = fakeBridge({ apks: [apk(2800)] });
+    const r = await cleanupReleaseApks(bridge, (names) => selectStaleApksOnStartup(names, 2789));
+    expect(bridge.deleteReleaseApk).not.toHaveBeenCalled();
+    expect(r).toEqual({ found: 1, selected: 0, deleted: [], errors: [] });
   });
 });
 
-describe('cleanupLegacyUpdateDirs', () => {
+describe('cleanupLegacyUpdateDirs (native bridge)', () => {
   it('removes old apk-only dirs and leaves everything else', async () => {
-    const pub = '/sdcard/Download';
-    const fs = fakeFs({
-      [pub]: 'dir',
-      [`${pub}/shelly-update-1500`]: 'dir',
-      [`${pub}/shelly-update-1500/${apk(1500)}`]: 'file',
-      [`${pub}/shelly-update-1600`]: 'dir',
-      [`${pub}/shelly-update-1600/keep.txt`]: 'file',
-      [`${pub}/shelly-update-2800`]: 'dir',
-      [`${pub}/shelly-update-2800/${apk(2800)}`]: 'file',
-      [`${pub}/ShellyModels`]: 'dir',
-      [`${pub}/user.apk`]: 'file',
+    const { bridge, deletedDirs } = fakeBridge({
+      legacy: [
+        { name: 'shelly-update-1500', entries: [{ name: apk(1500), isDirectory: false }] },
+        { name: 'shelly-update-1600', entries: [{ name: 'keep.txt', isDirectory: false }] },
+        { name: 'shelly-update-1700', entries: [{ name: 'nested.apk', isDirectory: true }] },
+        { name: 'shelly-update-2800', entries: [{ name: apk(2800), isDirectory: false }] },
+        { name: 'ShellyModels', entries: [] },
+      ],
     });
-    const removed = await cleanupLegacyUpdateDirs(fs, pub, 2700);
-    expect(removed).toEqual(['shelly-update-1500']);
-    expect(fs.deleted).toEqual([`${pub}/shelly-update-1500/${apk(1500)}`, `${pub}/shelly-update-1500`]);
+    const r = await cleanupLegacyUpdateDirs(bridge, 2700);
+    expect(deletedDirs).toEqual(['shelly-update-1500']);
+    expect(r).toEqual({ found: 5, selected: 1, deleted: ['shelly-update-1500'], errors: [] });
+  });
+
+  it('is a no-op on an old native build', async () => {
+    const r = await cleanupLegacyUpdateDirs({}, 2700);
+    expect(r.unsupported).toBe(true);
   });
 });

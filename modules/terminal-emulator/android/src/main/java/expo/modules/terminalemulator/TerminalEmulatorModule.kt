@@ -178,6 +178,52 @@ class TerminalEmulatorModule : Module() {
         return target
     }
 
+    // Must mirror lib/release-apk-cleanup.ts RELEASE_APK_NAME_RE / LEGACY_UPDATE_DIR_RE.
+    private val RELEASE_APK_NAME_RE = Regex("^Shelly-android-[A-Za-z0-9._-]+\\.apk$")
+    private val LEGACY_UPDATE_DIR_RE = Regex("^shelly-update-(?:[A-Za-z0-9._-]+-)?\\d+$")
+    private val LEGACY_APK_CHILD_RE = Regex("^[A-Za-z0-9._-]+\\.apk$", RegexOption.IGNORE_CASE)
+
+    private fun releaseApkRoot(context: Context): java.io.File? =
+        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.takeIf { it.isDirectory }
+
+    @Suppress("DEPRECATION")
+    private fun legacyUpdateRoot(): java.io.File? =
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.takeIf { it.isDirectory }
+
+    private fun isSymlink(file: java.io.File): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            java.nio.file.Files.isSymbolicLink(file.toPath())
+        } else {
+            file.canonicalFile.name != file.name
+        }
+
+    private fun isPlainFile(file: java.io.File): Boolean =
+        try { file.isFile && !isSymlink(file) } catch (e: Exception) { false }
+
+    /** A direct child of [root] named [name], or null if it is not exactly that (no traversal, no symlink). */
+    private fun directChild(root: java.io.File, name: String): java.io.File? {
+        if (name.isEmpty() || name.contains('/') || name.contains('\\') || name == "." || name == "..") return null
+        return try {
+            val canonicalRoot = root.canonicalFile
+            val child = java.io.File(root, name)
+            if (isSymlink(child)) return null
+            val canonical = child.canonicalFile
+            if (canonical.parentFile?.path != canonicalRoot.path || canonical.name != name) null else child
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun releaseApkChild(root: java.io.File, name: String): java.io.File? {
+        if (!RELEASE_APK_NAME_RE.matches(name)) return null
+        return directChild(root, name)?.takeIf { isPlainFile(it) }
+    }
+
+    private fun legacyUpdateChildDir(root: java.io.File, name: String): java.io.File? {
+        if (!LEGACY_UPDATE_DIR_RE.matches(name)) return null
+        return directChild(root, name)?.takeIf { it.isDirectory }
+    }
+
     /**
      * Sibling of validateDownloadPath for optional-pack archives (Fable5
      * roadmap item #6). Same app-private-external-files-dir rationale (no
@@ -725,7 +771,7 @@ class TerminalEmulatorModule : Module() {
                 } else {
                     // Stale entry — clean up and fall through to fresh fork.
                     Log.w("TerminalEmulator", "Session $sessionId in registry but dead — recreating")
-                    try { existing.destroy() } catch (_: Exception) {}
+                    try { existing.destroy() } catch (e: Exception) {}
                     sessions.remove(sessionId)
                 }
             }
@@ -1653,6 +1699,68 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // ── Stale updater APK cleanup (lib/release-apk-cleanup.ts) ─────────
+        // Done natively because expo-file-system/legacy deleteAsync() checks
+        // WRITE on `<file>/..`, which for a path outside filesDir/cacheDir
+        // falls back to File("<file>.apk/..").canWrite() -> access() fails
+        // with ENOTDIR, so every delete under getExternalFilesDir() was
+        // rejected ("isn't deletable") and the cleanup silently did nothing
+        // (build 2789). These only ever touch direct, regular-file (non
+        // symlink) children with fixed name patterns; JS decides WHICH.
+        AsyncFunction("listReleaseApks") {
+            val root = releaseApkRoot(requireReactContext()) ?: return@AsyncFunction emptyList<String>()
+            (root.listFiles() ?: emptyArray())
+                .filter { releaseApkChild(root, it.name) != null }
+                .map { it.name }
+                .sorted()
+        }
+
+        AsyncFunction("deleteReleaseApk") { name: String ->
+            val root = releaseApkRoot(requireReactContext()) ?: return@AsyncFunction false
+            val file = releaseApkChild(root, name) ?: return@AsyncFunction false
+            val ok = file.delete()
+            Log.i("TerminalEmulator", "deleteReleaseApk: $name ok=$ok")
+            ok
+        }
+
+        AsyncFunction("listLegacyUpdateDirs") {
+            val root = legacyUpdateRoot() ?: return@AsyncFunction emptyList<Map<String, Any>>()
+            (root.listFiles() ?: emptyArray())
+                .mapNotNull { dir -> legacyUpdateChildDir(root, dir.name) }
+                .sortedBy { it.name }
+                .map { dir ->
+                    mapOf(
+                        "name" to dir.name,
+                        "entries" to (dir.listFiles() ?: emptyArray()).map { child ->
+                            mapOf(
+                                "name" to child.name,
+                                // Anything that is not a plain regular file
+                                // (dir, symlink, special) reports as a dir so
+                                // the JS rule refuses the whole legacy dir.
+                                "isDirectory" to !isPlainFile(child),
+                            )
+                        },
+                    )
+                }
+        }
+
+        AsyncFunction("deleteLegacyUpdateDir") { name: String ->
+            val root = legacyUpdateRoot() ?: return@AsyncFunction false
+            val dir = legacyUpdateChildDir(root, name) ?: return@AsyncFunction false
+            val children = dir.listFiles() ?: return@AsyncFunction false
+            // Re-check natively: only plain `.apk` files, nothing else.
+            if (!children.all { isPlainFile(it) && LEGACY_APK_CHILD_RE.matches(it.name) }) {
+                return@AsyncFunction false
+            }
+            for (child in children) {
+                if (!child.delete()) return@AsyncFunction false
+            }
+            // Non-recursive: File.delete() on a dir only succeeds when empty.
+            val ok = dir.delete()
+            Log.i("TerminalEmulator", "deleteLegacyUpdateDir: $name ok=$ok")
+            ok
+        }
+
         // ── On-demand optional-tool packs (Fable5 roadmap item #6) ──────────
         // Only reached when a user explicitly runs `shelly install <pack>`;
         // the JS side refuses unless this build carries a pinned sha256 for
@@ -2193,7 +2301,7 @@ class TerminalEmulatorModule : Module() {
                     val seContext = seProc.inputStream.bufferedReader().readText().trim()
                     seProc.waitFor()
                     result.append("selinux_context=$seContext\n")
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     result.append("selinux_context=unknown\n")
                 }
 
@@ -2275,7 +2383,7 @@ class TerminalEmulatorModule : Module() {
                     val fileOut = fileProc.inputStream.bufferedReader().readText().trim()
                     fileProc.waitFor()
                     result.append("file_type=$fileOut\n")
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     result.append("file_type=unknown\n")
                 }
 
