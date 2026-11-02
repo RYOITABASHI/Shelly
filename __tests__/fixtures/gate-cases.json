@@ -195,6 +195,33 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "agent roles.json tee write -> deny (policy-write)",
+    "command": "tee ~/.shelly/agents/roles.json < /tmp/r.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agent roles.json cp overwrite -> deny (policy-write)",
+    "command": "cp /tmp/r.json ~/.shelly/agents/roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agent roles.json redirect write -> deny (policy-write)",
+    "command": "echo '{}' > ~/.shelly/agents/roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
     "name": "quoted heredoc body with backticks / $( is literal data L2 -> allow",
     "command": "bash -lc 'cat > game.js <<'\"'\"'EOF'\"'\"'\nconst m = `score`;\nconst q=$(1);\nEOF'",
     "policy": {

@@ -1,5 +1,7 @@
 // Shared TypeScript types for Shelly terminal app
 
+import type { AgentStepRole, PendingRoleChange } from '@/lib/agent-role-types';
+
 // ─── Connection ───────────────────────────────────────────────────────────────
 
 /** Legacy field kept on TabSession for backward compat */
@@ -1017,6 +1019,11 @@ export interface AgentRouteDecision {
 export interface Agent {
   id: string;
   name: string;
+  /** Agent roles (2026-11-02): the role a single-unit routed agent was built
+   *  from. DISPLAY ONLY — the role's instructions are already baked into
+   *  `prompt` (which the run-without-approval definition hash covers), so
+   *  nothing reads this to decide what a run does. Absent = no role. */
+  roleRef?: { id: string; name: string };
   description: string;
   prompt: string;
   /** Cron expression; null = manual only. May instead hold a resolved one-shot
@@ -1364,6 +1371,13 @@ export interface AgentOrchestrationStep {
    *  with today's serial carry-forward (quality-only divergence, no safety
    *  impact) — see canRunOrchestrationChain's comment. */
   parallelGroup?: string;
+  /** Agent roles (2026-11-02, Inc A): snapshot of the user-defined role this
+   *  step was routed to (lib/agent-role-store.ts toStepRole). Taken at
+   *  creation; no runtime ever reads ~/.shelly/agents/roles.json, so a later
+   *  role edit never changes an existing agent. Display (MONITOR channel,
+   *  hand-off labels) and, from WP4, the step prompt's `# Your role` block.
+   *  Absent = previous behavior. */
+  role?: AgentStepRole;
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
@@ -1649,6 +1663,10 @@ export type ChatMessage = {
     agentName: string;
     attempts: number;
   };
+  /** Agent roles (2026-11-02): a role create / edit / delete / level /
+   *  reset awaiting the user's typed confirm (lib/agent-role-chat.ts). Plain
+   *  chat text only; nothing is written until an exact confirm phrase. */
+  pendingRoleChange?: PendingRoleChange;
   /** P1 scheduling-reliability audit (2026-07-15): renders an
    *  AgentScheduleReadinessCard instead of plain text — a one-time,
    *  dismissible checklist (exact-alarm grant / battery-optimization

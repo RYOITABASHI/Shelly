@@ -33,6 +33,7 @@
  */
 
 import { redactSecretsText } from './redact-secrets';
+import { classifyTaskKind, type TaskKind } from './agent-role-types';
 
 export type HandoffTranslate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -44,6 +45,9 @@ export interface HandoffStepInput {
    *  attended path, AgentRunStep.parallelGroup for the unattended replay) —
    *  never the raw declared marker, which may have been demoted to serial. */
   parallelGroup?: string;
+  /** Role snapshot the step carries (AgentOrchestrationStep.role); its name
+   *  wins over the keyword label. Absent = keyword labels as before. */
+  role?: { name: string };
 }
 
 /** Minimal per-step result shape — satisfied by AgentRunStep. */
@@ -68,42 +72,50 @@ type RoleKey =
   | 'translator'
   | 'publisher';
 
-// Ordered: the first matching rule wins, so the more specific verbs come
-// first (e.g. "summarize the research" is a summarizer, not a researcher).
-const ROLE_RULES: Array<{ role: RoleKey; pattern: RegExp }> = [
-  { role: 'translator', pattern: /translat|翻訳|訳し/i },
-  { role: 'summarizer', pattern: /summari[sz]|digest|aggregat|condense|要約|まとめ|集約|整理/i },
-  { role: 'reviewer', pattern: /review|verif|check|proofread|fact[- ]?check|確認|検証|レビュー|校正|チェック/i },
-  // An instruction that LEADS with a delivery verb ("post the draft to X")
-  // publishes; otherwise "write a post" / 「投稿文を書いて」 is a writing job,
-  // so the writer rule outranks the general delivery-noun rule below it.
-  { role: 'publisher', pattern: /^\s*(?:post|publish|tweet|send|notify)\b/i },
-  { role: 'writer', pattern: /writ|draft|compose|article|執筆|書い|書く|下書き|作文|記事/i },
-  { role: 'publisher', pattern: /\bpost\b|publish|tweet|send|notify|投稿|送信|通知|配信|ポスト/i },
-  { role: 'researcher', pattern: /research|collect|gather|search|find|fetch|look up|investigat|調査|収集|集め|検索|探|調べ|リサーチ/i },
-];
+// The keyword table is shared with role routing (lib/agent-role-types.ts
+// TASK_KIND_RULES). The narrator skips the routing-only kinds so its labels
+// stay exactly what they were before roles existed.
+const NARRATOR_EXCLUDED_KINDS: readonly TaskKind[] = ['implement', 'judge'];
+const KIND_TO_ROLE_KEY: Partial<Record<TaskKind, RoleKey>> = {
+  translate: 'translator',
+  summarize: 'summarizer',
+  review: 'reviewer',
+  publish: 'publisher',
+  write: 'writer',
+  research: 'researcher',
+};
 
 /** Keyword role of one step instruction, or null when nothing matches. */
 export function classifyStepRole(instruction: string): RoleKey | null {
-  for (const rule of ROLE_RULES) {
-    if (rule.pattern.test(instruction)) return rule.role;
-  }
-  return null;
+  const kind = classifyTaskKind(instruction, { exclude: NARRATOR_EXCLUDED_KINDS });
+  return kind ? KIND_TO_ROLE_KEY[kind] ?? null : null;
+}
+
+/** The user-defined role name a step carries (AgentOrchestrationStep.role), if any. */
+function stepRoleName(step: HandoffStepInput): string | null {
+  const name = step.role && typeof step.role.name === 'string' ? step.role.name.replace(/\s+/g, ' ').trim() : '';
+  return name ? redactSecretsText(name) : null;
 }
 
 /**
- * Display label per step. A recognised verb maps to a role (調査役/執筆役/…);
- * otherwise "Step N". When two steps share a role the label gets its 1-based
- * step number appended so "調査役 → 調査役" never appears ambiguous.
+ * Display label per step. A step that carries a user-defined role
+ * (AgentOrchestrationStep.role) is labelled with that role's name; otherwise
+ * a recognised verb maps to a built-in role (調査役/執筆役/…), else "Step N".
+ * When two steps share a label the label gets its 1-based step number
+ * appended so "調査役 → 調査役" never appears ambiguous.
  */
 export function deriveStepRoleLabels(steps: HandoffStepInput[], tr: HandoffTranslate): string[] {
-  const roles = steps.map((s) => classifyStepRole(s.instruction));
-  const counts = new Map<RoleKey, number>();
-  for (const r of roles) if (r) counts.set(r, (counts.get(r) ?? 0) + 1);
-  return roles.map((role, i) => {
-    if (!role) return tr('handoff.role.step', { n: i + 1 });
-    const base = tr(`handoff.role.${role}`);
-    return (counts.get(role) ?? 0) > 1 ? `${base}${i + 1}` : base;
+  const named = steps.map(stepRoleName);
+  const roles = steps.map((s, i) => (named[i] ? null : classifyStepRole(s.instruction)));
+  const counts = new Map<string, number>();
+  const bases = steps.map((_, i) => {
+    const base = named[i] ?? (roles[i] ? tr(`handoff.role.${roles[i]}`) : null);
+    if (base !== null) counts.set(base, (counts.get(base) ?? 0) + 1);
+    return base;
+  });
+  return bases.map((base, i) => {
+    if (base === null) return tr('handoff.role.step', { n: i + 1 });
+    return (counts.get(base) ?? 0) > 1 ? `${base}${i + 1}` : base;
   });
 }
 
@@ -299,7 +311,11 @@ export function buildHandoffDigest(
     // Re-index densely: the narrator addresses steps by position.
     .map((r, pos) => ({ ...r, index: pos }));
   const narrator = new HandoffNarrator(
-    ordered.map((r) => ({ instruction: r.instruction, parallelGroup: r.parallelGroup })),
+    ordered.map((r) => ({
+      instruction: r.instruction,
+      parallelGroup: r.parallelGroup,
+      ...(r.role && typeof r.role.name === 'string' ? { role: { name: r.role.name } } : {}),
+    })),
     tr,
   );
   const lines: string[] = [];

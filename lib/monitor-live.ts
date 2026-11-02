@@ -6,7 +6,8 @@
  * both through one code path.
  *
  * Rules (DEFERRED.md「マルチエージェント MONITOR ペイン」2026-10-30 UX review):
- *  - one camera per branch (step), channels CH-01.. in step order;
+ *  - one camera per branch (step), channels CH-01.. in step order — or the
+ *    step's role name when it carries one (liveChannelLabel);
  *  - the provider chip is AUTO until the run's `tool` event says what ran;
  *  - money only when the provider reported it (usage.usd) — an API step with
  *    tokens but no usd shows tokens only, never an estimate;
@@ -66,6 +67,10 @@ export interface LiveAgentInfo {
    *  "AUTO · Auto". Only CLI tools are used: a CLI pick names one concrete
    *  worker, other picks may still be resolved differently at run time. */
   tools?: (ToolChoice | undefined)[];
+  /** Role name per step in plan order (AgentOrchestrationStep.role.name).
+   *  A step with a role shows the role name as its channel (liveChannelLabel);
+   *  absent / undefined entries keep CH-0n. */
+  roles?: (string | undefined)[];
 }
 
 const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
@@ -117,6 +122,41 @@ export function liveChannel(stepIndex: number): string {
   return `CH-${n < 10 ? `0${n}` : n}`;
 }
 
+/** Max characters of a role-name channel label. */
+export const ROLE_CHANNEL_MAX_CHARS = 10;
+
+/**
+ * Channel label of a step: the user-defined role name it carries
+ * (AgentOrchestrationStep.role.name — whitespace collapsed, at most
+ * ROLE_CHANNEL_MAX_CHARS characters, latin letters uppercased), else CH-0n.
+ * The MONITOR widget keeps CH-0n (it does not see roles).
+ */
+export function liveChannelLabel(stepIndex: number, roleName?: string | null): string {
+  const flat = typeof roleName === 'string' ? roleName.replace(/\s+/g, ' ').trim() : '';
+  if (!flat) return liveChannel(stepIndex);
+  const cps = Array.from(flat).slice(0, ROLE_CHANNEL_MAX_CHARS).join('').trim();
+  return cps ? cps.replace(/[a-z]/g, (c) => c.toUpperCase()) : liveChannel(stepIndex);
+}
+
+/** Channel label per step index; a role name used by several steps gets
+ *  `·<step number>` so every camera stays distinguishable. */
+function channelLabels(stepIndices: readonly number[], roles: LiveAgentInfo['roles']): Map<number, string> {
+  const base = new Map(stepIndices.map((i) => [i, liveChannelLabel(i, roles?.[i])]));
+  const counts = new Map<string, number>();
+  for (const [i, label] of base) if (label !== liveChannel(i)) counts.set(label, (counts.get(label) ?? 0) + 1);
+  const out = new Map<number, string>();
+  for (const [i, label] of base) {
+    if ((counts.get(label) ?? 0) < 2) {
+      out.set(i, label);
+      continue;
+    }
+    const suffix = `·${i + 1}`;
+    const head = Array.from(label).slice(0, Math.max(1, ROLE_CHANNEL_MAX_CHARS - suffix.length)).join('');
+    out.set(i, `${head}${suffix}`);
+  }
+  return out;
+}
+
 export function liveDefId(stepIndex: number): string {
   return `s${stepIndex}`;
 }
@@ -141,13 +181,13 @@ export function plannedCliProvider(tool: ToolChoice | undefined | null): Monitor
   return typeof cli === 'string' && isAgentCliId(cli) ? { kind: 'CLI', name: `cli:${cli}` } : null;
 }
 
-function defFor(run: MonitorRun, b: MonitorBranch, info: LiveAgentInfo): MonitorAgentDef {
+function defFor(run: MonitorRun, b: MonitorBranch, info: LiveAgentInfo, channel: string): MonitorAgentDef {
   // The run's own report wins; until then a step planned on a CLI shows it.
   const p = b.provider ?? plannedCliProvider(info.tools?.[b.stepIndex]) ?? undefined;
   const kind: MonitorProviderKind = p ? p.kind : 'AUTO';
   return {
     id: liveDefId(b.stepIndex),
-    channel: liveChannel(b.stepIndex),
+    channel,
     name: stepName(run, b, info),
     kind,
     provider: p ? PROVIDER_ALIASES[p.name] ?? 'auto' : 'auto',
@@ -300,7 +340,8 @@ function snapshotFor(
   if (outcome === 'failed') {
     const failed = run.branches.find((b) => b.state === 'FAILED');
     if (failed) {
-      info.failedChannel = liveChannel(failed.stepIndex);
+      const failedId = liveDefId(failed.stepIndex);
+      info.failedChannel = defs.find((d) => d.id === failedId)?.channel ?? liveChannel(failed.stepIndex);
       if (failed.tail) info.failureReason = failed.tail;
     }
   }
@@ -377,7 +418,8 @@ export function withPlannedSteps(run: MonitorRun, groups?: readonly (string | un
 
 export function createLiveSource(source: MonitorRun, info: LiveAgentInfo = {}): LiveSource {
   const run = withPlannedSteps(source, info.groups);
-  const defs = run.branches.map((b) => defFor(run, b, info));
+  const channels = channelLabels(run.branches.map((b) => b.stepIndex), info.roles);
+  const defs = run.branches.map((b) => defFor(run, b, info, channels.get(b.stepIndex) ?? liveChannel(b.stepIndex)));
   const team = liveTeam(run, defs, info);
   return {
     isDemo: false,
