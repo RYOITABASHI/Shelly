@@ -503,7 +503,7 @@ describe('link probe for existing symlinks (review 2026-11-02)', () => {
     const p = probeOf('cp -r ~/demo/assets $TMPDIR/assets && mv ~/demo/old ~/demo/new');
     expect(p.ok).toBe(true);
     if (p.ok) {
-      expect(p.command).toContain(`__o=$(/system/bin/find '${WS}/assets' -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi`);
+      expect(p.command).toContain(`__o=$(LD_LIBRARY_PATH= /system/bin/find '${WS}/assets' -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi`);
       expect(p.command).toContain(`/system/bin/find '${WS}/old' -type l`);
       expect(p.command).toContain(`if [ -e '${WS}/old' ] || [ -L '${WS}/old' ]; then`);
     }

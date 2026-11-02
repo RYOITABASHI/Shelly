@@ -1664,7 +1664,9 @@ export function autoApprovalLinkProbe(request: EscalationRequestLike, opts: Esca
 }
 
 /** Absolute path: execCommand's bundled bash has no /system/bin on PATH. A
- *  missing / failing find prints `LINK ?` (fail closed). */
+ *  missing / failing find prints `LINK ?` (fail closed). LD_LIBRARY_PATH is
+ *  cleared for it so the bundled libs execCommand exports can't shadow the
+ *  system ones toybox links against. */
 const PROBE_FIND = '/system/bin/find';
 
 function buildLinkProbe(collect: LinkProbeCollect): AllLevelLinkProbe {
@@ -1698,7 +1700,7 @@ function buildLinkProbe(collect: LinkProbeCollect): AllLevelLinkProbe {
     if (t.endsWith('\u0000glob') || /[*?[]/.test(t)) return { ok: false, reason: 'link-probe-glob' };
     // find's own status decides: one that cannot run, is denied or fails
     // part-way prints `LINK ?`; a missing source is skipped (nothing to copy).
-    lines.push(`if [ -e ${q(t)} ] || [ -L ${q(t)} ]; then __o=$(${PROBE_FIND} ${q(t)} -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi; fi`);
+    lines.push(`if [ -e ${q(t)} ] || [ -L ${q(t)} ]; then __o=$(LD_LIBRARY_PATH= ${PROBE_FIND} ${q(t)} -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi; fi`);
   }
   lines.push(`echo ${LINK_PROBE_DONE}`);
   return { ok: true, command: lines.join('\n') };
