@@ -6,6 +6,7 @@ import "@/global.css";
 import "@/lib/command-notifier";
 import React, { useCallback, useEffect, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
+import { registerAgentKeepAliveTask } from '@/lib/agent-keepalive';
 import { Stack, SplashScreen, type ErrorBoundaryProps } from "expo-router";
 import { applyThemeFromSettings, startBootThemeGate } from '@/lib/boot-theme-gate';
 import { StatusBar } from "expo-status-bar";
@@ -168,6 +169,9 @@ const ebStyles = StyleSheet.create({
 // User-controlled hide means expo-router's own auto-hide is suppressed;
 // RootLayout hides it on gate ready (or the gate's safety timeout).
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
+// Headless task that keeps RN timers running while an attended agent run is
+// backgrounded (lib/agent-keepalive.ts). Must be registered at module load.
+registerAgentKeepAliveTask();
 
 export const unstable_settings = {
   initialRouteName: "index",

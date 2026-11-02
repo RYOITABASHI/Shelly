@@ -1052,6 +1052,26 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // Keeps RN timers running while an attended run is in flight with the
+        // app backgrounded: RN pauses JS timers on host pause unless a headless
+        // JS task is active (JavaTimerManager). The escalation drain that
+        // answers "run without approval" and posts approval notifications is
+        // a 500ms setInterval, so without this a backgrounded attended run's
+        // asks went unanswered until the driver's turn timeout (2026-11-03,
+        // build 2812). The task itself (lib/agent-keepalive.ts) resolves as
+        // soon as no user run is registered.
+        AsyncFunction("startAgentKeepAlive") { timeoutMs: Double ->
+            val context = appContext.reactContext as? com.facebook.react.bridge.ReactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val config = com.facebook.react.jstasks.HeadlessJsTaskConfig(
+                "ShellyAgentKeepAlive",
+                com.facebook.react.bridge.Arguments.createMap(),
+                timeoutMs.toLong().coerceIn(60_000L, 3 * 60 * 60_000L),
+                true
+            )
+            com.facebook.react.jstasks.HeadlessJsTaskContext.getInstance(context).startTask(config)
+        }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+
         AsyncFunction("isIgnoringBatteryOptimizations") {
             val context = appContext.reactContext ?: return@AsyncFunction false
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager

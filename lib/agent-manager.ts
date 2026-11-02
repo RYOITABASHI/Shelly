@@ -27,6 +27,7 @@ import {
 } from './agent-provider-overrides';
 import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
+import { ensureAgentKeepAlive } from './agent-keepalive';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
@@ -2273,6 +2274,7 @@ async function runLadderAttempts(
     // running on a human's behalf — the RN approval choke point trusts this,
     // never the executor-written request file's origin.
     markUserRunStarted(agentId);
+    ensureAgentKeepAlive();
     if (materializeOpts.onAttemptTool) {
       try {
         materializeOpts.onAttemptTool(attemptAgent.tool);
@@ -2750,6 +2752,7 @@ async function runAgentViaPlanExecutor(
   let finalLog: AgentRunLog | undefined;
   let ourRunId: string | undefined;
   markUserRunStarted(agentId);
+  ensureAgentKeepAlive();
   try {
     await TerminalEmulator.runAgent(agentId);
     const waited = await waitForAttendedExecutorRun(runCommand, agentId, {

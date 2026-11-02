@@ -54,6 +54,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   stopSessionService(): Promise<void>;
   updateSessionNotification(info: string): Promise<void>;
   runAgent(agentId: string): Promise<void>;
+  /** Starts the "ShellyAgentKeepAlive" headless JS task (lib/agent-keepalive.ts)
+   *  so RN timers keep running while an attended run is backgrounded. */
+  startAgentKeepAlive?(timeoutMs: number): Promise<number>;
   isIgnoringBatteryOptimizations(): Promise<boolean>;
   requestBatteryOptimizationExemption(): Promise<void>;
   /** P1-B: Android 12+ SCHEDULE_EXACT_ALARM special-app-access check

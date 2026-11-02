@@ -40,6 +40,15 @@ export function registeredRunOrigin(agentId: string | null | undefined, now: num
   return 'user';
 }
 
+/** True while any agent is in a (non-expired) user run. */
+export function hasActiveUserRun(now: number = Date.now()): boolean {
+  for (const [agentId, startedAt] of userRuns) {
+    if (now - startedAt > MAX_USER_RUN_MS) userRuns.delete(agentId);
+    else return true;
+  }
+  return false;
+}
+
 /** Test hook. */
 export function __resetRunOriginRegistryForTests(): void {
   userRuns.clear();
