@@ -123,9 +123,11 @@ import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import {
   decideActionAutoApproval,
+  autoApprovalLinkProbe,
   auditCommandText,
   DEFAULT_AGENT_PROJECT_DIR,
   escalationAutoApprovable,
+  linkProbeIsClean,
   getRunWithoutApprovalSetting,
   isRunWithoutApprovalEnabled,
   postRunWithoutApprovalAuditLine,
@@ -2348,16 +2350,38 @@ export default function RootLayout() {
         // RN's own registry for that agent.
         const mintedSetting = await getRunWithoutApprovalSetting(agentFor(minted.agentId));
         const mintedAttended = registeredRunOrigin(minted.agentId) === 'user';
-        const verdict = escalationAutoApprovable(minted, {
+        const mintedOpts = {
           enabled: mintedSetting !== 'off',
           policyBlocksAutoAccept,
           ...gateOpts,
-          level: mintedSetting === 'all' && setting === 'all' ? 'all' : 'standard',
+          level: mintedSetting === 'all' && setting === 'all' ? ('all' as const) : ('standard' as const),
           attended: mintedAttended && userStarted,
-        });
+        };
+        const verdict = escalationAutoApprovable(minted, mintedOpts);
         if (verdict.ok === false) {
           logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} level=${mintedSetting} reason=${verdict.reason}`);
           return false;
+        }
+        // Both levels' checks are lexical, so every path a WRITING command
+        // names is probed on disk for a symlink below its allowed root
+        // (lib/agent-run-without-approval.ts autoApprovalLinkProbe; null for
+        // a pure read). A link, or a probe that cannot run to the end, hands
+        // the ask to the human.
+        const probe = verdict.kind === 'read' ? null : autoApprovalLinkProbe(minted, mintedOpts);
+        if (verdict.kind !== 'read') {
+          let probeRefusal: string | null = null;
+          if (!probe) {
+            probeRefusal = 'link-probe-missing';
+          } else if (probe.ok === false) {
+            probeRefusal = probe.reason;
+          } else {
+            const probeResult = await execCommand(probe.command, 10_000).catch(() => null);
+            if (!linkProbeIsClean(probeResult)) probeRefusal = 'link-in-path';
+          }
+          if (probeRefusal) {
+            logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} level=${mintedSetting} reason=${probeRefusal}`);
+            return false;
+          }
         }
         await TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId, minted.reqId, requestSha256, actionNonce);
         postRunWithoutApprovalAuditLine(

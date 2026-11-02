@@ -290,6 +290,17 @@ function readPrompt(args) {
   throw new Error('missing --prompt or --prompt-file');
 }
 
+// 2026-11-02 (build 2790): workers verified their output with `node -e
+// '…new Function(…)'`, which runs code and therefore always asks a human —
+// even under "承認なしで実行（すべて）". `node --check <file>` on a file in the
+// workspace or $TMPDIR is a read-only syntax check that level answers. The
+// hint only steers the worker; the gate decides exactly as before.
+const WORKER_PROMPT_HINT = 'To check syntax, run `node --check <file>` (for an inline <script> in HTML, first copy the script into a .js file in the workspace or $TMPDIR); do not use `node -e`, `python -c`, or git for checks. Keep scratch files in the workspace or $TMPDIR.';
+
+function workerPrompt(prompt) {
+  return `${String(prompt)}\n\n${WORKER_PROMPT_HINT}`;
+}
+
 function ensureConfig(args) {
   if (args.help) return args;
   if (!args.cwd) throw new Error('missing --cwd');
@@ -508,8 +519,23 @@ function readAndroidTimezone() {
   }
 }
 
-function codexChildEnv(input) {
+// 2026-11-02 review: variables that make an otherwise read-only command run
+// code: NODE_OPTIONS (`--require` for `node --check`), BASH_ENV (sourced by a
+// non-interactive bash, incl. `bash -n`), ENV (sh), PROMPT_COMMAND, and
+// CDPATH (changes where `cd rel` lands — the "all" level follows cwd
+// lexically). The "all" level's syntax-check / cd allowances depend on the
+// worker (and the gate) never inheriting them. NODE_PATH is kept: it only
+// changes module lookup for `require`, which `node --check` never runs.
+const WORKER_ENV_DROP = ['NODE_OPTIONS', 'BASH_ENV', 'ENV', 'CDPATH', 'PROMPT_COMMAND'];
+
+function sanitizeWorkerEnv(input) {
   const env = { ...input };
+  for (const key of WORKER_ENV_DROP) delete env[key];
+  return env;
+}
+
+function codexChildEnv(input) {
+  const env = sanitizeWorkerEnv(input);
   delete env.SHELLY_AGENT_ESCALATION_DIR;
   delete env.SHELLY_AGENT_ESCALATION_REPLY_DIR;
   delete env.SHELLY_AGENT_RUN_ID;
@@ -567,10 +593,10 @@ function gateSpawnSpec(config) {
   const android = androidLauncherContext();
   if (android) {
     const nodePath = resolveAndroidNode(config, android.libDir);
-    const env = {
+    const env = sanitizeWorkerEnv({
       ...androidBaseEnv(android.libDir),
       LD_LIBRARY_PATH: android.libDir,
-    };
+    });
     delete env.LD_PRELOAD;
     const args = [nodePath, config.gateScript];
     return {
@@ -588,7 +614,7 @@ function gateSpawnSpec(config) {
     mode: 'host-path',
     command: config.nodeBin,
     args,
-    env: process.env,
+    env: sanitizeWorkerEnv(process.env),
     display: [config.nodeBin, ...args],
     nodePath: config.nodeBin,
     libDir: null,
@@ -1902,7 +1928,7 @@ async function runDriver(config) {
       approvalPolicy: config.approvalPolicy,
       approvalsReviewer: 'user',
       sandboxPolicy: { type: 'dangerFullAccess' },
-      input: [{ type: 'text', text: config.prompt, text_elements: [] }],
+      input: [{ type: 'text', text: workerPrompt(config.prompt), text_elements: [] }],
     });
   };
 
@@ -3177,7 +3203,7 @@ async function runClaudeDriver(config) {
   send({
     type: 'user',
     session_id: '',
-    message: { role: 'user', content: [{ type: 'text', text: config.prompt }] },
+    message: { role: 'user', content: [{ type: 'text', text: workerPrompt(config.prompt) }] },
     parent_tool_use_id: null,
   });
 }
@@ -3207,6 +3233,14 @@ if (require.main === module) {
 
 // Exported for unit tests only (no behavior change to the CLI path).
 module.exports = {
+  WORKER_PROMPT_HINT,
+  workerPrompt,
+  WORKER_ENV_DROP,
+  sanitizeWorkerEnv,
+  codexChildEnv,
+  codexAppServerSpawnSpec,
+  claudeRunnerSpawnSpec,
+  gateSpawnSpec,
   isUnattendedPolicy,
   preapprovalGrantSignatureMessage,
   verifyPreapprovalGrantSignature,

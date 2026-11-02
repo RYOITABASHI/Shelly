@@ -282,7 +282,6 @@ describe('standard vs all — per reason', () => {
       "bash -lc 'rm -rf build'",                       // signal:destructive (HIGH)
       "bash -lc 'cp a.html ~/notes/a.html'",           // home-path / write-outside-root (inside home)
       "bash -lc 'rm -f ~/notes/*.tmp'",                // glob
-      "bash -lc 'cp a.html ../backup/a.html'",         // parent-path (stays in home)
       "bash -lc 'cd ~/notes && touch x'",              // dir-change-write
       "bash -lc 'chmod 644 ~/notes/a.md'",             // tool:chmod (a file tool)
       "bash -lc 'cat > notes.md <<EOF\nhello </b> http://x.test/a\nEOF'", // indirect (heredoc into the workspace)
@@ -294,6 +293,10 @@ describe('standard vs all — per reason', () => {
       if (std.ok === false) expect([command, isSoftLike(std.reason)]).toEqual([command, true]);
       expect([command, allow(command)]).toEqual([command, { ok: true, kind: 'all' }]);
     }
+  });
+
+  it('parent-path stays refused under all (review 2026-11-02: `..` is followed physically)', () => {
+    expect(allow("bash -lc 'cp a.html ../backup/a.html'")).toEqual({ ok: false, reason: 'parent-path' });
   });
 
   it('heredoc: unquoted body with $ / a target outside the workspace / not cat-tee is checked', () => {
@@ -473,9 +476,12 @@ describe('unattended / proactive runs never get the all level', () => {
     expect(fn).toMatch(/attended: userStarted,/);
     expect(fn).toMatch(/const mintedAttended = registeredRunOrigin\(minted\.agentId\) === 'user';/);
     expect(fn).toMatch(/attended: mintedAttended && userStarted,/);
-    expect(fn).toMatch(/level: mintedSetting === 'all' && setting === 'all' \? 'all' : 'standard',/);
+    expect(fn).toMatch(/level: mintedSetting === 'all' && setting === 'all' \? \('all' as const\) : \('standard' as const\),/);
     expect(fn).toMatch(/getRunWithoutApprovalSetting\(agentFor\(minted\.agentId\)\)/);
-    expect(fn).toMatch(/escalationAutoApprovable\(minted, \{/);
+    // One options object for the verdict AND the link probe (2026-11-02).
+    expect(fn).toMatch(/const mintedOpts = \{/);
+    expect(fn).toMatch(/escalationAutoApprovable\(minted, mintedOpts\)/);
+    expect(fn).toMatch(/autoApprovalLinkProbe\(minted, mintedOpts\)/);
     expect(fn).toMatch(/resolveAgentEscalationAutoApproval\(minted\.runId, minted\.reqId, requestSha256, actionNonce\)/);
     expect(fn).toMatch(/t\(runWithoutApprovalAuditKey\(mintedSetting\)/);
     expect(fn).toMatch(/level=\$\{mintedSetting\} reason=\$\{verdict\.reason\}/);
