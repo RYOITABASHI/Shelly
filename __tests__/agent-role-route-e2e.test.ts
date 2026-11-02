@@ -139,9 +139,12 @@ describe('Inc B: compete + a judge role → executor cli=2, judge step with anon
     const { plan, route } = install(draft);
     const list = (plan.steps as { list: Array<{ parallelGroup?: string; role?: { name: string }; handoff?: unknown; instruction: string }> }).list;
     expect(list.map((s) => s.role?.name)).toEqual(['Implementer', 'Builder', 'Judge']);
-    expect(list[2].handoff).toEqual({ kind: 'judge', of: [0, 1], round: 1 });
+    // Judge evidence (2026-11-02): the judge's hand-off names the branch folders.
+    expect(list[2].handoff).toEqual({ kind: 'judge', of: [0, 1], round: 1, candidateDirs: ['a', 'b'] });
     expect(list[2].instruction).toContain('"WINNER: A", "WINNER: B" or "WINNER: TIE"');
     expect(route).toMatchObject({ route: 'executor', cliSteps: 2, groupCount: 1 });
+    // No stored workspace root on this fixture agent → no candidateRoot.
+    expect((plan.steps as { candidateRoot?: string }).candidateRoot).toBeUndefined();
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toMatch(/^2\. \[Judge · Local LLM\] Compare the candidates above and pick the better one\. The candidates' files: A = ~\/demo\/a, B = ~\/demo\/b\. \(sees the candidates as A \/ B, without role or engine names\)$/m);
     expect(text).not.toContain('Output contract');
@@ -149,6 +152,12 @@ describe('Inc B: compete + a judge role → executor cli=2, judge step with anon
     expect(list[2].instruction).toContain("The candidates' files: A = ~/demo/a, B = ~/demo/b.");
     expect(list[2].instruction.indexOf('The candidates')).toBeLessThan(list[2].instruction.indexOf('Output contract'));
     expect(list[2].instruction).not.toMatch(/Implementer|Builder|Codex|Claude/);
+  });
+
+  it('with the stored (resolved) workspace root, the PlanSpec carries it as steps.candidateRoot', () => {
+    const { agent } = install(draft);
+    const plan = buildAgentPlanSpec({ ...agent, workspaceRoot: '/home/shelly-test/demo' }, storedPlanSpecOpts(agent, ENV));
+    expect((plan.steps as { candidateRoot?: string }).candidateRoot).toBe('/home/shelly-test/demo');
   });
 });
 

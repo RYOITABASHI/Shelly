@@ -78,6 +78,7 @@ import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route
 import { AttendedProgressWriter } from './agent-progress-writer';
 import { cliBranchOverlap, parseProgressLine } from './agent-progress';
 import { HandoffNarrator } from './agent-handoff';
+import { collectJudgeEvidenceViaShell } from './agent-judge-evidence';
 import {
   applyUnattendedSkillImprovement,
   clearSkillImprovementProposal,
@@ -465,6 +466,27 @@ function sanitizeWorkspaceRoot(root: string | undefined): string | undefined {
   if (verdict.ok) return root;
   logWarn('AgentManager', `Rejected unsafe workspaceRoot "${root}": ${verdict.reason}`);
   return undefined;
+}
+
+/**
+ * Judge evidence (2026-11-02, build 2806): the candidate-files block for a
+ * judge step whose hand-off names the candidates' branch folders, '' for any
+ * other step (or when the workspace root is unusable). Read through the shell
+ * with fixed single-quoted paths, each folder / file re-checked there
+ * (lib/agent-judge-evidence.ts). Never throws.
+ */
+async function judgeCandidateFilesFor(
+  agent: Agent,
+  step: { handoff?: { kind: string; candidateDirs?: string[] } },
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<string> {
+  const dirs = step.handoff?.kind === 'judge' ? step.handoff.candidateDirs : undefined;
+  if (!dirs || dirs.length < 2) return '';
+  const root = sanitizeWorkspaceRoot(agent.workspaceRoot);
+  if (!root) return '';
+  const text = await collectJudgeEvidenceViaShell(runCommand, root, getHomePath(), dirs);
+  logInfo('AgentManager', `judge evidence: ${dirs.length} candidates, ${text.length} chars`);
+  return text;
 }
 
 /**
@@ -3062,10 +3084,14 @@ async function runAgentOrchestratedBody(
       : synthesis
         ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount }
         : undefined;
+    // Judge evidence (2026-11-02, build 2806): a judge step whose hand-off
+    // names the candidates' branch folders also sees a bounded snapshot of
+    // their files (not only the carried text). '' = unchanged prompt.
+    const judgeFiles = await judgeCandidateFilesFor(agent, step, runCommand);
     const stepAgent: Agent = {
       ...agent,
       // Agent roles (WP4): undefined for a role-less chain (prompt unchanged).
-      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence, carriedStepRoleContext(steps, i, carriedCtx.indexes)),
+      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence, carriedStepRoleContext(steps, i, carriedCtx.indexes), judgeFiles || undefined),
       // Orchestration is otherwise cleared so a step's own script generation
       // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
       // only keys off .steps.length >= 2 (via normalizeSteps), so an object

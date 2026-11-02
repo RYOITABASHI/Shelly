@@ -1390,7 +1390,18 @@ export interface AgentOrchestrationStep {
    *  a round-2 review are skipped (status 'skipped') once the latest review
    *  answered `VERDICT: PASS`. Never changes the step's tool, pin or gate.
    *  Re-validated by normalizeStepHandoff (lib/agent-orchestration.ts). */
-  handoff?: { kind: 'review' | 'revise' | 'judge'; of: number[]; round: 1 | 2 };
+  handoff?: {
+    kind: 'review' | 'revise' | 'judge';
+    of: number[];
+    round: 1 | 2;
+    /** Judge only (2026-11-02, build 2806 fix): the candidates' branch
+     *  folders, index-aligned with `of` — single-segment names of direct
+     *  children of the agent's workspace root (`a`, `b`, `r2-a`), set by
+     *  lib/agent-role-router.ts §6b. The judge step then also gets a bounded
+     *  snapshot of those folders (lib/agent-judge-evidence.ts), re-checked at
+     *  run time (real dir, not a symlink, inside the workspace). */
+    candidateDirs?: string[];
+  };
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */

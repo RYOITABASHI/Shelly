@@ -541,7 +541,7 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
   //     workspace path in the branch's instruction is retargeted and a
   //     "work only inside" line added; the dirs are created at confirm. The
   //     gate boundary stays the workspace root (the dirs are inside it).
-  const branchDirs: Array<{ stepIndex: number; label: string; dir: string; group: string }> = [];
+  const branchDirs: Array<{ stepIndex: number; label: string; dir: string; group: string; leaf: string }> = [];
   if (workspaceRoot) {
     const root = workspaceRoot.replace(/\/+$/, '');
     const groups: string[] = [];
@@ -560,12 +560,13 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
       assigned.forEach((a, i) => {
         if (a.unit.group !== g || !a.role || a.kind !== 'implement' || k >= BRANCH_DIR_LETTERS.length) return;
         const letter = BRANCH_DIR_LETTERS[k++];
-        const dir = `${root}/${gi === 0 ? letter.toLowerCase() : `${g}-${letter.toLowerCase()}`}`;
+        const leaf = gi === 0 ? letter.toLowerCase() : `${g}-${letter.toLowerCase()}`;
+        const dir = `${root}/${leaf}`;
         const note = tl('roles.route.branch_dir_note', { dir });
         const pathRe = new RegExp(`${escapeRe(root)}(?![A-Za-z0-9_.\\-/])`, 'g');
         const body = a.unit.text.replace(pathRe, dir);
         a.unit = { ...a.unit, text: `${Array.from(body).slice(0, Math.max(40, 480 - note.length)).join('')}\n\n${note}` };
-        branchDirs.push({ stepIndex: i, label: letter, dir, group: g });
+        branchDirs.push({ stepIndex: i, label: letter, dir, group: g, leaf });
       });
     });
   }
@@ -583,6 +584,15 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
         ...judgeEntry.unit,
         text: at === -1 ? `${text}\n${candidateDirsLine}` : `${text.slice(0, at)}\n${candidateDirsLine}${text.slice(at)}`,
       };
+      // Judge evidence (2026-11-02, build 2806): the judge also gets a
+      // snapshot of these folders at run time (lib/agent-judge-evidence.ts),
+      // not just the candidates' carried text. Index-aligned with `of`; only
+      // when every compared step has its folder.
+      const h = judgeEntry.handoff;
+      const leaves = h ? h.of.map((k) => firstGroupDirs.find((b) => b.stepIndex === k)?.leaf) : [];
+      if (h && leaves.length === h.of.length && leaves.every((l): l is string => typeof l === 'string')) {
+        judgeEntry.handoff = { ...h, candidateDirs: leaves as string[] };
+      }
     }
   }
 
@@ -633,7 +643,16 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
         toolPinned: true,
         role: toStepRole(a.role),
         ...group,
-        ...(a.handoff ? { handoff: { kind: a.handoff.kind, of: [...a.handoff.of], round: a.handoff.round } } : {}),
+        ...(a.handoff
+          ? {
+              handoff: {
+                kind: a.handoff.kind,
+                of: [...a.handoff.of],
+                round: a.handoff.round,
+                ...(a.handoff.candidateDirs ? { candidateDirs: [...a.handoff.candidateDirs] } : {}),
+              },
+            }
+          : {}),
       };
     });
     if (appendFinal) {

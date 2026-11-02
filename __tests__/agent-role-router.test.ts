@@ -207,6 +207,10 @@ describe('compete', () => {
     const judge = steps.find((s) => s.handoff?.kind === 'judge');
     expect(judge?.instruction).toContain("The candidates' files: A = ~/demo/a, B = ~/demo/b, C = ~/demo/c.");
     expect(judge?.instruction).toContain('"WINNER: A", "WINNER: B", "WINNER: C" or "WINNER: TIE"');
+    // Judge evidence (2026-11-02): the hand-off carries the branch folders,
+    // index-aligned with `of`, and survives step normalization.
+    expect(judge?.handoff).toEqual({ kind: 'judge', of: [0, 1, 2], round: 1, candidateDirs: ['a', 'b', 'c'] });
+    expect(normalizeSteps({ steps: draft.orchestrationSteps ?? [] }).find((s) => s.handoff?.kind === 'judge')?.handoff?.candidateDirs).toEqual(['a', 'b', 'c']);
   });
 
   it('no workspace in the request → no branch folders (nothing to anchor them to)', () => {

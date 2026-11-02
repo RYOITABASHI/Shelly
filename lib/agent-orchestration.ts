@@ -23,6 +23,7 @@ import { GROQ_DEFAULT_MODEL } from './groq';
 import { MAX_EVIDENCE_CHARS, renderStepEvidence, type StepEvidence } from './agent-sources';
 import { ROLE_INSTRUCTIONS_MAX_CHARS, ROLE_NAME_MAX_CHARS, type AgentStepRole } from './agent-role-types';
 import { composeRoleInstructions } from './agent-role-store';
+import { JUDGE_EVIDENCE_MAX_CHARS, normalizeCandidateDirs } from './agent-judge-evidence';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -139,6 +140,9 @@ export interface StepHandoff {
   kind: StepHandoffKind;
   of: number[];
   round: 1 | 2;
+  /** Judge only: the candidates' branch folders (index-aligned with `of`),
+   *  re-validated by normalizeCandidateDirs (lib/agent-judge-evidence.ts). */
+  candidateDirs?: string[];
 }
 
 /** Hard cap of review → revise rounds (the loop is statically unrolled). */
@@ -166,7 +170,10 @@ export function normalizeStepHandoff(raw: unknown): StepHandoff | undefined {
     if (of.length && k <= of[of.length - 1]) return undefined;
     of.push(k);
   }
-  return { kind: r.kind as StepHandoffKind, of, round: r.round };
+  // Judge evidence (2026-11-02): a malformed candidateDirs drops only itself
+  // (the judge then runs on the carried text alone, as before).
+  const candidateDirs = r.kind === 'judge' && r.candidateDirs !== undefined ? normalizeCandidateDirs(r.candidateDirs, of.length) : undefined;
+  return { kind: r.kind as StepHandoffKind, of, round: r.round, ...(candidateDirs ? { candidateDirs } : {}) };
 }
 
 /** The review step's output contract (appended to its instruction, never to
@@ -582,8 +589,15 @@ export function buildStepPrompt(
   priorResults: string[],
   evidence?: StepEvidence,
   roles?: StepRoleContext,
+  /** Judge evidence (2026-11-02): the rendered candidate-files block
+   *  (lib/agent-judge-evidence.ts renderCandidateSnapshot) for a judge step.
+   *  Its own budget (≤ JUDGE_EVIDENCE_MAX_CHARS) on top of MAX_PROMPT_CHARS,
+   *  placed before the role block + tail; never truncates the rest. Absent
+   *  / '' = byte-identical to before. */
+  candidateFiles?: string,
 ): string {
   const tail = `# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
+  const candidateBlock = candidateFiles ? `${candidateFiles.slice(0, JUDGE_EVIDENCE_MAX_CHARS)}\n\n` : '';
   // Sourced briefings (2026-10-09, lib/agent-sources.ts): the research
   // directive / numbered Sources + sourcing contract is reserved BEFORE the
   // head+carried prefix is truncated, exactly like the tail — so neither the
@@ -610,7 +624,7 @@ export function buildStepPrompt(
       ? `# Results from previous steps\n${carriedItems}\n\n`
       : `# Results from previous steps\n${carriedItems}\n\n---\n\n`
     : '';
-  return `${`${head}${carried}`.slice(0, headBudget)}${dataNote}${evidenceBlock}${roleBlock}${tail}`;
+  return `${`${head}${carried}`.slice(0, headBudget)}${dataNote}${evidenceBlock}${candidateBlock}${roleBlock}${tail}`;
 }
 
 /**
