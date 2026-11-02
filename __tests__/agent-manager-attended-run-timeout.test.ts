@@ -125,4 +125,46 @@ describe('runAgentNow — attended-run poll is bounded, not infinite (bug #164)'
     // giving up — this is not a test that trivially resolves on the first call.
     expect(pollCount).toBeGreaterThan(1);
   });
+
+  it('does not count time the JS thread was paused (app backgrounded) against the budget', async () => {
+    useAgentStore.getState().setAgents([baseAgent]);
+    const stale = `${JSON.stringify({
+      agentId: AGENT_ID,
+      timestamp: Date.now() - 60_000,
+      status: 'success',
+      durationMs: 1,
+      toolUsed: 'x',
+      outputPreview: 'old',
+    })}\n---SHELLY_AGENT_LOG---\n`;
+
+    // RN pauses timers while backgrounded; the wall clock jumps 15 minutes
+    // between two polls while the native run keeps going and then finishes.
+    const realNow = Date.now.bind(Date);
+    let offset = 0;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    let polls = 0;
+    const runCommand = jest.fn(async (cmd: string): Promise<string> => {
+      if (!cmd.includes('---SHELLY_AGENT_LOG---')) return '';
+      polls += 1;
+      if (polls === 3) offset += 15 * 60_000;
+      if (polls < 5) return stale;
+      const fresh = {
+        agentId: AGENT_ID,
+        timestamp: Date.now(),
+        status: 'success',
+        durationMs: 1,
+        toolUsed: 'x',
+        outputPreview: 'finished while backgrounded',
+      };
+      return `${stale}${JSON.stringify(fresh)}\n---SHELLY_AGENT_LOG---\n`;
+    });
+    try {
+      // A budget above the per-gap cap (pollMs + 30s) so the one counted gap
+      // fits, while the 15-minute pause itself would blow it on a wall clock.
+      await runAgentNow(AGENT_ID, runCommand, { waitTimeoutMs: 60_000, pollMs: 25 });
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(polls).toBeGreaterThanOrEqual(5);
+  });
 });

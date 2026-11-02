@@ -2618,6 +2618,10 @@ async function waitForAttendedExecutorRun(
   let refusalLog: AgentRunLog | undefined;
   let poll = 0;
   let lastRunningLogReadAt = 0;
+  // Time the JS thread was paused (app backgrounded) does not count against
+  // the deadline — see waitForAgentRunCompletion.
+  const maxCountedGapMs = opts.pollMs + 30_000;
+  let pausedMs = 0;
   for (;;) {
     if (agentsHalted()) throw new AgentsHaltedError();
     let marker: ProgressRunMarker | null = null;
@@ -2677,7 +2681,7 @@ async function waitForAttendedExecutorRun(
       launchedAtMs: opts.launchedAtMs,
       callerTimeoutMs: opts.callerTimeoutMs,
     });
-    if (now > deadline) {
+    if (now - pausedMs > deadline) {
       if (!ours) {
         // A run may have started in the very last poll window: learn its id
         // so the caller can stop exactly that process.
@@ -2691,7 +2695,9 @@ async function waitForAttendedExecutorRun(
       throw new AttendedExecutorTimeoutError(agentId, ours?.runId);
     }
     poll += 1;
+    const beforeDelay = Date.now();
     await delay(opts.pollMs);
+    pausedMs += Math.max(0, Date.now() - beforeDelay - maxCountedGapMs);
   }
 }
 
@@ -3792,10 +3798,9 @@ async function improveReusedSkillsFromSyncedLogs(
  * `find … -name '*.json'` shell round-trip every `options.pollMs`, see
  * readAgentRunLogs) until one appears whose timestamp is both newer than the
  * pre-run snapshot AND >= runStartedAtMs, or `options.timeoutMs` elapses —
- * whichever comes first. This loop is BOUNDED: the `while (Date.now() <=
- * deadline)` guard always terminates and rejects with "Timed out waiting for
- * agent …" once the deadline passes (see the throw below), it does not spin
- * forever. bug #164 (docs/superpowers/DEFERRED.md): what looked like an
+ * whichever comes first. This loop is BOUNDED: once the counted wait time
+ * passes `timeoutMs` it rejects with "Timed out waiting for agent …" (see the
+ * throw below), it does not spin forever. bug #164 (docs/superpowers/DEFERRED.md): what looked like an
  * infinite busy-poll on-device was this loop legitimately bounded but called
  * with the 20-minute unattended default from an ATTENDED (chat-visible)
  * call site with zero incremental UI feedback — see
@@ -3812,9 +3817,17 @@ async function waitForAgentRunCompletion(
     pollMs: number;
   }
 ): Promise<void> {
-  const deadline = Date.now() + options.timeoutMs;
+  // The budget counts only time spent actually polling. RN pauses JS timers
+  // while the app is backgrounded (folded, another app in front) but the run
+  // itself keeps going natively under the foreground service; with a
+  // wall-clock deadline the first poll after resume found the deadline passed
+  // and threw without looking (2026-11-02, build 2810: T+11:45 failure exactly
+  // at resume). A gap longer than one poll plus slack is treated as a pause.
+  const maxCountedGapMs = options.pollMs + 30_000;
+  let waitedMs = 0;
+  let lastTick = Date.now();
   let lastError: unknown;
-  while (Date.now() <= deadline) {
+  for (;;) {
     try {
       const grouped = await readAgentRunLogs(runCommand, agentId);
       const logs = grouped[agentId] ?? [];
@@ -3830,7 +3843,11 @@ async function waitForAgentRunCompletion(
     }
     // STOP-ALL: haltAllAgents kills the run; don't wait out the deadline.
     if (agentsHalted()) throw new AgentsHaltedError();
+    if (waitedMs > options.timeoutMs) break;
     await delay(options.pollMs);
+    const now = Date.now();
+    waitedMs += Math.min(Math.max(0, now - lastTick), maxCountedGapMs);
+    lastTick = now;
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : '';
   throw new Error(`Timed out waiting for agent "${agentId}" to finish${detail}`);

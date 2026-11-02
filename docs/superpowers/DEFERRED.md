@@ -73,7 +73,9 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
-### 有人 Run now が Shelly のバックグラウンド化・折りたたみで「Timed out waiting for agent」になる（build 2810、2026-11-02 撮影中に 2 回）— 未対応 (P1)
+### 有人 Run now が Shelly のバックグラウンド化・折りたたみで「Timed out waiting for agent」になる（build 2810、2026-11-02 撮影中に 2 回）— 修正済み・実機未検証 (P1)
+- 2026-11-03 原因と修正: 実行自体は FGS 上で続いているが、RN は裏に回ると JS タイマーを止める。待機側（`waitForAgentRunCompletion` / `waitForAttendedExecutorRun`）が壁時計の締め切りだったため、復帰直後の 1 回目で締め切り超過と判定し、ログも見ずに失敗していた（logcat: 21:23 にホームへ戻ってから 21:32:34 の復帰まで poll 子プロセスが一度も起動せず、失敗は T+11:45＝復帰時刻ちょうど）。待機予算を「実際に poll していた時間」で数えるよう変更（1 回の間隔は poll 間隔 + 30 秒まで計上、それ以上は停止とみなす）、予算切れの前に必ずログを確認する。テスト `agent-manager-attended-run-timeout.test.ts` に 15 分停止のケースを追加。実機で「依頼 → アプリを閉じる → 戻ると完了」を要確認。
+- 残り（P2）: 失敗後に MONITOR のセルが RUNNING のまま残る件は未確認・未対応。
 - 端末を折りたたむ／他アプリ（X）を前面にすると、実行中の CLI ステップが「Timed out waiting for agent "agent-…" to finish」で失敗（`~/arcade3` は Reviewer、`~/arcade4` は Implementer で T+11:45）。logcat には Samsung Freecess（`FreecessHandler` / `handleLcdOnFreeze`）がバックグラウンドアプリを凍結するログ。Shelly 側の待機（RN／native `runPlanAgent`）が凍結で止まる、または子プロセスが止まる可能性。要調査: 前景サービス化の有無、待機タイマーの凍結耐性。
 - 同時に MONITOR 表示のバグ: 失敗後も Reviewer セルが RUNNING / REC のまま「no update 3:05:18」と残る（失敗状態が反映されない）。
 - 付随: Shelly を仮想ディスプレイで再起動した直後の `@agent` 依頼が約 30 秒で「done.」と返り、MONITOR は前回の失敗のまま（`~/arcade5`、実際に実行されたか未確認）。
