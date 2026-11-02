@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   allLevelLinkProbe,
+  autoApprovalLinkProbe,
   escalationAutoApprovable,
   lexAllLevelScript,
   linkProbeIsClean,
@@ -195,11 +196,11 @@ describe('$TMPDIR and /tmp', () => {
 
   it('/tmp/../ and $TMPDIR/../ do not escape', () => {
     for (const [command, reason] of [
-      ['cp claude.html /tmp/../data/local/x', 'outside-home'],
-      ['cp claude.html /tmp/x/../../sdcard/Download/x', 'outside-home'],
-      ['cp claude.html $TMPDIR/../bin/git', 'unresolved-path'],
-      ['cp claude.html ${TMPDIR}/../.bashrc', 'unresolved-path'],
-      ['cp claude.html /tmp/../../data/user/0/dev.shelly.terminal/files/home/bin/git', 'shelly-control-path'],
+      ['cp claude.html /tmp/../data/local/x', 'parent-path'],
+      ['cp claude.html /tmp/x/../../sdcard/Download/x', 'parent-path'],
+      ['cp claude.html $TMPDIR/../bin/git', 'parent-path'],
+      ['cp claude.html ${TMPDIR}/../.bashrc', 'parent-path'],
+      ['cp claude.html /tmp/../../data/user/0/dev.shelly.terminal/files/home/bin/git', 'parent-path'],
     ] as const) {
       expect([command, direct(command)]).toEqual([command, { ok: false, reason }]);
     }
@@ -502,8 +503,9 @@ describe('link probe for existing symlinks (review 2026-11-02)', () => {
     const p = probeOf('cp -r ~/demo/assets $TMPDIR/assets && mv ~/demo/old ~/demo/new');
     expect(p.ok).toBe(true);
     if (p.ok) {
-      expect(p.command).toContain(`find '${WS}/assets' -type l 2>/dev/null | head -n 1 | sed 's/^/LINK /'`);
-      expect(p.command).toContain(`find '${WS}/old' -type l`);
+      expect(p.command).toContain(`__o=$(/system/bin/find '${WS}/assets' -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi`);
+      expect(p.command).toContain(`/system/bin/find '${WS}/old' -type l`);
+      expect(p.command).toContain(`if [ -e '${WS}/old' ] || [ -L '${WS}/old' ]; then`);
     }
   });
 
@@ -556,12 +558,112 @@ describe('link probe for existing symlinks (review 2026-11-02)', () => {
 
   it('_layout runs the probe before signing an "all" auto-approval', () => {
     const layout = fs.readFileSync(path.join(ROOT, 'app/_layout.tsx'), 'utf8');
-    const probeAt = layout.indexOf('allLevelLinkProbe(minted, mintedOpts)');
+    const probeAt = layout.indexOf('autoApprovalLinkProbe(minted, mintedOpts)');
     const cleanAt = layout.indexOf('linkProbeIsClean(probeResult)');
     const signAt = layout.indexOf('TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId');
     expect(probeAt).toBeGreaterThan(0);
     expect(cleanAt).toBeGreaterThan(probeAt);
     expect(signAt).toBeGreaterThan(cleanAt);
+  });
+});
+
+describe('second review (2026-11-02): .., globbed tree sources, find fail-open, standard-level writes', () => {
+  const stdReq = (command: string) => ({ command, signals: ['write-or-exec'], reason: 'boundary: write-or-exec', cwd: WS, workspaceRoot: WS });
+  const stdOpts: EscalationAutoApproveOpts = { ...allOpts, level: 'standard' };
+
+  it('A: no path with a `..` component is answered (the kernel follows it through links)', () => {
+    for (const command of [
+      'echo x > ~/demo/l/../y',
+      'echo x > l/../y',
+      'cp claude.html ~/demo/l/../y',
+      'cd ~/demo/l/.. && rm -f y',
+      'node --check l/../a.js',
+      "cat > l/../a.txt <<'EOF'\nx\nEOF",
+      'rm -f $TMPDIR/l/../x',
+      'sort -o../x claude.html',
+    ]) {
+      expect([command, direct(command).ok]).toEqual([command, false]);
+      expect([command, escalationAutoApprovable(stdReq(command), stdOpts).ok]).toEqual([command, false]);
+    }
+    expect(direct('echo x > ~/demo/l/../y')).toEqual({ ok: false, reason: 'parent-path' });
+    // A pure read through `..` stays a read (nothing is written through a link).
+    expect(direct('cd .. && ls')).toEqual({ ok: true, kind: 'read' });
+  });
+
+  it('B: a globbed recursive cp / mv source asks (the probe cannot see what it expands to)', () => {
+    for (const command of ['cp -r ~/demo/* $TMPDIR/out', 'mv ~/demo/*.html $TMPDIR/out/', 'cp -R assets/* $TMPDIR/a']) {
+      expect([command, direct(command).ok]).toEqual([command, true]); // the lexical verdict alone …
+      expect([command, autoApprovalLinkProbe(stdReq(command), allOpts)]).toEqual([command, { ok: false, reason: 'link-probe-glob' }]);
+    }
+  });
+
+  it('C: a find that cannot run (missing /system/bin/find, denied, failing) reads as a link', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { spawnSync } = require('child_process');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const os = require('os');
+    const sh = process.platform === 'win32' ? 'C:/Program Files/Git/bin/sh.exe' : '/bin/sh';
+    if (!fs.existsSync(sh) || fs.existsSync('/system/bin/find')) return;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rwa-find-')).replace(/\\/g, '/');
+    const shHome = process.platform === 'win32' ? home.replace(/^([A-Za-z]):/, (_m: string, d: string) => `/${d.toLowerCase()}`) : home;
+    try {
+      fs.mkdirSync(path.join(home, 'demo', 'assets'), { recursive: true });
+      const opts = { ...allOpts, homePaths: [shHome], trustedWorkspaceRoot: `${shHome}/demo` };
+      const p = allLevelLinkProbe({ command: 'cp -r assets $TMPDIR/assets', signals: ['leaves-root', 'write-or-exec'], reason: 'boundary: x', cwd: `${shHome}/demo`, workspaceRoot: `${shHome}/demo` }, opts);
+      expect(p.ok).toBe(true);
+      if (p.ok === false) return;
+      const r = spawnSync(sh, ['-c', p.command], { encoding: 'utf8' });
+      expect(r.stdout).toContain('LINK ?');
+      expect(linkProbeIsClean({ exitCode: r.status ?? 1, stdout: r.stdout ?? '' })).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('D: standard-level in-root writes are probed too; reads are not', () => {
+    const w = autoApprovalLinkProbe(stdReq('echo x > out/a.txt'), stdOpts);
+    expect(escalationAutoApprovable(stdReq('echo x > out/a.txt'), stdOpts)).toEqual({ ok: true, kind: 'in-root-write' });
+    expect(w && w.ok && w.command.includes(`'${WS}/out'`) && w.command.includes(`'${WS}/out/a.txt'`)).toBe(true);
+    const r = { command: 'cat claude.html', signals: ['leaves-root'], reason: 'boundary: leaves-root', cwd: WS, workspaceRoot: WS };
+    expect(escalationAutoApprovable(r, stdOpts)).toEqual({ ok: true, kind: 'read' });
+    expect(autoApprovalLinkProbe(r, stdOpts)).toBeNull();
+    const m = autoApprovalLinkProbe(stdReq('mv old new'), stdOpts);
+    expect(m && m.ok && m.command.includes(`/system/bin/find '${WS}/old'`)).toBe(true);
+  });
+
+  it('D: link-creating commands are never answered, at either level', () => {
+    for (const command of [
+      'ln -s x l',
+      'ln -s /sdcard/Download l',
+      'patch -p1 < x.patch',
+      'git checkout HEAD~1 -- l',
+      'git checkout -- l && echo x > l/a',
+      'git restore l',
+      'git switch other',
+      'git stash pop',
+      'git apply x.patch',
+      'git am x.mbox',
+      'git merge other',
+      'git reset --hard HEAD~1',
+      'git cherry-pick abc',
+      'git rebase main',
+      'git revert abc',
+      'cp -a src dst',
+      'cp -s a b',
+    ]) {
+      const std = escalationAutoApprovable(stdReq(command), stdOpts);
+      // (`git reset --hard` is already command-safety HIGH at the standard level.)
+      expect([command, std.ok === false && (std.reason === 'link-create' || std.reason === 'safety:HIGH')]).toEqual([command, true]);
+      expect([command, direct(command)]).toEqual([command, { ok: false, reason: 'link-create' }]);
+    }
+    // Plain in-root writes keep working at the standard level.
+    expect(escalationAutoApprovable(stdReq('git add a.txt && git commit -m x'), stdOpts)).toEqual({ ok: true, kind: 'in-root-write' });
+  });
+
+  it('_layout probes every non-read auto-approval, not only the "all" level', () => {
+    const layout = fs.readFileSync(path.join(ROOT, 'app/_layout.tsx'), 'utf8');
+    expect(layout).toContain("const probe = verdict.kind === 'read' ? null : autoApprovalLinkProbe(minted, mintedOpts);");
+    expect(layout).not.toContain("if (verdict.kind === 'all') {");
   });
 });
 

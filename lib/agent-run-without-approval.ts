@@ -493,6 +493,15 @@ const READ_BANNED_OPTIONS: Record<string, RegExp> = {
 /** File-edit tools an in-workspace write may use. */
 const WRITE_TOOLS = new Set(['tee', 'cp', 'mv', 'mkdir', 'touch', 'rm', 'rmdir', 'sed', 'echo', 'printf', 'cat', 'ln', 'git', 'patch']);
 const WRITE_GIT_SUBCOMMANDS = new Set(['add', 'commit', 'mv', 'rm', 'restore', 'checkout', 'switch', 'stash', 'apply']);
+/** Review 2026-11-02: git subcommands that write the work tree from
+ *  repository content — they can materialize a symlink from history / a
+ *  patch (`git checkout <rev> -- l && echo x > l/a`). Never auto-approved,
+ *  at either level (reason link-create). */
+const LINK_GIT_SUBCOMMANDS = new Set([
+  'checkout', 'restore', 'switch', 'stash', 'apply', 'am', 'merge', 'pull', 'reset', 'cherry-pick', 'rebase', 'revert',
+]);
+/** Tools that create links (any form), never auto-approved at either level. */
+const LINK_TOOLS = new Set(['ln', 'patch']);
 const DIR_CHANGE_TOOLS = new Set(['cd', 'pushd', 'popd']);
 /** `find` options whose operand is a match pattern, not a path it opens. */
 const FIND_PATTERN_OPTIONS = new Set(['-path', '-ipath', '-wholename', '-iwholename', '-name', '-iname', '-lname', '-ilname']);
@@ -591,11 +600,14 @@ export function analyzeEscalationCommand(command: string): CommandShape {
   for (const tokens of segments) {
     const [cmd, ...args] = tokens;
     if (DIR_CHANGE_TOOLS.has(cmd)) return { kind: 'refuse', reason: 'dir-change-write' };
+    if (LINK_TOOLS.has(cmd)) return { kind: 'refuse', reason: 'link-create' };
+    if (cmd === 'cp' && args.some((a) => CP_LINK_OPTION_RE.test(a))) return { kind: 'refuse', reason: 'link-create' };
     if (!WRITE_TOOLS.has(cmd) && !READ_TOOLS.has(cmd)) return { kind: 'refuse', reason: `tool:${cmd}` };
     const banned = READ_BANNED_OPTIONS[cmd];
     if (banned && args.some((a) => banned.test(a))) return { kind: 'refuse', reason: `option:${cmd}` };
     if (cmd === 'git') {
       const sub = args.find((a) => !a.startsWith('-'));
+      if (sub && LINK_GIT_SUBCOMMANDS.has(sub)) return { kind: 'refuse', reason: 'link-create' };
       if (!sub || (!WRITE_GIT_SUBCOMMANDS.has(sub) && !READ_GIT_SUBCOMMANDS.has(sub))) return { kind: 'refuse', reason: 'git-subcommand' };
       if (args.some((a) => a === '-C')) return { kind: 'refuse', reason: 'dir-change-write' };
     }
@@ -1199,6 +1211,11 @@ const PATTERN_SYNTAX_RE = /[<>\\^$*+?()[\]{}|;, '"]/;
  *  are checked). */
 const PRINT_ONLY_TOOLS = new Set(['echo', 'printf']);
 
+/** A `..` path component (`..`, `a/../b`, `x/..`). */
+function hasParentComponent(word: string): boolean {
+  return String(word).split('/').includes('..');
+}
+
 /** `cp` options that create a link or copy one as a link. */
 const CP_LINK_OPTION_RE = /^-[A-Za-z]*[slaPd]|^--(?:symbolic-link|link|archive|no-dereference|preserve=.*(?:links|all))(?:=|$)/;
 /** Assignments to the variables the driver strips from the worker env
@@ -1357,6 +1374,7 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
     return files.every((f) => {
       if (!f || f.startsWith('-') || /[<>*?[\]{}]/.test(f.replace(/^\$\{(?:HOME|TMPDIR)\}/, ''))) return false;
       return cwds.every((c) => {
+        if (hasParentComponent(f)) return false;
         const p = resolve(f, c);
         if (!p) return false;
         seenPath(p);
@@ -1449,6 +1467,7 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
     if (cmdWord === 'git') {
       const sub = args.find((a, k) => !a.startsWith('-') && !(k > 0 && args[k - 1] === '-C'));
       if (sub && NETWORK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'network-tool' };
+      if (sub && LINK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'link-create' };
       if (!sub || (!WRITE_GIT_SUBCOMMANDS.has(sub) && !READ_GIT_SUBCOMMANDS.has(sub))) return { ok: false, reason: 'git-subcommand' };
     }
     // Links (review 2026-11-02, Critical): every check here is lexical, so a
@@ -1457,8 +1476,11 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
     // command that can create a link is answered: `ln` in any form, `cp`
     // that makes or copies links (-s / -l / -a / -P / -d / --preserve=links
     // …), `git apply` / `patch` (a diff can carry a symlink).
-    if (cmdWord === 'ln' || cmdWord === 'patch') return { ok: false, reason: 'link-create' };
-    if (cmdWord === 'git' && args.find((a) => !a.startsWith('-')) === 'apply') return { ok: false, reason: 'link-create' };
+    if (LINK_TOOLS.has(cmdWord)) return { ok: false, reason: 'link-create' };
+    if (cmdWord === 'git') {
+      const sub = args.find((a, k) => !a.startsWith('-') && !(k > 0 && args[k - 1] === '-C'));
+      if (sub && LINK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'link-create' };
+    }
     if (cmdWord === 'cp' && args.some((a) => CP_LINK_OPTION_RE.test(a))) return { ok: false, reason: 'link-create' };
     // A recursive copy / a move carries the links already in its sources:
     // the link probe looks inside them.
@@ -1467,7 +1489,7 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
         if (w.redir || w.text.startsWith('-')) continue;
         for (const c of cur) {
           const p = resolve(w.text, c);
-          if (p) collect.trees.add(p);
+          if (p) collect.trees.add(w.glob ? `${p}\u0000glob` : p);
         }
       }
     }
@@ -1483,6 +1505,7 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
         if (target.length > 1 || target[0] === '-' || target[0].startsWith('-')) return { ok: false, reason: 'dir-change-unknown' };
         next = [];
         for (const c of cur) {
+          if (hasParentComponent(target[0])) return { ok: false, reason: 'parent-path' };
           const n = resolve(target[0], c);
           if (!n) return { ok: false, reason: 'dir-change-unknown' };
           seenPath(n);
@@ -1514,6 +1537,7 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
       }
       if (!target) return { ok: false, reason: 'heredoc' };
       for (const c of cur) {
+        if (hasParentComponent(target)) return { ok: false, reason: 'parent-path' };
         const p = resolve(target, c);
         if (!p || !(inTemp(p) || inTrusted(p)) || checkPath(p) !== null) return { ok: false, reason: 'heredoc' };
         seenPath(p);
@@ -1563,6 +1587,11 @@ function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApprov
       // Bare words: only checked when a cwd is the home or a scratch root
       // (`cd ~ && rm -rf bin`, `cd $TMPDIR && rm -f *`) — elsewhere a bare
       // word names something in the cwd.
+      // Review 2026-11-02: `..` is collapsed lexically here but followed
+      // PHYSICALLY by the kernel (`~/demo/l/../y` through a link `l`), so no
+      // path with a `..` component is answered — like the standard
+      // level's parent-path.
+      if (hasParentComponent(word)) return { ok: false, reason: 'parent-path' };
       if (!pathish) {
         for (const c of cur) seenPath(normalizePath(`${c}/${word}`));
         for (const c of bareCwds) {
@@ -1601,10 +1630,11 @@ export type AllLevelLinkProbe = { ok: true; command: string } | { ok: false; rea
  * ALREADY exists under an allowed root (`~/demo/out -> /sdcard/x`, a
  * symlink in $TMPDIR) would let an auto-approved write leave it. Before
  * answering a command the "all" level allowed, the caller (app/_layout.tsx,
- * which can run native commands) runs this probe: a /system/bin/sh script
- * that tests every path component the command names below its allowed root
+ * which can run native commands) runs this probe: a shell script that tests every path component the command names below its allowed root
  * (`[ -L … ]`), every entry of a directory a glob reads, and the inside of
- * every recursive `cp` / `mv` source (`find -type l`). Any link — or a
+ * every recursive `cp` / `mv` source (`/system/bin/find -type l`, its own
+ * exit status checked). It runs in execCommand's bundled bash (not
+ * /system/bin/sh). Any link — or a
  * probe that fails / is cut off — means a human answers
  * (linkProbeIsClean). Commands that CREATE links are refused outright by
  * the verdict itself. Residual: the probe runs at approval time; a link
@@ -1615,6 +1645,29 @@ export function allLevelLinkProbe(request: EscalationRequestLike, opts: Escalati
   const collect: LinkProbeCollect = { paths: new Set(), trees: new Set(), roots: [] };
   const v = allLevelCore(request, opts, collect);
   if (v.ok === false) return { ok: false, reason: v.reason };
+  return buildLinkProbe(collect);
+}
+
+/**
+ * The probe for whatever auto-approval escalationAutoApprovable would give
+ * (review 2026-11-02, D): null for a pure read (nothing is written through
+ * a link), otherwise the probe of the paths the deciding rules saw — the
+ * standard level's in-root write as well as the "all" level. A refusal
+ * means a human answers.
+ */
+export function autoApprovalLinkProbe(request: EscalationRequestLike, opts: EscalationAutoApproveOpts): AllLevelLinkProbe | null {
+  const collect: LinkProbeCollect = { paths: new Set(), trees: new Set(), roots: [] };
+  const standard = standardEscalationVerdict(request, opts, collect);
+  if (standard.ok === true) return standard.kind === 'read' ? null : buildLinkProbe(collect);
+  if (opts.level !== 'all' || opts.attended !== true || !isSoftReasonForAll(standard.reason)) return { ok: false, reason: standard.reason };
+  return allLevelLinkProbe(request, opts);
+}
+
+/** Absolute path: execCommand's bundled bash has no /system/bin on PATH. A
+ *  missing / failing find prints `LINK ?` (fail closed). */
+const PROBE_FIND = '/system/bin/find';
+
+function buildLinkProbe(collect: LinkProbeCollect): AllLevelLinkProbe {
   const roots = [...new Set(collect.roots)];
   const checks = new Set<string>();
   const globDirs = new Set<string>();
@@ -1639,7 +1692,14 @@ export function allLevelLinkProbe(request: EscalationRequestLike, opts: Escalati
   const lines: string[] = [];
   if (checks.size > 0) lines.push(`for p in ${[...checks].map(q).join(' ')}; do [ -L "$p" ] && echo "LINK $p"; done`);
   for (const d of globDirs) lines.push(`for p in ${q(d)}/* ${q(d)}/.[!.]*; do [ -L "$p" ] && echo "LINK $p"; done`);
-  for (const t of collect.trees) lines.push(`find ${q(t)} -type l 2>/dev/null | head -n 1 | sed 's/^/LINK /'`);
+  for (const t of collect.trees) {
+    // A globbed recursive source (`cp -r ~/demo/* out`): the shell expands
+    // it, the probe cannot name what it expands to — a human answers.
+    if (t.endsWith('\u0000glob') || /[*?[]/.test(t)) return { ok: false, reason: 'link-probe-glob' };
+    // find's own status decides: one that cannot run, is denied or fails
+    // part-way prints `LINK ?`; a missing source is skipped (nothing to copy).
+    lines.push(`if [ -e ${q(t)} ] || [ -L ${q(t)} ]; then __o=$(${PROBE_FIND} ${q(t)} -type l 2>&1); __rc=$?; if [ "$__rc" -ne 0 ]; then echo "LINK ?"; elif [ -n "$__o" ]; then echo "LINK $__o"; fi; fi`);
+  }
   lines.push(`echo ${LINK_PROBE_DONE}`);
   return { ok: true, command: lines.join('\n') };
 }
@@ -1656,6 +1716,7 @@ export function linkProbeIsClean(result: { exitCode: number; stdout: string } | 
 function standardEscalationVerdict(
   request: EscalationRequestLike,
   opts: EscalationAutoApproveOpts,
+  collect: LinkProbeCollect | null = null,
 ): AutoApproveVerdict {
   if (!opts.enabled) return { ok: false, reason: 'flag-off' };
   // POLICY-001 deny / draft_only / ask, proactive origin (caller in RN).
@@ -1694,7 +1755,23 @@ function standardEscalationVerdict(
   const cwdRaw = String(request.cwd ?? '').trim();
   const cwd = cwdRaw ? normalizePath(cwdRaw) : roots[0];
   if (!cwd.startsWith('/') || !roots.some((r) => isWithinRoot(r, cwd))) return { ok: false, reason: 'cwd-outside-root' };
+  if (collect) {
+    collect.roots.push(...rootAliases('~', homePaths), TEMP_ROOT_LITERAL, ...roots);
+    collect.paths.add(cwd);
+  }
   for (const tokens of shape.segments) {
+    // Paths for the link probe (autoApprovalLinkProbe): every operand, and
+    // the inside of recursive cp / mv sources.
+    if (collect) {
+      const recursive = tokens[0] === 'mv' || (tokens[0] === 'cp' && tokens.some((a) => /^-[A-Za-z]*[rR]/.test(a) || a === '--recursive'));
+      for (const t of tokens.slice(1)) {
+        const bare = t.replace(/^\d?[<>]+/, '');
+        if (!bare || bare.startsWith('-')) continue;
+        const abs = normalizePath(bare.startsWith('/') ? bare : `${cwd}/${bare}`);
+        collect.paths.add(abs);
+        if (recursive) collect.trees.add(abs);
+      }
+    }
     // Arguments that are paths (contain `/`, or a redirect target). A bare
     // word is resolved against `cwd`, which is inside the root (no cd).
     for (const t of tokens.slice(1)) {

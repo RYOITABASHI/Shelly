@@ -123,7 +123,7 @@ import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import {
   decideActionAutoApproval,
-  allLevelLinkProbe,
+  autoApprovalLinkProbe,
   auditCommandText,
   DEFAULT_AGENT_PROJECT_DIR,
   escalationAutoApprovable,
@@ -2362,14 +2362,17 @@ export default function RootLayout() {
           logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} level=${mintedSetting} reason=${verdict.reason}`);
           return false;
         }
-        // "all" level: its checks are lexical, so every path the command
+        // Both levels' checks are lexical, so every path a WRITING command
         // names is probed on disk for a symlink below its allowed root
-        // (lib/agent-run-without-approval.ts allLevelLinkProbe). A link, or a
-        // probe that cannot run to the end, hands the ask to the human.
-        if (verdict.kind === 'all') {
-          const probe = allLevelLinkProbe(minted, mintedOpts);
+        // (lib/agent-run-without-approval.ts autoApprovalLinkProbe; null for
+        // a pure read). A link, or a probe that cannot run to the end, hands
+        // the ask to the human.
+        const probe = verdict.kind === 'read' ? null : autoApprovalLinkProbe(minted, mintedOpts);
+        if (verdict.kind !== 'read') {
           let probeRefusal: string | null = null;
-          if (probe.ok === false) {
+          if (!probe) {
+            probeRefusal = 'link-probe-missing';
+          } else if (probe.ok === false) {
             probeRefusal = probe.reason;
           } else {
             const probeResult = await execCommand(probe.command, 10_000).catch(() => null);
