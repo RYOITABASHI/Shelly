@@ -1450,8 +1450,11 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     isOrchestrated(agent.orchestration) &&
     tool.type === 'cli' &&
     chainStepCount > 0 &&
+    // Agent roles (WP4): a role step never runs on this bash mirror — its
+    // prompt template has no `# Your role` block / role-labelled carry, so
+    // the chain collapses instead of silently dropping the role.
     attemptableOrchestrationSteps.every(
-      (s) => !s.apiCall && (!s.tool || s.tool.type === 'cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type))
+      (s) => !s.apiCall && !s.role && (!s.tool || s.tool.type === 'cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type))
     );
 
   // Deliberately kept OUT of the actual dispatched/posted content

@@ -528,7 +528,9 @@ object AgentRuntime {
     // while its driver is alive (quietMs = time since the driver's last
     // output), so MONITOR does not flag a busy CLI turn as stuck. The widget
     // reader (monitor/MonitorProgress.kt) accepts the new event kind.
-    private const val CURRENT_EXECUTOR_VERSION = 24
+    // v25 (agent roles WP4): a step's role snapshot adds a `# Your role` block
+    // to its prompt and labels results carried from role steps. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 25
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

@@ -162,6 +162,16 @@ export function runWithoutApprovalAllAllowedFor(agent: UntrustedInputAgentLike |
     const stepTool = step && typeof step === 'object' ? toolType((step as { tool?: unknown }).tool) : '';
     if (UNTRUSTED_TOOL_TYPES.has(stepTool)) return false;
     if (URL_RE.test(instruction) || isResearchStep(instruction, stepTool || undefined)) return false;
+    // Agent roles (WP4): a step's role snapshot is prompt text too (the
+    // `# Your role` block) — a role that sends the worker to a URL / the web /
+    // research reads untrusted text just like such an instruction. Scanned
+    // raw (not via normalizeStepRole), so a malformed role still counts.
+    const role = step && typeof step === 'object' ? (step as { role?: unknown }).role : undefined;
+    if (role && typeof role === 'object') {
+      const r = role as { name?: unknown; instructions?: unknown };
+      const roleText = `${typeof r.name === 'string' ? r.name : ''}\n${typeof r.instructions === 'string' ? r.instructions : ''}`;
+      if (URL_RE.test(roleText) || hasExplicitWebCue(roleText) || isResearchStep(roleText, undefined)) return false;
+    }
   }
   const actions = [agent.action, ...(Array.isArray(agent.actions) ? agent.actions : [])];
   if (actions.some((a) => UNTRUSTED_ACTION_TYPES.has(toolType(a)))) return false;

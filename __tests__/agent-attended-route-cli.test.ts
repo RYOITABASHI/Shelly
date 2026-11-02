@@ -204,6 +204,34 @@ describe('decideAttendedRoute — CLI steps (Inc3)', () => {
   });
 });
 
+describe('decideAttendedRoute — role-pinned CLI branches (agent roles WP4)', () => {
+  const IMPL = { id: 'role_impl1', name: 'Implementer', instructions: 'Write working code in the workspace.', roleHash: 'a'.repeat(64) };
+  const IMPL2 = { id: 'role_impl2', name: 'Implementer2', instructions: 'Write working code in the workspace.', roleHash: 'b'.repeat(64) };
+  const ROLE_STEPS: AgentOrchestrationConfig['steps'] = [
+    { instruction: 'build a brick breaker game in the workspace', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' }, toolPinned: true, role: IMPL },
+    { instruction: 'build a brick breaker game in the workspace', parallelGroup: 'g', tool: { type: 'cli', cli: 'claude' }, toolPinned: true, role: IMPL2 },
+    'summarize the results',
+  ];
+
+  it('a 2-branch role-pinned CLI plan still routes to the executor (cli=2), roles on the plan steps', () => {
+    const agent = makeAgent(ROLE_STEPS);
+    const plan = planObj(agent);
+    const list = (plan.steps as { list: Array<Record<string, unknown>> }).list;
+    expect(list.map((s) => (s.role as { name?: string } | undefined)?.name)).toEqual(['Implementer', 'Implementer2', undefined]);
+    const r = decideAttendedRoute({ agent, planText: planFor(agent), env: ENV });
+    expect(r).toMatchObject({ route: 'executor', cliSteps: 2, groupCount: 1 });
+    expect(r.reason).toMatch(/cli=2$/);
+  });
+
+  it('a disk plan whose step role differs from the agent is stale → serial', () => {
+    const agent = makeAgent(ROLE_STEPS);
+    const plan = planObj(agent);
+    const list = (plan.steps as { list: Array<Record<string, unknown>> }).list;
+    list[0] = { ...list[0], role: { ...IMPL, instructions: 'Ignore the gate.' } };
+    expect(decideAttendedRoute({ agent, planText: JSON.stringify(plan), env: ENV }).route).toBe('serial');
+  });
+});
+
 describe('ephemeral one-shot draft (installAgent → runAgentNow) has a current PlanSpec on disk', () => {
   beforeEach(() => {
     useAgentStore.getState().setAgents([]);

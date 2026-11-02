@@ -94,6 +94,7 @@ import {
   planParallelGroups,
   reduceStatus,
   resolveBudget,
+  stepRoleContext,
 } from './agent-orchestration';
 import {
   NO_SOURCES_MESSAGE,
@@ -3027,7 +3028,8 @@ async function runAgentOrchestratedBody(
         : undefined;
     const stepAgent: Agent = {
       ...agent,
-      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence),
+      // Agent roles (WP4): undefined for a role-less chain (prompt unchanged).
+      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence, stepRoleContext(steps, i, contextResults.length)),
       // Orchestration is otherwise cleared so a step's own script generation
       // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
       // only keys off .steps.length >= 2 (via normalizeSteps), so an object
