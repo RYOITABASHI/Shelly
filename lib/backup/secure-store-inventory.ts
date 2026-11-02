@@ -50,6 +50,7 @@ export const FIXED_SECURE_KEYS: Readonly<Record<string, string>> = Object.freeze
   shelly_policy_file_seal: 'lib/agent-policy-device.ts',
   shelly_policy_trust_allow_keys: 'lib/agent-trust-allow-seal.ts',
   shelly_run_without_approval_v2: 'lib/agent-run-without-approval.ts',
+  shelly_roles_v1: 'lib/agent-role-device.ts',
   shelly_dotfiles_pat: 'lib/dotfiles-sync.ts',
   shelly_github_pat: 'lib/github-auth.ts',
   shelly_memory_v2_dek: 'lib/memory/encryption-key.ts',
@@ -61,12 +62,17 @@ export const TRUST_ALLOW_SEAL_KEY = 'shelly_policy_trust_allow_keys';
 /** Per-agent "run without approval" flags (lib/agent-run-without-approval.ts).
  *  Never restored: a restore must not be able to turn the option back on. */
 export const RUN_WITHOUT_APPROVAL_KEY = 'shelly_run_without_approval_v2';
+/** Agent roles seal + per-role approval levels (lib/agent-role-device.ts).
+ *  Never restored: levels must not come back without the user re-confirming;
+ *  a restored roles.json then reads as unsealed until the user resets roles. */
+export const ROLES_SEAL_KEY = 'shelly_roles_v1';
 /** Never restored by the generic SecureStore loop (see module doc). */
 export const APPROVAL_SECURE_KEYS: readonly string[] = Object.freeze([
   CLOSEPAW_PREAPPROVAL_KEY,
   TRUST_ALLOW_SEAL_KEY,
   POLICY_SEAL_KEY,
   RUN_WITHOUT_APPROVAL_KEY,
+  ROLES_SEAL_KEY,
 ]);
 
 /** Fixed connector ids that are not user-registered social connectors. */

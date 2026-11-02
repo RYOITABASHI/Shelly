@@ -28,6 +28,7 @@ import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
 import { continuousTextLocale, formatContinuousSummary, parseContinuousIntent, stripContinuousPhrases } from './agent-continuous';
 import { markAntigravitySteps, stripAntigravityInstrument } from './agent-antigravity';
+import type { RoleRoutingInfo } from './agent-role-types';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -314,6 +315,11 @@ export interface ParsedAgentDraft {
    *  in the summary; the dispatcher resolves it to an absolute path and
    *  passes it to createAgent as workspaceRoot. */
   workspaceRoot?: string;
+  /** Agent roles (2026-11-02, WP3): set when lib/agent-role-router.ts routed
+   *  this draft's units to user-defined roles. `original` is the draft as it
+   *  was before routing (revertRoleRouting restores it). Shown in the confirm
+   *  text; absent = no routing. */
+  roleRouting?: RoleRoutingInfo & { original: Omit<ParsedAgentDraft, 'roleRouting'> };
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }

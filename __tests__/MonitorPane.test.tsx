@@ -814,6 +814,40 @@ describe('MonitorPane LIVE source', () => {
     utils.unmount();
   });
 
+  it('a step routed to a role shows the role name as its channel', () => {
+    const r = liveRun();
+    r.branches = [{ ...r.branches[1], stepIndex: 0, branchId: 'run-1#0', provider: { kind: 'CLI', name: 'cli:codex' } }];
+    act(() => {
+      useAgentStore.setState({
+        agents: [
+          {
+            id: 'digest',
+            name: 'Brick breaker',
+            orchestration: {
+              steps: [
+                {
+                  instruction: 'build a brick breaker game',
+                  tool: { type: 'cli', cli: 'codex' },
+                  toolPinned: true,
+                  role: { id: 'role_impl', name: 'Implementer', instructions: 'Write code.', roleHash: 'a'.repeat(64) },
+                },
+                'summarize the results',
+              ],
+            },
+          } as never,
+        ],
+        runningAgentIds: ['digest'],
+        liveRuns: { digest: [{ run: r }] },
+      });
+    });
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getAllByLabelText(/^IMPLEMENTE .* · Codex CLI$/).length).toBeGreaterThan(0);
+    expect(utils.getAllByLabelText(/^CH-02 /).length).toBeGreaterThan(0);
+    expect(useAgentStore.getState().monitorLastRun?.info.roles).toEqual(['Implementer', undefined]);
+    utils.unmount();
+  });
+
   it('completed run with a recorded output: "Saved to" opens the file', () => {
     const r = liveRun({ endedAt: iso(1), status: 'success' });
     r.branches[1] = { ...r.branches[1], state: 'DONE', endedAt: iso(1) };

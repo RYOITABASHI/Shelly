@@ -55,6 +55,50 @@ describe('role labels', () => {
     );
     expect(labels).toEqual(['調査役1', '調査役2', 'ステップ3']);
   });
+
+  it('keeps the narrator table: code-like verbs are not routed to implement / judge here', () => {
+    expect(classifyStepRole('Write working code')).toBe('writer');
+    expect(classifyStepRole('build a game')).toBeNull();
+    expect(classifyStepRole('compare A and B')).toBeNull();
+  });
+
+  it('a step carrying a user-defined role is labelled with the role name', () => {
+    const labels = deriveStepRoleLabels(
+      [
+        { instruction: 'build a game', role: { name: 'Implementer' } },
+        { instruction: 'review it', role: { name: '  Code   Reviewer ' } },
+        { instruction: 'summarize the results' },
+      ],
+      trEn,
+    );
+    expect(labels).toEqual(['Implementer', 'Code Reviewer', trEn('handoff.role.summarizer')]);
+  });
+
+  it('two steps with the same role name are numbered', () => {
+    const labels = deriveStepRoleLabels(
+      [{ instruction: 'a', role: { name: 'Implementer' } }, { instruction: 'b', role: { name: 'Implementer' } }],
+      trEn,
+    );
+    expect(labels).toEqual(['Implementer1', 'Implementer2']);
+  });
+
+  it('role names flow into the narrator and the unattended digest', () => {
+    const narrator = new HandoffNarrator(
+      [{ instruction: 'build', role: { name: 'Implementer' } }, { instruction: 'review', role: { name: 'Reviewer' } }],
+      trEn,
+    );
+    expect(narrator.labelOf(0)).toBe('Implementer');
+    const digest = buildHandoffDigest(
+      'demo',
+      [
+        { index: 0, status: 'success', outputPreview: 'done', instruction: 'build', role: { name: 'Implementer' } },
+        { index: 1, status: 'success', outputPreview: 'ok', instruction: 'review', role: { name: 'Reviewer' } },
+      ],
+      trEn,
+    );
+    expect(digest).toContain('Implementer');
+    expect(digest).toContain('Reviewer');
+  });
 });
 
 describe('on-device test utterance (parser-verified)', () => {

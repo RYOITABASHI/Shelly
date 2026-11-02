@@ -7,6 +7,7 @@ import {
   STALE_AFTER_SEC,
   createLiveSource,
   isRunActive,
+  liveChannelLabel,
   liveOperator,
   pickDefaultLiveRun,
 } from '@/lib/monitor-live';
@@ -115,6 +116,46 @@ describe('monitor-live: serial run', () => {
     const single = runFrom([start('SINGLE', 1), state(0, 'RUNNING', 1)]);
     expect(createLiveSource(single, { name: 'Morning brief' }).agents[0].name).toBe('Morning brief');
     expect(createLiveSource(single).agents[0].name).toBe('STEP 1');
+  });
+});
+
+describe('monitor-live: role-named channels', () => {
+  it('liveChannelLabel: role name (≤10 chars, latin uppercased), else CH-0n', () => {
+    expect(liveChannelLabel(0)).toBe('CH-01');
+    expect(liveChannelLabel(1, '')).toBe('CH-02');
+    expect(liveChannelLabel(2, '   ')).toBe('CH-03');
+    expect(liveChannelLabel(0, 'Implementer')).toBe('IMPLEMENTE');
+    expect(liveChannelLabel(0, 'code  reviewer')).toBe('CODE REVIE');
+    expect(liveChannelLabel(0, 'レビュー役')).toBe('レビュー役');
+    expect(liveChannelLabel(0, 'Judge')).toBe('JUDGE');
+  });
+
+  it('steps with roles show role names; steps without keep CH-0n; failures name the role channel', () => {
+    const run = runFrom([
+      start('SERIAL', 3),
+      state(0, 'RUNNING', 1),
+      state(0, 'DONE', 2),
+      state(1, 'RUNNING', 3),
+      state(1, 'FAILED', 4),
+      end('error', 5),
+    ]);
+    const src = createLiveSource(run, { steps: ['build', 'review', 'summarize'], roles: ['Implementer', 'Reviewer', undefined] });
+    expect(src.agents.map((d) => d.channel)).toEqual(['IMPLEMENTE', 'REVIEWER', 'CH-03']);
+    expect(src.snapshot(T0 + 10_000, []).run?.failedChannel).toBe('REVIEWER');
+  });
+
+  it('the same role on two steps gets the step number', () => {
+    const run = runFrom([start('SERIAL', 2)]);
+    const src = createLiveSource(run, { roles: ['Reviewer', 'Reviewer'] });
+    expect(src.agents.map((d) => d.channel)).toEqual(['REVIEWER·1', 'REVIEWER·2']);
+    const long = createLiveSource(run, { roles: ['Implementer', 'Implementer'] });
+    expect(long.agents.map((d) => d.channel)).toEqual(['IMPLEMEN·1', 'IMPLEMEN·2']);
+  });
+
+  it('no roles = exactly the previous CH-0n labels', () => {
+    const run = runFrom([start('SERIAL', 2)]);
+    expect(createLiveSource(run, {}).agents.map((d) => d.channel)).toEqual(['CH-01', 'CH-02']);
+    expect(createLiveSource(run, { roles: [undefined, undefined] }).agents.map((d) => d.channel)).toEqual(['CH-01', 'CH-02']);
   });
 });
 
