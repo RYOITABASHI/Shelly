@@ -1592,7 +1592,7 @@ function touchesAgentsConfigDir(command) {
   if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
   if (/\.shelly\/+agents\b/.test(c)) return true;
   if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
-  if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  if (/(?:^|[\s/'"=])(?:policy|roles)\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
   if (/\bshared_prefs\b/.test(c)) return true;
   return false;
 }
@@ -1602,12 +1602,16 @@ var NARROW_INTERPRETER_RE = /\b(?:python\d*|node|nodejs|deno|bun|perl|ruby|php)\
 var REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|\.shelly\/+agents\/+logs\/+[A-Za-z0-9_.-]+\/+\.?overrides\.json|shelly_agent_policy)/;
 var OVERRIDES_FILE_RE = /(?:^|[\s/'"=])\.?overrides\.json\b/;
 var REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
+var ROLES_BASENAME_RE = /(?:^|[\s/'"=])roles\.json\b/;
+var REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
   if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
+  const rolesBasename = ROLES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;
