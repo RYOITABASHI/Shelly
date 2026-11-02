@@ -520,7 +520,7 @@ describe('HomeInitializer: one shelly-claude-glibc() for .bashrc and the agent r
     expect(homeKt).toContain('sb.appendLine("      subscription) unset ANTHROPIC_API_KEY ;;")');
     expect(homeKt).toContain('sb.appendLine("    if [ \\"\\${SHELLY_CLAUDE_AUTH:-}\\" != api-key ] && [ -z \\"\\${CLAUDE_CODE_OAUTH_TOKEN:-}\\" ] && [ -f \\"\\$HOME/.claude-token.env\\" ]; then . \\"\\$HOME/.claude-token.env\\"; fi")');
     // first line of the Bash-tool env file (inlined into every -c)
-    expect(homeKt).toMatch(/__SHELLY_CLAUDE_ENV'"\)\r?\n\s*sb\.appendLine\("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN"\)/);
+    expect(homeKt).toMatch(/__SHELLY_CLAUDE_ENV'"\)\r?\n\s*sb\.appendLine\("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS BASH_ENV ENV CDPATH PROMPT_COMMAND"\)/);
     expect(homeKt).toContain('unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON SHELLY_CLAUDE_AUTH');
   });
 

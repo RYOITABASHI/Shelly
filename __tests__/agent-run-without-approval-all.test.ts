@@ -473,9 +473,12 @@ describe('unattended / proactive runs never get the all level', () => {
     expect(fn).toMatch(/attended: userStarted,/);
     expect(fn).toMatch(/const mintedAttended = registeredRunOrigin\(minted\.agentId\) === 'user';/);
     expect(fn).toMatch(/attended: mintedAttended && userStarted,/);
-    expect(fn).toMatch(/level: mintedSetting === 'all' && setting === 'all' \? 'all' : 'standard',/);
+    expect(fn).toMatch(/level: mintedSetting === 'all' && setting === 'all' \? \('all' as const\) : \('standard' as const\),/);
     expect(fn).toMatch(/getRunWithoutApprovalSetting\(agentFor\(minted\.agentId\)\)/);
-    expect(fn).toMatch(/escalationAutoApprovable\(minted, \{/);
+    // One options object for the verdict AND the link probe (2026-11-02).
+    expect(fn).toMatch(/const mintedOpts = \{/);
+    expect(fn).toMatch(/escalationAutoApprovable\(minted, mintedOpts\)/);
+    expect(fn).toMatch(/allLevelLinkProbe\(minted, mintedOpts\)/);
     expect(fn).toMatch(/resolveAgentEscalationAutoApproval\(minted\.runId, minted\.reqId, requestSha256, actionNonce\)/);
     expect(fn).toMatch(/t\(runWithoutApprovalAuditKey\(mintedSetting\)/);
     expect(fn).toMatch(/level=\$\{mintedSetting\} reason=\$\{verdict\.reason\}/);

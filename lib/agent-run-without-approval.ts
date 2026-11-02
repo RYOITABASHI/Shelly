@@ -1199,6 +1199,14 @@ const PATTERN_SYNTAX_RE = /[<>\\^$*+?()[\]{}|;, '"]/;
  *  are checked). */
 const PRINT_ONLY_TOOLS = new Set(['echo', 'printf']);
 
+/** `cp` options that create a link or copy one as a link. */
+const CP_LINK_OPTION_RE = /^-[A-Za-z]*[slaPd]|^--(?:symbolic-link|link|archive|no-dereference|preserve=.*(?:links|all))(?:=|$)/;
+/** Assignments to the variables the driver strips from the worker env
+ *  (WORKER_ENV_DROP) or that the path checks rely on ($HOME / $TMPDIR / PATH). */
+const ENV_SENSITIVE_ASSIGN_RE = /^(?:NODE_OPTIONS|BASH_ENV|ENV|CDPATH|PROMPT_COMMAND|PATH|HOME|TMPDIR)\+?=/;
+/** Builtins / tools that change the environment of what follows. */
+const ENV_CHANGE_TOOLS = new Set(['export', 'declare', 'typeset', 'local', 'readonly', 'unset', 'env', 'set', 'shopt', 'alias', 'hash']);
+
 /** sed commands that run a program or write a file: `e` / `w` / `W` after an
  *  address (`1e cmd`, `$w f`, `/x/,/y/W f`) or an `s` flag set (`s/a/b/ge`). */
 const SED_EXEC_OR_WRITE_ADDR_RE = /(?:^|[\s;{}!$,/0-9~+])[ewW](?:[\s;}]|$)/;
@@ -1221,6 +1229,13 @@ const TEMP_ROOT_OK_TOOLS = new Set([...HOME_ROOT_OK_TOOLS, 'mkdir']);
  * conservative: anything it cannot place asks a human.
  */
 export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: EscalationAutoApproveOpts): AutoApproveVerdict {
+  return allLevelCore(request, opts, null);
+}
+
+/** What allLevelCore saw, for the filesystem link probe (allLevelLinkProbe). */
+type LinkProbeCollect = { paths: Set<string>; trees: Set<string>; roots: string[] };
+
+function allLevelCore(request: EscalationRequestLike, opts: EscalationAutoApproveOpts, collect: LinkProbeCollect | null): AutoApproveVerdict {
   if (!opts.enabled) return { ok: false, reason: 'flag-off' };
   if (opts.level !== 'all' || opts.attended !== true) return { ok: false, reason: 'not-all-level' };
   if (opts.policyBlocksAutoAccept) return { ok: false, reason: 'policy-ask' };
@@ -1320,6 +1335,11 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     (verdict === 'home-root' && HOME_ROOT_OK_TOOLS.has(cmd)) || (verdict === 'temp-root' && TEMP_ROOT_OK_TOOLS.has(cmd))
   );
   const isRootDir = (p: string) => homeRelative(p, homes) === '' || tempRelative(p) === '';
+  const seenPath = (p: string) => { collect?.paths.add(p); };
+  // Probe roots in order of preference: the home (so ~/demo and ~/tmp
+  // themselves are probed too), literal /tmp, then a workspace outside home.
+  if (collect) collect.roots.push(...homes, TEMP_ROOT_LITERAL, ...trusted);
+  seenPath(initialCwd);
 
   const lexed = lexAllLevelScript(shellText);
   if (lexed.ok === false) return { ok: false, reason: lexed.reason };
@@ -1339,6 +1359,7 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
       return cwds.every((c) => {
         const p = resolve(f, c);
         if (!p) return false;
+        seenPath(p);
         if (inTemp(p)) return checkPath(p) === null;
         return trusted.length > 0 && inTrusted(p) && checkPath(p) === null;
       });
@@ -1394,9 +1415,14 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     if ((seg.piped || hasRedirect || tokens.some((t) => /^\d?[<>]/.test(t))) && INTERPRETER_RE.test(cmdWord.replace(/^.*\//, ''))) {
       return { ok: false, reason: 'signal:opaque-script-exec' };
     }
-    if (cmdWord.includes('/')) return { ok: false, reason: 'script-exec' };
+    // Variables that turn a read-only command into code execution or move
+    // what a path means (the driver strips them from the worker env — see
+    // WORKER_ENV_DROP in scripts/shelly-agent-driver.js — and the syntax-check
+    // / cd / $HOME / $TMPDIR allowances depend on that): never changed here.
+    if (ENV_SENSITIVE_ASSIGN_RE.test(cmdWord) || ENV_CHANGE_TOOLS.has(cmdWord)) return { ok: false, reason: 'env-change' };
     // `VAR=value cmd …` runs cmd with a changed environment (PATH, NODE_OPTIONS …).
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cmdWord)) return { ok: false, reason: 'env-assignment' };
+    if (cmdWord.includes('/')) return { ok: false, reason: 'script-exec' };
     if (INTERPRETER_RE.test(cmdWord)) {
       if (seg.heredocs.length > 0 || !isSyntaxCheck(tokens, cur)) return { ok: false, reason: 'signal:opaque-script-exec' };
       continue;
@@ -1425,17 +1451,26 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
       if (sub && NETWORK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'network-tool' };
       if (!sub || (!WRITE_GIT_SUBCOMMANDS.has(sub) && !READ_GIT_SUBCOMMANDS.has(sub))) return { ok: false, reason: 'git-subcommand' };
     }
-    // Symlinks: a relative link target resolves against the LINK's directory,
-    // not the cwd this check uses — `ln -s ../bin $TMPDIR/b` then
-    // `cp x $TMPDIR/b/git` would write ~/bin/git. Relative symbolic targets,
-    // `ln -t` and `cp -s` ask.
-    if (cmdWord === 'ln' && args.some((a) => a === '--symbolic' || /^-[A-Za-z]*s/.test(a))) {
-      if (args.some((a) => /^-[A-Za-z]*t/.test(a) || a.startsWith('--target-directory'))) return { ok: false, reason: 'option:ln' };
-      const operands = words.slice(1).filter((w) => !w.redir && !w.text.startsWith('-')).map((w) => w.text);
-      const targets = operands.length >= 2 ? operands.slice(0, -1) : operands;
-      if (targets.some((t) => !/^(?:\/|~|\$HOME|\$\{HOME\}|\$TMPDIR|\$\{TMPDIR\})/.test(t))) return { ok: false, reason: 'option:ln' };
+    // Links (review 2026-11-02, Critical): every check here is lexical, so a
+    // link the command creates (`ln -s /sdcard $TMPDIR/l && echo x >
+    // $TMPDIR/l/a`) would let a later write leave every allowed root. No
+    // command that can create a link is answered: `ln` in any form, `cp`
+    // that makes or copies links (-s / -l / -a / -P / -d / --preserve=links
+    // …), `git apply` / `patch` (a diff can carry a symlink).
+    if (cmdWord === 'ln' || cmdWord === 'patch') return { ok: false, reason: 'link-create' };
+    if (cmdWord === 'git' && args.find((a) => !a.startsWith('-')) === 'apply') return { ok: false, reason: 'link-create' };
+    if (cmdWord === 'cp' && args.some((a) => CP_LINK_OPTION_RE.test(a))) return { ok: false, reason: 'link-create' };
+    // A recursive copy / a move carries the links already in its sources:
+    // the link probe looks inside them.
+    if (collect && (cmdWord === 'mv' || (cmdWord === 'cp' && args.some((a) => /^-[A-Za-z]*[rR]/.test(a) || a === '--recursive')))) {
+      for (const w of words.slice(1)) {
+        if (w.redir || w.text.startsWith('-')) continue;
+        for (const c of cur) {
+          const p = resolve(w.text, c);
+          if (p) collect.trees.add(p);
+        }
+      }
     }
-    if (cmdWord === 'cp' && args.some((a) => a === '--symbolic-link' || /^-[A-Za-z]*s/.test(a))) return { ok: false, reason: 'option:cp' };
 
     if (cmdWord === 'cd') {
       if (seg.piped || seg.background || lexed.hasParen) return { ok: false, reason: 'dir-change-unknown' };
@@ -1450,6 +1485,7 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
         for (const c of cur) {
           const n = resolve(target[0], c);
           if (!n) return { ok: false, reason: 'dir-change-unknown' };
+          seenPath(n);
           const v = checkPath(n);
           if (v && !((v === 'home-root' || v === 'temp-root') && isRootDir(n))) return { ok: false, reason: v };
           next.push(n);
@@ -1480,6 +1516,7 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
       for (const c of cur) {
         const p = resolve(target, c);
         if (!p || !(inTemp(p) || inTrusted(p)) || checkPath(p) !== null) return { ok: false, reason: 'heredoc' };
+        seenPath(p);
       }
       const h = seg.heredocs[0];
       if (!h.quoted && /[$`]/.test(withoutHomeVars(h.body))) return { ok: false, reason: 'expansion' };
@@ -1527,6 +1564,7 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
       // (`cd ~ && rm -rf bin`, `cd $TMPDIR && rm -f *`) — elsewhere a bare
       // word names something in the cwd.
       if (!pathish) {
+        for (const c of cur) seenPath(normalizePath(`${c}/${word}`));
         for (const c of bareCwds) {
           const v = checkPath(normalizePath(`${c}/${word}`));
           if (v && v !== 'home-root' && v !== 'temp-root') return { ok: false, reason: v };
@@ -1538,6 +1576,7 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
         const resolved = resolve(word, c);
         // M1: a target that cannot be resolved asks a human.
         if (resolved === null) return { ok: false, reason: 'unresolved-path' };
+        seenPath(resolved);
         const verdict = checkPath(resolved);
         // `ls ~` / `ls $TMPDIR` name a root without writing it. A glob in
         // the home (`ls ~/*`) still refuses.
@@ -1550,6 +1589,68 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
   }
   if (!sawAnyCommand) return { ok: false, reason: 'no-command' };
   return { ok: true, kind: 'all' };
+}
+
+/** Most link checks one probe runs before it asks a human instead. */
+const LINK_PROBE_MAX_CHECKS = 300;
+
+export type AllLevelLinkProbe = { ok: true; command: string } | { ok: false; reason: string };
+
+/**
+ * Review 2026-11-02 (Critical): the "all" checks are lexical, so a link that
+ * ALREADY exists under an allowed root (`~/demo/out -> /sdcard/x`, a
+ * symlink in $TMPDIR) would let an auto-approved write leave it. Before
+ * answering a command the "all" level allowed, the caller (app/_layout.tsx,
+ * which can run native commands) runs this probe: a /system/bin/sh script
+ * that tests every path component the command names below its allowed root
+ * (`[ -L … ]`), every entry of a directory a glob reads, and the inside of
+ * every recursive `cp` / `mv` source (`find -type l`). Any link — or a
+ * probe that fails / is cut off — means a human answers
+ * (linkProbeIsClean). Commands that CREATE links are refused outright by
+ * the verdict itself. Residual: the probe runs at approval time; a link
+ * created between the probe and the command (by another process) is not
+ * seen.
+ */
+export function allLevelLinkProbe(request: EscalationRequestLike, opts: EscalationAutoApproveOpts): AllLevelLinkProbe {
+  const collect: LinkProbeCollect = { paths: new Set(), trees: new Set(), roots: [] };
+  const v = allLevelCore(request, opts, collect);
+  if (v.ok === false) return { ok: false, reason: v.reason };
+  const roots = [...new Set(collect.roots)];
+  const checks = new Set<string>();
+  const globDirs = new Set<string>();
+  for (const p of collect.paths) {
+    if (DEVICE_PSEUDO_FILE_RE.test(p)) continue;
+    const root = roots.find((r) => p === r || p.startsWith(`${r}/`));
+    if (!root) return { ok: false, reason: 'link-probe-no-root' };
+    const comps = p === root ? [] : p.slice(root.length + 1).split('/');
+    let at = root;
+    for (let i = 0; i < comps.length; i++) {
+      if (/[*?[]/.test(comps[i])) {
+        if (i !== comps.length - 1) return { ok: false, reason: 'link-probe-glob' };
+        globDirs.add(at);
+        break;
+      }
+      at = `${at}/${comps[i]}`;
+      checks.add(at);
+    }
+  }
+  if (checks.size + globDirs.size + collect.trees.size > LINK_PROBE_MAX_CHECKS) return { ok: false, reason: 'link-probe-too-many' };
+  const q = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`;
+  const lines: string[] = [];
+  if (checks.size > 0) lines.push(`for p in ${[...checks].map(q).join(' ')}; do [ -L "$p" ] && echo "LINK $p"; done`);
+  for (const d of globDirs) lines.push(`for p in ${q(d)}/* ${q(d)}/.[!.]*; do [ -L "$p" ] && echo "LINK $p"; done`);
+  for (const t of collect.trees) lines.push(`find ${q(t)} -type l 2>/dev/null | head -n 1 | sed 's/^/LINK /'`);
+  lines.push(`echo ${LINK_PROBE_DONE}`);
+  return { ok: true, command: lines.join('\n') };
+}
+
+const LINK_PROBE_DONE = 'SHELLY_LINK_PROBE_DONE';
+
+/** The probe ran to the end and found no link. */
+export function linkProbeIsClean(result: { exitCode: number; stdout: string } | null | undefined): boolean {
+  if (!result || result.exitCode !== 0) return false;
+  const out = String(result.stdout ?? '');
+  return new RegExp(`(?:^|\\n)${LINK_PROBE_DONE}\\s*$`).test(out) && !/(?:^|\n)LINK /.test(out);
 }
 
 function standardEscalationVerdict(

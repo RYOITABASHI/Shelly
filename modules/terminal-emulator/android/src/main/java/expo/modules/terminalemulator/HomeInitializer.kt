@@ -5793,6 +5793,12 @@ patchCodex(libDir);
      * proxy / token / CLAUDE_CODE_SHELL / CLAUDE_ENV_FILE recipe is identical in
      * both. Calls __shelly_paste_tui_begin/_end, which the runner stubs out.
      */
+    // 2026-11-02: the Bash-tool env file (heredoc __SHELLY_CLAUDE_ENV below)
+    // also unsets NODE_OPTIONS / BASH_ENV / ENV / CDPATH / PROMPT_COMMAND —
+    // variables that turn a read-only command into code execution (`node
+    // --check`, `bash -n`, the shelly_shell re-exec which would source
+    // BASH_ENV) — before that re-exec. Mirrors the driver's WORKER_ENV_DROP.
+    // (No Kotlin comments inside the appendLine run: tests extract it.)
     private fun appendClaudeGlibcFunction(sb: StringBuilder, libDir: String) {
         sb.appendLine("shelly-claude-glibc() {")
         sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
@@ -5878,7 +5884,7 @@ patchCodex(libDir);
         sb.appendLine("    [ \"\$(readlink \"\$__sh\" 2>/dev/null)\" = /system/bin/sh ] || ln -sfn /system/bin/sh \"\$__sh\"")
         sb.appendLine("    # v283: tmp + rename, so a concurrent run never reads a half-written file.")
         sb.appendLine("    cat > \"\$__envf.\$BASHPID.tmp\" <<'__SHELLY_CLAUDE_ENV'")
-        sb.appendLine("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN")
+        sb.appendLine("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS BASH_ENV ENV CDPATH PROMPT_COMMAND")
         sb.appendLine("if [ -z \"\${BASH_VERSION:-}\" ]; then")
         sb.appendLine("  /system/bin/linker64 $libDir/shelly_shell -c 'mapfile -d \"\" -t __a < /proc/\$PPID/cmdline; eval \"\${__a[-1]}\"'")
         sb.appendLine("  exit \$?")

@@ -519,8 +519,23 @@ function readAndroidTimezone() {
   }
 }
 
-function codexChildEnv(input) {
+// 2026-11-02 review: variables that make an otherwise read-only command run
+// code: NODE_OPTIONS (`--require` for `node --check`), BASH_ENV (sourced by a
+// non-interactive bash, incl. `bash -n`), ENV (sh), PROMPT_COMMAND, and
+// CDPATH (changes where `cd rel` lands — the "all" level follows cwd
+// lexically). The "all" level's syntax-check / cd allowances depend on the
+// worker (and the gate) never inheriting them. NODE_PATH is kept: it only
+// changes module lookup for `require`, which `node --check` never runs.
+const WORKER_ENV_DROP = ['NODE_OPTIONS', 'BASH_ENV', 'ENV', 'CDPATH', 'PROMPT_COMMAND'];
+
+function sanitizeWorkerEnv(input) {
   const env = { ...input };
+  for (const key of WORKER_ENV_DROP) delete env[key];
+  return env;
+}
+
+function codexChildEnv(input) {
+  const env = sanitizeWorkerEnv(input);
   delete env.SHELLY_AGENT_ESCALATION_DIR;
   delete env.SHELLY_AGENT_ESCALATION_REPLY_DIR;
   delete env.SHELLY_AGENT_RUN_ID;
@@ -578,10 +593,10 @@ function gateSpawnSpec(config) {
   const android = androidLauncherContext();
   if (android) {
     const nodePath = resolveAndroidNode(config, android.libDir);
-    const env = {
+    const env = sanitizeWorkerEnv({
       ...androidBaseEnv(android.libDir),
       LD_LIBRARY_PATH: android.libDir,
-    };
+    });
     delete env.LD_PRELOAD;
     const args = [nodePath, config.gateScript];
     return {
@@ -599,7 +614,7 @@ function gateSpawnSpec(config) {
     mode: 'host-path',
     command: config.nodeBin,
     args,
-    env: process.env,
+    env: sanitizeWorkerEnv(process.env),
     display: [config.nodeBin, ...args],
     nodePath: config.nodeBin,
     libDir: null,
@@ -3220,6 +3235,12 @@ if (require.main === module) {
 module.exports = {
   WORKER_PROMPT_HINT,
   workerPrompt,
+  WORKER_ENV_DROP,
+  sanitizeWorkerEnv,
+  codexChildEnv,
+  codexAppServerSpawnSpec,
+  claudeRunnerSpawnSpec,
+  gateSpawnSpec,
   isUnattendedPolicy,
   preapprovalGrantSignatureMessage,
   verifyPreapprovalGrantSignature,

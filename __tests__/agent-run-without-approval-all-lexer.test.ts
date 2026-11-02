@@ -6,8 +6,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  allLevelLinkProbe,
   escalationAutoApprovable,
   lexAllLevelScript,
+  linkProbeIsClean,
   type EscalationAutoApproveOpts,
 } from '@/lib/agent-run-without-approval';
 import { classifyProposedCommand } from '@/lib/agent-boundary-policy';
@@ -264,17 +266,34 @@ describe('$TMPDIR and /tmp', () => {
     }
   });
 
-  it('symlinks into scratch dirs: relative targets and cp -s ask', () => {
-    for (const [command, reason] of [
-      ['ln -s ../bin $TMPDIR/b', 'option:ln'],
-      ['ln -sf ../../bin/git $TMPDIR/g', 'option:ln'],
-      ['ln -st $TMPDIR ../bin', 'option:ln'],
-      ['cp -s claude.html $TMPDIR/l', 'option:cp'],
-    ] as const) {
-      expect([command, direct(command)]).toEqual([command, { ok: false, reason }]);
+  it('no command that can create a link is answered (review 2026-11-02)', () => {
+    for (const command of [
+      'ln -s /sdcard $TMPDIR/l && echo x > $TMPDIR/l/a',
+      'ln -s ../bin $TMPDIR/b',
+      'ln -s ~/demo/claude.html $TMPDIR/l',
+      'ln ~/demo/claude.html ~/demo/hard',
+      'ln -t $TMPDIR ~/demo/a',
+      'ln --symbolic /sdcard ~/demo/l',
+      'cp -s claude.html $TMPDIR/l',
+      'cp -l claude.html $TMPDIR/l',
+      'cp --symbolic-link claude.html $TMPDIR/l',
+      'cp --link claude.html $TMPDIR/l',
+      'cp -a ~/demo $TMPDIR/d',
+      'cp -rP ~/demo $TMPDIR/d',
+      'cp -d ~/demo/l $TMPDIR/l',
+      'cp --archive ~/demo $TMPDIR/d',
+      'cp --no-dereference ~/demo/l $TMPDIR/l',
+      'cp --preserve=links -r ~/demo $TMPDIR/d',
+      'cp --preserve=all ~/demo/a $TMPDIR/a',
+      'git apply x.patch',
+      'patch -p1 < x.patch',
+      'cd ~/demo && touch a; ln -sf /sdcard/Download b',
+    ]) {
+      expect([command, direct(command)]).toEqual([command, { ok: false, reason: 'link-create' }]);
     }
-    expect(judge(`ln -s ${HOME}/bin $TMPDIR/b`)).toEqual({ ok: false, reason: 'shelly-control-path' });
-    expectAnswered('ln -s ~/demo/claude.html $TMPDIR/l');
+    // Plain copies still go through.
+    expectAnswered('cp -r ~/demo/assets $TMPDIR/assets');
+    expectAnswered('cp -p claude.html $TMPDIR/c.html');
   });
 
   it('other paths outside the home still ask', () => {
@@ -385,6 +404,164 @@ describe('more lexer / path adversarial cases', () => {
     expect(direct('cp claude.html `echo ~/bin/git`').ok).toBe(false);
     // (The gate itself still files this as indirect-exec — its own call.)
     expect(direct("grep -c '$(not run)' claude.html")).toEqual(ANSWERED);
+  });
+});
+
+describe('environment that turns a check into code execution', () => {
+  it('assigning / exporting / unsetting the sensitive variables asks', () => {
+    for (const command of [
+      'NODE_OPTIONS=--require=./x.js node --check a.js',
+      'BASH_ENV=./x.sh bash -n a.sh',
+      'ENV=./x.sh sh -n a.sh',
+      'CDPATH=/sdcard cd demo && rm -f a',
+      'PATH=. ls',
+      'HOME=/sdcard cp a ~/b',
+      'TMPDIR=/sdcard cp a $TMPDIR/b',
+      'export NODE_OPTIONS=--require=./x.js; node --check a.js',
+      'export BASH_ENV=x',
+      'declare -x BASH_ENV=x',
+      'typeset -x ENV=x',
+      'unset HOME; ls',
+      'env NODE_OPTIONS=-r./x node --check a.js',
+      'NODE_OPTIONS+=" -r ./x"; node --check a.js',
+      'cd ~/demo && PROMPT_COMMAND=x ls',
+    ]) {
+      expect([command, direct(command).ok]).toEqual([command, false]);
+    }
+    expect(direct('NODE_OPTIONS=--require=./x.js node --check a.js')).toEqual({ ok: false, reason: 'env-change' });
+    expect(direct('export BASH_ENV=x')).toEqual({ ok: false, reason: 'env-change' });
+    // The syntax checks themselves stay answered (the driver strips the
+    // variables from the worker env — next describe).
+    expectAnswered('node --check game.js && bash -n build.sh');
+  });
+
+  it('the driver strips them from every child it starts (Codex, Claude runner, gate)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const driver = require(path.join(ROOT, 'scripts/shelly-agent-driver.js'));
+    const dirty = {
+      HOME: '/h', PATH: '/bin', TMPDIR: '/h/tmp', NODE_PATH: '/h/lib/node_modules',
+      NODE_OPTIONS: '--require=/h/x.js', BASH_ENV: '/h/x.sh', ENV: '/h/x.sh', CDPATH: '/sdcard', PROMPT_COMMAND: 'id',
+    };
+    expect(driver.WORKER_ENV_DROP).toEqual(expect.arrayContaining(['NODE_OPTIONS', 'BASH_ENV', 'ENV', 'CDPATH', 'PROMPT_COMMAND']));
+    const envs = [
+      driver.sanitizeWorkerEnv(dirty),
+      driver.codexChildEnv(dirty),
+      driver.claudeChildEnv(dirty, { source: 'subscription' }),
+      driver.claudeChildEnv({ ...dirty, ANTHROPIC_API_KEY: 'k' }, { source: 'api-key' }),
+    ];
+    const saved = { ...process.env };
+    try {
+      Object.assign(process.env, dirty);
+      envs.push(driver.codexAppServerSpawnSpec({ codexBin: 'codex' }).env);
+      envs.push(driver.gateSpawnSpec({ nodeBin: 'node', gateScript: 'gate.js' }).env);
+      envs.push(driver.claudeRunnerSpawnSpec({ claudeRunner: 'run.sh', claudeRunnerInterpreter: 'bash' }, { source: 'subscription' }).env);
+    } finally {
+      for (const k of Object.keys(dirty)) delete process.env[k];
+      Object.assign(process.env, saved);
+    }
+    for (const env of envs) {
+      for (const key of ['NODE_OPTIONS', 'BASH_ENV', 'ENV', 'CDPATH', 'PROMPT_COMMAND']) expect([key, env[key]]).toEqual([key, undefined]);
+      expect(env.HOME).toBe('/h');
+      expect(env.NODE_PATH).toBe('/h/lib/node_modules'); // kept: module lookup only
+    }
+    // The generated Claude Bash-tool env file unsets them before its bash re-exec.
+    const homeKt = fs.readFileSync(path.join(ROOT, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt'), 'utf8');
+    expect(homeKt).toContain('sb.appendLine("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS BASH_ENV ENV CDPATH PROMPT_COMMAND")');
+  });
+});
+
+describe('link probe for existing symlinks (review 2026-11-02)', () => {
+  const probeOf = (command: string, cwd = WS) => allLevelLinkProbe(
+    { command, signals: ['leaves-root', 'write-or-exec'], reason: 'boundary: leaves-root, write-or-exec', cwd, workspaceRoot: cwd },
+    allOpts,
+  );
+
+  it('tests every component below its allowed root, the cwd and bare words', () => {
+    const p = probeOf('echo x > out && cp claude.html $TMPDIR/sub/c.html');
+    expect(p.ok).toBe(true);
+    if (p.ok) {
+      for (const comp of [WS, `${WS}/out`, `${WS}/claude.html`, `${HOME}/tmp/sub`, `${HOME}/tmp/sub/c.html`]) {
+        expect([comp, p.command.includes(`'${comp}'`)]).toEqual([comp, true]);
+      }
+      // ~/tmp itself is probed; the home never is (/data/user/0 is itself a
+      // link on Android).
+      expect(p.command).toContain(`'${HOME}/tmp'`);
+      expect(p.command).not.toContain(`'${HOME}'`);
+      expect(p.command).toMatch(/\[ -L "\$p" \] && echo "LINK \$p"/);
+      expect(p.command.trim().split('\n').pop()).toBe('echo SHELLY_LINK_PROBE_DONE');
+    }
+  });
+
+  it('globs: the directory is listed; a glob before the last component asks', () => {
+    const p = probeOf('rm -f ~/notes/*.tmp');
+    expect(p.ok && p.command.includes(`'${HOME}/notes'/* '${HOME}/notes'/.[!.]*`)).toBe(true);
+    expect(probeOf('cp a ~/demo/d*/x')).toEqual({ ok: false, reason: 'link-probe-glob' });
+  });
+
+  it('recursive copies and moves have their sources searched for links', () => {
+    const p = probeOf('cp -r ~/demo/assets $TMPDIR/assets && mv ~/demo/old ~/demo/new');
+    expect(p.ok).toBe(true);
+    if (p.ok) {
+      expect(p.command).toContain(`find '${WS}/assets' -type l 2>/dev/null | head -n 1 | sed 's/^/LINK /'`);
+      expect(p.command).toContain(`find '${WS}/old' -type l`);
+    }
+  });
+
+  it('paths are single-quoted safely', () => {
+    const p = probeOf("cp claude.html \"$TMPDIR/it's\"");
+    expect(p.ok && p.command.includes(`'${HOME}/tmp/it'\\''s'`)).toBe(true);
+  });
+
+  it('a refused command has no probe', () => {
+    expect(probeOf('ln -s /sdcard $TMPDIR/l')).toEqual({ ok: false, reason: 'link-create' });
+  });
+
+  it('the probe really finds a link (POSIX sh, real filesystem)', () => {
+    if (process.platform === 'win32') return; // NTFS symlinks need privileges
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { spawnSync } = require('child_process');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const os = require('os');
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rwa-probe-')));
+    try {
+      fs.mkdirSync(path.join(home, 'demo'));
+      fs.mkdirSync(path.join(home, 'tmp'));
+      const opts = { ...allOpts, homePaths: [home], trustedWorkspaceRoot: `${home}/demo` };
+      const probe = (command: string) => {
+        const p = allLevelLinkProbe({ command, signals: ['leaves-root', 'write-or-exec'], reason: 'boundary: leaves-root', cwd: `${home}/demo`, workspaceRoot: `${home}/demo` }, opts);
+        if (p.ok === false) throw new Error(p.reason);
+        const r = spawnSync('/bin/sh', ['-c', p.command], { encoding: 'utf8' });
+        return linkProbeIsClean({ exitCode: r.status ?? 1, stdout: r.stdout ?? '' });
+      };
+      expect(probe('echo x > out && cp a $TMPDIR/b')).toBe(true);
+      fs.symlinkSync(os.tmpdir(), path.join(home, 'demo', 'out'));
+      expect(probe('echo x > out')).toBe(false);
+      expect(probe('cp a $TMPDIR/b')).toBe(true);
+      fs.mkdirSync(path.join(home, 'demo', 'assets'));
+      fs.symlinkSync('/etc', path.join(home, 'demo', 'assets', 'l'));
+      expect(probe('cp -r assets $TMPDIR/assets')).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('linkProbeIsClean: only a probe that ran to the end and printed no LINK', () => {
+    expect(linkProbeIsClean({ exitCode: 0, stdout: 'SHELLY_LINK_PROBE_DONE\n' })).toBe(true);
+    expect(linkProbeIsClean({ exitCode: 0, stdout: `LINK ${WS}/out\nSHELLY_LINK_PROBE_DONE\n` })).toBe(false);
+    expect(linkProbeIsClean({ exitCode: 0, stdout: '' })).toBe(false);
+    expect(linkProbeIsClean({ exitCode: 1, stdout: 'SHELLY_LINK_PROBE_DONE\n' })).toBe(false);
+    expect(linkProbeIsClean({ exitCode: 0, stdout: 'SHELLY_LINK_PROBE_DONE\nmore' })).toBe(false);
+    expect(linkProbeIsClean(null)).toBe(false);
+  });
+
+  it('_layout runs the probe before signing an "all" auto-approval', () => {
+    const layout = fs.readFileSync(path.join(ROOT, 'app/_layout.tsx'), 'utf8');
+    const probeAt = layout.indexOf('allLevelLinkProbe(minted, mintedOpts)');
+    const cleanAt = layout.indexOf('linkProbeIsClean(probeResult)');
+    const signAt = layout.indexOf('TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId');
+    expect(probeAt).toBeGreaterThan(0);
+    expect(cleanAt).toBeGreaterThan(probeAt);
+    expect(signAt).toBeGreaterThan(cleanAt);
   });
 });
 
