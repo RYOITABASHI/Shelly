@@ -174,6 +174,7 @@ export default function AgentRunsPane() {
         agentId,
         durationMs: run.durationMs,
         explainWhenBlocked: true,
+        userRequested: true,
         alreadySkillId: agent.skillId,
         planSpec: run.steps && run.steps.length >= 2 ? buildAgentPlanSpec(agent) : undefined,
       });

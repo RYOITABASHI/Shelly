@@ -607,6 +607,9 @@ export function roleRoutingLines(
       if (eff.degraded) lines.push(tl('roles.route.level_all_degraded'));
     }
   }
+  if (routing.branchDirs && routing.branchDirs.length >= 2) {
+    lines.push(tl('roles.route.branch_dirs_line', { dirs: routing.branchDirs.map((b) => `${b.label} → ${b.dir}`).join(', ') }));
+  }
   for (const n of routing.notes ?? []) lines.push(n);
   lines.push(tl('roles.route.opt_out_hint'));
   return lines;
@@ -772,7 +775,15 @@ export function summarizeAgentDraftAsText(
       return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round === 2));
     };
     const stepLabel = (s: (typeof draft.orchestrationSteps)[number]) => {
-      const instruction = (typeof s === 'string' ? s : stripHandoffContract(s.instruction)) + loopSuffix(s);
+      // A routed step's appended paragraphs (hand-off contract, the
+      // competing-branch "work only inside <dir>" line) are not shown — the
+      // branch folders get their own confirm line (roleRoutingLines) — and a
+      // remaining line break is flattened so one step stays on one line.
+      const instruction = (typeof s === 'string'
+        ? s
+        : s.role
+          ? stripHandoffContract(s.instruction).split('\n\n')[0].replace(/\s*\n\s*/g, ' ')
+          : stripHandoffContract(s.instruction)) + loopSuffix(s);
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
       // Agent roles (WP3): "[<role> · <engine>] <instruction>".
       const roleName = typeof s === 'string' ? undefined : s.role?.name;
@@ -985,6 +996,10 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
       : {}),
     // The summary line the user OK'd named it ("Workspace: ~/demo").
     ...(draft.workspaceRoot ? { workspaceRoot: draft.workspaceRoot } : {}),
+    // "Each implementation works in its own folder: A → ~/demo/a, …"
+    ...(draft.workspaceRoot && draft.roleRouting?.branchDirs?.length
+      ? { branchDirs: draft.roleRouting.branchDirs.map((b) => b.dir) }
+      : {}),
     // Agent roles (WP3): a single-unit routed agent records which role it
     // was made with (display only), and — only for a draft the user typed
     // in this chat — which roles' levels the typed OK re-verifies and applies.

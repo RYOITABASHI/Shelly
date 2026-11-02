@@ -111,6 +111,10 @@ export interface RoleRoutingInfo {
   levelEligible?: boolean;
   /** Home-relative workspace the routed agent will use, when one was chosen. */
   workspaceRoot?: string;
+  /** Competing parallel implement branches each work in their own folder
+   *  under workspaceRoot (`~/demo/a`, `~/demo/b`; label = the judge's
+   *  Candidate letter). Created at confirm; shown in the confirm text. */
+  branchDirs?: Array<{ stepIndex: number; label: string; dir: string }>;
   /** Plain-text caveats for the confirm text (workspace conflict, serialized
    *  same-engine branches, ...). i18n keys or already-translated lines. */
   notes?: string[];

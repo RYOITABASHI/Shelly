@@ -5,7 +5,9 @@
  * user-visible save prompt also covers the one-shot `@agent` chat flow
  * (DEFERRED.md G3 Phase 2a item 1: one-shot is the most common conversation
  * path and previously never offered to distill a skill). Never silent —
- * always a human-confirmed Alert; the caller supplies the run's result
+ * attended runs get a plain chat-text offer the user answers by typing
+ * (lib/skill-offer-chat.ts; 2026-11-02, replaced the Alert); unattended runs
+ * keep the auto-save + notification. The caller supplies the run's result
  * directly (no store lookups here) so it works equally for a still-registered
  * scheduled agent (Sidebar) and an already-deleted ephemeral one-shot agent
  * (AI pane).
@@ -29,6 +31,11 @@ import {
   persistSkillImprovement,
   revertSkillImprovement,
 } from '@/lib/skill-self-improve';
+import {
+  findSkillOfferChatKey,
+  postSkillOfferLine,
+  setPendingSkillOffer,
+} from '@/lib/skill-offer-chat';
 import type { AgentRouteDecision, AgentRunLog, AgentRunStep } from '@/store/types';
 import { runSucceededInFull } from '@/lib/agent-run-success';
 import { runHadBlockedAction } from '@/lib/agent-run-blocks';
@@ -121,6 +128,12 @@ export interface SkillSaveOfferParams {
   /** An explicit user tap ("Save as skill" button): when the audit trail shows
    *  a block, explain why nothing is offered instead of doing nothing. */
   explainWhenBlocked?: boolean;
+  /** An explicit user tap ("Save as skill" button): save without asking
+   *  again (the tap is the decision) and report the result in chat. */
+  userRequested?: boolean;
+  /** Conversation key (store/ai-pane-store.ts) to ask in — the pane that
+   *  showed this run's result. Omitted: the focused / first AI pane. */
+  chatKey?: string;
 }
 
 /** Audit-trail check for one run (false when there is nothing to read). */
@@ -217,37 +230,37 @@ export function useSkillSaveOffer(opts: {
    * today's behavior: the metadata bump already landed, the body is untouched.
    * No-op when nothing was staged, so call sites can invoke unconditionally.
    */
-  const offerSkillImprovement = React.useCallback((agentId: string) => {
+  // 2026-11-02 owner decision: the attended offers are asked as plain chat
+  // text (lib/skill-offer-chat.ts), never an Alert. `chatKey` is the
+  // conversation the run's result went to (the @agent pane); without it the
+  // focused / first AI pane is used, and with no AI pane open the offer is
+  // only logged.
+  const offerSkillImprovement = React.useCallback((agentId: string, chatKey?: string) => {
     const proposal = consumeSkillImprovementProposal(agentId);
     if (!proposal || proposal.kind !== 'bump-with-learning' || !proposal.learning) return;
     const name = proposal.agentName ?? proposal.improved.name;
     const message = buildSkillImprovementAlertMessage(t, name, proposal.learning.note);
     if (!message) return;
-    Alert.alert(
-      t('sidebar.skill_improve_title'),
-      message,
-      [
-        {
-          text: t('sidebar.skill_improve_yes'),
-          onPress: () => {
-            void persistSkillImprovement(runCommand, proposal)
-              .then(() => onSaved?.())
-              .catch((error) => {
-                Alert.alert(
-                  t('sidebar.skill_improve_failed_title'),
-                  String((error as Error)?.message || error)
-                );
-              });
-          },
-        },
-        { text: t('common.cancel'), style: 'cancel' },
-      ],
-      { cancelable: true },
-    );
+    const key = chatKey ?? findSkillOfferChatKey();
+    if (!postSkillOfferLine(key, `${message}\n\n${t('skill_offer.improve_reply_hint')}`) || !key) return;
+    setPendingSkillOffer({
+      kind: 'improve',
+      chatKey: key,
+      createdAt: Date.now(),
+      apply: async () => {
+        try {
+          await persistSkillImprovement(runCommand, proposal);
+          onSaved?.();
+          postSkillOfferLine(key, t('skill_offer.improved', { name }));
+        } catch (error) {
+          postSkillOfferLine(key, t('skill_offer.improve_failed', { error: String((error as Error)?.message || error) }));
+        }
+      },
+    });
   }, [t, runCommand, onSaved]);
 
   // Async only for the audit-trail read: resolves once the decision is made
-  // (the Alert itself is non-blocking). A caller about to delete the agent
+  // (posting the offer is non-blocking). A caller about to delete the agent
   // (ephemeral one-shot) awaits it so the read sees the agent's live logs.
   const offerSkillSave = React.useCallback(async (params: SkillSaveOfferParams): Promise<void> => {
     // Cheap checks first: a run that fails them never needs the audit read.
@@ -255,11 +268,9 @@ export function useSkillSaveOffer(opts: {
     const blocked = await resolveRunBlocked(runCommand, params);
     if (blocked) {
       if (params.explainWhenBlocked) {
-        Alert.alert(
-          t('sidebar.skill_save_blocked_title'),
+        postSkillOfferLine(
+          params.chatKey ?? findSkillOfferChatKey(),
           t('sidebar.skill_save_blocked_body', { name: params.name }),
-          undefined,
-          { cancelable: true },
         );
       }
       return;
@@ -285,38 +296,27 @@ export function useSkillSaveOffer(opts: {
       })();
       return;
     }
-    Alert.alert(
-      t('sidebar.skill_save_title'),
-      t('sidebar.skill_save_body', { name: params.name }),
-      [
-        {
-          text: t('sidebar.skill_save_yes'),
-          onPress: () => {
-            void (async () => {
-              try {
-                await saveSkillWithoutConfirmation(runCommand, params);
-                onSaved?.();
-              } catch (error) {
-                Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
-              }
-            })();
-          },
-        },
-        { text: t('common.cancel'), style: 'cancel' },
-      ],
-      // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md): this
-      // Alert fires after EVERY successful attended run (by design — it's
-      // never silent), so during a burst of runs it repeatedly blocked all
-      // other interaction. RN's Alert.alert defaults to `cancelable: false`
-      // on Android unless explicitly opted in (same fact already documented
-      // elsewhere in components/layout/Sidebar.tsx for a different dialog) —
-      // without this, the ONLY way past it was to find and tap a button;
-      // back-button / tap-outside did nothing. This doesn't change WHETHER
-      // the prompt appears (still every successful run, still a real human
-      // decision before a skill is persisted) — it only adds the same
-      // escape hatch every other dismissible dialog in this app already has.
-      { cancelable: true },
-    );
+    const key = params.chatKey ?? findSkillOfferChatKey();
+    const save = async (): Promise<void> => {
+      try {
+        await saveSkillWithoutConfirmation(runCommand, params);
+        onSaved?.();
+        postSkillOfferLine(key, t('skill_offer.saved', { name: params.name }));
+      } catch (error) {
+        postSkillOfferLine(key, t('skill_offer.save_failed', { error: String((error as Error)?.message || error) }));
+      }
+    };
+    // An explicit "Save as skill" tap is already the user's decision.
+    if (params.userRequested) {
+      await save();
+      return;
+    }
+    // Every successful attended run gets one plain chat line (still never
+    // silent, still a real human decision before a skill is persisted) — but
+    // unlike the old Alert it never blocks the screen during a burst of runs
+    // (2026-08-09 QA finding), and ignoring it is the "no".
+    if (!postSkillOfferLine(key, t('skill_offer.save_ask', { name: params.name })) || !key) return;
+    setPendingSkillOffer({ kind: 'save', chatKey: key, createdAt: Date.now(), apply: save });
   }, [t, runCommand, onSaved]);
 
   return { offerSkillSave, offerSkillImprovement };

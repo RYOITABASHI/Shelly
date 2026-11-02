@@ -142,6 +142,7 @@ import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 import { isEmptyPlainAssistantMessage } from '@/lib/ai-pane-empty-reply';
+import { takeSkillOfferForReply } from '@/lib/skill-offer-chat';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1176,6 +1177,39 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         }
       }
 
+      // ── "Save as skill?" / "apply this improvement?" asked as plain chat
+      // text after an attended run (lib/skill-offer-chat.ts, 2026-11-02).
+      // Only an exact save / apply phrase typed by the user in this
+      // conversation answers the latest offer here; anything else leaves it
+      // pending (it expires on its own), and a newer open question of any
+      // other kind wins the turn.
+      {
+        const conv = store.getOrCreate(paneId);
+        const sessionOpen =
+          !!conv.pendingAgentSession && Date.now() - conv.pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS;
+        const freshest = freshestMsgForPendingCheck as (ChatMessage & Record<string, unknown>) | undefined;
+        const otherQuestionOpen =
+          !!freshest &&
+          freshest.role === 'assistant' &&
+          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingRoleChange', 'pendingClosePawShell', 'pendingActionApproval'].some(
+            (k) => !!freshest[k],
+          );
+        const skillOffer = takeSkillOfferForReply({
+          chatKey: paneId,
+          text: userText,
+          now: Date.now(),
+          typedByUser: dispatchOpts?.typedByUser === true,
+          source: dispatchOpts?.source,
+          otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,
+        });
+        if (skillOffer) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+          logInfo('AIPaneDispatch', `skill offer reply applied: ${skillOffer.kind}`);
+          await skillOffer.apply();
+          return;
+        }
+      }
+
       // ── Reply to a pending "save this for EVERY agent?" confirmation
       // (2026-07-29, roadmap item 3 part 2) ────────────────────────────────
       //
@@ -2204,7 +2238,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 }
                 // Skill self-improvement confirm (no-op unless this run of a
                 // skill-reusing agent staged a body-learning proposal).
-                offerSkillImprovement?.(updatedAgent.id);
+                offerSkillImprovement?.(updatedAgent.id, paneId);
               } catch (runErr) {
                 const detail = runErr instanceof Error ? runErr.message : String(runErr);
                 const failureLine = `❌ ${correctionStrings['agentplan.run_now_failed']}: ${detail}`;
@@ -3416,7 +3450,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               }
               // Skill self-improvement confirm (no-op unless this run of a
               // skill-reusing agent staged a body-learning proposal).
-              offerSkillImprovement?.(agentResult.data.agentId);
+              offerSkillImprovement?.(agentResult.data.agentId, paneId);
             } catch (runErr) {
               const detail = runErr instanceof Error ? runErr.message : String(runErr);
               stopProgressTicker();
@@ -4605,6 +4639,28 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           if (prepared.ok === true && prepared.realPath) resolvedWorkspaceRoot = prepared.realPath;
           else logWarn('AgentDraft', `workspace ${workspaceCandidate} not used: ${prepared.ok === false ? prepared.reason : 'missing'}`);
         }
+        // Competing role branches (lib/agent-role-router.ts §6b): one folder
+        // each under the workspace (~/demo/a, ~/demo/b), created the same way
+        // (symlink-refusing mkdir -p, physical path re-validated, and it must
+        // be the direct child of the workspace that was just prepared). A
+        // refused folder is only logged: the branch instruction still says to
+        // work inside it, and the CLI creates it under the same gate.
+        if (resolvedWorkspaceRoot && confirmed.branchDirs?.length) {
+          for (const dir of confirmed.branchDirs) {
+            const abs = resolveWorkspaceRootForHome(dir, getHomePath());
+            const leaf = dir.replace(/\/+$/, '').split('/').pop() ?? '';
+            if (!abs || !leaf) {
+              logWarn('AgentDraft', `branch dir ${dir} not created: invalid`);
+              continue;
+            }
+            const prepared = parseWorkspacePrepareOutput(
+              await runAgentShellCommand(buildWorkspacePrepareCommand(abs, getHomePath(), true)).catch(() => 'REFUSE exec-failed'),
+            );
+            if (!(prepared.ok === true && prepared.realPath === `${resolvedWorkspaceRoot}/${leaf}`)) {
+              logWarn('AgentDraft', `branch dir ${dir} not created: ${prepared.ok === false ? prepared.reason : 'outside-workspace'}`);
+            }
+          }
+        }
         const agentFields = {
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),
@@ -4727,7 +4783,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             }
             // Skill self-improvement confirm (no-op unless this run of a
             // skill-reusing agent staged a body-learning proposal).
-            offerSkillImprovement?.(created.id);
+            offerSkillImprovement?.(created.id, paneId);
           } catch (runErr) {
             const detail = runErr instanceof Error ? runErr.message : String(runErr);
             const failureResult = { content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}` };
@@ -4871,12 +4927,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               planSpec: log?.steps && log.steps.length >= 2
                 ? buildAgentPlanSpec(created)
                 : undefined,
+              chatKey: paneId,
             });
             // Complementary to the save offer (skipped for skill-reusing
             // agents): consume any staged body-learning proposal. The staged
             // proposal is keyed by agentId in its own map, so it survives the
             // ephemeral agent's deletion below just like the rollback handle.
-            offerSkillImprovement?.(created.id);
+            offerSkillImprovement?.(created.id, paneId);
           } finally {
             // Stop the heartbeat before anything else in this block — the
             // agent (and this message's relevance to it) may already be

@@ -290,6 +290,9 @@ function nextGroupId(units: readonly Unit[]): string {
   for (let i = 1; ; i++) if (!used.has(`r${i}`)) return `r${i}`;
 }
 
+/** Branch folder letters — the same labels the judge sees (Candidate A/B/C). */
+const BRANCH_DIR_LETTERS = ['A', 'B', 'C'] as const;
+
 function byAge(a: AgentRole, b: AgentRole): number {
   return a.createdAt - b.createdAt || a.name.localeCompare(b.name);
 }
@@ -530,6 +533,59 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
     }
   }
 
+  // 6b. One folder per competing branch (2026-11-02 on-device finding: two
+  //     implementers building "in ~/demo" in parallel both wrote into ~/demo,
+  //     and the judge could read the other branch's files). Every parallel
+  //     group with ≥2 role-pinned implement units gets `<workspace>/a`, `/b`,
+  //     `/c` (letters = the judge's Candidate labels). Instruction-level: the
+  //     workspace path in the branch's instruction is retargeted and a
+  //     "work only inside" line added; the dirs are created at confirm. The
+  //     gate boundary stays the workspace root (the dirs are inside it).
+  const branchDirs: Array<{ stepIndex: number; label: string; dir: string; group: string }> = [];
+  if (workspaceRoot) {
+    const root = workspaceRoot.replace(/\/+$/, '');
+    const groups: string[] = [];
+    const subPathRe = new RegExp(`${escapeRe(root)}/[^\\s/]`);
+    for (const a of assigned) {
+      const g = a.unit.group;
+      if (!g || groups.includes(g)) continue;
+      const impl = assigned.filter((b) => b.unit.group === g && b.role && b.kind === 'implement');
+      // A group whose units already name their own folders under the
+      // workspace ("build a timer in ~/demo/a, a clock in ~/demo/b") keeps
+      // the user's layout.
+      if (impl.length >= 2 && !impl.some((b) => subPathRe.test(b.unit.text))) groups.push(g);
+    }
+    groups.forEach((g, gi) => {
+      let k = 0;
+      assigned.forEach((a, i) => {
+        if (a.unit.group !== g || !a.role || a.kind !== 'implement' || k >= BRANCH_DIR_LETTERS.length) return;
+        const letter = BRANCH_DIR_LETTERS[k++];
+        const dir = `${root}/${gi === 0 ? letter.toLowerCase() : `${g}-${letter.toLowerCase()}`}`;
+        const note = tl('roles.route.branch_dir_note', { dir });
+        const pathRe = new RegExp(`${escapeRe(root)}(?![A-Za-z0-9_.\\-/])`, 'g');
+        const body = a.unit.text.replace(pathRe, dir);
+        a.unit = { ...a.unit, text: `${Array.from(body).slice(0, Math.max(40, 480 - note.length)).join('')}\n\n${note}` };
+        branchDirs.push({ stepIndex: i, label: letter, dir, group: g });
+      });
+    });
+  }
+  const firstGroupDirs = branchDirs.filter((b) => b.group === branchDirs[0]?.group);
+  const candidateDirsLine = firstGroupDirs.length >= 2
+    ? tl('roles.route.candidate_dirs', { dirs: firstGroupDirs.map((b) => `${b.label} = ${b.dir}`).join(', ') })
+    : '';
+  if (candidateDirsLine && judgeApplied) {
+    // The judge compares the candidates' outputs; tell it where their files are.
+    const judgeEntry = assigned.find((a) => a.handoff?.kind === 'judge');
+    if (judgeEntry) {
+      const text = judgeEntry.unit.text;
+      const at = text.indexOf('\n\nOutput contract:');
+      judgeEntry.unit = {
+        ...judgeEntry.unit,
+        text: at === -1 ? `${text}\n${candidateDirsLine}` : `${text.slice(0, at)}\n${candidateDirsLine}${text.slice(at)}`,
+      };
+    }
+  }
+
   // 7. Build the draft.
   const levelOf = (r: AgentRole): RoleLevel => ctx.levels.get(r.id) ?? 'off';
   const assignments: RoleRoutingAssignment[] = [];
@@ -550,6 +606,7 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
     minLevel: minRoleLevel(usedRoles.map(levelOf)),
     levelEligible: ctx.source === 'chat',
     ...(workspaceRoot ? { workspaceRoot } : {}),
+    ...(branchDirs.length ? { branchDirs: branchDirs.map(({ stepIndex, label, dir }) => ({ stepIndex, label, dir })) } : {}),
     ...(notes.length ? { notes } : {}),
   };
   const { roleRouting: _drop, ...original } = draft;
@@ -579,7 +636,11 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
         ...(a.handoff ? { handoff: { kind: a.handoff.kind, of: [...a.handoff.of], round: a.handoff.round } } : {}),
       };
     });
-    if (appendFinal) steps.push(tl(competeApplied && !judgeApplied ? 'roles.route.compare_step' : 'roles.route.summary_step'));
+    if (appendFinal) {
+      const compare = competeApplied && !judgeApplied;
+      const finalText = tl(compare ? 'roles.route.compare_step' : 'roles.route.summary_step');
+      steps.push(compare && candidateDirsLine ? `${finalText} ${candidateDirsLine}` : finalText);
+    }
     routed = {
       ...draft,
       tool: { type: 'local' },

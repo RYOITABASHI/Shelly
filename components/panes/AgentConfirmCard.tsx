@@ -119,6 +119,9 @@ export interface ConfirmedAgentDraft {
    *  (definition hash) and applies as the agent's "run without approval"
    *  (their minimum). Set only for a draft the user typed in this chat. */
   roleLevelRoles?: Array<{ id: string; roleHash: string }>;
+  /** Competing role branches' own folders under workspaceRoot (`~/demo/a`,
+   *  `~/demo/b`; lib/agent-role-router.ts), created at confirm. */
+  branchDirs?: string[];
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

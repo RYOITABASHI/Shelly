@@ -95,9 +95,12 @@ describe('compete: "have both implementers … and compare" → executor cli=2',
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('Assigned to your roles:');
     const line = text.split('\n').find((l) => /^1\. /.test(l)) ?? '';
-    expect(line).toBe('1. In parallel: [Implementer · Codex CLI] build a brick breaker game in ~/demo / [Builder · Claude Code] build a brick breaker game in ~/demo');
-    expect(text).toMatch(/^2\. Compare the implementations above/m);
+    // Each competing branch works in its own folder (2026-11-02).
+    expect(line).toBe('1. In parallel: [Implementer · Codex CLI] build a brick breaker game in ~/demo/a / [Builder · Claude Code] build a brick breaker game in ~/demo/b');
+    expect(text).toMatch(/^2\. Compare the implementations above and say which is better and why\. The candidates' files: A = ~\/demo\/a, B = ~\/demo\/b\.$/m);
     expect(text).toContain('Workspace: ~/demo');
+    expect(text).toContain('Each implementation works in its own folder: A → ~/demo/a, B → ~/demo/b');
+    expect(text).not.toContain('Work only inside');
     expect(text).toContain("Run without approval: standard (the lowest of the roles' settings: Implementer=all, Builder=standard)");
     expect(text).toContain('To set it up without roles, reply "without roles".');
   });
@@ -113,6 +116,19 @@ describe('compete: "have both implementers … and compare" → executor cli=2',
     expect(route).toMatchObject({ route: 'executor', cliSteps: 2, groupCount: 1 });
     expect(route.reason).toMatch(/cli=2$/);
   });
+
+  it('the stored branch instructions target their own folder; the gate root stays the workspace', () => {
+    const { confirmed, plan } = install(draft);
+    const list = (plan.steps as { list: Array<{ instruction: string }> }).list;
+    expect(list[0].instruction).toBe('build a brick breaker game in ~/demo/a\n\nWork only inside ~/demo/a (create it if missing); do not read or modify files outside it.');
+    expect(list[1].instruction).toBe('build a brick breaker game in ~/demo/b\n\nWork only inside ~/demo/b (create it if missing); do not read or modify files outside it.');
+    expect(confirmed.workspaceRoot).toBe('~/demo');
+    expect(confirmed.branchDirs).toEqual(['~/demo/a', '~/demo/b']);
+    expect(draft.roleRouting?.branchDirs).toEqual([
+      { stepIndex: 0, label: 'A', dir: '~/demo/a' },
+      { stepIndex: 1, label: 'B', dir: '~/demo/b' },
+    ]);
+  });
 });
 
 describe('Inc B: compete + a judge role → executor cli=2, judge step with anonymous candidates', () => {
@@ -127,8 +143,12 @@ describe('Inc B: compete + a judge role → executor cli=2, judge step with anon
     expect(list[2].instruction).toContain('"WINNER: A", "WINNER: B" or "WINNER: TIE"');
     expect(route).toMatchObject({ route: 'executor', cliSteps: 2, groupCount: 1 });
     const text = summarizeAgentDraftAsText(draft);
-    expect(text).toMatch(/^2\. \[Judge · Local LLM\] Compare the candidates above and pick the better one\. \(sees the candidates as A \/ B, without role or engine names\)$/m);
+    expect(text).toMatch(/^2\. \[Judge · Local LLM\] Compare the candidates above and pick the better one\. The candidates' files: A = ~\/demo\/a, B = ~\/demo\/b\. \(sees the candidates as A \/ B, without role or engine names\)$/m);
     expect(text).not.toContain('Output contract');
+    // The judge is told where each candidate's files are (no role / engine names).
+    expect(list[2].instruction).toContain("The candidates' files: A = ~/demo/a, B = ~/demo/b.");
+    expect(list[2].instruction.indexOf('The candidates')).toBeLessThan(list[2].instruction.indexOf('Output contract'));
+    expect(list[2].instruction).not.toMatch(/Implementer|Builder|Codex|Claude/);
   });
 });
 

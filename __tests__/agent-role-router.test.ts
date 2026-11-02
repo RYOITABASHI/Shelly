@@ -165,10 +165,20 @@ describe('compete', () => {
     const { draft, info } = routeDraftToRoles(d, loaded(IMPL, REV, BUILDER), ctx());
     const steps = objSteps(draft.orchestrationSteps);
     expect(steps).toHaveLength(3);
-    expect(steps[0]).toMatchObject({ instruction: 'build a brick breaker game in ~/demo', tool: { cli: 'codex' }, parallelGroup: 'r1', role: { name: 'Implementer' } });
-    expect(steps[1]).toMatchObject({ instruction: 'build a brick breaker game in ~/demo', tool: { cli: 'claude' }, parallelGroup: 'r1', role: { name: 'Builder' } });
-    expect(steps[2]).toEqual({ instruction: 'Compare the implementations above and say which is better and why.' });
+    // 2026-11-02: each branch works in its own folder under the workspace.
+    expect(steps[0]).toMatchObject({ instruction: 'build a brick breaker game in ~/demo/a\n\nWork only inside ~/demo/a (create it if missing); do not read or modify files outside it.', tool: { cli: 'codex' }, parallelGroup: 'r1', role: { name: 'Implementer' } });
+    expect(steps[1]).toMatchObject({ instruction: 'build a brick breaker game in ~/demo/b\n\nWork only inside ~/demo/b (create it if missing); do not read or modify files outside it.', tool: { cli: 'claude' }, parallelGroup: 'r1', role: { name: 'Builder' } });
+    expect(steps[2]).toEqual({ instruction: "Compare the implementations above and say which is better and why. The candidates' files: A = ~/demo/a, B = ~/demo/b." });
     expect(info?.notes).toContain('The competing implementations are compared in the last step; the reviewer is not added automatically.');
+    expect(info?.workspaceRoot).toBe('~/demo');
+    expect(info?.branchDirs).toEqual([
+      { stepIndex: 0, label: 'A', dir: '~/demo/a' },
+      { stepIndex: 1, label: 'B', dir: '~/demo/b' },
+    ]);
+    // The gate boundary (agent workspace) stays the parent folder.
+    expect(draft.workspaceRoot).toBe('~/demo');
+    // Reverting the routing restores the original instruction.
+    expect(revertRoleRouting(draft).orchestrationSteps).toEqual(d.orchestrationSteps);
   });
 
   it('JA 「競わせて」', () => {
@@ -177,7 +187,33 @@ describe('compete', () => {
     const steps = objSteps(draft.orchestrationSteps);
     expect(steps.map((s) => s.parallelGroup)).toEqual(['r1', 'r1', undefined]);
     expect(steps[0].instruction).not.toMatch(/競わせ/);
-    expect(steps[2].instruction).toBe('上の実装を比べて、どちらが良いかと理由を説明して');
+    expect(steps[0].instruction).toBe('~/demo/aにブロック崩しゲームを作って\n\n~/demo/a の中だけで作業して（無ければ作成）。その外のファイルは読んだり変更したりしないで。');
+    expect(steps[1].instruction.startsWith('~/demo/bにブロック崩しゲームを作って\n\n~/demo/b の中だけで')).toBe(true);
+    expect(steps[2].instruction).toBe('上の実装を比べて、どちらが良いかと理由を説明して 各候補のファイルの場所: A = ~/demo/a, B = ~/demo/b。');
+  });
+
+  it('three implementers → ~/demo/a, ~/demo/b, ~/demo/c (letters = judge labels)', () => {
+    const third = role({ id: 'role_impl3', name: 'Hacker', engine: { type: 'gemini-api' }, handles: ['implement'], createdAt: 10 });
+    const JUDGE = role({ id: 'role_judge', name: 'Judge', engine: { type: 'local' }, handles: ['judge'], createdAt: 11 });
+    const d = parseAgentNL('Right now, have the implementers compete to build a brick breaker game in ~/demo');
+    const { draft, info } = routeDraftToRoles(d, loaded(IMPL, BUILDER, third, JUDGE), ctx());
+    const steps = objSteps(draft.orchestrationSteps);
+    expect(info?.branchDirs?.map((b) => [b.label, b.dir])).toEqual([['A', '~/demo/a'], ['B', '~/demo/b'], ['C', '~/demo/c']]);
+    expect(steps.slice(0, 3).map((s) => s.instruction.split('\n\n')[1])).toEqual([
+      'Work only inside ~/demo/a (create it if missing); do not read or modify files outside it.',
+      'Work only inside ~/demo/b (create it if missing); do not read or modify files outside it.',
+      'Work only inside ~/demo/c (create it if missing); do not read or modify files outside it.',
+    ]);
+    const judge = steps.find((s) => s.handoff?.kind === 'judge');
+    expect(judge?.instruction).toContain("The candidates' files: A = ~/demo/a, B = ~/demo/b, C = ~/demo/c.");
+    expect(judge?.instruction).toContain('"WINNER: A", "WINNER: B", "WINNER: C" or "WINNER: TIE"');
+  });
+
+  it('no workspace in the request → no branch folders (nothing to anchor them to)', () => {
+    const d = parseAgentNL('Right now, have both implementers build a brick breaker game and compare');
+    const { draft, info } = routeDraftToRoles(d, loaded(IMPL, BUILDER), ctx());
+    expect(info?.branchDirs).toBeUndefined();
+    expect(objSteps(draft.orchestrationSteps)[0].instruction).not.toContain('Work only inside');
   });
 
   it('Inc B: a judge role compares the branches (Candidate labels, WINNER contract); a CLI judge gets a summary after it', () => {
@@ -230,6 +266,27 @@ describe('parallel groups from the request → different roles', () => {
     expect(steps.map((s) => s.parallelGroup)).toEqual(['p1', 'p1', undefined]);
     // The last unit is a local role, so no extra summary step.
     expect(steps).toHaveLength(3);
+    // The user already gave each unit its own folder: kept as written.
+    expect(steps.slice(0, 2).map((s) => s.instruction)).toEqual(['build a timer app in ~/demo/a', 'build a clock app in ~/demo/b']);
+  });
+
+  it('parallel implement units sharing the bare workspace get their own folders', () => {
+    const base = parseAgentNL('Right now, build a timer app in ~/demo');
+    const d: ParsedAgentDraft = {
+      ...base,
+      workspaceRoot: '~/demo',
+      orchestrationSteps: [
+        { instruction: 'build a timer app in ~/demo', parallelGroup: 'p1' },
+        { instruction: 'build a clock app in ~/demo', parallelGroup: 'p1' },
+        'summarize the two results into one memo',
+      ],
+    };
+    const { draft, info } = routeDraftToRoles(d, loaded(IMPL, BUILDER, SUMM), ctx());
+    const steps = objSteps(draft.orchestrationSteps);
+    expect(steps[0].instruction.startsWith('build a timer app in ~/demo/a\n\nWork only inside ~/demo/a')).toBe(true);
+    expect(steps[1].instruction.startsWith('build a clock app in ~/demo/b\n\nWork only inside ~/demo/b')).toBe(true);
+    expect(steps[2].instruction).toBe('summarize the two results into one memo');
+    expect(info?.branchDirs?.map((b) => b.dir)).toEqual(['~/demo/a', '~/demo/b']);
   });
 });
 
