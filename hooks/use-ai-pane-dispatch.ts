@@ -33,6 +33,11 @@ import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter
 import { resolveCompanionBrain } from '@/lib/companion-brain';
 import { checkOllamaConnection, ollamaChat, ollamaChatStream } from '@/lib/local-llm';
 import { handlePendingPolicyResetReply, handlePendingPolicyRevokeReply, handlePendingPolicyRuleReply, handlePendingTrustReply, handlePolicyIntent } from '@/lib/agent-policy-chat';
+// Side effect: wires the agent-roles seal (Keystore-backed SecureStore).
+import '@/lib/agent-role-device';
+import { detectRoleIntent } from '@/lib/agent-role-intent';
+import { canChangeRolesFrom, handlePendingRoleReply, handleRoleIntent, type RoleChatIO } from '@/lib/agent-role-chat';
+import type { PendingRoleChange } from '@/lib/agent-role-types';
 import '@/lib/agent-policy-device';
 import type { PolicyChatFn } from '@/lib/agent-policy-rule-intent';
 import { trustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -1030,7 +1035,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const otherQuestionOpen =
           !!freshest &&
           freshest.role === 'assistant' &&
-          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset'].some(
+          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingRoleChange'].some(
             (k) => !!freshest[k],
           );
         const target = !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
@@ -1070,7 +1075,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const otherQuestionOpen =
           !!freshest &&
           freshest.role === 'assistant' &&
-          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingClosePawShell'].some(
+          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingRoleChange', 'pendingClosePawShell'].some(
             (k) => !!freshest[k],
           );
         const replyParams = {
@@ -1177,6 +1182,48 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // → generateRunScript → resolveAgentRoute, so a secret inside a GLOBAL
       // note forces the run on-device exactly like a secret in an
       // agent-scoped one.
+      // ── Agent roles: the chat IO for lib/agent-role-chat.ts (flowTurn
+      // bubbles in this pane, the app's own shell, the app home).
+      const roleChatIO = (postAgent: ChatMessage['agent']): RoleChatIO => ({
+        post: (content: string, extra?: Partial<ChatMessage>) =>
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content,
+            timestamp: Date.now(),
+            agent: postAgent,
+            flowTurn: true,
+            ...(extra ?? {}),
+          }),
+        run: runAgentShellCommand,
+        home: getHomePath(),
+      });
+
+      // ── Agent roles: reply to a pending role create / edit / delete /
+      // level / reset confirmation (lib/agent-role-chat.ts). Only the user's
+      // own typing in the composer answers it — a voice transcript, a
+      // `shelly agent add` terminal request, a MONITOR team draft or a widget
+      // ASK leaves the question pending and routes normally. An "@…" message
+      // is a fresh command: it drops the question instead of answering it.
+      if (
+        freshestMsgForPendingCheck?.role === 'assistant' &&
+        freshestMsgForPendingCheck.pendingRoleChange &&
+        Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS &&
+        canChangeRolesFrom({ typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source })
+      ) {
+        const roleMsg = freshestMsgForPendingCheck;
+        const pendingRole = roleMsg.pendingRoleChange as PendingRoleChange;
+        store.updateMessage(paneId, roleMsg.id, { pendingRoleChange: undefined });
+        if (!userText.trim().startsWith('@')) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+          await handlePendingRoleReply(pendingRole, userText, detectMessageLocale(roleMsg.content), roleChatIO(roleMsg.agent), {
+            typedByUser: dispatchOpts?.typedByUser === true,
+            source: dispatchOpts?.source,
+          });
+          return;
+        }
+      }
+
       // ── POLICY-001: reply to a pending safety-rule confirmation or a
       // trust-ramp proposal (lib/agent-policy-chat.ts). Same "the most
       // recently asked question wins" placement as pendingGlobalMemory below;
@@ -2617,6 +2664,27 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         return;
       }
 
+      // Agent roles (lib/agent-role-intent.ts / lib/agent-role-chat.ts):
+      // "make a reviewer role using Claude Code that …" / 「ロール一覧」 /
+      // "delete the judge role". Deterministic (two markers, questions
+      // excluded), decided before any LLM routing so a model never claims to
+      // have "saved" a role. Nothing is written without the echoed
+      // interpretation + a typed confirm; only typed composer text may
+      // change roles (handleRoleIntent refuses other sources, a weak intent
+      // from them falls through).
+      if (parsed.layer !== 'mention') {
+        const roleIntent = detectRoleIntent(promptText);
+        if (roleIntent) {
+          const handledRole = await handleRoleIntent(
+            roleIntent,
+            detectMessageLocale(promptText),
+            roleChatIO(agent as ChatMessage['agent']),
+            { typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source },
+          );
+          if (handledRole) return;
+        }
+      }
+
       // POLICY-001 (lib/agent-policy-chat.ts): NL safety rules / listing /
       // revoking, flag-gated OFF. Checked before any LLM routing for the same
       // reason as provider connect above — "お金が絡む操作は必ず聞いて" must be
@@ -2827,6 +2895,28 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // reminding me about X" -> parts[0] === 'stop'). It always enters
           // the 'create' branch directly, reusing the confident draft
           // already computed above instead of re-parsing.
+          // Agent roles under `@agent` ("@agent list my roles", "@agent make a
+          // reviewer role …"): checked before parseAgentCommand, whose
+          // first-word subcommands (list / delete / edit) would otherwise
+          // treat "list my roles" as the agent list. After the same capability
+          // question / shared-memory checks the create branch below runs.
+          if (
+            parsed.layer === 'mention' &&
+            parsed.target === 'agent' &&
+            !isCapabilityQuestionForAgentFlow(parsed.prompt) &&
+            !detectGlobalMemoryWrite(parsed.prompt)
+          ) {
+            const roleIntent = detectRoleIntent(parsed.prompt);
+            if (roleIntent) {
+              const handledRole = await handleRoleIntent(
+                roleIntent,
+                detectMessageLocale(parsed.prompt),
+                roleChatIO(agent as ChatMessage['agent']),
+                { typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source },
+              );
+              if (handledRole) return;
+            }
+          }
           const agentResult = (parsed.layer === 'mention' && parsed.target === 'agent')
             ? parseAgentCommand(parsed.prompt)
             : { type: 'create' as const, message: promptText, data: { suggestion: suggestTool(promptText) } };

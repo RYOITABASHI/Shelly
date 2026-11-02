@@ -1059,7 +1059,7 @@ export function touchesAgentsConfigDir(command: string): boolean {
   if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
   if (/\.shelly\/+agents\b/.test(c)) return true;
   if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
-  if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  if (/(?:^|[\s/'"=])(?:policy|roles)\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
   if (/\bshared_prefs\b/.test(c)) return true;
   return false;
 }
@@ -1080,6 +1080,12 @@ const REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[
 // (lib/agent-provider-overrides.ts isAppWrittenOverrides).
 const OVERRIDES_FILE_RE = /(?:^|[\s/'"=])\.?overrides\.json\b/;
 const REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
+// Agent roles (lib/agent-role-store.ts): ~/.shelly/agents/roles.json, RN is
+// the single writer. The full path is already covered by
+// PROTECTED_POLICY_FILE_RE; this is the basename-after-`cd` form
+// (`cd ~/.shelly/agents && echo {} > roles.json`).
+const ROLES_BASENAME_RE = /(?:^|[\s/'"=])roles\.json\b/;
+const REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
 
 /**
  * NARROW form (always on, flag OFF too): only mutations aimed at the files
@@ -1095,6 +1101,10 @@ export function touchesProtectedPolicyFiles(command: string): boolean {
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
   // `cd ~/.shelly/agents && echo {} > policy.json`
   if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
+  // Same for the roles file: `cd ~/.shelly/agents && echo {} > roles.json`,
+  // `… && rm roles.json`, `… && node -e "…writeFileSync('roles.json')"`.
+  const rolesBasename = ROLES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

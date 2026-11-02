@@ -222,6 +222,51 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "agent roles.json basename redirect after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && echo {} > roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agent roles.json basename ./ redirect after cd -> deny (policy-write)",
+    "command": "cd /data/user/0/dev.shelly.terminal/files/home/.shelly/agents; printf '{}' >> ./roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agent roles.json basename rm after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && rm -f roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agent roles.json basename interpreter write after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && node -e \"require('fs').writeFileSync('roles.json','{}')\"",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "workspace roles.json write (no agents dir named) L2 -> allow",
+    "command": "echo {} > /root/app/roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
     "name": "quoted heredoc body with backticks / $( is literal data L2 -> allow",
     "command": "bash -lc 'cat > game.js <<'\"'\"'EOF'\"'\"'\nconst m = `score`;\nconst q=$(1);\nEOF'",
     "policy": {
