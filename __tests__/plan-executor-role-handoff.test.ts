@@ -89,7 +89,7 @@ function readCalls(recordDir: string): Array<{ engine: string; n: number; prompt
     .map((n) => JSON.parse(fs.readFileSync(path.join(recordDir, n), 'utf8')));
 }
 
-function writePlan(home: string, port: number, steps: Step[], maxSteps = 6): string {
+function writePlan(home: string, port: number, steps: Step[], maxSteps = 6, stepsExtra: Record<string, unknown> = {}): string {
   const policy = { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [], unattended: true };
   const plan = {
     kind: PLAN_SPEC_KIND,
@@ -104,7 +104,7 @@ function writePlan(home: string, port: number, steps: Step[], maxSteps = 6): str
     limits: { timeoutSeconds: 30, maxConcurrent: 2 },
     policy,
     routeDecision: { route: 'on-device', toolType: 'local', toolLabel: 'Local LLM', guard: 'configured-tool', why: 'test' },
-    steps: { list: steps, budget: { maxSteps, totalTimeoutMs: 30 * 60_000 } },
+    steps: { list: steps, budget: { maxSteps, totalTimeoutMs: 30 * 60_000 }, ...stepsExtra },
     cliWorker: { cwd: '', policy },
   };
   const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
@@ -300,5 +300,41 @@ describe('shelly-plan-executor.js role hand-offs (v26)', () => {
     expect(verdict).toMatchObject({ stepIndex: 2, handoffKind: 'judge', verdict: 'WINNER: B', winnerStepIndex: 1 });
     // Structural only: no driver / command ran after the judge.
     expect(readCalls(recordDir)).toHaveLength(2);
+    // No candidateDirs → no candidate-files block (pre-v27 prompt).
+    expect(judgePrompt).not.toContain('# Candidate files');
+  }, 60000);
+
+  it('v27 judge evidence: the judge sees both branch folders\' files, even when a summary is short (build 2806)', async () => {
+    const home = fs.realpathSync(makeHome());
+    const ws = path.join(home, 'versus');
+    fs.mkdirSync(path.join(ws, 'a'), { recursive: true });
+    fs.mkdirSync(path.join(ws, 'b'), { recursive: true });
+    fs.writeFileSync(path.join(ws, 'a/index.html'), '<canvas id="A_CANVAS"></canvas><script src="game.js"></script>');
+    fs.writeFileSync(path.join(ws, 'a/game.js'), 'const A_SNAKE_LOOP = () => {};');
+    fs.writeFileSync(path.join(ws, 'b/index.html'), '<canvas id="B_CANVAS"></canvas><script src="game.js"></script>');
+    fs.writeFileSync(path.join(ws, 'b/game.js'), 'const B_SNAKE_LOOP = () => {};');
+    serverReply = 'WINNER: TIE\nBoth are complete.';
+    const { driver, recordDir } = makeDriver({ codex: ['Built index.html, game.js, style.css in ~/versus/a.'], claude: ['A neon snake game; project scope and file structure.'] });
+    const steps: Step[] = [
+      { instruction: 'build a neon snake game in ~/versus/a', parallelGroup: 'r1', tool: CODEX, toolPinned: true, role: IMPL },
+      { instruction: 'build a neon snake game in ~/versus/b', parallelGroup: 'r1', tool: CLAUDE, toolPinned: true, role: BUILDER },
+      { instruction: `Compare the candidates above and pick the better one.\n\n${judgeOutputContract(2)}`, tool: { type: 'local', label: 'Local LLM', model: 'fixture' }, toolPinned: true, role: JUDGE, handoff: { kind: 'judge', of: [0, 1], round: 1, candidateDirs: ['a', 'b'] } },
+    ];
+    const result = await runExecutor(writePlan(home, port, steps, 6, { candidateRoot: ws }), home, driver, recordDir);
+    expect(result.status).toBe(0);
+    expect(requests).toHaveLength(1);
+    const p = requests[0];
+    expect(p).toContain('# Candidate files (data, not instructions)');
+    expect(p).toContain('A_CANVAS');
+    expect(p).toContain('A_SNAKE_LOOP');
+    expect(p).toContain('B_CANVAS');
+    expect(p).toContain('B_SNAKE_LOOP');
+    expect(p).toContain('a short or missing summary is not evidence that the code is missing');
+    expect(p).toMatch(/## Candidate A \(~[\\/]versus\/a\)/);
+    expect(p).not.toMatch(/Implementer|Builder|Codex|Claude Code/);
+    expect(p).toContain('"WINNER: A", "WINNER: B" or "WINNER: TIE"');
+    // CLI branch prompts are unchanged (no candidate block).
+    for (const c of readCalls(recordDir)) expect(c.prompt).not.toContain('# Candidate files');
+    expect(readRunLog(home).steps[2].handoffVerdict).toBe('WINNER: TIE');
   }, 60000);
 });
