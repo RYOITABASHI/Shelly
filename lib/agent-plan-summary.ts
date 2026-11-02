@@ -825,7 +825,7 @@ export function summarizeAgentDraftAsText(
     if (allAsked && !allAllowed) lines.push(tl('agentplan.run_without_approval_all_fallback_note'));
   }
   // Agent roles (WP3): the level the routed agent gets (no phrase in the
-  // request) = the strictest of its roles' levels, stated with each role's.
+  // request) = the lowest of its roles' levels, stated with each role's.
   if (draft.roleRouting) lines.push(...roleRoutingLines(draft, tl, !runWithoutApprovalHonored(draft)));
   if (draft.roleRoutingNotice === 'unavailable') lines.push(tl('roles.route.unavailable_note'));
   if (draft.memory?.remember) {

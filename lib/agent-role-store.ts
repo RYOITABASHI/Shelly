@@ -348,7 +348,7 @@ export function newRoleId(): string {
   return `role_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** The strictest of the given levels ('off' < 'standard' < 'all'). Empty → 'off'. */
+/** The lowest of the given levels ('off' < 'standard' < 'all'). Empty → 'off'. */
 export function minRoleLevel(levels: readonly RoleLevel[]): RoleLevel {
   if (!levels.length) return 'off';
   if (levels.includes('off')) return 'off';

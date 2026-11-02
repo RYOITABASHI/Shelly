@@ -98,7 +98,7 @@ describe('compete: "have both implementers … and compare" → executor cli=2',
     expect(line).toBe('1. In parallel: [Implementer · Codex CLI] build a brick breaker game in ~/demo / [Builder · Claude Code] build a brick breaker game in ~/demo');
     expect(text).toMatch(/^2\. Compare the implementations above/m);
     expect(text).toContain('Workspace: ~/demo');
-    expect(text).toContain('Run without approval: standard (the strictest of the roles: Implementer=all, Builder=standard)');
+    expect(text).toContain('Run without approval: standard (the lowest of the roles' settings: Implementer=all, Builder=standard)');
     expect(text).toContain('To set it up without roles, reply "without roles".');
   });
 
@@ -157,7 +157,7 @@ describe('single role', () => {
     expect(confirmed.roleRef).toEqual({ id: 'role_impl', name: 'Implementer' });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('Role: Implementer · Codex CLI');
-    expect(text).toContain('Run without approval: standard (the strictest of the roles: Implementer=standard)');
+    expect(text).toContain('Run without approval: standard (the lowest of the roles' settings: Implementer=standard)');
     expect(text).not.toMatch(/^Engine: /m);
   });
 
@@ -174,7 +174,7 @@ describe('single role', () => {
     const draft = nlToRouted('Right now, build a brick breaker game in ~/demo and run without approval', loaded(IMPL), { role_impl: 'all' });
     expect(draft.runWithoutApproval).toBe(true);
     const text = summarizeAgentDraftAsText(draft);
-    expect(text).not.toContain('the strictest of the roles');
+    expect(text).not.toContain("the lowest of the roles' settings");
     expect(draftToConfirmedAgentDraft(draft).runWithoutApproval).toBe(true);
   });
 });
