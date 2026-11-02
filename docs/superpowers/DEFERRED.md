@@ -73,6 +73,11 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 有人 Run now が Shelly のバックグラウンド化・折りたたみで「Timed out waiting for agent」になる（build 2810、2026-11-02 撮影中に 2 回）— 未対応 (P1)
+- 端末を折りたたむ／他アプリ（X）を前面にすると、実行中の CLI ステップが「Timed out waiting for agent "agent-…" to finish」で失敗（`~/arcade3` は Reviewer、`~/arcade4` は Implementer で T+11:45）。logcat には Samsung Freecess（`FreecessHandler` / `handleLcdOnFreeze`）がバックグラウンドアプリを凍結するログ。Shelly 側の待機（RN／native `runPlanAgent`）が凍結で止まる、または子プロセスが止まる可能性。要調査: 前景サービス化の有無、待機タイマーの凍結耐性。
+- 同時に MONITOR 表示のバグ: 失敗後も Reviewer セルが RUNNING / REC のまま「no update 3:05:18」と残る（失敗状態が反映されない）。
+- 付随: Shelly を仮想ディスプレイで再起動した直後の `@agent` 依頼が約 30 秒で「done.」と返り、MONITOR は前回の失敗のまま（`~/arcade5`、実際に実行されたか未確認）。
+
 ### 自律エージェントで名指ししたエンジンを無人スケジュール起動でも守る — 一部のみ (P2)
 - 2026-11-01（`2abd0ccf3`）: ステップに `toolPinned`（ユーザーの言葉で付けたツール）を持たせ、自律エージェントでも名指しの CLI だけでそのステップを実行するようにした（`lib/agent-escalation-ladder.ts`、ローカル優先へ差し替えない・使えなければ失敗表示）。言葉で付けた Claude Code ステップも Claude 単独になる（以前は `[claude, local, codex]`）。
 - **残り**: エージェント本体のツールが local / Gemini などの自律チェーンに Codex を名指ししたステップがあると、無人のスケジュール起動では PlanSpec executor（`scripts/shelly-plan-executor.js`、CLI ステップを実行できない設計）がそのステップを `plan.tool` で実行し、実質的に差し替わる。対応案: `toolPinned` な CLI ステップを含むチェーンは無人でも `.sh` チェーンに回す、または executor から CLI を呼べるようにする。単一ステップのエージェント単位のピン（`suggestToolForDraft`）も未対応。
