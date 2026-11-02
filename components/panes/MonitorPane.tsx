@@ -73,6 +73,7 @@ import {
   type MonitorSource,
 } from '@/lib/monitor-source';
 import { createLiveSource, liveLoopText, pickMonitorRun, type LiveAgentInfo } from '@/lib/monitor-live';
+import { createRosterSource, ensureMonitorRoster, getMonitorRoster, subscribeMonitorRoster } from '@/lib/monitor-roster';
 import type { MonitorRun } from '@/lib/agent-progress';
 import type { Agent, ToolChoice } from '@/store/types';
 import { useMonitorLivePoller } from '@/hooks/use-monitor-live-poller';
@@ -104,6 +105,22 @@ import { translateMonitorText } from '@/components/monitor/monitor-i18n';
 import { computeMonitorGrid, GRID_GAP } from '@/components/monitor/monitor-grid';
 
 const TICK_MS = 200;
+/** Idle with no roles: nothing on the wall but the hint (see staffHint). */
+const EMPTY_STAFF_SOURCE: MonitorSource = {
+  isDemo: false,
+  agents: [],
+  team: { title: '', columns: [], subAgents: [] },
+  snapshot: () => EMPTY_STAFF_SNAPSHOT,
+};
+const EMPTY_STAFF_SNAPSHOT: MonitorSnapshot = {
+  t: 0,
+  agents: {},
+  approvalPending: false,
+  approvalAgentId: null,
+  complete: false,
+  chat: [],
+  missionPct: 0,
+};
 const AUTO_CYCLE_MS = 3200;
 const GAP = 10;
 /** Pane padding and the gap between its blocks (styles.content). */
@@ -362,9 +379,29 @@ export default function MonitorPane() {
     }
     return isDraft ? createTeamSource(draftTeam) : null;
   }, [standbyAgent, registration.agentId, registration.team, isDraft, draftTeam]);
-  const source: MonitorSource = liveSource ?? stillSource ?? run.source;
-  // Editable map: DEMO (preview edits) and DRAFT. LIVE / standby are read-only.
-  const editable = !isLive && !standbyAgent;
+  // Idle (no run, not DEMO / DRAFT / a standby agent): the user's agent roles
+  // stand by as staff (lib/monitor-roster.ts) instead of the DEMO playback,
+  // which stays one tap away on the DEMO key. No roles: a hint instead.
+  const roster = useSyncExternalStore(subscribeMonitorRoster, getMonitorRoster, getMonitorRoster);
+  const idle = !liveSource && !stillSource && sourceMode !== 'demo';
+  useEffect(() => {
+    if (idle && !roster) ensureMonitorRoster(runShell).catch(() => {});
+  }, [idle, roster]);
+  const staffTitle = t('monitor.staff.title');
+  const rosterSource = useMemo(
+    () => (idle && roster && !roster.unavailable && roster.roles.length ? createRosterSource(roster, staffTitle) : null),
+    [idle, roster, staffTitle],
+  );
+  const staffEmpty = idle && !rosterSource;
+  const source: MonitorSource = liveSource ?? stillSource ?? rosterSource ?? (staffEmpty ? EMPTY_STAFF_SOURCE : run.source);
+  const idleSource = rosterSource ?? (staffEmpty ? EMPTY_STAFF_SOURCE : null);
+  const staffHint = staffEmpty
+    ? roster?.unavailable
+      ? t('monitor.staff.unavailable')
+      : t('monitor.staff.none')
+    : null;
+  // Editable map: DEMO (preview edits) and DRAFT. LIVE / standby / staff are read-only.
+  const editable = !isLive && !standbyAgent && !idle;
   const team = editable ? monitor.team ?? source.team : source.team;
   // The live agent's pending human approvals (actions + boundary-op
   // escalations), oldest first — lib/agent-pending-approvals.ts.
@@ -378,12 +415,12 @@ export default function MonitorPane() {
     [isLive, liveAsks, liveRun?.startedAt],
   );
   const snap: MonitorSnapshot = useMemo(() => {
-    if (!liveSource) return run.source.snapshot(playT, inputs);
+    if (!liveSource) return (idleSource ?? run.source).snapshot(playT, inputs);
     // A step blocked on a pending approval is waiting for you, not stuck.
     // Review L4: only asks of THIS run count (a previous run's leftover must
     // not make a really-running sibling read as waiting, or the reverse).
     return withPendingApprovals(liveSource.snapshot(now, []), runAskCount);
-  }, [liveSource, run.source, now, playT, inputs, runAskCount]);
+  }, [liveSource, idleSource, run.source, now, playT, inputs, runAskCount]);
   const summary = summarize(source.agents, snap);
 
   // Playback clock (JS, coarse) — drives the DEMO timeline only.
@@ -405,8 +442,11 @@ export default function MonitorPane() {
   }, [isLive]);
 
   useEffect(() => {
-    logInfo('Monitor', isLive ? `pane showing live run ${liveRun?.runId}` : `pane showing demo (run ${runId})`);
-  }, [isLive, liveRun?.runId, runId]);
+    logInfo(
+      'Monitor',
+      isLive ? `pane showing live run ${liveRun?.runId}` : idle ? 'pane showing staff roster' : `pane showing demo (run ${runId})`,
+    );
+  }, [isLive, liveRun?.runId, runId, idle]);
 
   // Animation clock (UI thread) — drives the liveness overlays only; frozen
   // under reduced motion so every overlay renders as a still frame.
@@ -446,6 +486,7 @@ export default function MonitorPane() {
       }
       let pool = source.agents.filter((d) => ACTIVE_STATES.has(s.agents[d.id]?.state ?? 'STANDBY'));
       if (pool.length === 0) pool = [...source.agents];
+      if (pool.length === 0) return;
       const i = pool.findIndex((d) => d.id === selRef.current);
       const next = stay && i >= 0 ? pool[i] : pool[(i + 1) % pool.length];
       setMonitor({ selectedId: next.id, view: 'single' });
@@ -498,7 +539,8 @@ export default function MonitorPane() {
     : undefined;
   // The empty "free channel" tile only takes a cell the chosen grid leaves
   // free (and only on a wide wall, where it reads as part of the bank).
-  const showEmptyTile = isWide && (grid ? grid.freeCells > 0 : true);
+  // Not on the staff roster: every channel there is a real role standing by.
+  const showEmptyTile = isWide && !rosterSource && (grid ? grid.freeCells > 0 : true);
 
   const [draft, setDraft] = useState('');
   // OPEN CHAT found no room for a chat pane (4 panes full).
@@ -1034,7 +1076,7 @@ export default function MonitorPane() {
       </View>
 
       {/* ── Map ── */}
-      {view === 'map' && (
+      {view === 'map' && !staffEmpty && (
         <MonitorMap
           team={team}
           defaultTeam={source.team}
@@ -1073,9 +1115,14 @@ export default function MonitorPane() {
           onClose={providerPick.toggle}
         />
       )}
-      {showWall && (
+      {staffHint && (
+        <View style={styles.staffHint} testID="monitor-staff-hint">
+          <Text style={styles.staffHintText}>{staffHint}</Text>
+        </View>
+      )}
+      {showWall && !staffEmpty && (
         <View style={[styles.wall, fitted && { height: wallH }]} onLayout={onWallLayout} testID="monitor-wall">
-          {view === 'single' ? (
+          {view === 'single' && selectedDef ? (
             <View style={styles.singleWrap}>
             {/* The single camera can push the switcher's GRID key off-screen;
                 keep a way back right above it. */}
@@ -1257,6 +1304,13 @@ const styles = StyleSheet.create({
   },
   brandRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10, rowGap: 4 },
   brand: { fontFamily: MON_FONT_OSD, fontSize: 18, color: MON.phosphor, letterSpacing: 1 },
+  staffHint: {
+    borderWidth: 1,
+    borderColor: MON.muted,
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+  },
+  staffHintText: { fontFamily: MON_FONT_MONO, fontSize: 13, color: MON.label, textAlign: 'center' },
   demoBadge: {
     fontFamily: MON_FONT_OSD,
     fontSize: 13,

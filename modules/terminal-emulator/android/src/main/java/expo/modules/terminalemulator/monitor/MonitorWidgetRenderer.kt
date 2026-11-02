@@ -26,6 +26,11 @@ import java.util.Locale
  * Deep links (consumed by app/_layout.tsx -> lib/monitor-widget-link.ts):
  *   shelly://monitor?agentId=<id>            whole widget: MONITOR pane, LIVE on that agent
  *   shelly://monitor?agentId=<id>&step=<n>   camera: MONITOR single view on that channel
+ *   shelly://monitor                         a staff (roster) tile / the idle widget
+ *
+ * Idle (no run to show): the staff roster's roles on STANDBY
+ * (MonitorWidgetModel.staffCameras) — only as many tiles as there are roles
+ * (unused ones GONE so the rest fill the widget); no roles: one hint tile.
  */
 object MonitorWidgetRenderer {
     private data class CamIds(
@@ -103,17 +108,59 @@ object MonitorWidgetRenderer {
         val motion = animationsEnabled(context)
 
         views.setOnClickPendingIntent(R.id.monitor_root, link(context, model?.agentId, null, REQ_ROOT + reqOffset))
-        views.setViewVisibility(R.id.monitor_empty, if (model == null) View.VISIBLE else View.GONE)
-        if (model == null) views.setTextViewText(R.id.monitor_empty, res.getString(R.string.monitor_widget_empty))
+        // The idle widget never shows the old "No agent runs yet" line: its
+        // tiles are the staff roster, or the one hint tile.
+        views.setViewVisibility(R.id.monitor_empty, View.GONE)
 
-        if (!slim) bindHeader(views, context, res, model, snapshot.agentName, japanese)
+        val roster = snapshot.roster
+        val staff = if (model == null) MonitorWidgetModel.staffCameras(roster, slim) else emptyList()
+        if (!slim) bindHeader(views, context, res, model, snapshot.agentName, japanese, if (model == null) roster else null)
 
         val ids = if (slim) SLIM_CAMS else FULL_CAMS
+        // Idle tiles in use: one per staff camera, or the single hint tile.
+        val idleTiles = if (model != null) ids.size else maxOf(1, staff.size)
         ids.forEachIndexed { slot, cam ->
-            val camera = model?.cameras?.getOrNull(slot)
-            bindCamera(views, context, res, cam, slot, camera, model, japanese, motion, REQ_ROOT + reqOffset + 1 + slot)
+            views.setViewVisibility(cam.root, if (slot < idleTiles) View.VISIBLE else View.GONE)
+            val requestCode = REQ_ROOT + reqOffset + 1 + slot
+            when {
+                slot >= idleTiles -> Unit
+                model == null && staff.isEmpty() -> bindHint(views, context, res, cam, roster, requestCode)
+                else -> {
+                    val camera = if (model != null) model.cameras.getOrNull(slot) else staff.getOrNull(slot)
+                    bindCamera(views, context, res, cam, slot, camera, model, japanese, motion, requestCode)
+                }
+            }
         }
+        if (!slim) views.setViewVisibility(R.id.monitor_row_2, if (idleTiles > 2) View.VISIBLE else View.GONE)
         return views
+    }
+
+    /** No roles (or roles.json unreadable): one tile that says how to add one. */
+    private fun bindHint(
+        views: RemoteViews,
+        context: Context,
+        res: Context,
+        ids: CamIds,
+        roster: MonitorRoster.Roster,
+        requestCode: Int
+    ) {
+        val hint = res.getString(
+            if (roster.unavailable) R.string.monitor_widget_staff_unavailable else R.string.monitor_widget_staff_none
+        )
+        views.setTextViewText(ids.ch, "")
+        views.setTextViewText(ids.noSignal, hint)
+        views.setViewVisibility(ids.noSignal, View.VISIBLE)
+        views.removeAllViews(ids.rec)
+        views.removeAllViews(ids.bang)
+        views.setViewVisibility(ids.recStatic, View.GONE)
+        views.setInt(ids.root, "setBackgroundResource", R.drawable.monitor_cam_bg)
+        ids.pill?.let { views.setViewVisibility(it, View.GONE) }
+        ids.bar?.let { views.setProgressBar(it, 100, 0, false) }
+        ids.kind?.let { views.setViewVisibility(it, View.GONE) }
+        ids.name?.let { views.setTextViewText(it, "") }
+        ids.cost?.let { views.setTextViewText(it, "") }
+        views.setContentDescription(ids.root, hint)
+        views.setOnClickPendingIntent(ids.root, link(context, null, null, requestCode))
     }
 
     private fun bindHeader(
@@ -122,7 +169,9 @@ object MonitorWidgetRenderer {
         res: Context,
         model: MonitorWidgetModel.Model?,
         agentName: String?,
-        japanese: Boolean
+        japanese: Boolean,
+        /** Idle: the staff roster, for the "STAFF n · +N more" line. */
+        idleRoster: MonitorRoster.Roster?
     ) {
         val pct = model?.missionPct ?: 0
         val toneColor = model?.let { toneColor(it.tone) } ?: MUTED
@@ -154,8 +203,20 @@ object MonitorWidgetRenderer {
 
         val approval = model?.approvalChannel
         if (model == null) {
-            views.setViewVisibility(R.id.monitor_cost, View.GONE)
             views.setViewVisibility(R.id.monitor_alert, View.GONE)
+            val staffLine = idleRoster?.takeIf { !it.isEmpty }?.let { r ->
+                val total = maxOf(r.total, r.entries.size)
+                val hidden = MonitorWidgetModel.staffHidden(r)
+                val count = res.getString(R.string.monitor_widget_staff_count, total)
+                if (hidden > 0) count + res.getString(R.string.monitor_widget_cost_separator) +
+                    res.getString(R.string.monitor_widget_staff_more, hidden) else count
+            }
+            if (staffLine != null) {
+                views.setTextViewText(R.id.monitor_cost, staffLine)
+                views.setViewVisibility(R.id.monitor_cost, View.VISIBLE)
+            } else {
+                views.setViewVisibility(R.id.monitor_cost, View.GONE)
+            }
         } else if (approval != null) {
             views.setTextViewText(R.id.monitor_alert, res.getString(R.string.monitor_widget_alert, approval))
             views.setViewVisibility(R.id.monitor_alert, View.VISIBLE)
@@ -205,11 +266,25 @@ object MonitorWidgetRenderer {
         requestCode: Int
     ) {
         val state = camera?.state ?: CamState.NO_SIGNAL
-        val noSignal = state == CamState.NO_SIGNAL
+        val overflow = camera?.overflow ?: 0
+        val noSignal = state == CamState.NO_SIGNAL || overflow > 0
         val channel = camera?.channel ?: MonitorWidgetModel.channel(slot)
         val live = model?.live == true
+        val staff = camera?.staff == true
 
-        views.setTextViewText(ids.ch, channel)
+        // The 4x2 tile has no pill / footer: a staff tile spells out its
+        // engine and STANDBY under the role name instead.
+        val chText = when {
+            overflow > 0 -> ""
+            staff && ids.pill == null -> listOf(channel, camera?.providerLabel ?: "", stateLabel(res, state))
+                .filter { it.isNotEmpty() }.joinToString("\n")
+            else -> channel
+        }
+        views.setTextViewText(ids.ch, chText)
+        views.setTextViewText(
+            ids.noSignal,
+            if (overflow > 0) res.getString(R.string.monitor_widget_staff_more, overflow) else res.getString(R.string.monitor_widget_no_signal)
+        )
         views.setViewVisibility(ids.noSignal, if (noSignal) View.VISIBLE else View.GONE)
         if (camera != null && !noSignal) {
             val op = camera.operator.coerceIn(1, OPERATORS.size)
@@ -258,11 +333,21 @@ object MonitorWidgetRenderer {
         ids.name?.let { views.setTextViewText(it, camera?.providerLabel ?: "") }
         ids.cost?.let { views.setTextViewText(it, costText(res, camera?.cost ?: Cost.None, japanese)) }
 
-        views.setContentDescription(ids.root, res.getString(R.string.monitor_widget_cam_description, channel, label))
+        val description = when {
+            overflow > 0 -> res.getString(R.string.monitor_widget_staff_more, overflow)
+            staff -> res.getString(R.string.monitor_widget_cam_description, channel, listOf(camera?.providerLabel ?: "", label).filter { it.isNotEmpty() }.joinToString(" "))
+            else -> res.getString(R.string.monitor_widget_cam_description, channel, label)
+        }
+        views.setContentDescription(ids.root, description)
         val step = camera?.stepIndex
         views.setOnClickPendingIntent(
             ids.root,
-            if (step != null) link(context, model?.agentId, step, requestCode) else link(context, model?.agentId, null, requestCode)
+            when {
+                // A staff tile is no step of the shown run: open MONITOR.
+                staff -> link(context, null, null, requestCode)
+                step != null -> link(context, model?.agentId, step, requestCode)
+                else -> link(context, model?.agentId, null, requestCode)
+            }
         )
     }
 

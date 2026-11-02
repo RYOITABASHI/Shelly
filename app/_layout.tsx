@@ -120,6 +120,7 @@ import {
 } from '@/lib/agent-action-chat-approval';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
+import { startMonitorRoster } from '@/lib/monitor-roster-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import {
   decideActionAutoApproval,
@@ -2923,6 +2924,16 @@ export default function RootLayout() {
       // best-effort only
     }
   }, [locale]);
+
+  // MONITOR staff roster (lib/monitor-roster.ts): load the agent roles once a
+  // few seconds after launch so the widget's idle tiles show them without the
+  // user opening the chat first. Later role edits publish on their own.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      startMonitorRoster().catch(() => {});
+    }, 4000);
+    return () => clearTimeout(id);
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

@@ -401,6 +401,31 @@ export function getCachedRoles(): LoadedRoles | null {
   return cache;
 }
 
+type RolesListener = (loaded: LoadedRoles) => void;
+const rolesListeners = new Set<RolesListener>();
+
+/**
+ * Called after every load (loadRoles) and every write (save / mutate /
+ * reset) with the resulting state. Display consumers only (the MONITOR staff
+ * roster, lib/monitor-roster.ts) — a listener must not write roles.json.
+ */
+export function subscribeRoles(listener: RolesListener): () => void {
+  rolesListeners.add(listener);
+  return () => {
+    rolesListeners.delete(listener);
+  };
+}
+
+function emitRoles(loaded: LoadedRoles): void {
+  for (const l of rolesListeners) {
+    try {
+      l(loaded);
+    } catch (e) {
+      logWarn('AgentRoles', 'roles listener failed', e);
+    }
+  }
+}
+
 /** Test hook. */
 export function __resetRoleStoreForTests(): void {
   cache = null;
@@ -457,7 +482,11 @@ async function loadInner(run: ShellRunner): Promise<{ loaded: LoadedRoles; seal:
 
 /** Read and verify roles.json. Never throws. */
 export function loadRoles(run: ShellRunner): Promise<LoadedRoles> {
-  return serialized(async () => (await loadInner(run)).loaded);
+  return serialized(async () => {
+    const { loaded } = await loadInner(run);
+    emitRoles(loaded);
+    return loaded;
+  });
 }
 
 /** Drop levels whose role is gone or whose definition changed. */
@@ -485,6 +514,7 @@ async function writeFileSealed(
   await sealPort.write({ fileHashes: [actual], levels });
   lastFileHash = actual;
   cache = { roles, unavailable: false };
+  emitRoles(cache);
 }
 
 /**

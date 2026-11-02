@@ -433,7 +433,9 @@
         </LinearLayout>
       </LinearLayout>
     </LinearLayout>
+    <!-- Second camera row: GONE when the idle staff wall has ≤2 tiles. -->
     <LinearLayout
+      android:id="@+id/monitor_row_2"
       android:layout_width="match_parent"
       android:layout_height="0dp"
       android:layout_weight="1"

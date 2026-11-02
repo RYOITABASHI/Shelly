@@ -32,8 +32,13 @@ object MonitorWidgetRepository {
     data class Snapshot(
         val model: MonitorWidgetModel.Model?,
         val agentName: String?,
-        val recheckDelayMs: Long? = null
+        val recheckDelayMs: Long? = null,
+        /** The staff roster (monitor-roster.json, display only). */
+        val roster: MonitorRoster.Roster = MonitorRoster.NONE
     )
+
+    /** RN's display-only roster snapshot (lib/monitor-roster.ts); read here, never written. */
+    fun rosterFile(context: Context): File = File(agentsDir(context), "monitor-roster.json")
 
     fun agentsDir(context: Context): File =
         File(HomeInitializer.getHomeDir(context.applicationContext), ".shelly/agents")
@@ -49,6 +54,7 @@ object MonitorWidgetRepository {
         nowMs: Long = System.currentTimeMillis()
     ): Snapshot {
         val agents = agentsDir(context)
+        val roster = readRoster(File(agents, "monitor-roster.json"))
         val logs = File(agents, "logs")
         val candidates = (logs.listFiles { f -> f.isDirectory && SAFE_AGENT_ID.matches(f.name) } ?: emptyArray())
             .asSequence()
@@ -58,7 +64,7 @@ object MonitorWidgetRepository {
             .sortedByDescending { it.lastModified() }
             .take(MAX_CANDIDATES)
             .toList()
-        if (candidates.isEmpty()) return Snapshot(null, null)
+        if (candidates.isEmpty()) return Snapshot(null, null, roster = roster)
 
         val built = ArrayList<MonitorWidgetModel.Candidate>()
         for (file in candidates) {
@@ -80,11 +86,14 @@ object MonitorWidgetRepository {
             )
             built += MonitorWidgetModel.Candidate(run, model, nativeActive, chainActive)
         }
-        val pick = MonitorWidgetModel.pick(built) ?: return Snapshot(null, null)
+        val pick = MonitorWidgetModel.pick(built) ?: return Snapshot(null, null, roster = roster)
+        val agent = readAgent(agents, pick.model.agentId)
+        val name = agent?.optString("name")?.trim()?.takeIf { it.isNotEmpty() }
         return Snapshot(
-            pick.model,
-            readAgentName(agents, pick.model.agentId),
-            MonitorWidgetModel.recheckDelayMs(pick.run, nowMs, pick.model.live, pick.nativeActive, pick.chainActive)
+            MonitorWidgetModel.withRoles(pick.model, MonitorRoster.stepRoleNames(agent), roster),
+            name,
+            MonitorWidgetModel.recheckDelayMs(pick.run, nowMs, pick.model.live, pick.nativeActive, pick.chainActive),
+            roster
         )
     }
 
@@ -109,9 +118,16 @@ object MonitorWidgetRepository {
         }.getOrNull()
     }
 
-    private fun readAgentName(agents: File, agentId: String): String? = runCatching {
+    private fun readAgent(agents: File, agentId: String): JSONObject? = runCatching {
         val file = File(agents, "$agentId.json")
         if (!file.isFile || file.length() > 512 * 1024) return@runCatching null
-        JSONObject(file.readText(Charsets.UTF_8)).optString("name").trim().takeIf { it.isNotEmpty() }
+        JSONObject(file.readText(Charsets.UTF_8))
     }.getOrNull()
+
+    /** The roster file, capped and validated (MonitorRoster.parse); NONE when absent. */
+    private fun readRoster(file: File): MonitorRoster.Roster = runCatching {
+        if (!file.isFile) return@runCatching MonitorRoster.NONE
+        if (file.length() > MonitorRoster.MAX_FILE_BYTES) return@runCatching MonitorRoster.Roster(present = true)
+        MonitorRoster.parse(file.readText(Charsets.UTF_8))
+    }.onFailure { Log.w(TAG, "roster read failed", it) }.getOrDefault(MonitorRoster.NONE)
 }

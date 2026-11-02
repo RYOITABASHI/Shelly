@@ -1925,6 +1925,14 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // RN rewrote the display-only staff roster (~/.shelly/agents/monitor-roster.json,
+        // lib/monitor-roster.ts): refresh the widget once. Native only reads it.
+        AsyncFunction("notifyMonitorWidgetRoster") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.rosterChanged(context)
+            null
+        }
+
         AsyncFunction("installScouterCodexPetZip") { uriString: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

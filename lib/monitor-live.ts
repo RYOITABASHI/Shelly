@@ -134,7 +134,8 @@ export const ROLE_CHANNEL_MAX_CHARS = 10;
  * Channel label of a step: the user-defined role name it carries
  * (AgentOrchestrationStep.role.name — whitespace collapsed, at most
  * ROLE_CHANNEL_MAX_CHARS characters, latin letters uppercased), else CH-0n.
- * The MONITOR widget keeps CH-0n (it does not see roles).
+ * The MONITOR widget applies the same rule natively (MonitorRoster.channelLabel,
+ * read from the agent definition's step roles); keep the two in sync.
  */
 export function liveChannelLabel(stepIndex: number, roleName?: string | null): string {
   const flat = typeof roleName === 'string' ? roleName.replace(/\s+/g, ' ').trim() : '';

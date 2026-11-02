@@ -62,7 +62,11 @@ object MonitorWidgetModel {
         /** 0 / 50 / 100 (step-based, like the pane's camera bar). */
         val progress: Int,
         val tone: Tone,
-        val cost: Cost
+        val cost: Cost,
+        /** A role of the staff roster standing by (not a step of the shown run). */
+        val staff: Boolean = false,
+        /** > 0: not a camera but the "+N" tile for roles that did not fit. */
+        val overflow: Int = 0
     ) {
         val active: Boolean get() = state == CamState.RUNNING || state == CamState.APPROVAL
     }
@@ -403,6 +407,100 @@ object MonitorWidgetModel {
             costLine = CostLine(hasApi, apiUsd, apiTokens, hasCli, cliTokens, hasLocal, localTokens),
             cameras = cameras
         )
+    }
+
+    // ── Staff roster (MonitorRoster): roles on STANDBY ──
+
+    /** Portrait of a staff role: stable per role name. */
+    fun staffOperator(name: String): Int = ((hash(name) % 5) + 1).toInt()
+
+    fun staffCamera(slot: Int, entry: MonitorRoster.Entry, index: Int): Camera = Camera(
+        slot = slot,
+        stepIndex = null,
+        channel = MonitorRoster.channelLabel(entry.name).ifEmpty { channel(index) },
+        state = CamState.STANDBY,
+        variant = Variant.DIM,
+        operator = staffOperator(entry.name),
+        kind = entry.kind,
+        providerLabel = entry.engine,
+        progress = 0,
+        tone = Tone.DONE,
+        cost = Cost.None,
+        staff = true
+    )
+
+    private fun overflowCamera(slot: Int, hidden: Int): Camera = Camera(
+        slot = slot, stepIndex = null, channel = "+$hidden", state = CamState.STANDBY, variant = Variant.DIM,
+        operator = 1, kind = null, providerLabel = "", progress = 0, tone = Tone.DONE, cost = Cost.None,
+        staff = true, overflow = hidden
+    )
+
+    /**
+     * Idle wall (no run to show): the roster's roles as STANDBY staff. More
+     * roles than [CAMERA_SLOTS]: the 4x3 widget shows the first four (its
+     * header says "+N"), the 4x2 one the first three plus a "+N" tile.
+     * Empty when the roster is.
+     */
+    fun staffCameras(roster: MonitorRoster.Roster, slim: Boolean): List<Camera> {
+        if (roster.isEmpty) return emptyList()
+        val total = maxOf(roster.total, roster.entries.size)
+        val overflowTile = slim && total > CAMERA_SLOTS
+        val shown = if (overflowTile) CAMERA_SLOTS - 1 else CAMERA_SLOTS
+        val cams = roster.entries.take(shown).mapIndexed { i, e -> staffCamera(i, e, i) }.toMutableList()
+        if (overflowTile) cams += overflowCamera(cams.size, total - cams.size)
+        return cams
+    }
+
+    /** Roles the idle 4x3 header reports as "+N" (not on a tile). */
+    fun staffHidden(roster: MonitorRoster.Roster): Int =
+        (maxOf(roster.total, roster.entries.size) - CAMERA_SLOTS).coerceAtLeast(0)
+
+    /**
+     * Role-named channels for a run whose steps carry roles (agent
+     * definition `orchestration.steps[i].role.name`) — the rules of
+     * lib/monitor-live.ts channelLabels: the role name (≤10 chars, latin
+     * uppercased), a name used by several steps gets `·<step number>`.
+     * Steps without a role keep CH-0n.
+     */
+    fun roleChannels(stepRoles: List<String?>): Map<Int, String> {
+        val base = HashMap<Int, String>()
+        stepRoles.forEachIndexed { i, name ->
+            val label = MonitorRoster.channelLabel(name)
+            if (label.isNotEmpty()) base[i] = label
+        }
+        val counts = base.values.groupingBy { it }.eachCount()
+        return base.mapValues { (i, label) ->
+            if ((counts[label] ?: 0) < 2) {
+                label
+            } else {
+                val suffix = "·${i + 1}"
+                val keep = maxOf(1, MonitorRoster.CHANNEL_MAX_CHARS - suffix.length)
+                val head = if (label.codePointCount(0, label.length) > keep) label.substring(0, label.offsetByCodePoints(0, keep)) else label
+                head + suffix
+            }
+        }
+    }
+
+    /**
+     * A run's model with its roles: step cameras named by their role, and the
+     * slots the run leaves free (NO SIGNAL) filled with roster roles that are
+     * not in the run, on STANDBY. Roles in the run keep their live state.
+     */
+    fun withRoles(model: Model, stepRoles: List<String?>, roster: MonitorRoster.Roster): Model {
+        val labels = roleChannels(stepRoles)
+        val inRun = stepRoles.mapNotNull { MonitorRoster.channelLabel(it).takeIf { l -> l.isNotEmpty() } }.toSet()
+        val idle = roster.entries.filter { MonitorRoster.channelLabel(it.name) !in inRun }.iterator()
+        var idleIndex = 0
+        val cameras = model.cameras.map { cam ->
+            val step = cam.stepIndex
+            when {
+                step != null -> labels[step]?.let { cam.copy(channel = it) } ?: cam
+                cam.state == CamState.NO_SIGNAL && idle.hasNext() -> staffCamera(cam.slot, idle.next(), idleIndex++)
+                else -> cam
+            }
+        }
+        val approvalChannel = model.approvalStep?.let { labels[it] } ?: model.approvalChannel
+        return model.copy(cameras = cameras, approvalChannel = approvalChannel)
     }
 
     // ── Formatting (pure; the provider resolves the localized words) ──

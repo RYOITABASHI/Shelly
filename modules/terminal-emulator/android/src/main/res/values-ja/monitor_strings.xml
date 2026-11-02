@@ -27,4 +27,8 @@
   <string name="monitor_widget_cost_cli">CLI %1$s</string>
   <string name="monitor_widget_cost_local">LOCAL %1$s</string>
   <string name="monitor_widget_cost_separator">" · "</string>
+  <string name="monitor_widget_staff_none">ロールはまだありません · Shellyで「Claude Codeでレビュー役を作って」と頼んでください</string>
+  <string name="monitor_widget_staff_unavailable">ロール設定を読み込めません · Shellyのチャットで確認してください</string>
+  <string name="monitor_widget_staff_count">スタッフ %1$d名</string>
+  <string name="monitor_widget_staff_more">ほか%1$d名</string>
 </resources>

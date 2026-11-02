@@ -30,4 +30,9 @@
   <string name="monitor_widget_cost_cli">CLI %1$s</string>
   <string name="monitor_widget_cost_local">LOCAL %1$s</string>
   <string name="monitor_widget_cost_separator">" · "</string>
+  <!-- Idle staff roster (lib/monitor-roster.ts → monitor-roster.json). -->
+  <string name="monitor_widget_staff_none">No roles yet · ask in Shelly: make a reviewer role using Claude Code</string>
+  <string name="monitor_widget_staff_unavailable">Can\'t read your role settings · open Shelly\'s chat</string>
+  <string name="monitor_widget_staff_count">STAFF %1$d</string>
+  <string name="monitor_widget_staff_more">+%1$d more</string>
 </resources>

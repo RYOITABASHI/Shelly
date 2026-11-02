@@ -37,7 +37,10 @@ import java.util.concurrent.TimeUnit
  *    alarm at its silence deadline (re-armed on fire while still live), so a
  *    dead run (process killed mid-run, crash, JS reload) cannot keep the
  *    widget "recording" forever; [onAppModuleStart] also refreshes once when
- *    the app comes back.
+ *    the app comes back;
+ *  - the staff roster (RN's display-only monitor-roster.json, shown on the
+ *    idle tiles) refreshes once when RN reports it rewrote it
+ *    ([rosterChanged]) — still no observer and no polling for it.
  * Nothing at all happens when no MONITOR widget is placed.
  */
 object MonitorWidgetUpdater {
@@ -139,6 +142,17 @@ object MonitorWidgetUpdater {
         }
     }
 
+    /** RN rewrote monitor-roster.json (lib/monitor-roster.ts): one refresh, pushed only if it changed the widget. */
+    fun rosterChanged(context: Context) {
+        val app = context.applicationContext
+        executor.execute {
+            runCatching {
+                if (!hasWidgets(app)) return@runCatching
+                refreshNow(app, force = false)
+            }.onFailure { Log.w(TAG, "roster refresh failed", it) }
+        }
+    }
+
     /** Launcher asked (placement, resize, reboot) or the re-check alarm fired. */
     fun requestUpdate(context: Context, force: Boolean, fromAlarm: Boolean = false, onDone: (() -> Unit)? = null) {
         val app = context.applicationContext
@@ -193,7 +207,7 @@ object MonitorWidgetUpdater {
         val locale = appLocale(context)
         for ((cls, ids) in targets) {
             val slim = cls == MonitorWidgetSlimProvider::class.java
-            val key = listOf(model, snapshot.agentName, locale, slim)
+            val key = listOf(model, snapshot.agentName, snapshot.roster, locale, slim)
             if (!force && lastPushed[cls.name] == key) continue
             val views = MonitorWidgetRenderer.render(context, snapshot, slim, locale)
             ids.forEach { id ->

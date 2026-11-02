@@ -214,6 +214,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   notifyMonitorWidget?(agentId: string, active: boolean): Promise<void>;
   /** MONITOR home-screen widget: mirror the app language ('en' | 'ja'). */
   setMonitorWidgetLocale?(locale: string): Promise<void>;
+  /** MONITOR home-screen widget: the staff roster file (monitor-roster.json) changed — refresh once. */
+  notifyMonitorWidgetRoster?(): Promise<void>;
   installScouterCodexPetZip?(uri: string): Promise<{
     installedCount: number;
     installedIds: string[];

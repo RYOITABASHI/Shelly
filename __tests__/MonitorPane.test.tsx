@@ -10,6 +10,8 @@ import MonitorPane from '@/components/panes/MonitorPane';
 import { useAgentStore, type LiveRunEntry } from '@/store/agent-store';
 import type { MonitorRun } from '@/lib/agent-progress';
 import { computeMonitorGrid } from '@/components/monitor/monitor-grid';
+import { __resetMonitorRosterForTests, noteRoles } from '@/lib/monitor-roster';
+import type { AgentRole } from '@/lib/agent-role-types';
 
 jest.mock('@/lib/i18n', () => ({
   useTranslation: () => ({ t: (key: string) => key, locale: 'en' }),
@@ -90,6 +92,23 @@ jest.mock('react-native-reanimated', () => {
   };
 });
 
+function staffRole(id: string, name: string, engine: AgentRole['engine']): AgentRole {
+  return {
+    id,
+    name,
+    instructions: 'SECRET instructions never shown on MONITOR',
+    engine,
+    handles: ['implement'],
+    workspace: { mode: 'request' },
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+const setRoster = (roles: AgentRole[], unavailable = false) =>
+  act(() => {
+    void noteRoles({ roles, unavailable });
+  });
+
 const setT = (t: number) =>
   act(() => {
     useAgentStore.setState((s) => ({ monitor: { ...s.monitor, t } }));
@@ -107,7 +126,9 @@ describe('MonitorPane', () => {
     useAgentStore.getState().restartMonitor();
     useAgentStore.getState().setMonitor({ view: 'grid', auto: false, speed: 1, legendDismissed: false });
     useAgentStore.getState().setMonitorTeam(null);
-    useAgentStore.getState().setMonitor({ sourceMode: 'auto', liveAgentId: null, selectedId: 'ch1' });
+    // The DEMO is picked explicitly: an idle MONITOR shows the staff roster
+    // (see "MonitorPane idle staff roster" below).
+    useAgentStore.getState().setMonitor({ sourceMode: 'demo', liveAgentId: null, selectedId: 'ch1' });
     useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
@@ -238,22 +259,13 @@ describe('MonitorPane', () => {
     utils.unmount();
   });
 
-  it('the automatic DEMO stand-in tags its scripted ask as a sample and takes no reply', () => {
-    // sourceMode 'auto' (beforeEach): no real run seen, the DEMO stands in.
+  it('the picked DEMO tags its scripted ask as a sample and takes a reply', () => {
     const utils = render(<MonitorPane />);
     setT(26);
     expect(utils.getByTestId('monitor-pinned-approval')).toBeTruthy();
     expect(utils.getByTestId('monitor-demo-ask-tag')).toBeTruthy();
     expect(utils.getAllByText(/monitor.demo.ask_tag/).length).toBeGreaterThanOrEqual(2);
-    expect(utils.getByTestId('monitor-demo-input-locked')).toBeTruthy();
-    expect(utils.getByTestId('monitor-demo-chat-locked')).toBeTruthy();
-    expect(utils.queryByLabelText('monitor.pinned_a11y')).toBeNull();
-    expect(utils.queryByLabelText('monitor.chat_a11y')).toBeNull();
-    expect(utils.queryByLabelText('monitor.pinned_send_a11y')).toBeNull();
-    // Picking DEMO makes it a try-it playback: the reply box comes back, the tag stays.
-    fireEvent.press(utils.getByLabelText('monitor.source.demo_a11y'));
     expect(utils.getByLabelText('monitor.pinned_a11y')).toBeTruthy();
-    expect(utils.getByTestId('monitor-demo-ask-tag')).toBeTruthy();
     expect(utils.queryByTestId('monitor-demo-input-locked')).toBeNull();
     utils.unmount();
   });
@@ -439,12 +451,18 @@ describe('MonitorPane LIVE source', () => {
     useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
-  it('defaults to DEMO when no run is known', () => {
+  it('defaults to the staff roster (not the DEMO) when no run is known', () => {
+    setRoster([staffRole('r1', 'Reviewer', { type: 'cli', cli: 'claude' })]);
     const utils = render(<MonitorPane />);
     expect(utils.getByText('monitor.source.live_none')).toBeTruthy();
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    expect(utils.queryByText('SPEED 1×')).toBeNull();
+    // The DEMO is still one tap away.
+    fireEvent.press(utils.getByLabelText('monitor.source.demo_a11y'));
     expect(utils.getByText('monitor.demo_badge')).toBeTruthy();
     expect(utils.getByText('SPEED 1×')).toBeTruthy();
     utils.unmount();
+    __resetMonitorRosterForTests();
   });
 
   it('defaults to LIVE for a running run and hides the demo-only controls', () => {
@@ -709,10 +727,14 @@ describe('MonitorPane LIVE source', () => {
     act(() => {
       useAgentStore.setState({ agents: [] });
     });
+    setRoster([]);
     const utils = render(<MonitorPane />);
     expect(utils.getByText('monitor.source.live_none')).toBeTruthy();
-    expect(utils.getByText('monitor.demo_badge')).toBeTruthy();
+    // Idle again: the staff roster (here: none yet), not the DEMO.
+    expect(utils.getByTestId('monitor-staff-hint')).toBeTruthy();
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
     utils.unmount();
+    __resetMonitorRosterForTests();
   });
 
   it('keeps the last real run on the wall after it ends and its ephemeral agent is deleted', () => {
@@ -1042,7 +1064,7 @@ describe('MonitorPane MAP register / run / team file', () => {
     mockRunAgentNow.mockClear();
     reg.resetTeamRegistration();
     useAgentStore.getState().setMonitorTeam(null);
-    useAgentStore.getState().setMonitor({ view: 'map', auto: false, sourceMode: 'auto', liveAgentId: null });
+    useAgentStore.getState().setMonitor({ view: 'map', auto: false, sourceMode: 'demo', liveAgentId: null });
     useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
@@ -1146,6 +1168,103 @@ describe('MonitorPane MAP register / run / team file', () => {
     expect(utils.queryByTestId('monitor-map-paste-error')).toBeNull();
     expect(useAgentStore.getState().monitor.team?.title).toBe('Bell');
     expect(useAgentStore.getState().monitor.team?.columns[0][0].role).toBe('fetch it');
+    utils.unmount();
+  });
+});
+
+describe('MonitorPane idle staff roster', () => {
+  beforeEach(() => {
+    layout.isWide = true;
+    layout.isCompact = false;
+    __resetMonitorRosterForTests();
+    useAgentStore.getState().restartMonitor();
+    useAgentStore.getState().setMonitorTeam(null);
+    useAgentStore.getState().setMonitor({ view: 'grid', auto: false, sourceMode: 'auto', liveAgentId: null, selectedId: 'ch1' });
+    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
+  });
+  afterEach(() => __resetMonitorRosterForTests());
+
+  it('every role stands by as a channel: role name, engine, STANDBY — no DEMO, no NO SIGNAL tile', () => {
+    setRoster([
+      staffRole('r1', 'Implementer', { type: 'cli', cli: 'codex' }),
+      staffRole('r2', 'Reviewer', { type: 'cli', cli: 'claude' }),
+      staffRole('r3', 'Judge', { type: 'local' }),
+    ]);
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getAllByText('IMPLEMENTE').length).toBeGreaterThan(0);
+    expect(utils.getAllByText('REVIEWER').length).toBeGreaterThan(0);
+    expect(utils.getAllByText('JUDGE').length).toBeGreaterThan(0);
+    expect(utils.getAllByLabelText(/^REVIEWER Reviewer · Claude Code/).length).toBeGreaterThan(0);
+    expect(utils.getAllByLabelText(/^IMPLEMENTE Implementer · Codex/).length).toBeGreaterThan(0);
+    expect(utils.getAllByLabelText(/^JUDGE Judge · Local LLM/).length).toBeGreaterThan(0);
+    expect(utils.getByText('monitor.staff.title')).toBeTruthy();
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    expect(utils.queryByText('monitor.osd_demo')).toBeNull();
+    expect(utils.queryByText('monitor.no_signal')).toBeNull();
+    expect(utils.queryByText(/SECRET/)).toBeNull();
+    expect(utils.queryByTestId('monitor-staff-hint')).toBeNull();
+    // Nothing runs: no playback controls, no DEMO chat.
+    expect(utils.queryByText(/^SPEED/)).toBeNull();
+    expect(utils.queryByLabelText('monitor.chat_a11y')).toBeNull();
+    // A channel opens its single view like any camera.
+    fireEvent.press(utils.getAllByLabelText(/^REVIEWER /)[0]);
+    expect(utils.getByText('monitor.back_to_grid')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('no roles: the hint instead of the wall (the MAP too); DEMO still reachable', () => {
+    setRoster([]);
+    const utils = render(<MonitorPane />);
+    expect(utils.getByTestId('monitor-staff-hint')).toBeTruthy();
+    expect(utils.getByText('monitor.staff.none')).toBeTruthy();
+    expect(utils.queryByTestId('monitor-wall')).toBeNull();
+    fireEvent.press(utils.getByText('MAP'));
+    expect(utils.getByText('monitor.staff.none')).toBeTruthy();
+    fireEvent.press(utils.getByText('AUTO'));
+    expect(utils.getByText('monitor.staff.none')).toBeTruthy();
+    fireEvent.press(utils.getByLabelText('monitor.source.demo_a11y'));
+    expect(utils.queryByTestId('monitor-staff-hint')).toBeNull();
+    expect(utils.getByText('monitor.demo_badge')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it("roles.json unreadable: says it can't read them (no names)", () => {
+    setRoster([], true);
+    const utils = render(<MonitorPane />);
+    expect(utils.getByText('monitor.staff.unavailable')).toBeTruthy();
+    expect(utils.queryByTestId('monitor-wall')).toBeNull();
+    utils.unmount();
+  });
+
+  it('a real run replaces the roster', () => {
+    setRoster([staffRole('r2', 'Reviewer', { type: 'cli', cli: 'claude' })]);
+    const iso = (agoSec: number) => new Date(Date.now() - agoSec * 1000).toISOString();
+    act(() => {
+      useAgentStore.setState({
+        agents: [{ id: 'digest', name: 'Paper digest', orchestration: { steps: ['collect papers'] } } as never],
+        runningAgentIds: ['digest'],
+        liveRuns: {
+          digest: [
+            {
+              run: {
+                runId: 'run-1',
+                agentId: 'digest',
+                mode: 'SINGLE',
+                startedAt: iso(5),
+                stepCount: 1,
+                lastSeq: 2,
+                branches: [{ branchId: 'run-1#0', stepIndex: 0, state: 'RUNNING', startedAt: iso(4), updatedAt: iso(1) }],
+              },
+            },
+          ],
+        },
+      });
+    });
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getByText('collect papers')).toBeTruthy();
+    expect(utils.queryByText('REVIEWER')).toBeNull();
     utils.unmount();
   });
 });
