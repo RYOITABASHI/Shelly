@@ -1493,6 +1493,21 @@ patchCodex(libDir);
     //      longer truncate it under a reading claude), and a caller may replace
     //      the default --settings JSON with SHELLY_CLAUDE_SETTINGS_JSON (the
     //      agent driver's stricter deny/ask rules); it is unset for claude itself.
+    // v285: Claude Bash tool ran nothing (build 2806). Claude Code builds its
+    //      shell snapshot (~/.claude/shell-snapshots/snapshot-bash-*.sh) by
+    //      running its capture script in CLAUDE_CODE_SHELL, which is mksh
+    //      here (v279), so mksh's `set -o` table was recorded as enabled bash
+    //      options -- including `set -o noexec` -- plus mksh aliases. Every
+    //      Bash-tool command sources that snapshot BEFORE the env file, so the
+    //      shell (and the re-exec'd bash, which sources it again) stopped
+    //      executing. No exec-able bash ELF exists for the glibc claude
+    //      (nativeLibraryDir is empty, S3) and no documented setting turns
+    //      snapshots off, so shelly-claude-glibc() now (a) deletes poisoned
+    //      snapshots before claude starts and (b) runs a scrubber for the
+    //      claude process's lifetime that replaces any mksh-generated snapshot
+    //      with a neutral comment (commands then run exactly as with no
+    //      snapshot: env from claude's environment, the env file re-execs in
+    //      bash). HomeInitializer also deletes poisoned snapshots every start.
     // v284: front agent (窓口). When settings.frontAgent is antigravity/claude,
     //      the primary terminal session's fresh fork at app start gets
     //      SHELLY_FRONT_AGENT=agy|claude from shelly-pty.c; .bashrc moves it
@@ -1501,7 +1516,7 @@ patchCodex(libDir);
     //      interactive `agy` / `claude` TUI with no arguments, or prints a
     //      one-line install hint and stays in bash. Interactive TUI only —
     //      never `agy -p` / `--print` (Google ToS).
-    private const val BASHRC_VERSION = 284
+    private const val BASHRC_VERSION = 285
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1839,6 +1854,10 @@ patchCodex(libDir);
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-claude-run.sh write failed: ${e.message}")
         }
+
+        // v285: devices updated from a build whose Claude sessions wrote
+        // mksh-generated shell snapshots (`set -o noexec` etc.) recover at once.
+        removePoisonedClaudeSnapshots(File(home, ".claude/shell-snapshots"))
 
         // v39: Mozilla CA bundle for TLS clients that don't consult the
         // Android system trust store. Three classes of clients need this:
@@ -5801,6 +5820,7 @@ patchCodex(libDir);
      * (No Kotlin comments inside the appendLine run: tests extract it.)
      */
     private fun appendClaudeGlibcFunction(sb: StringBuilder, libDir: String) {
+        appendClaudeSnapshotScrubFunction(sb)
         sb.appendLine("shelly-claude-glibc() {")
         sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
         sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
@@ -5841,6 +5861,7 @@ patchCodex(libDir);
         sb.appendLine("    __proxy_pid=\$!")
         sb.appendLine("    __cleanup() {")
         sb.appendLine("      kill \"\$__proxy_pid\" 2>/dev/null")
+        sb.appendLine("      [ -n \"\${__scrub_pid:-}\" ] && kill \"\$__scrub_pid\" 2>/dev/null")
         sb.appendLine("      if grep -q 'Proxy-Authorization' \"\$__pfile.log\" 2>/dev/null; then")
         sb.appendLine("        echo \"shelly-claude-glibc: claude's HTTP client did not send the private proxy credentials (407); see DEFERRED.md\" >&2")
         sb.appendLine("      fi")
@@ -5848,6 +5869,20 @@ patchCodex(libDir);
         sb.appendLine("      rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"")
         sb.appendLine("    }")
         sb.appendLine("    trap __cleanup EXIT")
+        sb.appendLine("    # v285: claude captures its shell snapshot with CLAUDE_CODE_SHELL (mksh here), which")
+        sb.appendLine("    # records mksh's option table (set -o noexec ...) and every Bash command then ran")
+        sb.appendLine("    # nothing. Delete old poisoned snapshots, then neutralize new ones while claude runs.")
+        sb.appendLine("    __snapd=\"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/shell-snapshots\"")
+        sb.appendLine("    __shelly_claude_snapshot_scrub \"\$__snapd\" delete")
+        sb.appendLine("    __me=\$BASHPID")
+        sb.appendLine("    (")
+        sb.appendLine("      __n=0")
+        sb.appendLine("      while kill -0 \"\$__me\" 2>/dev/null; do")
+        sb.appendLine("        __shelly_claude_snapshot_scrub \"\$__snapd\" neutralize")
+        sb.appendLine("        if [ \"\$__n\" -lt 600 ]; then __n=\$((__n + 1)); sleep 0.1; else sleep 0.25; fi")
+        sb.appendLine("      done")
+        sb.appendLine("    ) </dev/null >/dev/null 2>&1 &")
+        sb.appendLine("    __scrub_pid=\$!")
         sb.appendLine("    __port=\"\"")
         sb.appendLine("    __token=\"\"")
         sb.appendLine("    __i=0")
@@ -5917,6 +5952,58 @@ patchCodex(libDir);
         sb.appendLine("  return \$__rc")
         sb.appendLine("}")
     }
+
+    /**
+     * v285: __shelly_claude_snapshot_scrub <dir> [delete|neutralize]. Claude Code
+     * captures ~/.claude/shell-snapshots/snapshot-*.sh with CLAUDE_CODE_SHELL,
+     * which is mksh for the glibc claude (S3c), so the file records mksh's
+     * `set -o` table as enabled options (`set -o noexec`, `set -o Current`,
+     * `set -o inherit-xtrace` ...) and every Bash-tool command, which sources
+     * the snapshot first, executes nothing. A file with one of those markers is
+     * deleted, or (for a running claude, which keeps sourcing the same path)
+     * replaced atomically by a comment. Reads with the `read` builtin only, so a
+     * polling loop forks nothing but its sleep. Bash snapshots never match.
+     * (No Kotlin comments inside the appendLine run: tests extract it.)
+     */
+    private fun appendClaudeSnapshotScrubFunction(sb: StringBuilder) {
+        sb.appendLine("__shelly_claude_snapshot_scrub() {")
+        sb.appendLine("  local __d=\"\$1\" __mode=\"\${2:-neutralize}\" __f __c")
+        sb.appendLine("  for __f in \"\$__d\"/snapshot-*.sh; do")
+        sb.appendLine("    [ -f \"\$__f\" ] || continue")
+        sb.appendLine("    __c=\"\"")
+        sb.appendLine("    IFS= read -r -d '' __c < \"\$__f\" 2>/dev/null")
+        sb.appendLine("    case \"\$__c\" in")
+        sb.appendLine("      *\"set -o noexec\"*|*\"set -o Current\"*|*\"set -o inherit-xtrace\"*) ;;")
+        sb.appendLine("      *) continue ;;")
+        sb.appendLine("    esac")
+        sb.appendLine("    if [ \"\$__mode\" = delete ]; then")
+        sb.appendLine("      rm -f -- \"\$__f\"")
+        sb.appendLine("    else")
+        sb.appendLine("      printf '%s\\n' '# Shelly: mksh-generated Claude shell snapshot neutralized (see DEFERRED.md)' > \"\$__f.shelly-\$BASHPID\" && mv -f -- \"\$__f.shelly-\$BASHPID\" \"\$__f\"")
+        sb.appendLine("    fi")
+        sb.appendLine("  done")
+        sb.appendLine("  return 0")
+        sb.appendLine("}")
+    }
+
+    /** v285: startup counterpart of __shelly_claude_snapshot_scrub ... delete. */
+    internal fun removePoisonedClaudeSnapshots(dir: File) {
+        val files = try { dir.listFiles() } catch (_: Exception) { null } ?: return
+        for (f in files) {
+            if (!f.isFile || !f.name.startsWith("snapshot-") || !f.name.endsWith(".sh")) continue
+            try {
+                if (f.length() > 4L * 1024 * 1024) continue
+                val text = f.readText()
+                if (CLAUDE_POISONED_SNAPSHOT_MARKERS.any { text.contains(it) } && f.delete()) {
+                    android.util.Log.i("HomeInitializer", "removed mksh-generated Claude shell snapshot ${f.name}")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("HomeInitializer", "Claude snapshot check failed for ${f.name}: ${e.message}")
+            }
+        }
+    }
+
+    private val CLAUDE_POISONED_SNAPSHOT_MARKERS = listOf("set -o noexec", "set -o Current", "set -o inherit-xtrace")
 
     /**
      * Claude glibc S4: $HOME/.shelly-claude-run.sh, regenerated on every start

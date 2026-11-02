@@ -113,7 +113,7 @@ describe('front agent .bashrc snippet (v284)', () => {
   const all = lines.join('\n');
 
   it('bumped BASHRC_VERSION to 284 (283 is reserved for S4)', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 284\b/);
+    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(284);
   });
 
   it('captures the value only in an interactive shell and unsets the env var at the top', () => {
