@@ -6,6 +6,132 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-11-02
+
+### Added
+
+- **Agent roles.** Reusable named roles with an engine (Codex CLI, Claude
+  Code, local LLM or an API provider), instructions, a workspace and a
+  run-without-approval level. Create, edit, list and delete them in plain
+  chat ("make a reviewer role using Claude Code that reviews code for bugs
+  and security issues", "list my roles", "delete the judge role"); each
+  change is echoed back and saved only after you type OK. Antigravity is
+  never accepted as a role engine.
+- **`@agent` requests are assigned to roles.** A request that names no
+  tool is matched to your roles and shown as `[role · engine]` lines in the
+  confirm text. "without roles" turns this off for one request; naming a
+  tool skips it.
+- **Review loop.** An implementer step followed by a reviewer runs as
+  implement → review → revise, up to 2 rounds, and stops early when the
+  review answers `VERDICT: PASS`.
+- **Compete.** "have both implementers build ... and compare" runs 2–3
+  implementer roles in parallel, each in its own folder (`~/demo/a`,
+  `~/demo/b`). A judge role compares them as "Candidate A/B" without engine
+  or role names and answers `WINNER: A|B|TIE`.
+- **Claude Code as an agent worker.** The official Claude Code linux-arm64
+  (glibc) binary, staged under `~/.shelly-runtime/claude-glibc/`, runs
+  through a userland loader without modification; plain `claude` starts
+  it in the terminal. Agent steps can be pinned to Claude Code next to
+  Codex; its Bash, Read, Write and Edit tools go through the same gate as
+  Codex, and web, Task, MCP, hooks and user settings are off. The sign-in
+  URL opens only on tap. Settings > Anthropic API Key is used when set;
+  otherwise attended runs use the signed-in subscription and unattended
+  runs follow Settings > Claude subscription for unattended runs.
+- **Parallel CLI steps.** "Right now, in parallel, using Codex ..., using
+  Claude Code ..., then combine ..." runs the Codex and Claude Code steps
+  at the same time through the PlanSpec executor (at most 2 CLI workers,
+  1 per engine; one after another when another agent is running or
+  Android's process headroom is low).
+- **MONITOR pane.** A camera-wall view of a live agent run: one channel
+  per step (named after its role, with `·R2` for review rounds), provider,
+  progress, tokens and cost (yen in Japanese, dollars otherwise), pending
+  approvals, and a MAP view of the steps. A MAP team can be registered as
+  an agent through the normal chat confirm. Tapping a channel lets you
+  switch that step's provider mid-run.
+- **MONITOR home-screen widget** (4x3 and 4x2) with live run data. It
+  updates only while a run is active and opens MONITOR on the tapped
+  channel.
+- **Run without approval** (per agent, default OFF), with two levels.
+  *Standard* auto-approves pure reads and writes inside the agent's
+  workspace. *All* (only when you type "run fully without approval" in
+  chat, attended runs only, and never for agents that read web, URL or
+  notification input) also allows file work in the workspace, home and
+  `$TMPDIR`, and read-only syntax checks (`node --check`, `python3 -m
+  py_compile`, `bash -n`). Both still ask for running scripts, network,
+  secrets, Shelly runtime paths and anything that creates a link. Each
+  auto-approval is written to the agent's chat. The level is kept in
+  Keystore-backed storage, bound to the agent definition.
+- **Approve by typing.** Pending agent approvals are posted in the agent's
+  chat and in MONITOR; type OK / NO, or `ok <hash>` when two are waiting.
+  An attended CLI step waits up to 10 minutes for an answer.
+- **Workspace from the request.** When the paths in a request share one
+  folder in the home (for example `~/demo/a.html` and `~/demo/b.html`),
+  that folder becomes the agent's workspace and is shown in the confirm
+  text.
+- **Continuous mode.** "keep going until I stop it" runs an agent as short
+  iterations with a cooldown, stopped by Stop, STOP-ALL, 50 iterations, 24
+  hours, 3 failures in a row or a daily paid-API budget (default 0).
+- Parallel steps can be written in plain language ("in parallel",
+  "同時に"), and a single step's provider changed by chat ("make step 2
+  Codex").
+- Agents with no schedule are kept as manual agents instead of asking
+  when to run them.
+- Pane swap: a header button exchanges two panes without restarting the
+  terminal or clearing the chat.
+- `agy-install` / `agy` for Google's Antigravity CLI (SHA-512 checked).
+  Settings > Front agent can open the `agy` or `claude` TUI in the first
+  terminal tab. Shelly never runs Antigravity from agents or schedules.
+
+### Changed
+
+- "Save as skill?" is asked as a chat line after a successful run; reply
+  "save skill" to save. No dialog.
+- Codex file-change approvals (`apply_patch`) go through the gate instead
+  of failing the step.
+- An attended step pinned to Codex or Claude Code runs only on that CLI; a
+  failure is reported instead of switching to another engine.
+- MONITOR shows Codex step token counts, and "—" instead of "0 tok" when a
+  step reports none.
+- STOP-ALL now stops chains and executor runs already in progress, not
+  only future alarms.
+
+### Fixed
+
+- MONITOR no longer shows "stuck?" for a Codex or Claude Code step that is
+  still working (10-second heartbeat).
+- The in-app updater deletes old downloaded APKs (about 660 MB each), which
+  had been accumulating.
+- Approval requests of deleted agents are dropped instead of re-notifying
+  on every launch.
+- A run-without-approval draft approval no longer fails with "reply did
+  not match the pending request".
+- Pasting an OAuth code into Claude Code's sign-in arrives intact.
+- The terminal starts with `PWD` spelled like `$HOME`, so tools no longer
+  see the home folder under two paths.
+
+### Security
+
+- The gate boundary-checks paths attached to options (`-t/sdcard/x`,
+  `--file=...`) and redirects written without spaces (`echo x>/sdcard/y`).
+- Quoted heredoc bodies (`<<'EOF'`) are treated as data, so a file written
+  with `cat > f <<'EOF'` is not flagged as indirect execution; function
+  definitions are refused.
+- Auto-approval never covers commands that can create links (`ln`, `cp
+  -s/-l/-a`, `patch`, several `git` subcommands) or paths with `..`, and
+  probes existing links in every path it allows.
+- The "all" level reads commands with a quote-aware shell lexer, and the
+  worker environment drops `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `CDPATH` and
+  `PROMPT_COMMAND`.
+- Only text typed in the chat composer can answer an approval; voice
+  transcripts cannot. The ask shown is built from the same request bytes
+  the notification uses and is refused if they change.
+- `roles.json` is sealed by a hash in Keystore-backed storage; a changed
+  file disables roles until reset. Role levels live only in that storage,
+  an agent gets the lowest level of its roles, and CLI steps cannot write
+  the roles file.
+- Savepoints no longer turn `$HOME` into a git repository, and the secret
+  scan catches segmented keys and `KEY=value` env-file tokens.
+
 ## [8.1.2] - 2026-10-29
 
 ### Added
