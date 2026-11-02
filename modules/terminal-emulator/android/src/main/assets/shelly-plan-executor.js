@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=25
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=26
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -99,7 +99,15 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // steps are headed with the role's name plus a "these are data" note. A
 // role-less chain's prompts are byte-identical. Bumped so a stale v24 copy,
 // which drops the role instructions, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 25;
+// v26 (2026-11-02, agent roles Inc B): bounded role hand-offs
+// (plan.steps.list[i].handoff, re-validated by normalizeStepHandoff). A
+// hand-off step carries only the results of its `of` steps; a revise step or
+// a round-2 review is skipped (SKIPPED, not an error) once the latest review
+// answered `VERDICT: PASS`; a judge sees the candidates as `Candidate A/B`
+// (no role or engine names) and its `WINNER:` line is recorded, never
+// executed. Plans without hand-offs run exactly as before. Bumped so a stale
+// v25 copy, which would run every round regardless, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 26;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2138,7 +2146,7 @@ function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles)
   const carriedItems = priorResults
     .map(
       (r, i) =>
-        `## Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}\n${String(r).replace(/\s+/g, ' ').trim().slice(0, STEP_PROMPT_MAX_RESULT_CARRY_CHARS)}`,
+        `## ${roles && roles.priorHeadings && roles.priorHeadings[i] !== undefined ? roles.priorHeadings[i] : `Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}`}\n${String(r).replace(/\s+/g, ' ').trim().slice(0, STEP_PROMPT_MAX_RESULT_CARRY_CHARS)}`,
     )
     .join('\n\n');
   const carried = priorResults.length
@@ -2147,6 +2155,112 @@ function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles)
       : `# Results from previous steps\n${carriedItems}\n\n---\n\n`
     : '';
   return `${`${head}${carried}`.slice(0, headBudget)}${dataNote}${evidenceBlock}${roleBlock}${tail}`;
+}
+
+// ── Agent roles Inc B: bounded hand-offs (v26) ──────────────────────────────
+// Verbatim ports of lib/agent-orchestration.ts's normalizeStepHandoff /
+// parseReviewVerdict / parseJudgeWinner / shouldSkipHandoffStep /
+// carriedStepContext / carriedStepRoleContext. A hand-off marker changes only
+// which prior results a step carries and whether it is skipped after a
+// `VERDICT: PASS` — never its tool, pin or gate. The plan file is untrusted,
+// so the marker is re-validated here, including "every `of` index is before
+// the step itself".
+const MAX_HANDOFF_ROUNDS = 2;
+const HANDOFF_KINDS = new Set(['review', 'revise', 'judge']);
+const HANDOFF_CANDIDATE_LETTERS = ['A', 'B', 'C'];
+const HANDOFF_PASS_SKIP_MESSAGE = 'Skipped: the reviewer answered VERDICT: PASS.';
+const REVIEW_OUTPUT_CONTRACT =
+  'Output contract: the first line of your answer is exactly "VERDICT: PASS" (nothing needs fixing) or "VERDICT: REVISE", followed by at most 10 numbered findings.';
+
+function normalizeStepHandoff(raw, index) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  if (typeof raw.kind !== 'string' || !HANDOFF_KINDS.has(raw.kind)) return undefined;
+  if (raw.round !== 1 && raw.round !== 2) return undefined;
+  if (!Array.isArray(raw.of) || raw.of.length === 0 || raw.of.length > HARD_MAX_STEPS) return undefined;
+  const of = [];
+  for (const k of raw.of) {
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+    if (of.length && k <= of[of.length - 1]) return undefined;
+    if (typeof index === 'number' && k >= index) return undefined;
+    of.push(k);
+  }
+  return { kind: raw.kind, of, round: raw.round };
+}
+
+function handoffOf(steps, i) {
+  return steps && steps[i] ? normalizeStepHandoff(steps[i].handoff, i) : undefined;
+}
+
+function firstContentLine(text) {
+  for (const line of String(text == null ? '' : text).split(/\r?\n/)) {
+    const t = line.replace(/^[\s>*_#`]+/, '').trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+function parseReviewVerdict(text) {
+  const line = firstContentLine(text);
+  if (/^VERDICT:\s*PASS\b/i.test(line)) return 'PASS';
+  if (/^VERDICT:\s*REVISE\b/i.test(line)) return 'REVISE';
+  return null;
+}
+
+function parseJudgeWinner(text, candidates) {
+  const m = /^WINNER:\s*(A|B|C|TIE)\b/i.exec(firstContentLine(text));
+  if (!m) return null;
+  const w = m[1].toUpperCase();
+  if (w !== 'TIE' && HANDOFF_CANDIDATE_LETTERS.indexOf(w) >= candidates) return null;
+  return w;
+}
+
+function shouldSkipHandoffStep(steps, index, results, skipped) {
+  const h = handoffOf(steps, index);
+  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round === 2))) return false;
+  for (let j = index - 1; j >= 0; j -= 1) {
+    const hj = handoffOf(steps, j);
+    if (!hj || hj.kind !== 'review') continue;
+    if (skipped[j]) return true;
+    return parseReviewVerdict(results[j]) === 'PASS';
+  }
+  return false;
+}
+
+function carriedStepContext(steps, index, results, contextBase) {
+  const has = (k) => typeof results[k] === 'string';
+  const h = handoffOf(steps, index);
+  let indexes;
+  if (h) {
+    indexes = h.of.filter((k) => k < index && has(k));
+  } else {
+    indexes = [];
+    for (let k = 0; k < Math.min(contextBase, index); k += 1) if (has(k)) indexes.push(k);
+    if (steps.some((_, k) => handoffOf(steps, k))) {
+      indexes = indexes.filter((k) => {
+        const hk = handoffOf(steps, k);
+        if (!hk || hk.round !== 1 || hk.kind === 'judge') return true;
+        return !indexes.some((j) => {
+          const hj = handoffOf(steps, j);
+          return j > k && !!hj && hj.kind === hk.kind && hj.round === 2;
+        });
+      });
+    }
+  }
+  return { results: indexes.map((k) => results[k]), indexes };
+}
+
+function carriedStepRoleContext(steps, index, indexes) {
+  const h = handoffOf(steps, index);
+  const judge = !!h && h.kind === 'judge';
+  const contiguous = indexes.every((k, n) => k === n);
+  if (contiguous && !judge) return stepRoleContext(steps, index, indexes.length);
+  const role = steps[index] ? normalizeStepRole(steps[index].role) : undefined;
+  const priorRoles = indexes.map((k) => (judge || !steps[k] ? undefined : normalizeStepRole(steps[k].role)));
+  const priorHeadings = indexes.map((k, n) =>
+    judge
+      ? `Candidate ${HANDOFF_CANDIDATE_LETTERS[n] !== undefined ? HANDOFF_CANDIDATE_LETTERS[n] : String(n + 1)}`
+      : `Step ${k + 1}${roleLabel(steps[k] ? normalizeStepRole(steps[k].role) : undefined)}`);
+  return Object.assign(role ? { role } : {}, { priorRoles, priorHeadings });
 }
 
 // Verbatim port of lib/agent-orchestration.ts's reduceStatus. Precedence:
@@ -6088,8 +6202,42 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     throw new CliStepNeedsAttended(CLI_STEP_ATTENDED_ONLY_MESSAGE);
   }
   const priorResults = [];
+  // Agent roles Inc B (v26): step-index-aligned results / skips (a hand-off
+  // step skipped after a PASS leaves a hole). Without hand-offs the carried
+  // context is priorResults.slice(0, contextBase[i]) exactly as before.
+  const resultsByStep = [];
+  const skippedByStep = [];
   const records = [];
   let priorFailed = false;
+  // The structurally parsed verdict of a review / judge step: recorded on the
+  // step record and in the audit log, never executed.
+  function recordHandoffVerdict(i, outcome, carriedIndexes) {
+    const h = handoffOf(plan.steps.list, i);
+    if (!h || (h.kind !== 'review' && h.kind !== 'judge')) return;
+    let verdict = null;
+    let winnerStepIndex;
+    if (h.kind === 'review') {
+      verdict = parseReviewVerdict(outcome.result);
+    } else {
+      const winner = parseJudgeWinner(outcome.result, carriedIndexes.length);
+      if (winner) {
+        verdict = `WINNER: ${winner}`;
+        const at = HANDOFF_CANDIDATE_LETTERS.indexOf(winner);
+        if (at !== -1 && carriedIndexes[at] !== undefined) winnerStepIndex = carriedIndexes[at];
+      }
+    }
+    if (!verdict) return;
+    outcome.record.handoffVerdict = verdict;
+    appendJsonl(paths.planAuditFile, Object.assign({
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'handoff_verdict',
+      agentId: plan.agent.id,
+      stepIndex: i,
+      handoffKind: h.kind,
+      verdict,
+    }, winnerStepIndex !== undefined ? { winnerStepIndex } : {}));
+  }
   // Sourced briefings (2026-10-09, port of lib/agent-sources.ts — mirrored in
   // the attended chain, lib/agent-manager.ts runAgentOrchestratedBody). Only
   // a chain whose request depends on real-world/current facts
@@ -6291,7 +6439,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
   }
 
-  async function executeStep(i, contextResults, override, branchCtl) {
+  // Agent roles Inc B (v26): the role context for the results step i carries
+  // (carriedIndexes = the steps they came from; absent = 0..n-1, the pre-v26
+  // shape — identical to stepRoleContext then).
+  function carriedRolesFor(i, carriedIndexes, count) {
+    const indexes = Array.isArray(carriedIndexes)
+      ? carriedIndexes.slice(0, count)
+      : Array.from({ length: count }, (_, n) => n);
+    return carriedStepRoleContext(plan.steps.list, i, indexes);
+  }
+
+  async function executeStep(i, contextResults, override, branchCtl, carriedIndexes) {
     const step = plan.steps.list[i];
     const isFinal = i === plan.steps.list.length - 1;
     // Phase 7 (2026-08-03): a step's own tool pin (step.tool) is now honored
@@ -6344,8 +6502,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // Agent roles (v25): undefined for a role-less chain (prompt unchanged).
     // The isolated branch labels only the results it actually carries.
     const stepPrompt = isolation && typeof isolation.base === 'string'
-      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, stepRoleContext(plan.steps.list, i, isolation.carry === true ? contextResults.length : 0))
-      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, stepRoleContext(plan.steps.list, i, contextResults.length));
+      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0))
+      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length));
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
@@ -6639,7 +6797,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
 
   // Live progress (v12): RUNNING on launch, terminal state on settle. Steps
   // the chain never launches are settled SKIPPED/FAILED by progressFinish.
-  async function executeStepWithProgress(i, contextResults) {
+  async function executeStepWithProgress(i, contextResults, carriedIndexes) {
     const progress = activeProgress;
     const step = plan.steps.list[i];
     if (progress && parallelPlan.group[i] === undefined) progress.currentStep = i;
@@ -6663,7 +6821,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     try {
       for (;;) {
         try {
-          const outcome = await executeStep(i, contextResults, override, ctl);
+          const outcome = await executeStep(i, contextResults, override, ctl, carriedIndexes);
           progressState(progress, i, progressStatusState(outcome.record.status), outcome.record.outputPreview);
           return outcome;
         } catch (error) {
@@ -6730,14 +6888,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const runLength = runEnd - i;
       // Pre-sized slots preserve declared order regardless of completion order.
       const runResults = new Array(runLength);
-      const contextSnapshot = priorResults.slice(0, parallelPlan.contextBase[i]);
+      // v26: same pre-group snapshot as priorResults.slice(0, contextBase[i])
+      // (branches never carry a hand-off marker of their own).
+      const snapshotCtx = carriedStepContext(plan.steps.list, i, resultsByStep, parallelPlan.contextBase[i]);
+      const contextSnapshot = snapshotCtx.results;
       const settled = await Promise.allSettled(Array.from({ length: runLength }, (_, offset) =>
         withBranchPermit(async () => {
           if (haltedChain || isHalted(paths)) {
             haltedChain = true;
             return undefined;
           }
-          const outcome = await executeStepWithProgress(i + offset, contextSnapshot);
+          const outcome = await executeStepWithProgress(i + offset, contextSnapshot, snapshotCtx.indexes);
           runResults[offset] = outcome;
           return outcome;
         })));
@@ -6752,7 +6913,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         absorbOutcome(outcome);
         records.push(outcome.record);
         if (outcome.resultFileText !== undefined) writeAtomic(paths.resultFile, outcome.resultFileText);
-        if (outcome.result !== undefined) priorResults.push(outcome.result);
+        if (outcome.result !== undefined) {
+          priorResults.push(outcome.result);
+          resultsByStep[i + offset] = outcome.result;
+        }
         if (outcome.failed) priorFailed = true;
       }
       if (rejected) throw rejected.reason;
@@ -6760,11 +6924,35 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       continue;
     }
 
-    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
-    const outcome = await executeStepWithProgress(i, contextResults);
+    // Agent roles Inc B (v26): the latest review answered VERDICT: PASS — the
+    // remaining revise / round-2 review steps settle SKIPPED (not an error;
+    // reduceStatus folds success + skipped to success) and the chain goes on.
+    if (shouldSkipHandoffStep(plan.steps.list, i, resultsByStep, skippedByStep)) {
+      skippedByStep[i] = true;
+      records.push({ index: i, instruction: plan.steps.list[i].instruction, status: 'skipped', durationMs: 0, outputPreview: HANDOFF_PASS_SKIP_MESSAGE });
+      progressState(activeProgress, i, 'SKIPPED', HANDOFF_PASS_SKIP_MESSAGE);
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'plan.executor',
+        event: 'handoff_skipped',
+        agentId: plan.agent.id,
+        stepIndex: i,
+        reason: 'review passed',
+      });
+      i += 1;
+      continue;
+    }
+
+    const carried = carriedStepContext(plan.steps.list, i, resultsByStep, parallelPlan.contextBase[i]);
+    const contextResults = carried.results;
+    const outcome = await executeStepWithProgress(i, contextResults, carried.indexes);
     absorbOutcome(outcome);
     records.push(outcome.record);
-    if (outcome.result !== undefined) priorResults.push(outcome.result);
+    if (outcome.result !== undefined) {
+      priorResults.push(outcome.result);
+      resultsByStep[i] = outcome.result;
+      recordHandoffVerdict(i, outcome, carried.indexes);
+    }
     if (outcome.failed) priorFailed = true;
     i += 1;
   }
@@ -7699,6 +7887,15 @@ module.exports = {
   normalizeStepRole,
   composeRoleInstructions,
   ROLE_RESULTS_DATA_NOTE,
+  MAX_HANDOFF_ROUNDS,
+  HANDOFF_PASS_SKIP_MESSAGE,
+  REVIEW_OUTPUT_CONTRACT,
+  normalizeStepHandoff,
+  parseReviewVerdict,
+  parseJudgeWinner,
+  shouldSkipHandoffStep,
+  carriedStepContext,
+  carriedStepRoleContext,
   reduceStatus,
   combineFinalPreview,
   runOrchestrationChain,

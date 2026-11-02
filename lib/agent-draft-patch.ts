@@ -564,7 +564,7 @@ function resolveStepRef(
       const lines = summaryLineSteps(steps);
       if (ref.n < 1 || ref.n > lines.length) return null;
       const line = lines[ref.n - 1];
-      return line.length === 1 ? line : { ambiguousLine: ref.n };
+      return isParallelLine(steps, line) ? { ambiguousLine: ref.n } : line;
     }
     case 'parallel': {
       const groups = planParallelGroups(steps.map(normalizeStep)).group;
@@ -584,10 +584,43 @@ function toolKey(tool: ToolChoice | undefined): string {
   return tool && tool.type !== 'auto' ? JSON.stringify(tool) : '';
 }
 
-/** Original step indices per summary line (a parallel line holds several). */
+/** Original step indices per summary line (a parallel line holds several).
+ *  Agent roles Inc B: a review → revise loop's revise / round-2 review steps
+ *  have no summary line of their own — each joins the visible line of the
+ *  step with the same role before it (the implement line / the round-1
+ *  review line), so 「2番目をローカルで」 re-engines every round of it. */
 export function summaryLineSteps(steps: ReadonlyArray<string | AgentOrchestrationStep>): number[][] {
   let next = 0;
-  return groupStepsForDisplay(steps).entries.map((entry) => entry.items.map(() => next++));
+  const lines = groupStepsForDisplay(steps).entries.map((entry) => entry.items.map(() => next++));
+  const step = (i: number) => (typeof steps[i] === 'string' ? undefined : (steps[i] as AgentOrchestrationStep));
+  const hidden = (i: number) => {
+    const h = step(i)?.handoff;
+    return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round === 2));
+  };
+  if (!steps.some((_, i) => hidden(i))) return lines;
+  const visible = lines.filter((l) => !(l.length === 1 && hidden(l[0])));
+  for (const l of lines) {
+    if (!(l.length === 1 && hidden(l[0]))) continue;
+    const i = l[0];
+    // Follow `of[0]` (the previous round of the same work) to the visible
+    // step the loop started from: revise → implement, review r2 → review r1.
+    let root = i;
+    for (let guard = 0; guard < steps.length && hidden(root); guard++) {
+      const prev = step(root)?.handoff?.of[0];
+      if (typeof prev !== 'number' || prev >= root) break;
+      root = prev;
+    }
+    const host = hidden(root) ? undefined : visible.find((v) => v.length >= 1 && v[0] === root);
+    if (host) host.push(i);
+    else visible.push(l); // no host line: keep it addressable on its own
+  }
+  return visible.sort((a, b) => a[0] - b[0]);
+}
+
+/** true when a summary line is an effective parallel group (vs a loop line). */
+function isParallelLine(steps: ReadonlyArray<string | AgentOrchestrationStep>, line: readonly number[]): boolean {
+  const groups = planParallelGroups(steps.map(normalizeStep)).group;
+  return line.length > 1 && groups[line[0]] !== undefined;
 }
 
 /** The summary line (1-based) that shows step `index`. */

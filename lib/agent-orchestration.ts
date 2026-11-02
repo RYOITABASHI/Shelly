@@ -82,7 +82,12 @@ export interface ResolvedBudget {
  */
 export function resolveBudget(cfg: AgentOrchestrationConfig | undefined): ResolvedBudget {
   const stepCount = cfg?.steps?.length ?? 0;
-  const requestedMax = cfg?.maxSteps ?? Math.min(stepCount || DEFAULT_MAX_STEPS, DEFAULT_MAX_STEPS);
+  // Agent roles Inc B: a statically unrolled hand-off loop (+ its final
+  // summary) is bounded by its own construction (≤ HARD_MAX_STEPS), so its
+  // steps are not cut by the default 6-step budget.
+  const hasHandoff = (cfg?.steps ?? []).some((s) => typeof s === 'object' && s !== null && s.handoff !== undefined);
+  const requestedMax =
+    cfg?.maxSteps ?? (hasHandoff ? stepCount || DEFAULT_MAX_STEPS : Math.min(stepCount || DEFAULT_MAX_STEPS, DEFAULT_MAX_STEPS));
   const requestedTimeout = cfg?.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS;
   return {
     maxSteps: clamp(Math.floor(requestedMax) || 1, 1, HARD_MAX_STEPS),
@@ -116,6 +121,182 @@ export interface NormalizedStep {
    *  runs role-less, exactly as before roles existed). Feeds buildStepPrompt's
    *  `# Your role` block via stepRoleContext(). */
   role?: AgentStepRole;
+  /** Agent roles Inc B (2026-11-02): this step is part of a bounded role
+   *  hand-off (review / revise loop, or a judge after a parallel group),
+   *  re-validated by normalizeStepHandoff. It changes only WHICH prior
+   *  results the step carries and whether it is skipped after a PASS — never
+   *  its tool, pin or privileges. */
+  handoff?: StepHandoff;
+}
+
+// ── Agent roles Inc B: bounded hand-offs ─────────────────────────────────────
+
+export type StepHandoffKind = 'review' | 'revise' | 'judge';
+
+/** `of` = the step indexes whose results this step carries (strictly
+ *  ascending, each before the step itself); `round` = loop round (judge: 1). */
+export interface StepHandoff {
+  kind: StepHandoffKind;
+  of: number[];
+  round: 1 | 2;
+}
+
+/** Hard cap of review → revise rounds (the loop is statically unrolled). */
+export const MAX_HANDOFF_ROUNDS = 2;
+
+const HANDOFF_KINDS: ReadonlySet<string> = new Set(['review', 'revise', 'judge']);
+
+/**
+ * Re-validate a step's hand-off marker (it lives in the agent JSON / plan
+ * file, which a run can rewrite). A fresh object from the known fields, or
+ * undefined when anything is off (unknown kind, round not 1|2, `of` empty /
+ * not strictly ascending non-negative integers below HARD_MAX_STEPS). The
+ * "before this step" bound is checked by normalizeSteps (it knows the index).
+ * Mirrored in scripts/shelly-plan-executor.js (normalizeStepHandoff).
+ */
+export function normalizeStepHandoff(raw: unknown): StepHandoff | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== 'string' || !HANDOFF_KINDS.has(r.kind)) return undefined;
+  if (r.round !== 1 && r.round !== 2) return undefined;
+  if (!Array.isArray(r.of) || r.of.length === 0 || r.of.length > HARD_MAX_STEPS) return undefined;
+  const of: number[] = [];
+  for (const k of r.of) {
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+    if (of.length && k <= of[of.length - 1]) return undefined;
+    of.push(k);
+  }
+  return { kind: r.kind as StepHandoffKind, of, round: r.round };
+}
+
+/** The review step's output contract (appended to its instruction, never to
+ *  the role definition). Mirrored in scripts/shelly-plan-executor.js. */
+export const REVIEW_OUTPUT_CONTRACT =
+  'Output contract: the first line of your answer is exactly "VERDICT: PASS" (nothing needs fixing) or "VERDICT: REVISE", followed by at most 10 numbered findings.';
+
+/** The judge step's output contract for `candidates` candidates (2-3). */
+export function judgeOutputContract(candidates: number): string {
+  const letters = HANDOFF_CANDIDATE_LETTERS.slice(0, Math.max(2, Math.min(candidates, MAX_PARALLEL_BRANCHES)));
+  return `Output contract: the first line of your answer is exactly ${letters.map((l) => `"WINNER: ${l}"`).join(', ')} or "WINNER: TIE", followed by a short reason.`;
+}
+
+const HANDOFF_CANDIDATE_LETTERS = ['A', 'B', 'C'];
+
+/** The display text of a hand-off step's instruction (its contract removed). */
+export function stripHandoffContract(instruction: string): string {
+  const at = instruction.indexOf('\n\nOutput contract:');
+  return (at === -1 ? instruction : instruction.slice(0, at)).trim();
+}
+
+/** Run-log preview of a review / revise step skipped after a PASS. Mirrored. */
+export const HANDOFF_PASS_SKIP_MESSAGE = 'Skipped: the reviewer answered VERDICT: PASS.';
+
+function firstContentLine(text: string | undefined): string {
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    // Tolerate markdown emphasis / heading / quote markers before the token.
+    const t = line.replace(/^[\s>*_#`]+/, '').trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+/** VERDICT of a review step's output (first non-empty line), structurally
+ *  only — the text is never executed. null = no verdict line (treated as
+ *  REVISE: the loop continues). Mirrored. */
+export function parseReviewVerdict(text: string | undefined): 'PASS' | 'REVISE' | null {
+  const line = firstContentLine(text);
+  if (/^VERDICT:\s*PASS\b/i.test(line)) return 'PASS';
+  if (/^VERDICT:\s*REVISE\b/i.test(line)) return 'REVISE';
+  return null;
+}
+
+/** WINNER of a judge step's output for `candidates` candidates, structurally
+ *  only (recorded in the run log, never executed). Mirrored. */
+export function parseJudgeWinner(text: string | undefined, candidates: number): 'A' | 'B' | 'C' | 'TIE' | null {
+  const m = /^WINNER:\s*(A|B|C|TIE)\b/i.exec(firstContentLine(text));
+  if (!m) return null;
+  const w = m[1].toUpperCase() as 'A' | 'B' | 'C' | 'TIE';
+  if (w !== 'TIE' && HANDOFF_CANDIDATE_LETTERS.indexOf(w) >= candidates) return null;
+  return w;
+}
+
+/**
+ * true when step `index` (a revise step, or a round-2 review) must be skipped:
+ * the most recent review step before it answered VERDICT: PASS, or was itself
+ * skipped. `results[k]` / `skipped[k]` are index-aligned with the steps.
+ * Pure; mirrored in scripts/shelly-plan-executor.js.
+ */
+export function shouldSkipHandoffStep(
+  steps: ReadonlyArray<Pick<NormalizedStep, 'handoff'>>,
+  index: number,
+  results: ReadonlyArray<string | undefined>,
+  skipped: ReadonlyArray<boolean | undefined>,
+): boolean {
+  const h = steps[index]?.handoff;
+  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round === 2))) return false;
+  for (let j = index - 1; j >= 0; j--) {
+    if (steps[j]?.handoff?.kind !== 'review') continue;
+    if (skipped[j]) return true;
+    return parseReviewVerdict(results[j]) === 'PASS';
+  }
+  return false;
+}
+
+/**
+ * The results step `index` carries, and which steps they came from.
+ *  - a hand-off step carries exactly its `of` steps that produced a result;
+ *  - any other step carries every result before `contextBase` (the parallel
+ *    plan's bound), except a round-1 review / revise result superseded by a
+ *    round-2 result of the same kind (so a summary sees the final state).
+ * Without hand-offs this is `results.slice(0, contextBase)` — the pre-Inc B
+ * carry. Pure; mirrored in scripts/shelly-plan-executor.js.
+ */
+export function carriedStepContext(
+  steps: ReadonlyArray<Pick<NormalizedStep, 'handoff'>>,
+  index: number,
+  results: ReadonlyArray<string | undefined>,
+  contextBase: number,
+): { results: string[]; indexes: number[] } {
+  const has = (k: number) => typeof results[k] === 'string';
+  const h = steps[index]?.handoff;
+  let indexes: number[];
+  if (h) {
+    indexes = h.of.filter((k) => k < index && has(k));
+  } else {
+    indexes = [];
+    for (let k = 0; k < Math.min(contextBase, index); k++) if (has(k)) indexes.push(k);
+    if (steps.some((s) => s?.handoff)) {
+      indexes = indexes.filter((k) => {
+        const hk = steps[k]?.handoff;
+        if (!hk || hk.round !== 1 || hk.kind === 'judge') return true;
+        return !indexes.some((j) => j > k && steps[j]?.handoff?.kind === hk.kind && steps[j]?.handoff?.round === 2);
+      });
+    }
+  }
+  return { results: indexes.map((k) => results[k] as string), indexes };
+}
+
+/**
+ * StepRoleContext for step `index` carrying the results of `indexes`. Same as
+ * stepRoleContext(steps, index, n) when `indexes` is 0..n-1 and the step is
+ * not a judge; otherwise each carried result gets an explicit heading — its
+ * real step number (+ role), or `Candidate A/B/C` for a judge, which sees no
+ * role (or engine) name. Mirrored in scripts/shelly-plan-executor.js.
+ */
+export function carriedStepRoleContext(
+  steps: ReadonlyArray<Pick<NormalizedStep, 'role' | 'handoff'>>,
+  index: number,
+  indexes: readonly number[],
+): StepRoleContext | undefined {
+  const judge = steps[index]?.handoff?.kind === 'judge';
+  const contiguous = indexes.every((k, n) => k === n);
+  if (contiguous && !judge) return stepRoleContext(steps, index, indexes.length);
+  const role = steps[index]?.role;
+  const priorRoles = indexes.map((k) => (judge ? undefined : steps[k]?.role));
+  const priorHeadings = indexes.map((k, n) =>
+    judge ? `Candidate ${HANDOFF_CANDIDATE_LETTERS[n] ?? String(n + 1)}` : `Step ${k + 1}${roleLabel(steps[k]?.role)}`,
+  );
+  return { ...(role ? { role } : {}), priorRoles, priorHeadings };
 }
 
 // Mirrors lib/agent-role-store.ts's own validation of a role (ROLE_ID_RE /
@@ -179,8 +360,12 @@ export function normalizeStep(step: string | AgentOrchestrationStep): Normalized
   const role = step.role !== undefined ? normalizeStepRole(step.role) : undefined;
   const roleField = role ? { role } : {};
   if (step.apiCall) return { instruction, apiCall: step.apiCall, ...groupField, ...roleField };
-  if (!step.tool) return { instruction, ...groupField, ...roleField };
-  return { instruction, tool: step.tool, ...(step.toolPinned === true ? { toolPinned: true } : {}), ...groupField, ...roleField };
+  // Agent roles Inc B: a well-formed hand-off marker rides along (never on an
+  // api-call step); a malformed one is dropped (plain step).
+  const handoff = step.handoff !== undefined ? normalizeStepHandoff(step.handoff) : undefined;
+  const handoffField = handoff ? { handoff } : {};
+  if (!step.tool) return { instruction, ...groupField, ...roleField, ...handoffField };
+  return { instruction, tool: step.tool, ...(step.toolPinned === true ? { toolPinned: true } : {}), ...groupField, ...roleField, ...handoffField };
 }
 
 /** A human-readable, display-only label for an api-call step (e.g. shown in
@@ -207,10 +392,19 @@ export function resolveApiCallTemplate(template: string | undefined, lastResult:
 /** Return the ordered, bounded, non-empty steps for an agent (normalized). */
 export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): NormalizedStep[] {
   if (!cfg?.steps) return [];
-  return cfg.steps
-    .map(normalizeStep)
-    .filter((s) => s.instruction.length > 0)
-    .slice(0, HARD_MAX_STEPS);
+  const all = cfg.steps.map(normalizeStep);
+  const kept = all.filter((s) => s.instruction.length > 0).slice(0, HARD_MAX_STEPS);
+  // Agent roles Inc B: a hand-off's `of` indexes are only meaningful when no
+  // step was dropped before it and each points before the step itself;
+  // otherwise the marker is dropped (the step runs as a plain step).
+  const shifted = kept.length !== Math.min(all.length, HARD_MAX_STEPS) || all.slice(0, kept.length).some((s) => s.instruction.length === 0);
+  return kept.map((s, i) => {
+    if (!s.handoff) return s;
+    if (!shifted && s.handoff.of.every((k) => k < i)) return s;
+    const { handoff: _drop, ...rest } = s;
+    void _drop;
+    return rest;
+  });
 }
 
 /** True when the agent should run as a multi-step orchestration (≥ 2 steps). */
@@ -348,6 +542,10 @@ export function nextStepGate(opts: {
 export interface StepRoleContext {
   role?: Pick<AgentStepRole, 'name' | 'instructions'>;
   priorRoles?: ReadonlyArray<Pick<AgentStepRole, 'name'> | undefined>;
+  /** Agent roles Inc B: explicit heading per carried result (after `## `),
+   *  set by carriedStepRoleContext when the carried steps are not 0..n-1 or
+   *  the step is a judge (`Candidate A`). Absent = `Step N (<role>)`. */
+  priorHeadings?: ReadonlyArray<string | undefined>;
 }
 
 /** The line that follows role-produced carried results. Mirrored verbatim in
@@ -404,7 +602,7 @@ export function buildStepPrompt(
   const carriedItems = priorResults
     .map(
       (r, i) =>
-        `## Step ${i + 1}${roleMode ? roleLabel(roles?.priorRoles?.[i]) : ''}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`,
+        `## ${roles?.priorHeadings?.[i] ?? `Step ${i + 1}${roleMode ? roleLabel(roles?.priorRoles?.[i]) : ''}`}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`,
     )
     .join('\n\n');
   const carried = priorResults.length

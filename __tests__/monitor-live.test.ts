@@ -6,6 +6,7 @@ import { parseProgressJsonl, type MonitorRun } from '@/lib/agent-progress';
 import {
   STALE_AFTER_SEC,
   createLiveSource,
+  handoffChannelSuffix,
   isRunActive,
   liveChannelLabel,
   liveOperator,
@@ -150,6 +151,20 @@ describe('monitor-live: role-named channels', () => {
     expect(src.agents.map((d) => d.channel)).toEqual(['REVIEWER·1', 'REVIEWER·2']);
     const long = createLiveSource(run, { roles: ['Implementer', 'Implementer'] });
     expect(long.agents.map((d) => d.channel)).toEqual(['IMPLEMEN·1', 'IMPLEMEN·2']);
+  });
+
+  it('Inc B: a review → revise loop reads <NAME>, <NAME>·R1 / ·R2 — every camera distinct', () => {
+    const run = runFrom([start('SERIAL', 6)]);
+    const src = createLiveSource(run, {
+      roles: ['Implementer', 'Reviewer', 'Implementer', 'Reviewer', 'Implementer', undefined],
+      handoffs: [undefined, { kind: 'review', round: 1 }, { kind: 'revise', round: 1 }, { kind: 'review', round: 2 }, { kind: 'revise', round: 2 }, undefined],
+    });
+    expect(src.agents.map((d) => d.channel)).toEqual(['IMPLEMENTE', 'REVIEWER', 'IMPLEME·R1', 'REVIEWE·R2', 'IMPLEME·R2', 'CH-06']);
+    expect(handoffChannelSuffix({ kind: 'judge', round: 1 })).toBe('');
+    expect(handoffChannelSuffix({ kind: 'review', round: 1 })).toBe('');
+    expect(handoffChannelSuffix(undefined)).toBe('');
+    // A role-less hand-off step keeps CH-0n.
+    expect(createLiveSource(runFrom([start('SERIAL', 2)]), { handoffs: [undefined, { kind: 'revise', round: 2 }] }).agents.map((d) => d.channel)).toEqual(['CH-01', 'CH-02']);
   });
 
   it('no roles = exactly the previous CH-0n labels', () => {

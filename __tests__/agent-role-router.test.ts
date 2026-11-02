@@ -17,6 +17,7 @@ import {
   type RoleRouteSource,
 } from '@/lib/agent-role-router';
 import { applyDraftPatch } from '@/lib/agent-draft-patch';
+import { HARD_MAX_STEPS, MAX_HANDOFF_ROUNDS, REVIEW_OUTPUT_CONTRACT, normalizeSteps, stripHandoffContract } from '@/lib/agent-orchestration';
 import { roleDefinitionHash } from '@/lib/agent-role-store';
 import type { AgentRole, LoadedRoles, RoleLevel } from '@/lib/agent-role-types';
 import type { AgentOrchestrationStep } from '@/store/types';
@@ -72,24 +73,81 @@ describe('implement + auto-attached reviewer → serial chain with a final summa
     const d = parseAgentNL('Right now, build a brick breaker game in ~/demo');
     const { draft, info } = routeDraftToRoles(d, loaded(IMPL, REV), ctx());
     const steps = objSteps(draft.orchestrationSteps);
-    expect(steps).toHaveLength(3);
+    // Inc B: statically unrolled [impl, review r1, revise r1, review r2, revise r2] + summary.
+    expect(steps).toHaveLength(6);
     expect(steps[0]).toMatchObject({ instruction: 'build a brick breaker game in ~/demo', tool: { type: 'cli', cli: 'codex' }, toolPinned: true, role: { id: 'role_impl', name: 'Implementer' } });
-    expect(steps[1]).toMatchObject({ tool: { type: 'cli', cli: 'claude' }, toolPinned: true, role: { id: 'role_rev', name: 'Reviewer' } });
+    expect(steps[0].handoff).toBeUndefined();
+    expect(steps[1]).toMatchObject({ tool: { type: 'cli', cli: 'claude' }, toolPinned: true, role: { id: 'role_rev', name: 'Reviewer' }, handoff: { kind: 'review', of: [0], round: 1 } });
     expect(steps[1].instruction).toMatch(/^Review the implementation/);
-    expect(steps[2]).toEqual({ instruction: 'Summarize the results of the steps above for me.' });
+    expect(steps[1].instruction.endsWith(`\n\n${REVIEW_OUTPUT_CONTRACT}`)).toBe(true);
+    // Revise steps: the implementer's role and engine (same pin → same gate).
+    expect(steps[2]).toMatchObject({ tool: { type: 'cli', cli: 'codex' }, toolPinned: true, role: { id: 'role_impl' }, handoff: { kind: 'revise', of: [0, 1], round: 1 } });
+    expect(steps[3]).toMatchObject({ tool: { type: 'cli', cli: 'claude' }, toolPinned: true, role: { id: 'role_rev' }, handoff: { kind: 'review', of: [1, 2], round: 2 } });
+    expect(steps[3].instruction.endsWith(REVIEW_OUTPUT_CONTRACT)).toBe(true);
+    expect(steps[4]).toMatchObject({ tool: { type: 'cli', cli: 'codex' }, toolPinned: true, role: { id: 'role_impl' }, handoff: { kind: 'revise', of: [2, 3], round: 2 } });
+    expect(steps[2].instruction).not.toContain('Output contract');
+    expect(steps[5]).toEqual({ instruction: 'Summarize the results of the steps above for me.' });
     expect(steps.some((s) => s.parallelGroup)).toBe(false);
     expect(draft.tool).toEqual({ type: 'local' });
     expect(draft.toolExplicit).toBe(true);
-    expect(info?.assignments.map((a) => [a.stepIndex, a.roleName])).toEqual([[0, 'Implementer'], [1, 'Reviewer']]);
+    expect(info?.assignments.map((a) => [a.stepIndex, a.roleName])).toEqual([[0, 'Implementer'], [1, 'Reviewer'], [2, 'Implementer'], [3, 'Reviewer'], [4, 'Implementer']]);
     expect(steps[0].role?.roleHash).toBe(roleDefinitionHash(IMPL));
+    // The contract is in the step instruction, never in the role definition.
+    expect(steps[1].role?.instructions).toBe(REV.instructions);
+    // normalizeSteps keeps every marker (all `of` indexes point backwards).
+    expect(normalizeSteps({ steps: draft.orchestrationSteps! }).map((s) => s.handoff)).toEqual(steps.map((s) => s.handoff));
   });
 
-  it('no reviewer added when the request already has a review unit after it', () => {
+  it('a reviewer named right after the implement unit is unrolled the same way', () => {
     const d = parseAgentNL('have the implementer build a snake game in ~/demo and the reviewer check it');
     const { draft } = routeDraftToRoles(d, loaded(IMPL, REV), ctx());
     const steps = objSteps(draft.orchestrationSteps);
+    expect(steps.map((s) => stripHandoffContract(s.instruction))).toEqual([
+      'build a snake game in ~/demo',
+      'check it',
+      "Fix the problems the reviewer listed, in the workspace. If a finding is wrong, say why.",
+      'Check whether your earlier findings were fixed and list any problems that remain.',
+      "Fix the problems the reviewer listed, in the workspace. If a finding is wrong, say why.",
+      'Summarize the results of the steps above for me.',
+    ]);
+    expect(steps.map((s) => s.role?.name)).toEqual(['Implementer', 'Reviewer', 'Implementer', 'Reviewer', 'Implementer', undefined]);
+    expect(steps.map((s) => s.handoff?.kind)).toEqual([undefined, 'review', 'revise', 'review', 'revise', undefined]);
+  });
+
+  it('a reviewer without autoAttach named after the implementer stays a single review (no loop)', () => {
+    const plainRev = { ...REV, autoAttach: undefined };
+    const d = parseAgentNL('have the implementer build a snake game in ~/demo and the reviewer check it');
+    const steps = objSteps(routeDraftToRoles(d, loaded(IMPL, plainRev), ctx()).draft.orchestrationSteps);
     expect(steps.map((s) => s.instruction)).toEqual(['build a snake game in ~/demo', 'check it', 'Summarize the results of the steps above for me.']);
-    expect(steps.map((s) => s.role?.name)).toEqual(['Implementer', 'Reviewer', undefined]);
+    expect(steps.some((s) => s.handoff)).toBe(false);
+  });
+
+  it('rounds are capped so the loop + summary stays within HARD_MAX_STEPS', () => {
+    const base = parseAgentNL('Right now, build a snake game in ~/demo');
+    const d: ParsedAgentDraft = {
+      ...base,
+      orchestrationSteps: ['outline the design', 'write the spec', 'draft the plan', 'list the risks', 'write the test plan', 'build a snake game in ~/demo'],
+    };
+    const { draft } = routeDraftToRoles(d, loaded(IMPL, REV), ctx());
+    const steps = objSteps(draft.orchestrationSteps);
+    // 6 units + review = 7; 2 rounds (+3) + summary would be 11 > 10 → 1 round.
+    expect(steps.length).toBeLessThanOrEqual(HARD_MAX_STEPS);
+    expect(steps.map((s) => s.handoff?.kind).slice(5)).toEqual([undefined, 'review', 'revise', undefined]);
+    expect(steps.filter((s) => s.handoff?.kind === 'revise')).toHaveLength(1);
+    expect(MAX_HANDOFF_ROUNDS).toBe(2);
+    expect(steps[steps.length - 1]).toEqual({ instruction: 'Summarize the results of the steps above for me.' });
+    // Two units fewer → both rounds fit.
+    const short = objSteps(routeDraftToRoles({ ...d, orchestrationSteps: (d.orchestrationSteps ?? []).slice(2) }, loaded(IMPL, REV), ctx()).draft.orchestrationSteps);
+    expect(short.filter((s) => s.handoff?.kind === 'revise')).toHaveLength(2);
+    expect(short.length).toBeLessThanOrEqual(HARD_MAX_STEPS);
+  });
+
+  it('taint: research → implement → no Codex / Claude Code implementer, reviewer or revise step', () => {
+    const d = parseAgentNL('Right now, first research the latest canvas game techniques on the web, then build a brick breaker game in ~/demo');
+    const { draft } = routeDraftToRoles(d, loaded(IMPL, REV, RESEARCHER), ctx());
+    const steps = objSteps(draft.orchestrationSteps);
+    expect(steps.some((s) => s.tool?.type === 'cli')).toBe(false);
+    expect(steps.some((s) => s.handoff?.kind === 'revise' || s.handoff?.kind === 'review')).toBe(false);
   });
 
   it('JA: a unit naming two roles is split at the second', () => {
@@ -120,6 +178,23 @@ describe('compete', () => {
     expect(steps.map((s) => s.parallelGroup)).toEqual(['r1', 'r1', undefined]);
     expect(steps[0].instruction).not.toMatch(/競わせ/);
     expect(steps[2].instruction).toBe('上の実装を比べて、どちらが良いかと理由を説明して');
+  });
+
+  it('Inc B: a judge role compares the branches (Candidate labels, WINNER contract); a CLI judge gets a summary after it', () => {
+    const JUDGE = role({ id: 'role_judge', name: 'Judge', engine: { type: 'local' }, handles: ['judge'], createdAt: 8 });
+    const d = parseAgentNL('Right now, have both implementers build a brick breaker game in ~/demo and compare');
+    const steps = objSteps(routeDraftToRoles(d, loaded(IMPL, REV, BUILDER, JUDGE), ctx()).draft.orchestrationSteps);
+    expect(steps).toHaveLength(3);
+    expect(steps[2]).toMatchObject({ tool: { type: 'local' }, toolPinned: true, role: { name: 'Judge' }, handoff: { kind: 'judge', of: [0, 1], round: 1 } });
+    expect(steps[2].instruction).toMatch(/^Compare the candidates above/);
+    expect(steps[2].instruction).toContain('"WINNER: A", "WINNER: B" or "WINNER: TIE"');
+    // The judge's instruction names no role or engine.
+    expect(steps[2].instruction).not.toMatch(/Implementer|Builder|Codex|Claude/);
+
+    const CLI_JUDGE = { ...JUDGE, engine: { type: 'cli' as const, cli: 'claude' as const } };
+    const withCli = objSteps(routeDraftToRoles(d, loaded(IMPL, BUILDER, CLI_JUDGE), ctx()).draft.orchestrationSteps);
+    expect(withCli.map((s) => s.handoff?.kind)).toEqual([undefined, undefined, 'judge', undefined]);
+    expect(withCli[3]).toEqual({ instruction: 'Summarize the results of the steps above for me.' });
   });
 
   it('only one implementer → runs once, with a note', () => {
@@ -322,13 +397,17 @@ describe('revert / patches', () => {
 
   it('overriding a role step engine drops that step role', () => {
     const r = applyDraftPatch(routed(), '2番目をローカルで')!;
-    expect(r.changedFields).toEqual(['step:1']);
     const steps = objSteps(r.patchedDraft.orchestrationSteps);
+    // Inc B: summary line 2 is the review loop — both review rounds change.
+    expect(r.changedFields).toEqual(['step:1', 'step:3']);
     expect(steps[1].role).toBeUndefined();
     expect(steps[1].tool).toEqual({ type: 'local' });
+    expect(steps[3].role).toBeUndefined();
+    expect(steps[3].tool).toEqual({ type: 'local' });
+    expect(steps[1].handoff).toEqual({ kind: 'review', of: [0], round: 1 });
     expect(steps[0].role?.name).toBe('Implementer');
-    expect(r.patchedDraft.roleRouting?.assignments.map((a) => a.roleName)).toEqual(['Implementer']);
-    expect(dropStepAssignments(r.patchedDraft, [0]).roleRouting).toBeUndefined();
+    expect(r.patchedDraft.roleRouting?.assignments.map((a) => a.roleName)).toEqual(['Implementer', 'Implementer', 'Implementer']);
+    expect(dropStepAssignments(r.patchedDraft, [0, 2, 4]).roleRouting).toBeUndefined();
   });
 
   it('a schedule patch that makes CLI roles unattended reverts the routing', () => {

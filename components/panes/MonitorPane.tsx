@@ -214,6 +214,15 @@ function agentStepRoles(agent: Agent | undefined): (string | undefined)[] | unde
   return roles.some(Boolean) ? roles : undefined;
 }
 
+/** Each step's hand-off kind + round (plan order), for `·R2` round channels
+ *  (lib/monitor-live.ts handoffChannelSuffix). undefined when none has one. */
+function agentStepHandoffs(agent: Agent | undefined): ({ kind: string; round: number } | undefined)[] | undefined {
+  const steps = agent?.orchestration?.steps;
+  if (!steps || !steps.length) return undefined;
+  const out = steps.map((s) => (typeof s === 'string' || !s?.handoff ? undefined : { kind: s.handoff.kind, round: s.handoff.round }));
+  return out.some(Boolean) ? out : undefined;
+}
+
 function latestRun(list: { run: MonitorRun }[] | undefined): MonitorRun | undefined {
   return list && list.length ? list[list.length - 1].run : undefined;
 }
@@ -307,6 +316,7 @@ export default function MonitorPane() {
   const stepGroups = useMemo(() => agentStepGroups(liveAgent), [liveAgent]);
   const stepTools = useMemo(() => agentStepTools(liveAgent), [liveAgent]);
   const stepRoles = useMemo(() => agentStepRoles(liveAgent), [liveAgent]);
+  const stepHandoffs = useMemo(() => agentStepHandoffs(liveAgent), [liveAgent]);
   const liveInfo: LiveAgentInfo | null = useMemo(() => {
     if (!liveRun) return null;
     if (retainedInfo) return retainedInfo;
@@ -316,8 +326,9 @@ export default function MonitorPane() {
       groups: stepGroups,
       tools: stepTools,
       ...(stepRoles ? { roles: stepRoles } : {}),
+      ...(stepHandoffs ? { handoffs: stepHandoffs } : {}),
     };
-  }, [liveRun, retainedInfo, liveAgentName, stepLabels, stepGroups, stepTools, stepRoles]);
+  }, [liveRun, retainedInfo, liveAgentName, stepLabels, stepGroups, stepTools, stepRoles, stepHandoffs]);
   const liveSource = useMemo(
     () => (liveRun && liveInfo ? createLiveSource(liveRun, liveInfo) : null),
     [liveRun, liveInfo],

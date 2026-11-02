@@ -1454,7 +1454,9 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // prompt template has no `# Your role` block / role-labelled carry, so
     // the chain collapses instead of silently dropping the role.
     attemptableOrchestrationSteps.every(
-      (s) => !s.apiCall && !s.role && (!s.tool || s.tool.type === 'cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type))
+      // Agent roles Inc B: nor hand-off steps (the bash mirror has no
+      // VERDICT: PASS skip / `of` carry) — even one whose role was dropped.
+      (s) => !s.apiCall && !s.role && !s.handoff && (!s.tool || s.tool.type === 'cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type))
     );
 
   // Deliberately kept OUT of the actual dispatched/posted content

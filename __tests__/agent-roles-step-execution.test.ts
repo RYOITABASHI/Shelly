@@ -234,10 +234,12 @@ describe('executor parity — role prompts', () => {
 
   it('both executor call sites (shared + isolated prompt) pass the role context', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-plan-executor.js'), 'utf8');
-    expect(src).toContain('stepRoleContext(plan.steps.list, i, isolation.carry === true ? contextResults.length : 0))');
-    expect(src).toContain('stepRoleContext(plan.steps.list, i, contextResults.length))');
+    // Inc B (v26): both go through carriedRolesFor → carriedStepRoleContext,
+    // which is stepRoleContext for a contiguous, non-judge carry.
+    expect(src).toContain('carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0))');
+    expect(src).toContain('carriedRolesFor(i, carriedIndexes, contextResults.length))');
     const mgr = fs.readFileSync(path.join(__dirname, '..', 'lib', 'agent-manager.ts'), 'utf8');
-    expect(mgr).toContain('stepRoleContext(steps, i, contextResults.length)');
+    expect(mgr).toContain('carriedStepRoleContext(steps, i, carriedCtx.indexes)');
   });
 });
 

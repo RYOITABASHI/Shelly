@@ -86,15 +86,20 @@ import {
 } from './skill-self-improve';
 import { runSkillCuratorSweep } from './skill-curator';
 import {
+  HANDOFF_PASS_SKIP_MESSAGE,
   buildStepPrompt,
+  carriedStepContext,
+  carriedStepRoleContext,
   combineFinalPreview,
   isOrchestrated,
   nextStepGate,
   normalizeSteps,
+  parseJudgeWinner,
+  parseReviewVerdict,
   planParallelGroups,
   reduceStatus,
   resolveBudget,
-  stepRoleContext,
+  shouldSkipHandoffStep,
 } from './agent-orchestration';
 import {
   NO_SOURCES_MESSAGE,
@@ -2897,6 +2902,13 @@ async function runAgentOrchestratedBody(
   const parallelPlan = planParallelGroups(steps);
   const startedAtMs = Date.now();
   const priorResults: string[] = [];
+  // Agent roles Inc B: step-index-aligned results / skips (a hand-off step
+  // skipped after a PASS leaves a hole), consumed by carriedStepContext and
+  // shouldSkipHandoffStep. Without hand-offs the carried context equals
+  // priorResults.slice(0, contextBase[i]) exactly as before.
+  const resultsByStep: Array<string | undefined> = [];
+  const skippedByStep: boolean[] = [];
+  let handoffPassNarrated = false;
   const records: AgentRunStep[] = [];
   let priorFailed = false;
   // STOP-ALL (2026-10-30): set once the kill-switch is seen mid-chain; no
@@ -2997,6 +3009,23 @@ async function runAgentOrchestratedBody(
       priorFailed = true;
       continue;
     }
+    // Agent roles Inc B: the latest review answered VERDICT: PASS — the
+    // remaining revise / round-2 review steps are skipped (not an error;
+    // reduceStatus folds success + skipped to success) and the chain goes on
+    // to the summary.
+    if (shouldSkipHandoffStep(steps, i, resultsByStep, skippedByStep)) {
+      const skipRecord: AgentRunStep = { index: i, instruction: steps[i].instruction, status: 'skipped', durationMs: 0, outputPreview: HANDOFF_PASS_SKIP_MESSAGE };
+      records.push(skipRecord);
+      skippedByStep[i] = true;
+      progress?.stepFinished(i, 'skipped', HANDOFF_PASS_SKIP_MESSAGE);
+      if (!handoffPassNarrated) {
+        handoffPassNarrated = true;
+        const reviewer = [...steps.slice(0, i)].reverse().find((s) => s.handoff?.kind === 'review')?.role?.name;
+        postAgentHandoffLine(agentId, handoffRunId, handoffSeq++, t('handoff.loop_passed', { role: reviewer || t('handoff.loop_reviewer') }));
+      }
+      logInfo('AgentManager', `handoff: step ${i} of ${agentId} skipped after VERDICT: PASS`);
+      continue;
+    }
     narrate((n) => n.stepStarting(i));
     progress?.stepStarted(i);
 
@@ -3017,7 +3046,10 @@ async function runAgentOrchestratedBody(
     // slice is a no-op (contextBase[i] === i === priorResults.length under
     // the fail-fast invariant — every earlier step succeeded or we never got
     // here). See the parallelPlan comment above.
-    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
+    // Agent roles Inc B: a hand-off step carries exactly its `of` results (a
+    // revise step: the implementer's output + the review findings, as data).
+    const carriedCtx = carriedStepContext(steps, i, resultsByStep, parallelPlan.contextBase[i]);
+    const contextResults = carriedCtx.results;
     const research = stepIsResearch(i);
     const synthesis = sourcingActive && !research && !step.apiCall && evidence.sources.length > 0;
     // Sourced briefings (review M1): the FINAL step of a sourced chain
@@ -3033,7 +3065,7 @@ async function runAgentOrchestratedBody(
     const stepAgent: Agent = {
       ...agent,
       // Agent roles (WP4): undefined for a role-less chain (prompt unchanged).
-      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence, stepRoleContext(steps, i, contextResults.length)),
+      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence, carriedStepRoleContext(steps, i, carriedCtx.indexes)),
       // Orchestration is otherwise cleared so a step's own script generation
       // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
       // only keys off .steps.length >= 2 (via normalizeSteps), so an object
@@ -3282,8 +3314,22 @@ async function runAgentOrchestratedBody(
     }
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
-    if (record.status === 'success') priorResults.push(carry);
-    else priorFailed = true;
+    if (record.status === 'success') {
+      priorResults.push(carry);
+      resultsByStep[i] = carry;
+      // Agent roles Inc B: record the structurally parsed verdict (never executed).
+      if (step.handoff?.kind === 'review') {
+        const verdict = parseReviewVerdict(carry);
+        if (verdict) record.handoffVerdict = verdict;
+      } else if (step.handoff?.kind === 'judge') {
+        const winner = parseJudgeWinner(carry, carriedCtx.indexes.length);
+        if (winner) {
+          record.handoffVerdict = `WINNER: ${winner}`;
+          const at = 'ABC'.indexOf(winner);
+          logInfo('AgentManager', `handoff: judge step ${i} of ${agentId} → WINNER: ${winner}${at >= 0 && carriedCtx.indexes[at] !== undefined ? ` (step ${carriedCtx.indexes[at] + 1})` : ''}`);
+        }
+      }
+    } else priorFailed = true;
   }
 
   // Restore the original (orchestration) script after the last step-prompt run.

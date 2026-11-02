@@ -71,6 +71,11 @@ export interface LiveAgentInfo {
    *  A step with a role shows the role name as its channel (liveChannelLabel);
    *  absent / undefined entries keep CH-0n. */
   roles?: (string | undefined)[];
+  /** Agent roles Inc B: hand-off marker per step in plan order
+   *  (AgentOrchestrationStep.handoff kind + round). A revise step's channel
+   *  reads `<NAME>·R<round>`, a round-2 review `<NAME>·R2`
+   *  (handoffChannelSuffix). */
+  handoffs?: ({ kind: string; round: number } | undefined)[];
 }
 
 const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
@@ -138,10 +143,29 @@ export function liveChannelLabel(stepIndex: number, roleName?: string | null): s
   return cps ? cps.replace(/[a-z]/g, (c) => c.toUpperCase()) : liveChannel(stepIndex);
 }
 
+/** Agent roles Inc B: the round suffix of a hand-off step's channel — `·R1` /
+ *  `·R2` for a revise step, `·R2` for a round-2 review, else ''. */
+export function handoffChannelSuffix(handoff: { kind: string; round: number } | undefined | null): string {
+  if (!handoff || (handoff.round !== 1 && handoff.round !== 2)) return '';
+  if (handoff.kind === 'revise') return `·R${handoff.round}`;
+  if (handoff.kind === 'review' && handoff.round === 2) return '·R2';
+  return '';
+}
+
+/** Role channel label with a hand-off round suffix (the name is shortened so
+ *  the whole label stays within ROLE_CHANNEL_MAX_CHARS). */
+function roleChannelWithRound(stepIndex: number, roleName: string | undefined, handoff: { kind: string; round: number } | undefined): string {
+  const label = liveChannelLabel(stepIndex, roleName);
+  const suffix = handoffChannelSuffix(handoff);
+  if (!suffix || label === liveChannel(stepIndex)) return label;
+  const head = Array.from(label).slice(0, Math.max(1, ROLE_CHANNEL_MAX_CHARS - suffix.length)).join('').trim();
+  return `${head}${suffix}`;
+}
+
 /** Channel label per step index; a role name used by several steps gets
  *  `·<step number>` so every camera stays distinguishable. */
-function channelLabels(stepIndices: readonly number[], roles: LiveAgentInfo['roles']): Map<number, string> {
-  const base = new Map(stepIndices.map((i) => [i, liveChannelLabel(i, roles?.[i])]));
+function channelLabels(stepIndices: readonly number[], roles: LiveAgentInfo['roles'], handoffs?: LiveAgentInfo['handoffs']): Map<number, string> {
+  const base = new Map(stepIndices.map((i) => [i, roleChannelWithRound(i, roles?.[i], handoffs?.[i])]));
   const counts = new Map<string, number>();
   for (const [i, label] of base) if (label !== liveChannel(i)) counts.set(label, (counts.get(label) ?? 0) + 1);
   const out = new Map<number, string>();
@@ -418,7 +442,7 @@ export function withPlannedSteps(run: MonitorRun, groups?: readonly (string | un
 
 export function createLiveSource(source: MonitorRun, info: LiveAgentInfo = {}): LiveSource {
   const run = withPlannedSteps(source, info.groups);
-  const channels = channelLabels(run.branches.map((b) => b.stepIndex), info.roles);
+  const channels = channelLabels(run.branches.map((b) => b.stepIndex), info.roles, info.handoffs);
   const defs = run.branches.map((b) => defFor(run, b, info, channels.get(b.stepIndex) ?? liveChannel(b.stepIndex)));
   const team = liveTeam(run, defs, info);
   return {

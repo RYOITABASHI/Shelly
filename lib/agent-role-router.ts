@@ -37,7 +37,14 @@ import type { AgentOrchestrationStep } from '@/store/types';
 import { classifyTaskKind, type AgentRole, type LoadedRoles, type RoleEngine, type RoleKind, type RoleLevel, type RoleRoutingAssignment, type RoleRoutingInfo, type TaskKind } from './agent-role-types';
 import { composeRoleInstructions, minRoleLevel, roleDefinitionHash, toStepRole } from './agent-role-store';
 import { roleNameKey } from './agent-role-intent';
-import { MAX_PARALLEL_BRANCHES } from './agent-orchestration';
+import {
+  HARD_MAX_STEPS,
+  MAX_HANDOFF_ROUNDS,
+  MAX_PARALLEL_BRANCHES,
+  REVIEW_OUTPUT_CONTRACT,
+  judgeOutputContract,
+  type StepHandoff,
+} from './agent-orchestration';
 import { toolChoiceToLabel } from './agent-tool-router';
 import { runWithoutApprovalAllAllowedFor } from './agent-run-without-approval';
 import { detectMessageLocale } from './agent-slot-fill';
@@ -356,7 +363,7 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
   }
 
   // 3. Assign.
-  type Assigned = { unit: Unit; role?: AgentRole; kind: TaskKind | null };
+  type Assigned = { unit: Unit; role?: AgentRole; kind: TaskKind | null; handoff?: StepHandoff };
   const assigned: Assigned[] = [];
   let tainted = false;
   let taintGroup: string | undefined;
@@ -393,7 +400,13 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
     }
   }
 
-  // 4. Auto-attached reviewer after the last implement unit.
+  // 4. Auto-attached reviewer after the last implement unit. Inc B: when the
+  //    implement unit is serial and the reviewer (auto-attached, or named
+  //    right after it) is an autoAttach reviewer, the review is unrolled into
+  //    a bounded loop [impl, review r1, revise r1, review r2, revise r2]
+  //    (MAX_HANDOFF_ROUNDS, within HARD_MAX_STEPS) + a final summary. Revise
+  //    steps use the implementer's role and engine (same pin, same gate).
+  let loop: { rounds: number; reviewAt: number } | null = null;
   if (!competeApplied) {
     let lastImpl = -1;
     assigned.forEach((a, i) => {
@@ -409,19 +422,102 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
       const reviewer = roles.find(
         (r) => r.autoAttach === 'after-implement' && r.handles.includes('review') && !(isCliEngine(r.engine) && (unattended || taintedAt)),
       );
+      let reviewAt = -1;
       if (!reviewedAfter && reviewer) {
         assigned.splice(insertAt, 0, { unit: { text: tl('roles.route.review_step'), named: reviewer }, role: reviewer, kind: 'review' });
+        reviewAt = insertAt;
+      } else if (
+        assigned[insertAt]?.kind === 'review' &&
+        assigned[insertAt].role?.autoAttach === 'after-implement' &&
+        !assigned[insertAt].unit.group
+      ) {
+        reviewAt = insertAt;
+      }
+      const impl = assigned[lastImpl];
+      if (reviewAt !== -1 && reviewAt === lastImpl + 1 && !impl.unit.group && impl.role) {
+        // + the final summary step the loop always ends with.
+        let rounds = MAX_HANDOFF_ROUNDS;
+        const extra = (r: number) => (r <= 0 ? 0 : 2 * r - 1);
+        while (rounds > 0 && assigned.length + extra(rounds) + 1 > HARD_MAX_STEPS) rounds--;
+        const reviewA = assigned[reviewAt];
+        const withContract = (text: string, contract: string) =>
+          `${Array.from(text).slice(0, Math.max(40, 480 - contract.length)).join('')}\n\n${contract}`;
+        reviewA.unit = { ...reviewA.unit, text: withContract(reviewA.unit.text, REVIEW_OUTPUT_CONTRACT) };
+        reviewA.handoff = { kind: 'review', of: [lastImpl], round: 1 };
+        const added: Assigned[] = [];
+        // Absolute step indexes: nothing is inserted before these later.
+        let lastWork = lastImpl;
+        let lastReview = reviewAt;
+        for (let r = 1; r <= rounds; r++) {
+          const reviseAt = reviewAt + added.length + 1;
+          added.push({
+            unit: { text: tl('roles.route.revise_step'), named: impl.role },
+            role: impl.role,
+            kind: 'implement',
+            handoff: { kind: 'revise', of: [lastWork, lastReview], round: r as 1 | 2 },
+          });
+          if (r < rounds) {
+            const nextReviewAt = reviseAt + 1;
+            added.push({
+              unit: { text: withContract(tl('roles.route.review_again_step'), REVIEW_OUTPUT_CONTRACT), named: reviewA.role },
+              role: reviewA.role,
+              kind: 'review',
+              handoff: { kind: 'review', of: [lastReview, reviseAt], round: (r + 1) as 1 | 2 },
+            });
+            lastReview = nextReviewAt;
+          }
+          lastWork = reviseAt;
+        }
+        assigned.splice(reviewAt + 1, 0, ...added);
+        loop = { rounds, reviewAt };
       }
     }
   } else if (roles.some((r) => r.autoAttach === 'after-implement')) {
     addNote(tl('roles.route.compete_no_review'));
   }
 
+  // 4b. Inc B judge: competing branches are compared by a judge role when the
+  //     user has one (else the existing unpinned comparison step). The judge
+  //     sees the candidates as "Candidate A / B" (no role or engine names).
+  let judgeApplied = false;
+  if (competeApplied) {
+    const groupEnd = (() => {
+      let end = -1;
+      assigned.forEach((a, i) => {
+        if (a.unit.group && assigned.some((b, j) => j !== i && b.unit.group === a.unit.group)) end = i;
+      });
+      return end;
+    })();
+    const g = groupEnd !== -1 ? assigned[groupEnd].unit.group : undefined;
+    const branchIdx = g ? assigned.map((a, i) => (a.unit.group === g ? i : -1)).filter((i) => i !== -1) : [];
+    const judge = roles.find((r) => r.handles.includes('judge') && !(isCliEngine(r.engine) && unattended));
+    const existing = assigned[groupEnd + 1];
+    if (branchIdx.length >= 2 && (judge || (existing?.kind === 'judge' && existing.role))) {
+      const contract = judgeOutputContract(branchIdx.length);
+      const withJudgeContract = (text: string) => `${Array.from(text).slice(0, Math.max(40, 480 - contract.length)).join('')}\n\n${contract}`;
+      if (existing && existing.kind === 'judge' && existing.role) {
+        existing.unit = { ...existing.unit, text: withJudgeContract(existing.unit.text) };
+        existing.handoff = { kind: 'judge', of: branchIdx, round: 1 };
+      } else if (judge) {
+        assigned.splice(groupEnd + 1, 0, {
+          unit: { text: withJudgeContract(tl('roles.route.judge_step')), named: judge },
+          role: judge,
+          kind: 'judge',
+          handoff: { kind: 'judge', of: branchIdx, round: 1 },
+        });
+      }
+      judgeApplied = true;
+    }
+  }
+
   if (!assigned.some((a) => a.role)) return { draft, info: null, skipped: 'no-match' };
 
   // 5. Final summary step when the last unit is a CLI role.
   const last = assigned[assigned.length - 1];
-  const appendFinal = (assigned.length >= 2 || competeApplied) && !!last.role && isCliEngine(last.role.engine);
+  // Inc B: a hand-off loop always ends with the summary (its last revise step
+  // may be skipped after a PASS, and the final step performs the action).
+  const appendFinal =
+    loop !== null || ((assigned.length >= 2 || competeApplied) && !!last.role && isCliEngine(last.role.engine));
 
   // 6. Workspace: request > first fixed role path > none.
   const usedRoles: AgentRole[] = [];
@@ -474,9 +570,16 @@ export function routeDraftToRoles(draft: ParsedAgentDraft, loaded: LoadedRoles, 
     const steps: Array<string | AgentOrchestrationStep> = assigned.map((a) => {
       const group = a.unit.group ? { parallelGroup: a.unit.group } : {};
       if (!a.role) return a.unit.group ? { instruction: a.unit.text, ...group } : a.unit.text;
-      return { instruction: a.unit.text, tool: a.role.engine, toolPinned: true, role: toStepRole(a.role), ...group };
+      return {
+        instruction: a.unit.text,
+        tool: a.role.engine,
+        toolPinned: true,
+        role: toStepRole(a.role),
+        ...group,
+        ...(a.handoff ? { handoff: { kind: a.handoff.kind, of: [...a.handoff.of], round: a.handoff.round } } : {}),
+      };
     });
-    if (appendFinal) steps.push(tl(competeApplied ? 'roles.route.compare_step' : 'roles.route.summary_step'));
+    if (appendFinal) steps.push(tl(competeApplied && !judgeApplied ? 'roles.route.compare_step' : 'roles.route.summary_step'));
     routed = {
       ...draft,
       tool: { type: 'local' },

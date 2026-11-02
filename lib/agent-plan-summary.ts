@@ -34,7 +34,7 @@ import { explicitPaidStepPins, formatContinuousSummary, normalizeContinuousConfi
 import { AgentAction } from '@/store/types';
 import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
-import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay } from './agent-orchestration';
+import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay, stripHandoffContract } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { runWithoutApprovalAllAllowedFor } from './agent-run-without-approval';
 import { effectiveRoutedLevel, routedRoleRefs } from './agent-role-router';
@@ -747,8 +747,32 @@ export function summarizeAgentDraftAsText(
     // shown as one 「同時に: A ／ B ／ C」 line — a marker severed by the
     // final-step/singleton rules shows nothing, matching what will actually
     // run; members severed by the branch cap get a note (2026-10-30).
+    const allSteps = draft.orchestrationSteps;
+    // Agent roles Inc B: a review → revise loop is shown as ONE line on its
+    // round-1 review ("… (up to 2 rounds; <implementer> fixes findings, stops
+    // early on PASS)"); its revise / round-2 review steps get no line of
+    // their own. A judge line says it sees anonymous candidates.
+    const handoffOfStep = (s: (typeof allSteps)[number]) => (typeof s === 'string' ? undefined : s.handoff);
+    // A full-width （…） suffix (ja) follows the text directly; others get a space.
+    const joinSuffix = (sfx: string) => (sfx.startsWith('（') ? sfx : ` ${sfx}`);
+    const loopSuffix = (s: (typeof allSteps)[number]): string => {
+      const h = handoffOfStep(s);
+      if (!h) return '';
+      if (h.kind === 'judge') return joinSuffix(tl('roles.route.judge_suffix'));
+      if (h.kind !== 'review' || h.round !== 1) return '';
+      const idx = allSteps.indexOf(s);
+      const revises = allSteps.slice(idx + 1).filter((x) => handoffOfStep(x)?.kind === 'revise');
+      if (!revises.length) return '';
+      const first = revises[0];
+      const implementer = (typeof first === 'string' ? undefined : first.role?.name) ?? '';
+      return joinSuffix(tl(revises.length === 1 ? 'roles.route.loop_suffix_one' : 'roles.route.loop_suffix', { rounds: revises.length, implementer }));
+    };
+    const hiddenStep = (s: (typeof allSteps)[number]) => {
+      const h = handoffOfStep(s);
+      return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round === 2));
+    };
     const stepLabel = (s: (typeof draft.orchestrationSteps)[number]) => {
-      const instruction = typeof s === 'string' ? s : s.instruction;
+      const instruction = (typeof s === 'string' ? s : stripHandoffContract(s.instruction)) + loopSuffix(s);
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
       // Agent roles (WP3): "[<role> · <engine>] <instruction>".
       const roleName = typeof s === 'string' ? undefined : s.role?.name;
@@ -760,15 +784,22 @@ export function summarizeAgentDraftAsText(
     // Original step indices per display entry (a parallel entry holds several).
     let nextIndex = 0;
     const entryIndices = display.entries.map((entry) => entry.items.map(() => nextIndex++));
+    // Display line number per entry (hidden loop steps take none).
+    const lineNumbers: number[] = [];
+    let shown = 0;
+    display.entries.forEach((entry) => {
+      lineNumbers.push(!entry.parallel && hiddenStep(entry.items[0]) ? shown : ++shown);
+    });
     display.entries.forEach((entry, n) => {
+      if (!entry.parallel && hiddenStep(entry.items[0])) return;
       // A step-provider edit (changedFields `step:<index>`) stars the line
       // that shows that step (a parallel line holds several steps).
       const changedIdx = entryIndices[n].find((i) => changedFields.has(`step:${i}`));
       lines.push(
         markLine(
           entry.parallel
-            ? `${n + 1}. ${tl('agentplan.parallel_group_label')} ${entry.items.map(stepLabel).join(tl('agentplan.parallel_group_separator'))}`
-            : `${n + 1}. ${stepLabel(entry.items[0])}`,
+            ? `${lineNumbers[n]}. ${tl('agentplan.parallel_group_label')} ${entry.items.map(stepLabel).join(tl('agentplan.parallel_group_separator'))}`
+            : `${lineNumbers[n]}. ${stepLabel(entry.items[0])}`,
           `step:${changedIdx ?? entryIndices[n][0]}`,
           changedFields,
         ),
@@ -786,7 +817,8 @@ export function summarizeAgentDraftAsText(
         const s = draft.orchestrationSteps[idx];
         const pinned = typeof s === 'string' ? undefined : s.tool;
         // Numbered by summary line, like every other step reference.
-        const line = entryIndices.findIndex((members) => members.includes(idx)) + 1;
+        const entryAt = entryIndices.findIndex((members) => members.includes(idx));
+        const line = entryAt === -1 ? 0 : lineNumbers[entryAt];
         if (pinned) lines.push(tl('agentplan.step_paid_pin_note', { n: line || idx + 1, tool: toolChoiceToLabel(pinned) }));
       }
     }

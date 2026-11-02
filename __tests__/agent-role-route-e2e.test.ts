@@ -98,7 +98,7 @@ describe('compete: "have both implementers … and compare" → executor cli=2',
     expect(line).toBe('1. In parallel: [Implementer · Codex CLI] build a brick breaker game in ~/demo / [Builder · Claude Code] build a brick breaker game in ~/demo');
     expect(text).toMatch(/^2\. Compare the implementations above/m);
     expect(text).toContain('Workspace: ~/demo');
-    expect(text).toContain('Run without approval: standard (the lowest of the roles' settings: Implementer=all, Builder=standard)');
+    expect(text).toContain("Run without approval: standard (the lowest of the roles' settings: Implementer=all, Builder=standard)");
     expect(text).toContain('To set it up without roles, reply "without roles".');
   });
 
@@ -115,6 +115,23 @@ describe('compete: "have both implementers … and compare" → executor cli=2',
   });
 });
 
+describe('Inc B: compete + a judge role → executor cli=2, judge step with anonymous candidates', () => {
+  const JUDGE: AgentRole = { ...base, id: 'role_judge', name: 'Judge', instructions: 'Compare two implementations and pick the better one.', engine: { type: 'local' }, handles: ['judge'], createdAt: 6 };
+  const draft = nlToRouted('Right now, have both implementers build a brick breaker game in ~/demo and compare', loaded(IMPL, REV, BUILDER, JUDGE));
+
+  it('the plan ends with the judge (local, handoff judge of both branches); the route stays executor cli=2', () => {
+    const { plan, route } = install(draft);
+    const list = (plan.steps as { list: Array<{ parallelGroup?: string; role?: { name: string }; handoff?: unknown; instruction: string }> }).list;
+    expect(list.map((s) => s.role?.name)).toEqual(['Implementer', 'Builder', 'Judge']);
+    expect(list[2].handoff).toEqual({ kind: 'judge', of: [0, 1], round: 1 });
+    expect(list[2].instruction).toContain('"WINNER: A", "WINNER: B" or "WINNER: TIE"');
+    expect(route).toMatchObject({ route: 'executor', cliSteps: 2, groupCount: 1 });
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).toMatch(/^2\. \[Judge · Local LLM\] Compare the candidates above and pick the better one\. \(sees the candidates as A \/ B, without role or engine names\)$/m);
+    expect(text).not.toContain('Output contract');
+  });
+});
+
 describe('implement + auto-attached review → serial chain', () => {
   it.each([
     ['EN', 'Right now, build a brick breaker game in ~/demo', [IMPL, REV], ['Implementer', 'Reviewer']],
@@ -123,14 +140,42 @@ describe('implement + auto-attached review → serial chain', () => {
   ])('%s', (_l, utterance, roles, names) => {
     const draft = nlToRouted(utterance as string, loaded(...(roles as AgentRole[])));
     const steps = objSteps(draft.orchestrationSteps);
-    expect(steps.map((s) => s.role?.name)).toEqual([...(names as string[]), undefined]);
-    const { route, agent } = install(draft);
+    // Inc B: [impl, review r1, revise r1, review r2, revise r2] + summary.
+    const [impl, rev] = names as string[];
+    expect(steps.map((s) => s.role?.name)).toEqual([impl, rev, impl, rev, impl, undefined]);
+    expect(steps.map((s) => s.handoff)).toEqual([
+      undefined,
+      { kind: 'review', of: [0], round: 1 },
+      { kind: 'revise', of: [0, 1], round: 1 },
+      { kind: 'review', of: [1, 2], round: 2 },
+      { kind: 'revise', of: [2, 3], round: 2 },
+      undefined,
+    ]);
+    const { route, agent, plan } = install(draft);
     expect(route.route).toBe('serial');
     expect(route.reason).toBe('no effective parallel group');
     expect(agent.tool).toEqual({ type: 'local' });
+    // The PlanSpec carries the markers and a budget that runs every step.
+    const list = (plan.steps as { list: Array<{ handoff?: unknown }>; budget: { maxSteps: number } });
+    expect(list.list.map((s) => s.handoff)).toEqual(steps.map((s) => s.handoff));
+    expect(list.budget.maxSteps).toBe(6);
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toMatch(/^1\. \[(?:Implementer|実装役) · Codex CLI\] /m);
     expect(text).toMatch(/^2\. \[(?:Reviewer|レビュー役) · Claude Code\] /m);
+    expect(text).toMatch(/^3\. /m);
+    expect(text).not.toMatch(/^4\. /m);
+    expect(text).not.toContain('Output contract');
+  });
+
+  it('confirm text shows the loop compactly (EN + JA)', () => {
+    const en = summarizeAgentDraftAsText(nlToRouted('@agent Right now, build a brick breaker game in ~/demo', loaded(IMPL, REV)));
+    expect(en).toContain(
+      '2. [Reviewer · Claude Code] Review the implementation from the previous step and list concrete problems by severity. (up to 2 rounds; Implementer fixes findings, stops early on PASS)',
+    );
+    expect(en).toMatch(/^3\. Summarize the results of the steps above for me\.$/m);
+    const ja = summarizeAgentDraftAsText(nlToRouted('今すぐ、~/demoにブロック崩しゲームを作って', loaded(JA_IMPL, JA_REV)));
+    expect(ja).toContain('2. [レビュー役 · Claude Code] 前のステップの実装をレビューして、具体的な問題点を重大度順に挙げて（最大2往復: 実装役が指摘を直す。PASSなら途中で終了）');
+    expect(ja).toMatch(/^3\. 上のステップの結果をまとめて報告して$/m);
   });
 
   it('a routed agent never runs on the .sh codex chain (canRunOrchestrationChain false)', () => {
@@ -138,12 +183,18 @@ describe('implement + auto-attached review → serial chain', () => {
     const { agent } = install(draft);
     // Even with a CLI agent tool, role steps collapse the bash chain.
     const asCli = { ...agent, tool: { type: 'cli', cli: 'codex' } } as Agent;
-    expect(generateRunScript(asCli)).toContain('[Shelly] Note: this agent is configured as a 3-step chain');
+    expect(generateRunScript(asCli)).toContain('[Shelly] Note: this agent is configured as a 6-step chain');
     const roleless = {
+      ...asCli,
+      orchestration: { steps: asCli.orchestration!.steps.map((s) => (typeof s === 'string' ? s : (({ role: _r, handoff: _h, ...rest }) => rest)(s))) },
+    } as Agent;
+    expect(generateRunScript(roleless)).not.toContain('[Shelly] Note: this agent is configured as a 6-step chain');
+    // A hand-off step whose role was dropped (step engine override) still collapses it.
+    const handoffOnly = {
       ...asCli,
       orchestration: { steps: asCli.orchestration!.steps.map((s) => (typeof s === 'string' ? s : (({ role: _r, ...rest }) => rest)(s))) },
     } as Agent;
-    expect(generateRunScript(roleless)).not.toContain('[Shelly] Note: this agent is configured as a 3-step chain');
+    expect(generateRunScript(handoffOnly)).toContain('[Shelly] Note: this agent is configured as a 6-step chain');
   });
 });
 
@@ -157,7 +208,7 @@ describe('single role', () => {
     expect(confirmed.roleRef).toEqual({ id: 'role_impl', name: 'Implementer' });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('Role: Implementer · Codex CLI');
-    expect(text).toContain('Run without approval: standard (the lowest of the roles' settings: Implementer=standard)');
+    expect(text).toContain("Run without approval: standard (the lowest of the roles' settings: Implementer=standard)");
     expect(text).not.toMatch(/^Engine: /m);
   });
 

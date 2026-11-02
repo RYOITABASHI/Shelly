@@ -1281,6 +1281,10 @@ export interface AgentRunStep {
    *  the same group. Absent for every ordinary serial step and for every run
    *  log written before this field existed (additive only). */
   parallelGroup?: string;
+  /** Agent roles Inc B: the structurally parsed verdict of a hand-off step —
+   *  `PASS` / `REVISE` for a review, `WINNER: A|B|C|TIE` for a judge. Display /
+   *  log only; never executed. */
+  handoffVerdict?: string;
 }
 
 /**
@@ -1378,6 +1382,15 @@ export interface AgentOrchestrationStep {
    *  hand-off labels) and, from WP4, the step prompt's `# Your role` block.
    *  Absent = previous behavior. */
   role?: AgentStepRole;
+  /** Agent roles Inc B (2026-11-02): this step is part of a bounded role
+   *  hand-off — `review` / `revise` (an implement → review → revise loop,
+   *  statically unrolled to at most 2 rounds by lib/agent-role-router.ts) or
+   *  `judge` (after a parallel group of implementations). `of` = the step
+   *  indexes whose results it carries; `round` = loop round. A revise step and
+   *  a round-2 review are skipped (status 'skipped') once the latest review
+   *  answered `VERDICT: PASS`. Never changes the step's tool, pin or gate.
+   *  Re-validated by normalizeStepHandoff (lib/agent-orchestration.ts). */
+  handoff?: { kind: 'review' | 'revise' | 'judge'; of: number[]; round: 1 | 2 };
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
