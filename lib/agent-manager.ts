@@ -498,6 +498,9 @@ export function createAgent(params: {
    *  at creation so the first materialize already carries it (MONITOR team
    *  "ask before writing"). Undefined = inherit the global default. */
   requireActionApproval?: boolean;
+  /** Agent roles (WP3): the role a single-step routed agent was made with
+   *  (display only — the role's instructions are already in `prompt`). */
+  roleRef?: Agent['roleRef'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -529,6 +532,7 @@ export function createAgent(params: {
     orchestration: params.orchestration,
     startNotBefore: params.startNotBefore ?? null,
     ...(params.requireActionApproval !== undefined ? { requireActionApproval: params.requireActionApproval } : {}),
+    ...(params.roleRef ? { roleRef: { id: params.roleRef.id, name: params.roleRef.name } } : {}),
     ...(params.continuous
       ? { continuous: normalizeContinuousConfig({ ...params.continuous, loopStartedAt: Date.now() }) }
       : {}),

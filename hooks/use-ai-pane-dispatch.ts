@@ -37,7 +37,17 @@ import { handlePendingPolicyResetReply, handlePendingPolicyRevokeReply, handlePe
 import '@/lib/agent-role-device';
 import { detectRoleIntent } from '@/lib/agent-role-intent';
 import { canChangeRolesFrom, handlePendingRoleReply, handleRoleIntent, type RoleChatIO } from '@/lib/agent-role-chat';
-import type { PendingRoleChange } from '@/lib/agent-role-types';
+import type { AgentRole, PendingRoleChange, RoleLevel } from '@/lib/agent-role-types';
+import { getCachedRoles, getRoleLevel, loadRoles } from '@/lib/agent-role-store';
+import {
+  mentionsRoleName,
+  mentionsTeamWords,
+  resolveRoutedRoleLevel,
+  revertRoleRouting,
+  roleRoutingConflict,
+  routeDraftToRoles,
+  type RoleRouteSource,
+} from '@/lib/agent-role-router';
 import '@/lib/agent-policy-device';
 import type { PolicyChatFn } from '@/lib/agent-policy-rule-intent';
 import { trustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -75,7 +85,7 @@ import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
-import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
+import { runWithoutApprovalAllAllowedFor, setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 import {
   buildWorkspacePrepareCommand,
   parseWorkspacePrepareOutput,
@@ -685,6 +695,15 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // the result goes — resolved from Settings here, since the summary
         // renderer is pure. Display-only (never persisted).
         let draft = presentedDraft;
+        // Agent roles (WP3): a slot-fill answer / LLM extraction after routing
+        // may have made the agent unattended (schedule / trigger) with
+        // Codex / Claude Code roles, or autonomous — then it can't keep the
+        // routing (unattended CLI steps are unsupported).
+        const roleConflict = roleRoutingConflict(draft);
+        if (roleConflict) {
+          logInfo('AgentRoles', `role routing reverted before confirm: ${roleConflict}`);
+          draft = revertRoleRouting(draft);
+        }
         // Security review M3: the derived workspace is shown only when it
         // resolves under the home with no symlinked component (read-only
         // check; created on confirm). Refused → no Workspace line, unset.
@@ -2876,13 +2895,47 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         implicitAgentDraft.scheduleConfident === true &&
         !isLowConfidenceAgentDraft(implicitAgentDraft);
 
+      // Agent roles (WP3, design §3): a plain (non-@agent) message is routed
+      // to roles ONLY when it names one of the user's roles or says team
+      // words (「ロールで」「役割分担して」「チームで任せて」 / "with my roles" /
+      // "have the team") — AND the router actually assigns a role. Anything
+      // else stays ordinary chat (the "implement + home path" trigger is
+      // deliberately not implemented).
+      const roleRouteSource: RoleRouteSource = dispatchOpts?.source
+        ? dispatchOpts.source
+        : dispatchOpts?.typedByUser === true
+          ? 'chat'
+          : 'voice';
+      const loadRoleLevels = async (roles: readonly AgentRole[]) => {
+        const levels = new Map<string, RoleLevel>();
+        for (const r of roles) levels.set(r.id, await getRoleLevel(r).catch(() => 'off' as RoleLevel));
+        return levels;
+      };
+      let implicitRoleRouting = false;
+      if (implicitAgentDraft !== null && roleRouteSource !== 'monitor-team') {
+        const cachedRoles = getCachedRoles();
+        const maybeRoles =
+          mentionsTeamWords(promptText) ||
+          (cachedRoles ? mentionsRoleName(promptText, cachedRoles.roles) : false) ||
+          // First message of the session: load once (later calls use the cache).
+          (!cachedRoles && /role|ロール|役/i.test(promptText));
+        if (maybeRoles) {
+          const loadedForImplicit = await loadRoles(runAgentShellCommand);
+          if (!loadedForImplicit.unavailable && (mentionsTeamWords(promptText) || mentionsRoleName(promptText, loadedForImplicit.roles))) {
+            const probe = routeDraftToRoles(implicitAgentDraft, loadedForImplicit, { levels: new Map(), source: roleRouteSource });
+            implicitRoleRouting = probe.info !== null;
+            logInfo('AgentRoles', `implicit role request: routed=${implicitRoleRouting}${probe.skipped ? ` skipped=${probe.skipped}` : ''}`);
+          }
+        }
+      }
+
       // bug: @agent used to only be wired into TerminalPane.onBlockCompleted,
       // so typing `@agent status` in the AI pane fell through to the LLM
       // (which has no idea what it means). The AI pane is the natural home
       // for @mention commands — intercept here and run the agent-manager
       // handler inline, appending a synthetic assistant message with the
       // result so the UX matches every other chat response.
-      if ((parsed.layer === 'mention' && parsed.target === 'agent') || implicitAgentIntent) {
+      if ((parsed.layer === 'mention' && parsed.target === 'agent') || implicitAgentIntent || implicitRoleRouting) {
         let resultMessage: string;
         let rollbackOffer: ChatMessage['agentRollbackOffer'];
         try {
@@ -3057,6 +3110,30 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               }
             } catch {
               // skill match is best-effort
+            }
+            // Agent roles (WP3, lib/agent-role-router.ts): after parseAgentNL,
+            // ClosePaw auto-routing and the skill match (an executable skill
+            // plan wins). Every `@agent` create is offered to the roles; a
+            // plain message only when it named a role / said team words
+            // (implicitRoleRouting above). Deterministic; the confirm text
+            // states every assignment and the user OKs it.
+            if ((parsed.layer === 'mention' && parsed.target === 'agent') || implicitRoleRouting) {
+              try {
+                const loadedRoles = await loadRoles(runAgentShellCommand);
+                const levels = loadedRoles.unavailable ? new Map<string, RoleLevel>() : await loadRoleLevels(loadedRoles.roles);
+                const routedResult = routeDraftToRoles(draft, loadedRoles, { levels, source: roleRouteSource });
+                draft = routedResult.draft;
+                if (routedResult.info) {
+                  logInfo(
+                    'AgentRoles',
+                    `routed draft: steps=${draft.orchestrationSteps?.length ?? 1} roles=${routedResult.info.assignments.map((a) => a.roleName).join(',')} minLevel=${routedResult.info.minLevel} levelEligible=${routedResult.info.levelEligible === true}`,
+                  );
+                } else if (routedResult.skipped && routedResult.skipped !== 'no-roles') {
+                  logInfo('AgentRoles', `role routing skipped: ${routedResult.skipped}`);
+                }
+              } catch (e) {
+                logWarn('AgentRoles', 'role routing failed — draft left unrouted', e);
+              }
             }
             // Hybrid LLM-extraction fallback (2026-07-23): only when the
             // deterministic parser found NEITHER a confident schedule NOR
@@ -4566,6 +4643,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // creation so the first materialize already carries it.
           ...(confirmed.requireActionApproval !== undefined ? { requireActionApproval: confirmed.requireActionApproval } : {}),
           ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
+          ...(confirmed.roleRef && !editingAgent ? { roleRef: confirmed.roleRef } : {}),
         };
         const persisted = await persistAgentDraft({
           editingAgentId,
@@ -4589,6 +4667,21 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         if (confirmed.runWithoutApproval === true) {
           await setRunWithoutApproval(created, confirmed.runWithoutApprovalLevel === 'all' ? 'all' : 'standard', 'chat').catch((e) =>
             logError('AgentDraft', 'run-without-approval flag write failed', e));
+        } else if (confirmed.roleLevelRoles && confirmed.roleLevelRoles.length > 0 && !editingAgentId) {
+          // Agent roles (WP3): no level phrase in the request → the routed
+          // agent gets the strictest of its roles' levels, re-verified now
+          // (a role edited or deleted since the summary counts as off).
+          // draftToConfirmedAgentDraft sets roleLevelRoles only for a draft the
+          // user typed in this chat (never terminal / voice / widget / MONITOR).
+          try {
+            const verified = await resolveRoutedRoleLevel(confirmed.roleLevelRoles, await loadRoles(runAgentShellCommand), getRoleLevel);
+            const effective: RoleLevel =
+              verified === 'all' && !runWithoutApprovalAllAllowedFor(created) ? 'standard' : verified;
+            logInfo('AgentRoles', `routed agent ${created.id}: role level=${verified} effective=${effective}`);
+            if (effective !== 'off') await setRunWithoutApproval(created, effective, 'chat');
+          } catch (e) {
+            logError('AgentRoles', 'role level write failed', e);
+          }
         }
 
         // 2026-07-28 bug fix (ParsedAgentDraft.runOnceOnConfirm's doc

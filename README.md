@@ -490,6 +490,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | Hand-off narration lines in the agent's chat thread | ✅ verified on device (Galaxy Z Fold6, N=1) |
 | Keyboard/IME-aware pane layout — panes reserve only the real IME overlap | ✅ verified on device (Galaxy Z Fold6, N=1) |
 | Live theme switching — Case File and the other presets applied without restart, terminal palette included | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Agent roles — reusable roles ("make a reviewer role using Claude Code that …"), `@agent` requests assigned to them automatically (implementer → reviewer, or two implementers in parallel with "compete"), shown as `[role · engine]` lines you OK in chat; "without roles" opts out | 🟡 implemented, not yet verified on device |
 | Agent safety rules (POLICY-001) — NL rules, read-only floor for runs you didn't start, trust ramp | 🟡 implemented, not yet verified on device; flag OFF by default |
 | MCP server, spec 2026-07-28 (stateless) alongside the older revisions | 🟡 implemented, not yet verified on device |
 | On-device speech-to-text (keyless, Android SpeechRecognizer) | 🟡 implemented, not yet verified on device |

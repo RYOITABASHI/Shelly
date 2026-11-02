@@ -112,6 +112,13 @@ export interface ConfirmedAgentDraft {
   /** See ParsedAgentDraft.workspaceRoot — home-relative (`~/demo`); the
    *  dispatcher resolves it before createAgent. */
   workspaceRoot?: string;
+  /** Agent roles (WP3): the role a single-step routed agent was made with
+   *  (display only, Agent.roleRef). Chat confirm only. */
+  roleRef?: { id: string; name: string };
+  /** Agent roles (WP3): the roles whose levels the typed OK re-verifies
+   *  (definition hash) and applies as the agent's "run without approval"
+   *  (their minimum). Set only for a draft the user typed in this chat. */
+  roleLevelRoles?: Array<{ id: string; roleHash: string }>;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

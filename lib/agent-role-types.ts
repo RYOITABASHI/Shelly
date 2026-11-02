@@ -94,12 +94,21 @@ export interface RoleRoutingAssignment {
   roleName: string;
   engine: RoleEngine;
   kind: TaskKind;
+  /** roleDefinitionHash of the role when it was assigned (the confirm
+   *  re-verifies the level against it). */
+  roleHash?: string;
+  /** The role's verified level when it was assigned (display + minLevel). */
+  level?: RoleLevel;
 }
 
 export interface RoleRoutingInfo {
   assignments: RoleRoutingAssignment[];
   /** Minimum level of the assigned roles — what the confirm text states. */
   minLevel: RoleLevel;
+  /** true only when the draft came from the user's own typing in the chat:
+   *  only then may the confirm write the roles' level to the agent (never
+   *  for a terminal request / voice / widget / inbound / MONITOR team draft). */
+  levelEligible?: boolean;
   /** Home-relative workspace the routed agent will use, when one was chosen. */
   workspaceRoot?: string;
   /** Plain-text caveats for the confirm text (workspace conflict, serialized

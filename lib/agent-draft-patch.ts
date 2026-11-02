@@ -54,6 +54,7 @@ import { encodeAtOneShot, isOneShotSchedule, parseOneShotSchedule } from './agen
 import { toolChoiceToLabel } from './agent-tool-router';
 import { groupStepsForDisplay, normalizeStep, planParallelGroups } from './agent-orchestration';
 import { withStepTool } from './agent-provider-overrides';
+import { detectRoleOptOut, dropStepAssignments, revertRoleRouting, roleRoutingConflict } from './agent-role-router';
 import type { Agent, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
 // convention lib/agent-plan-summary.ts already follows for ConfirmedAgentDraft.
@@ -633,6 +634,14 @@ export function tryPatchStepTools(
       const current = typeof step === 'string' ? undefined : step.tool;
       if (toolKey(current) === toolKey(tool)) return step;
       changedFields.push(`step:${i}`);
+      // Agent roles (WP3): overriding a role step's engine drops its role
+      // (the role's instructions were written for its own engine).
+      if (typeof step !== 'string' && step.role) {
+        const { role: _role, ...rest } = step;
+        void _role;
+        if (tool.type === 'auto') delete rest.toolPinned;
+        return withStepTool(rest, tool);
+      }
       return withStepTool(step, tool);
     });
     return changedFields.length ? { orchestrationSteps: next, changedFields } : { changedFields: [] };
@@ -690,6 +699,12 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   // that gap for both of this module's public entry points at once.
   if (text.startsWith('@')) return null;
 
+  // Agent roles (WP3): "without roles" / 「ロールなしで」 on a routed draft
+  // restores the draft as it was before routing (other patches stay).
+  if (draft.roleRouting && detectRoleOptOut(text)) {
+    return { patchedDraft: revertRoleRouting(draft), changedFields: ['roleRouting'] };
+  }
+
   // Step provider edit: the grammar is whole-utterance, so when it matches it
   // is the ONLY thing this reply says — no other detector runs (「2番目を
   // Codexで」 must never also read as an action / schedule change).
@@ -698,8 +713,16 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   const stepTools = stepToolsRaw as StepToolPatch | null;
   if (stepTools && stepTools.changedFields.length === 0) return null;
   if (stepTools) {
-    const patchedDraft: ParsedAgentDraft = { ...draft };
-    if (stepTools.orchestrationSteps) patchedDraft.orchestrationSteps = stepTools.orchestrationSteps;
+    // A single-step routed agent's engine change drops the role entirely
+    // (its prompt carried the role block for the old engine).
+    let patchedDraft: ParsedAgentDraft = stepTools.tool && draft.roleRouting ? revertRoleRouting(draft) : { ...draft };
+    if (stepTools.orchestrationSteps) {
+      patchedDraft.orchestrationSteps = stepTools.orchestrationSteps;
+      const overridden = stepTools.changedFields
+        .map((f) => (f.startsWith('step:') ? Number(f.slice(5)) : NaN))
+        .filter((n) => Number.isInteger(n));
+      patchedDraft = dropStepAssignments(patchedDraft, overridden);
+    }
     if (stepTools.tool) {
       patchedDraft.tool = stepTools.tool;
       patchedDraft.toolLabel = toolChoiceToLabel(stepTools.tool);
@@ -745,6 +768,12 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   }
 
   if (changedFields.length === 0) return null;
+  // Agent roles (WP3): a schedule / autonomy change that makes the routed
+  // agent unattended with Codex / Claude Code roles (or autonomous) can't
+  // keep its routing — restore the unrouted steps, said by the ★ line.
+  if (roleRoutingConflict(patched)) {
+    return { patchedDraft: revertRoleRouting(patched), changedFields: [...changedFields, 'roleRouting'] };
+  }
   return { patchedDraft: patched, changedFields };
 }
 

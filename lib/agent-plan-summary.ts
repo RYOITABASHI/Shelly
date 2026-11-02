@@ -37,6 +37,7 @@ import { closePawTaskText } from './agent-intent-review';
 import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { runWithoutApprovalAllAllowedFor } from './agent-run-without-approval';
+import { effectiveRoutedLevel, routedRoleRefs } from './agent-role-router';
 
 /** Security review H2: "承認なしで実行" counts only from the user's own typed
  *  words — never on a MONITOR team registration draft or a terminal request
@@ -115,6 +116,9 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
     // 2026-11-01: the user named Antigravity, which never runs agent steps —
     // they must see which engine runs instead before it registers.
     !!draft.antigravityRequested ||
+    // Agent roles (WP3): the role assignment is an interpretation — the
+    // user OKs it once.
+    !!draft.roleRouting ||
     // 2026-10-30: manual-only DEFAULTED (no schedule named) is an
     // interpretation too — one human confirm before it registers.
     (draft.triggerAssumed === true && isManualTriggerDraft(draft)) ||
@@ -200,6 +204,7 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  * ClosePaw hand-off now always need the typed OK, whatever the settings.
  */
 export function isAutoRegisterEligibleDraft(draft: ParsedAgentDraft): boolean {
+  if (draft.roleRouting) return false;
   if ((draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool)) return false;
   const toolType = (draft.tool as { type?: string } | undefined)?.type;
   if (toolType === 'cli' || toolType === 'ab-article-eval') return false;
@@ -234,6 +239,8 @@ export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts): the plain-text
   // summary must say which part ClosePaw does on the phone — chat-native.
   if (draft.closePawRouting?.routed) return true;
+  // Agent roles (WP3): the role assignment is stated in plain chat text.
+  if (draft.roleRouting) return true;
   if (draft.action.type === 'social-post') return true;
   if (draft.action.type === 'draft') return true;
   if (draft.action.type === 'notify') return true;
@@ -573,6 +580,38 @@ export function antigravityNoticeLines(
     });
 }
 
+/**
+ * Agent roles (WP3) confirm lines: the level line (when the request named no
+ * level), the router's notes, and the "without roles" opt-out hint.
+ */
+export function roleRoutingLines(
+  draft: ParsedAgentDraft,
+  tl: (key: string, params?: Record<string, string | number>) => string,
+  showLevel: boolean,
+): string[] {
+  const routing = draft.roleRouting;
+  if (!routing) return [];
+  const lines: string[] = [];
+  if (showLevel) {
+    if (routing.levelEligible !== true) {
+      lines.push(tl('roles.route.level_not_applied'));
+    } else {
+      const label = (l: string) => (l === 'off' ? tl('roles.route.level_short_off') : tl(`roles.level_${l}`));
+      const seen = new Set<string>();
+      const detail = routing.assignments
+        .filter((a) => (seen.has(a.roleId) ? false : (seen.add(a.roleId), true)))
+        .map((a) => `${a.roleName}=${label(a.level ?? 'off')}`)
+        .join(', ');
+      const eff = effectiveRoutedLevel(draft);
+      lines.push(tl('roles.route.level_line', { level: label(eff.level), detail }));
+      if (eff.degraded) lines.push(tl('roles.route.level_all_degraded'));
+    }
+  }
+  for (const n of routing.notes ?? []) lines.push(n);
+  lines.push(tl('roles.route.opt_out_hint'));
+  return lines;
+}
+
 export function summarizeAgentDraftAsText(
   draft: ParsedAgentDraft,
   changedFields: ReadonlySet<string> = new Set(),
@@ -683,7 +722,7 @@ export function summarizeAgentDraftAsText(
   // 2026-10-15 (review L2): a tool the user NAMED is shown, so they can see the
   // request was understood ("パープレで…" → Perplexity API).
   const toolDisclosure = describeDraftTool(draft, opts.cloudConsent === true);
-  if (toolDisclosure.pinned && !toolDisclosure.substitution && (opts.cloudConsent !== undefined || !draft.autonomous)) {
+  if (toolDisclosure.pinned && !toolDisclosure.substitution && !draft.roleRouting && (opts.cloudConsent !== undefined || !draft.autonomous)) {
     lines.push(tl('agentplan.summary_tool_pinned', { tool: toolDisclosure.label }));
   }
   // Follow-up item 2 (2026-10-15): never swap a named / suggested cloud
@@ -696,6 +735,11 @@ export function summarizeAgentDraftAsText(
     }));
   }
 
+  if (draft.roleRouting) lines.push(tl('roles.route.header'));
+  if (draft.roleRouting && !(draft.orchestrationSteps && draft.orchestrationSteps.length >= 2)) {
+    const a = draft.roleRouting.assignments[0];
+    if (a) lines.push(markLine(tl('roles.route.single_line', { role: a.roleName, engine: toolChoiceToLabel(a.engine) }), 'tool', changedFields));
+  }
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {
     lines.push(tl('agentcard.orchestration', { count: draft.orchestrationSteps.length }));
     // Fan-out subtasks: only the EFFECTIVE branches (the same
@@ -706,6 +750,10 @@ export function summarizeAgentDraftAsText(
     const stepLabel = (s: (typeof draft.orchestrationSteps)[number]) => {
       const instruction = typeof s === 'string' ? s : s.instruction;
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
+      // Agent roles (WP3): "[<role> · <engine>] <instruction>".
+      const roleName = typeof s === 'string' ? undefined : s.role?.name;
+      if (roleName && pinnedTool) return `[${roleName} · ${toolChoiceToLabel(pinnedTool)}] ${instruction}`;
+      if (roleName) return `[${roleName}] ${instruction}`;
       return pinnedTool ? `[${toolChoiceToLabel(pinnedTool)}] ${instruction}` : instruction;
     };
     const display = groupStepsForDisplay(draft.orchestrationSteps);
@@ -776,6 +824,10 @@ export function summarizeAgentDraftAsText(
     // untrusted input — it falls back to the standard level, said plainly.
     if (allAsked && !allAllowed) lines.push(tl('agentplan.run_without_approval_all_fallback_note'));
   }
+  // Agent roles (WP3): the level the routed agent gets (no phrase in the
+  // request) = the strictest of its roles' levels, stated with each role's.
+  if (draft.roleRouting) lines.push(...roleRoutingLines(draft, tl, !runWithoutApprovalHonored(draft)));
+  if (draft.roleRoutingNotice === 'unavailable') lines.push(tl('roles.route.unavailable_note'));
   if (draft.memory?.remember) {
     lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }
@@ -901,5 +953,22 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
       : {}),
     // The summary line the user OK'd named it ("Workspace: ~/demo").
     ...(draft.workspaceRoot ? { workspaceRoot: draft.workspaceRoot } : {}),
+    // Agent roles (WP3): a single-unit routed agent records which role it
+    // was made with (display only), and — only for a draft the user typed
+    // in this chat — which roles' levels the typed OK re-verifies and applies.
+    ...(roleRefFor(draft) ? { roleRef: roleRefFor(draft) } : {}),
+    ...(roleLevelRefsFor(draft).length ? { roleLevelRoles: roleLevelRefsFor(draft) } : {}),
   };
+}
+
+function roleRefFor(draft: ParsedAgentDraft): { id: string; name: string } | undefined {
+  const a = draft.roleRouting?.assignments;
+  if (!a || a.length !== 1 || (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2)) return undefined;
+  return { id: a[0].roleId, name: a[0].roleName };
+}
+
+function roleLevelRefsFor(draft: ParsedAgentDraft): Array<{ id: string; roleHash: string }> {
+  if (!draft.roleRouting || draft.roleRouting.levelEligible !== true) return [];
+  if (draft.monitorTeamToken || draft.terminalRequestId) return [];
+  return routedRoleRefs(draft);
 }

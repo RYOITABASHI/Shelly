@@ -320,6 +320,9 @@ export interface ParsedAgentDraft {
    *  was before routing (revertRoleRouting restores it). Shown in the confirm
    *  text; absent = no routing. */
   roleRouting?: RoleRoutingInfo & { original: Omit<ParsedAgentDraft, 'roleRouting'> };
+  /** Display-only: 'unavailable' when roles.json could not be verified, so
+   *  the confirm text says no roles were used (routing fail-closed). */
+  roleRoutingNotice?: 'unavailable';
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
