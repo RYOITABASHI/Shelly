@@ -374,8 +374,9 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
 | **Native PTY (JNI forkpty)** | Kotlin + C, direct PTY fd, no TCP/socket bridge — an embedded native terminal, not a WebView terminal. |
 | **Batteries included** | bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, make, ripgrep, jq ship inside the APK. Termux not required. |
-| **9 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, Ask, Agent Runs, and Memory Workbench. Split up to 4 live panes freely. |
-| **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, OpenRouter, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
+| **10 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, Ask, Agent Runs, Memory Workbench, and Monitor. Split up to 4 live panes freely, and swap any two from the pane header. |
+| **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, OpenRouter, Local LLM, plus the foreground Codex terminal CLI. Agent steps can also run on Codex or Claude Code as CLI workers, both through the same command gate. Auto-routed or `@mention` where supported. |
+| **MONITOR pane + widget** | A camera-wall view of a live agent run: one channel per step (named after its role), provider, progress, tokens and cost, pending approvals you answer by typing OK / NO, and a MAP view of the steps. A 4x3 / 4x2 home-screen widget shows the same run. *The pane is verified on device (Galaxy Z Fold6, N=1); the widget is not yet.* |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow. Qwen3.5-0.8B ships as the actual default (light enough to stay always-on for background/autonomous use); Qwen3.5-2B is the recommended step-up for on-demand use when you can spare the RAM/battery, Qwen3 1.7B sits between the two, and 4B+ models are reserved for short quality checks. The llama.cpp download is pinned to release b11433 and checked against a sha256. MiniCPM5-2B is listed as **Experimental** only — evaluated on the Fold6 and not adopted (see [Status](#status)). |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
@@ -415,6 +416,26 @@ Unattended runs whose action is only a local `draft` file (inside the scoped out
 If the request itself is too vague to act on — "help me out" with no object or domain — Shelly asks what you actually want done *before* it asks when to run it, instead of scheduling an agent with an empty task.
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
+
+### Agent roles
+
+A role is a reusable worker definition: a name, an engine (Codex CLI, Claude Code, the local LLM or an API provider), instructions, a workspace and a run-without-approval level. You create, edit, list and delete roles in plain chat; each change is echoed back and saved only after you type OK.
+
+```
+make a reviewer role using Claude Code that reviews code for bugs and security issues and lists them by severity
+create a role called Implementer with Codex: write working code in the workspace and run a syntax check
+add a role "Judge" using the local LLM that compares two implementations and picks the better one
+@agent Right now, build a brick breaker game in ~/demo
+@agent Right now, have both implementers build a brick breaker game in ~/demo and compare
+```
+
+- An `@agent` request that names no tool is assigned to your roles and shown as `[role · engine]` lines in the confirm text. Say "without roles" to skip this, or name a tool yourself.
+- An implementer followed by a reviewer runs as implement → review → revise, up to 2 rounds, and stops early when the review answers `VERDICT: PASS`.
+- "compete" / "both ... and compare" runs 2–3 implementers in parallel, each in its own folder (`~/demo/a`, `~/demo/b`); a judge role compares them as "Candidate A/B" without engine or role names.
+- MONITOR names each channel after its role (`REVIEWER·R2` for a second round). `list my roles` shows what you have; Antigravity is never accepted as a role engine.
+- Roles are stored in `~/.shelly/agents/roles.json`, sealed by a hash in Keystore-backed storage (a changed file turns roles off until you reset them). Levels are kept only in that storage, and an agent gets the lowest level among its roles.
+
+**Run without approval** is a per-agent setting, OFF by default. *Standard* auto-approves pure reads and writes inside the agent's workspace. *All* — only when you type "run fully without approval" in chat, only for attended runs, and never for agents that read web, URL or notification input — also allows file work in the workspace, home and `$TMPDIR` and read-only syntax checks (`node --check`, `python3 -m py_compile`, `bash -n`). Both levels still ask for running scripts, network access, secrets, Shelly's own runtime paths and anything that creates a link, and each auto-approval is written to the agent's chat. When the paths in a request share one folder (for example `~/demo/a.html` and `~/demo/b.html`), that folder becomes the agent's workspace and the confirm text says so.
 
 ### Learning loop
 
@@ -490,7 +511,11 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | Hand-off narration lines in the agent's chat thread | ✅ verified on device (Galaxy Z Fold6, N=1) |
 | Keyboard/IME-aware pane layout — panes reserve only the real IME overlap | ✅ verified on device (Galaxy Z Fold6, N=1) |
 | Live theme switching — Case File and the other presets applied without restart, terminal palette included | ✅ verified on device (Galaxy Z Fold6, N=1) |
-| Agent roles — reusable roles ("make a reviewer role using Claude Code that …"), `@agent` requests assigned to them automatically (implementer → reviewer, or two implementers in parallel with "compete"), shown as `[role · engine]` lines you OK in chat; "without roles" opts out | 🟡 implemented, not yet verified on device |
+| Agent roles — reusable roles ("make a reviewer role using Claude Code that …"), `@agent` requests assigned to them automatically, implement → review → revise (up to 2 rounds), "compete" with a judge, shown as `[role · engine]` lines you OK in chat; "without roles" opts out | 🟡 implemented, not yet verified on device |
+| Parallel CLI steps — Codex and Claude Code steps of one attended run at the same time (at most 2 CLI workers, 1 per engine) | ✅ verified on device (Galaxy Z Fold6, N=1, 2026-11-01): `cli=2`, no worker processes left after the run |
+| Claude Code as an agent worker — official linux-arm64 glibc binary staged under `~/.shelly-runtime/claude-glibc/`, every tool call through the same gate as Codex | ✅ ran as a parallel worker on device (Galaxy Z Fold6, N=1); unattended Claude Code runs not yet verified |
+| Run without approval — per agent, OFF / standard / all | 🟡 "all" ran a parallel Codex / Claude Code task in `~/demo` on device (2026-11-02); the later link probe, lexer and env hardening are not yet verified on device |
+| MONITOR pane (LIVE) and home-screen widget | ✅ pane verified on device with a 3-branch parallel run (2026-10-31); 🟡 widget and the CLI-step heartbeat not yet verified |
 | Agent safety rules (POLICY-001) — NL rules, read-only floor for runs you didn't start, trust ramp | 🟡 implemented, not yet verified on device; flag OFF by default |
 | MCP server, spec 2026-07-28 (stateless) alongside the older revisions | 🟡 implemented, not yet verified on device |
 | On-device speech-to-text (keyless, Android SpeechRecognizer) | 🟡 implemented, not yet verified on device |
