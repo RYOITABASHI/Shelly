@@ -220,7 +220,8 @@
 - **ToS 制約**: Google は第三者エージェントによる `agy` のプログラム的呼び出しを禁止。Shelly は対話 TUI を起動するだけで、`agy -p` / `--print`、AI ペイン→agy、スケジュール/エージェントからの agy 呼び出しは禁止。`__tests__/front-agent.test.ts` がソース全体を走査してガード。
 - **実機で確認すること**: (1) 窓口=Antigravity・未インストールでアプリをコールド起動 → 先頭タブに `agy-install` ヒント、bash プロンプトが出る。(2) インストール後に再起動 → 先頭タブで agy TUI が起動、終了で同じタブの bash プロンプト。(3) 新しいタブ・JS リロード（プロセス生存）・アプリをバックグラウンド→復帰で再起動しない。(4) `echo $SHELLY_FRONT_AGENT` が空、`env | grep FRONT` なし。(5) 窓口=Claude Code でも同様（`~/.shelly-runtime/claude-glibc/claude` 有無）。(6) agy TUI 中の貼り付け・IME・Ctrl-C。
 
-### STOP-ALL が実行中のチェーンを止めない — 実装済み・実機未検証 (P1)
+### STOP-ALL が実行中のチェーンを止めない — ✅ 実装済み・実機 VERIFIED（build 2818、2026-11-03: attended の Codex ステップ実行中に STOP ALL → 10 秒以内に timeout/driver/codex_tui が全て消滅、MONITOR「STOPPED BY YOU」・後続 SKIPPED、RESUME で復帰。alarm 経路・local LLM 中・承認待ち中は未確認）
+- 2026-11-03 付随修正: STOP-ALL で止めた run のチャット通知が「⏭️ Done.」だった → skipped は「途中で止まりました。」/ "Stopped before it finished."（`agentplan.run_now_skipped`）。
 - **2026-10-30 設計調査で判明**: `haltAllAgents`（`lib/agent-manager.ts` 約 3082 行）はアラームの解除と `.halted` の書き込みだけで、実行中の run を kill しない。attended チェーンは入口（約 1440 行）でしか `halted` を見ず、PlanSpec executor も開始時（`shelly-plan-executor.js` 約 5098 行）だけ。押しても走っている run は最後まで動く。
 - **直し方**: 各ステップ／各グループの直前（両 executor の `nextStepGate` 呼び出し箇所）で `.halted` を確認する。executor は pid を書き、`haltAllAgents` がプロセスグループごと kill する（`generateStopCommand` と同じ方式）。broker の子プロセスは SIGTERM で道連れにする。
 - 下の MONITOR／attended 並列化の前提条件（並列にすると止まらない run が最大 3 本になる）。
@@ -312,7 +313,8 @@
 - **通知の投稿とタップの間の TOCTOU（対応済み）**: 変種の証明書チェックは通知投稿時ではなくタップ時に再確認する。`shelly closepaw` の承認・`agent add` の承認はいずれも Shelly を経由して `launch()` を呼ぶので起動時点で再判定される。バックグラウンド時の「ClosePaw に引き継ぎ」通知は、変種の場合は caller token を PendingIntent に入れず `shelly:///closepaw-launch?nonce=…`（単回・10分）で Shelly を開き、`launchDeferred` が再判定してから起動する。公式 ClosePaw では従来どおり直接起動（トークンなし）。
 - **ユーザー決定（option 3、同コミットで実装）**: 変種インストール時（トークンが付く場合）、ClosePaw が関わる承認に ChatGPT／ターミナルのテキスト承認は使えない。(a) `shelly closepaw confirm` の承認は常に拒否（RN とネイティブの両方、却下は可）、1依頼ごとに通知の［承認］（ロック解除）またはチャットの専用返信「承認 <hash8>」が必要で再利用なし。(b) ClosePaw ステップを含む下書きの `shelly agent confirm` は、変種インストール時（判定不能時も安全側で）拒否し、要約にも「スマホで承認」と表示。(c) `via='chatgpt'` の承認からは ClosePaw の事前承認を一切作らない。ClosePaw を含まない下書きは従来どおり ChatGPT から承認可能。公式 ClosePaw（トークンなし）は ClosePaw 自身のダイアログが端末上のゲートなので従来どおり。
 
-### `shelly device` — スクリプト／エージェント／Codex から使えるスマホ機能（Termux:API 相当の組み込み版）— 実装済み・実機未検証 (P1)、権限の要る機能は見送り (P2)
+### `shelly device` — スクリプト／エージェント／Codex から使えるスマホ機能（Termux:API 相当の組み込み版）— 実装済み・一部実機 VERIFIED (P1)、権限の要る機能は見送り (P2)
+- 2026-11-03 実機（build 2818）: (1) `battery` / `info` の JSON OK（Fold 展開 1856x2160）、(4) `notify --id 7` → 同 id で置換 → `--remove 7` すべて rc=0、Shelly 前面での `clipboard get` rc=0。未確認: clipboard set、toast / vibrate / tts / share、レート制限（ユーザーの端末で音・振動・クリップボード上書きが起きるため手動確認に回す）。
 
 2026-10-29、ブランチ `feat/shelly-device-api`（BASHRC_VERSION 272 / SHELLY_HELPER_SHIM v23）。
 
@@ -338,7 +340,7 @@
 - **仕様（未対応として明記）**: アプリ内のチェーン実行（`lib/agent-manager.ts` `runAgentOrchestratedBody`、AI ペインの attended な多段実行）は `AgentRuntime.runAgent` を通らないため `NativeAgentRunRegistry` に登録されず、ClosePaw の事前承認は**使われない**（毎回 Review が出る）。事前承認が効くのは、AgentRuntime 経由の実行（スケジュール／通知トリガー／「今すぐ実行」）のみ。必要になれば attended チェーンの開始・終了をネイティブ registry に登録する（P2）。
 - **既知の未対応 (P2)**: legacy `.sh` executor 経路の unattended ClosePaw は従来どおり拒否（PlanSpec 経路のみ対応）／LLM 主導の会話型登録 (Tier 3) で生成された下書きには ClosePaw 自動ルーティングを未適用／ターミナル依頼の処理中に別の `@agent` を打つと 30 分間すべての登録が確認必須になる（fail-closed の仕様）／ユーザーが Shelly 自身のパッケージを notificationTrigger＋authorizedSenders に設定した場合、承認通知の本文がエージェント入力になり得る（明示設定が必要な極端なケース）。
 
-### `shelly` が bash 関数の無い文脈で "bad interpreter: Permission denied" — ネイティブ shim 化（BASHRC_VERSION 255）実装済み・実機未検証 (P1)
+### `shelly` が bash 関数の無い文脈で "bad interpreter: Permission denied" — ✅ ネイティブ shim 化（BASHRC_VERSION 255）実機 VERIFIED（build 2818、2026-11-03: `bash script.sh` 内・`sh -c`・`bash -c`・node `spawnSync('shelly')` の 4 文脈で `shelly device battery` が rc=0）
 
 - **症状（build 2534 / BASHRC 253 で実機確認）**: PTY から `bash script.sh` / `bash -c` / `sh -c`、node child_process など `shelly()` 関数を持たない文脈で `shelly ...` を打つと `.../home/bin/shelly: /system/bin/sh: bad interpreter: Permission denied`。`$HOME/bin/shelly` が `#!/system/bin/sh` スクリプトで、Knox が app_data_file の exec を拒否するため。
 - **修正（branch `fix/shelly-native-shim`、`fix/closepaw-background` の上に積む）**:

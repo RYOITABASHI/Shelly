@@ -2227,7 +2227,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 const log = useAgentStore.getState().getRunHistory(updatedAgent.id).at(-1);
                 const preview = (log?.outputPreview || '').trim();
                 const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
-                const resultLine = preview ? `${icon} ${preview}` : `${icon} ${correctionStrings['agentplan.run_now_done']}`;
+                const resultLine = preview ? `${icon} ${preview}` : `${icon} ${correctionStrings[log?.status === 'skipped' ? 'agentplan.run_now_skipped' : 'agentplan.run_now_done']}`;
                 const runResult = {
                   content: summaryText ? `${summaryText}\n\n${resultLine}` : resultLine,
                   agentRollbackOffer: buildRollbackOffer(updatedAgent.id, updatedAgent),
@@ -3437,7 +3437,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               const preview = (log?.outputPreview || '').trim();
               const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
               const runResult = {
-                content: preview ? `${icon} ${preview}` : `${icon} Done.`,
+                content: preview ? `${icon} ${preview}` : `${icon} ${log?.status === 'skipped' ? 'Stopped before it finished.' : 'Done.'}`,
                 agentRollbackOffer: buildRollbackOffer(
                   agentResult.data.agentId,
                   useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
@@ -4772,7 +4772,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
-            const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings['agentplan.run_now_done']}`;
+            const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings[log?.status === 'skipped' ? 'agentplan.run_now_skipped' : 'agentplan.run_now_done']}`;
             const runResult = {
               content: `${baseContent}\n\n${resultLine}`,
               agentRollbackOffer: buildRollbackOffer(created.id, created),
@@ -4882,7 +4882,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               : '';
             finalContent = preview
               ? `${icon} ${created.name}\n\n${preview}${auditPath}`
-              : `${icon} ${created.name} — done.${auditPath}`;
+              : `${icon} ${created.name} — ${log?.status === 'skipped' ? 'stopped before it finished' : 'done'}.${auditPath}`;
             // Compute the undo offer BEFORE the agent is deleted below — the
             // handle itself (in lib/agent-manager.ts's pendingRollbackHandles)
             // survives agent deletion fine (it is keyed by agentId in its own

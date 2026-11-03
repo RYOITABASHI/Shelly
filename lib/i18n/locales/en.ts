@@ -768,6 +768,7 @@ const en: Record<string, string> = {
   // one-off run, not a schedule replacement.
   'agentplan.run_now_started': 'Running "{{name}}" right now — its recurring schedule stays unchanged.',
   'agentplan.run_now_done': 'Done.',
+  'agentplan.run_now_skipped': 'Stopped before it finished.',
   'agentplan.run_now_failed': 'The run-now request failed',
   // 2026-08-10 on-device QA finding: a local-LLM (on-device route) one-shot
   // @agent run took ~3m10s with the "▶ Running…" bubble frozen the entire

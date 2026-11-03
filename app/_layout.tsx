@@ -755,7 +755,8 @@ export default function RootLayout() {
         const agentState = useAgentStore.getState();
         for (const log of agentRunLogNoticeTracker.completeSync(agentState.runHistory)) {
           const agentName = agentState.agents.find((agent) => agent.id === log.agentId)?.name ?? log.agentId;
-          postAgentCompanionNotice(log, agentName, t('agentplan.run_now_done'));
+          // A skipped run (STOP-ALL, previous run still active) is not "Done."
+          postAgentCompanionNotice(log, agentName, t(log.status === 'skipped' ? 'agentplan.run_now_skipped' : 'agentplan.run_now_done'));
           // Unattended multi-step runs: replay the log's per-step records as
           // one hand-off digest in the agent's own thread (lib/agent-handoff.ts).
           // Own try/catch: a narration failure must never skip the remaining

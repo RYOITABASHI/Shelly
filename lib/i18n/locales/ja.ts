@@ -747,6 +747,7 @@ const ja: Record<string, string> = {
   // applyCorrectionToJustRegisteredAgent のコメント参照。
   'agentplan.run_now_started': '「{{name}}」を今すぐ実行します（定期スケジュールはそのまま維持されます）。',
   'agentplan.run_now_done': '完了しました。',
+  'agentplan.run_now_skipped': '途中で止まりました。',
   'agentplan.run_now_failed': '今すぐ実行がエラーになりました',
   // 2026-08-10 実機QA所見: ローカルLLM（オンデバイスルート）経由の@agent
   // one-shot実行が完了まで約3分10秒かかり、その間「▶実行中…」の吹き出しが
