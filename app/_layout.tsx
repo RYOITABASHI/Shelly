@@ -6,7 +6,7 @@ import "@/global.css";
 import "@/lib/command-notifier";
 import React, { useCallback, useEffect, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { registerAgentKeepAliveTask } from '@/lib/agent-keepalive';
+import { onAgentKeepAliveTick } from '@/lib/agent-keepalive';
 import { Stack, SplashScreen, type ErrorBoundaryProps } from "expo-router";
 import { applyThemeFromSettings, startBootThemeGate } from '@/lib/boot-theme-gate';
 import { StatusBar } from "expo-status-bar";
@@ -169,9 +169,6 @@ const ebStyles = StyleSheet.create({
 // User-controlled hide means expo-router's own auto-hide is suppressed;
 // RootLayout hides it on gate ready (or the gate's safety timeout).
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
-// Headless task that keeps RN timers running while an attended agent run is
-// backgrounded (lib/agent-keepalive.ts). Must be registered at module load.
-registerAgentKeepAliveTask();
 
 export const unstable_settings = {
   initialRouteName: "index",
@@ -2538,6 +2535,9 @@ export default function RootLayout() {
       }
     };
     const escalationInterval = setInterval(drainAgentEscalationRequests, 500);
+    // Backgrounded attended run: timers stop on Samsung, the native keep-alive
+    // tick drives the drain instead (lib/agent-keepalive.ts).
+    const escalationTickOff = onAgentKeepAliveTick(() => { void drainAgentEscalationRequests(); });
     void drainAgentEscalationRequests();
 
     // Bug #6 (2026-10-31): no time-based pruning (see rememberEscalation) —
@@ -2870,6 +2870,7 @@ export default function RootLayout() {
       }
     };
     const actionApprovalInterval = setInterval(drainAgentActionApprovalRequests, 500);
+    const actionApprovalTickOff = onAgentKeepAliveTick(() => { void drainAgentActionApprovalRequests(); });
     void drainAgentActionApprovalRequests();
     // A chat "OK" on a review-required action type opens the SAME review
     // screen the notification's Review deep link opens — never a direct
@@ -2901,7 +2902,9 @@ export default function RootLayout() {
       agentAddAppStateSub.remove();
       clearInterval(connectorSecretUpdateInterval);
       clearInterval(escalationInterval);
+      escalationTickOff();
       clearInterval(actionApprovalInterval);
+      actionApprovalTickOff();
       unsubscribeActionReview();
       if (agentLogInterval) clearInterval(agentLogInterval);
     };

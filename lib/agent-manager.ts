@@ -27,7 +27,7 @@ import {
 } from './agent-provider-overrides';
 import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
-import { ensureAgentKeepAlive } from './agent-keepalive';
+import { ensureAgentKeepAlive, keepAliveDelay } from './agent-keepalive';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
@@ -3856,8 +3856,10 @@ async function waitForAgentRunCompletion(
   throw new Error(`Timed out waiting for agent "${agentId}" to finish${detail}`);
 }
 
+// Also wakes from the attended-run keep-alive tick: a backgrounded app's
+// timers do not fire (lib/agent-keepalive.ts).
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return keepAliveDelay(ms);
 }
 
 export async function stopAgent(

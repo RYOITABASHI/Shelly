@@ -1,58 +1,95 @@
 /**
- * lib/agent-keepalive.ts — keep RN timers alive during an attended run.
+ * lib/agent-keepalive.ts — keep attended-run work going while backgrounded.
  *
- * RN pauses JS timers when the app is backgrounded (phone folded, another app
- * in front). The run itself keeps going natively under the foreground
- * service, but everything RN does for it on a timer stops with the app: the
- * 500ms escalation drain in app/_layout.tsx that answers "run without
- * approval" asks and posts approval notifications, and the run-log waiter.
- * A Codex step that asked to run `node --check` therefore sat unanswered
- * until the driver's 5-minute turn timeout (2026-11-03, build 2812).
+ * RN's JS timers run on Choreographer frame callbacks, and Samsung stops
+ * those for background apps ("SYSPERF_ACTIVE_APP_BBA_ENABLE : stop animation
+ * in background states") — a headless JS task does not help. The run itself
+ * keeps going natively under the foreground service, but everything RN does
+ * for it on a timer stopped with the app: the 500ms escalation drain in
+ * app/_layout.tsx that answers "run without approval" asks and posts approval
+ * notifications, and the run-log waiter. A Codex step that asked to run
+ * `node --check` therefore sat unanswered until the driver's 5-minute turn
+ * timeout (2026-11-03, builds 2812 / 2814).
  *
- * A headless JS task keeps RN's timers running (JavaTimerManager does not
- * pause while a task is active). One task covers every concurrent user run;
- * it ends as soon as no run is registered in agent-run-origin-registry.
+ * The JS thread itself keeps running, so while any user run is registered
+ * (agent-run-origin-registry) a native thread emits "onAgentKeepAliveTick"
+ * every second; subscribers run their timer work from it, and keepAliveDelay
+ * resolves from it when its timer cannot fire.
  */
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { hasActiveUserRun } from './agent-run-origin-registry';
 import { logInfo, logWarn } from './debug-logger';
 
-export const AGENT_KEEPALIVE_TASK = 'ShellyAgentKeepAlive';
 /** Above the longest attended wait (native 30 min executor cap + slack). */
 const KEEPALIVE_MAX_MS = 45 * 60_000;
-const CHECK_MS = 2_000;
 
-let taskActive = false;
-let registered = false;
+type Tick = () => void;
+const tickListeners = new Set<Tick>();
+let tickerActive = false;
+let subscription: { remove(): void } | null = null;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-export function registerAgentKeepAliveTask(): void {
-  if (registered) return;
-  registered = true;
-  // Required lazily so agent-manager's unit tests never load react-native.
-  const { AppRegistry } = require('react-native') as typeof import('react-native');
-  AppRegistry.registerHeadlessTask(AGENT_KEEPALIVE_TASK, () => async () => {
-    const startedAt = Date.now();
+function onTick(): void {
+  if (!hasActiveUserRun()) {
+    stopTicker();
+    return;
+  }
+  for (const listener of tickListeners) {
     try {
-      while (hasActiveUserRun() && Date.now() - startedAt < KEEPALIVE_MAX_MS) {
-        await sleep(CHECK_MS);
-      }
-    } finally {
-      taskActive = false;
-      logInfo('AgentKeepAlive', `ended after ${Math.round((Date.now() - startedAt) / 1000)}s`);
+      listener();
+    } catch (e) {
+      logWarn('AgentKeepAlive', 'tick listener failed', e);
     }
-  });
+  }
 }
 
-/** Call right after markUserRunStarted. No-op while a task is already running. */
+function stopTicker(): void {
+  if (!tickerActive) return;
+  tickerActive = false;
+  subscription?.remove();
+  subscription = null;
+  TerminalEmulator.stopAgentKeepAlive?.().catch(() => undefined);
+  logInfo('AgentKeepAlive', 'stopped');
+}
+
+/** Call right after markUserRunStarted. No-op while the ticker is running. */
 export function ensureAgentKeepAlive(): void {
-  if (taskActive || !registered || !TerminalEmulator.startAgentKeepAlive) return;
-  taskActive = true;
-  TerminalEmulator.startAgentKeepAlive(KEEPALIVE_MAX_MS + 60_000)
-    .then((taskId) => logInfo('AgentKeepAlive', `started task=${taskId}`))
+  if (tickerActive || !TerminalEmulator.startAgentKeepAlive || !TerminalEmulator.addListener) return;
+  tickerActive = true;
+  subscription = TerminalEmulator.addListener('onAgentKeepAliveTick', onTick);
+  TerminalEmulator.startAgentKeepAlive(KEEPALIVE_MAX_MS)
+    .then(() => logInfo('AgentKeepAlive', 'started'))
     .catch((e) => {
-      taskActive = false;
-      logWarn('AgentKeepAlive', 'could not start keep-alive task', e);
+      logWarn('AgentKeepAlive', 'could not start keep-alive ticker', e);
+      tickerActive = true;
+      stopTicker();
     });
+}
+
+/** Runs `listener` on every tick while an attended run is in flight. */
+export function onAgentKeepAliveTick(listener: Tick): () => void {
+  tickListeners.add(listener);
+  return () => {
+    tickListeners.delete(listener);
+  };
+}
+
+/** setTimeout that also resolves from a keep-alive tick once `ms` passed
+ *  (a backgrounded app's timers do not fire). */
+export function keepAliveDelay(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const due = Date.now() + ms;
+    let done = false;
+    let unsubscribe: () => void = () => undefined;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    unsubscribe = onAgentKeepAliveTick(() => {
+      if (Date.now() >= due) finish();
+    });
+  });
 }

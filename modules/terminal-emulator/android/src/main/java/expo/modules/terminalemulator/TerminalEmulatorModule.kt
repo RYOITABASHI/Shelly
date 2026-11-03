@@ -119,6 +119,37 @@ class TerminalEmulatorModule : Module() {
         sendEvent(name, body)
     }
 
+    private val keepAliveLock = Any()
+    private var keepAliveThread: Thread? = null
+
+    private fun startKeepAliveTicker(timeoutMs: Long) {
+        synchronized(keepAliveLock) {
+            keepAliveThread?.interrupt()
+            val deadline = System.currentTimeMillis() + timeoutMs
+            keepAliveThread = Thread {
+                try {
+                    while (!Thread.currentThread().isInterrupted && System.currentTimeMillis() < deadline) {
+                        emitEvent("onAgentKeepAliveTick", emptyMap())
+                        Thread.sleep(1_000L)
+                    }
+                } catch (_: InterruptedException) {
+                    // stopped
+                }
+            }.apply {
+                name = "ShellyAgentKeepAlive"
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
+    private fun stopKeepAliveTicker() {
+        synchronized(keepAliveLock) {
+            keepAliveThread?.interrupt()
+            keepAliveThread = null
+        }
+    }
+
     private fun requireReactContext(): Context =
         appContext.reactContext ?: throw IllegalStateException("React context unavailable")
 
@@ -549,6 +580,8 @@ class TerminalEmulatorModule : Module() {
             "onSttPartial", "onSttFinal", "onSttError",
             // ImeInsetsWatcher — real IME window inset (px), see ImeInsetsWatcher.kt.
             "onImeInsets",
+            // Attended-run keep-alive tick (startAgentKeepAlive).
+            "onAgentKeepAliveTick",
         )
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
@@ -1052,25 +1085,23 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
-        // Keeps RN timers running while an attended run is in flight with the
-        // app backgrounded: RN pauses JS timers on host pause unless a headless
-        // JS task is active (JavaTimerManager). The escalation drain that
-        // answers "run without approval" and posts approval notifications is
-        // a 500ms setInterval, so without this a backgrounded attended run's
-        // asks went unanswered until the driver's turn timeout (2026-11-03,
-        // build 2812). The task itself (lib/agent-keepalive.ts) resolves as
-        // soon as no user run is registered.
+        // Attended-run keep-alive (lib/agent-keepalive.ts): while the app is
+        // backgrounded RN's JS timers stop — they run on Choreographer frame
+        // callbacks, and Samsung stops those for background apps
+        // ("SYSPERF_ACTIVE_APP_BBA_ENABLE : stop animation in background
+        // states"), even with a headless JS task active. The JS thread itself
+        // keeps running, so a native thread emits a tick every second and JS
+        // runs the escalation drain ("run without approval" answers and
+        // approval notifications) from it (2026-11-03, builds 2812/2814).
         AsyncFunction("startAgentKeepAlive") { timeoutMs: Double ->
-            val context = appContext.reactContext as? com.facebook.react.bridge.ReactContext
-                ?: throw IllegalStateException("React context unavailable")
-            val config = com.facebook.react.jstasks.HeadlessJsTaskConfig(
-                "ShellyAgentKeepAlive",
-                com.facebook.react.bridge.Arguments.createMap(),
-                timeoutMs.toLong().coerceIn(60_000L, 3 * 60 * 60_000L),
-                true
-            )
-            com.facebook.react.jstasks.HeadlessJsTaskContext.getInstance(context).startTask(config)
-        }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+            startKeepAliveTicker(timeoutMs.toLong().coerceIn(60_000L, 3 * 60 * 60_000L))
+            null
+        }
+
+        AsyncFunction("stopAgentKeepAlive") {
+            stopKeepAliveTicker()
+            null
+        }
 
         AsyncFunction("isIgnoringBatteryOptimizations") {
             val context = appContext.reactContext ?: return@AsyncFunction false
