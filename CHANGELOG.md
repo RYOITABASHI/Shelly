@@ -6,7 +6,7 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
-## [8.2.0] - 2026-11-02
+## [8.2.0] - 2026-11-03
 
 ### Added
 
@@ -108,9 +108,19 @@ All notable changes to Shelly are documented here. Format loosely follows
 - Pasting an OAuth code into Claude Code's sign-in arrives intact.
 - The terminal starts with `PWD` spelled like `$HOME`, so tools no longer
   see the home folder under two paths.
+- An attended run keeps going when Shelly is closed or the phone is folded:
+  waiting for the result no longer counts the time the app was in the
+  background, and "run without approval" answers and approval
+  notifications keep working while it is backgrounded (Samsung stops app
+  timers in the background; a native tick drives them instead).
+- MONITOR shows the final state of a "Right now" run that finished while
+  Shelly was closed, instead of freezing on the step it last saw.
+- A run stopped by STOP-ALL is reported as stopped in chat, not "Done.".
 
 ### Security
 
+- The gate recognizes network tools hidden by shell quoting (`cu''rl`,
+  `"c"url`, `$'\x63'url`, `w\get`) and asks before running them.
 - The gate boundary-checks paths attached to options (`-t/sdcard/x`,
   `--file=...`) and redirects written without spaces (`echo x>/sdcard/y`).
 - Quoted heredoc bodies (`<<'EOF'`) are treated as data, so a file written
