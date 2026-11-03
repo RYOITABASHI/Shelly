@@ -77,7 +77,7 @@ import {
 } from './agent-companion-notice';
 import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route';
 import { AttendedProgressWriter } from './agent-progress-writer';
-import { cliBranchOverlap, parseProgressLine } from './agent-progress';
+import { cliBranchOverlap, parseProgressLine, parseProgressRuns } from './agent-progress';
 import { HandoffNarrator } from './agent-handoff';
 import { collectJudgeEvidenceViaShell } from './agent-judge-evidence';
 import {
@@ -3870,6 +3870,27 @@ export async function stopAgent(
 }
 
 /**
+ * MONITOR keeps showing a deleted agent's last polled run, and the poller
+ * never reads a deleted agent again. An ephemeral "Right now" agent is deleted
+ * right after its run, so when that happens while Shelly is backgrounded (the
+ * poller is paused) MONITOR froze on the last state it saw — e.g. step 1
+ * RUNNING after the whole chain had finished (2026-11-03, build 2815). Read
+ * the progress stream one last time before the logs are removed. Best-effort.
+ */
+async function captureFinalProgressBeforeDelete(agentId: string): Promise<void> {
+  try {
+    const res = await TerminalEmulator.execCommand(
+      `# PROGRESS_FINAL_READ\ncat "$HOME/.shelly/agents/logs/${agentId}/progress.jsonl" 2>/dev/null; true`,
+      5_000,
+    );
+    const runs = parseProgressRuns(res?.stdout ?? '');
+    if (runs.length) useAgentStore.getState().upsertLiveRuns(agentId, runs);
+  } catch (error) {
+    logWarn('AgentManager', `deleteAgent: final progress read failed for ${agentId}`, error);
+  }
+}
+
+/**
  * Delete an agent and clean up.
  */
 export async function deleteAgent(agentId: string): Promise<void> {
@@ -3896,6 +3917,7 @@ export async function deleteAgent(agentId: string): Promise<void> {
     // Best-effort: deleting the run script below still neutralizes any leftover alarm.
   }
   logInfo('AgentManager', `deleteAgent: uninstallSchedule settled for ${agentId}, starting file cleanup`);
+  await captureFinalProgressBeforeDelete(agentId);
   // Delete via the live shell $HOME — NOT the JS getHomePath() cache. The cache
   // can hold an unresolved /data/user/0 alias that doesn't resolve to the real
   // files dir on some OEM builds, so `rm -f <alias>` silently exits 0 while the
