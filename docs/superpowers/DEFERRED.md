@@ -178,7 +178,7 @@
 → sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
 （旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
 
-### エージェントロール Inc A（ロール定義・自動割り当て）— 実装済み・実機未検証 (P1)、以下は意図的に見送り (P2/P3)
+### エージェントロール Inc A（ロール定義・自動割り当て）— Inc A/B 実装済み・実機 VERIFIED（build 2806–2810、2026-11-02: チャットでのロール作成、ツール指定なしの依頼が Implementer（Codex）→ Reviewer（Claude Code）で REVISE → 修正 → PASS、競わせる実行 `cli=2` をローカル LLM の審査役が両候補のファイルを読んで `WINNER: B`、枝フォルダ `a/` `b/`。roles.json 改ざんでのルーティング停止・Antigravity 拒否は未確認）(P1)、以下は意図的に見送り (P2/P3)
 設計: `docs/superpowers/specs/2026-11-02-agent-roles-design.md`。WP0–WP5 は main 着地済み（WP3 = `feat/agent-roles-wp3`、未push）。実機手順は設計 §8。
 - **実機検証（P1）**: 設計 §8 の 1–9（ロール作成 → `@agent Right now, build a brick breaker game in ~/demo` で実装役＋レビュー役の直列 → 2 つ目の実装役で "have both implementers … and compare" が `cli=2` → roles.json 改ざんでルーティング停止 → Antigravity 拒否 → Inc4 の明示ツール依頼がロールなしのまま `cli=2`）。
 - **ステップ単位の承認レベル（P2）**: Inc A はエージェント全体に「割り当てたロールの最小レベル」を書くだけ。エスカレーションがどのステップ（＝どのロール）から来たかを認証できないため、ステップごとのレベルは未対応。

@@ -23,7 +23,13 @@
   <b>3 ステップで試せます:</b>
   &#9312; <a href="https://github.com/RYOITABASHI/Shelly/releases">Releases</a> から APK をインストール &nbsp;
   &#9313; Shelly で <code>shelly codex pair</code> を実行し、ChatGPT アプリ（Codex）でペアリング &nbsp;
-  &#9314; ChatGPT にスマホでやってほしいことを頼む <sub>（動画のようなアプリ操作には <a href="https://github.com/RYOITABASHI/closepaw/releases">ClosePaw の Shelly 用ビルド</a>が必要）</sub>
+  &#9314; ChatGPT にスマホでやってほしいことを頼む <sub>（動画のようなアプリ操作には <a href="https://github.com/RYOITABASHI/closepaw/releases">ClosePaw の Shelly 用ビルド</a>が必要）</sub><br>
+  <sub>必要なもの: Codex 用の ChatGPT サインイン（リモート操作は API キー非対応）。アプリ操作には、ClosePaw の Shelly 用ビルド（先に公式 ClosePaw をアンインストール）を API キーか OpenAI 互換エンドポイントで設定したものと、起動中の Shizuku。</sub>
+</p>
+
+<p align="center">
+  <sub>対応端末: arm64 の Android 7.0 以上（minSdk 24）。APK は約 700 MB あり、初回起動時に同梱ツールを展開するので、その分の空き容量も必要です。<br>
+  新機能: <a href="https://github.com/RYOITABASHI/Shelly/releases/tag/v8.2.0">v8.2.0 リリースノート</a> — エージェントのロール、Codex と Claude Code のステップの並列実行、MONITOR。</sub>
 </p>
 
 <p align="center">
@@ -117,7 +123,7 @@ https://github.com/user-attachments/assets/ac89f1a9-fecc-4e58-bb37-b33421e862d2
 
 https://github.com/user-attachments/assets/fbda309f-ad12-4a6d-a5b8-96b6ee4d4e57
 
-Scouter ウィジェットの ASK ボックスに `@agent ...` と直接打つ（または話しかける）だけ。AI ペインに直接打ったときとまったく同じ確認フロー ―― 同じパース、同じ確認カード ―― に合流し、登録が終わるとスケジュール済みエージェント一覧に次回実行時刻付きで表示されます。
+Scouter ウィジェットの ASK ボックスに `@agent ...` と直接打つ（または話しかける）だけ。AI ペインに直接打ったときとまったく同じ確認フロー ―― 同じパース、同じチャットでの確認（OK と打つだけ。カードの UI はありません）―― に合流し、登録が終わるとスケジュール済みエージェント一覧に次回実行時刻付きで表示されます。
 
 <br>
 
@@ -175,7 +181,7 @@ CLI ベースの AI ツールを使っている開発者には見慣れたワー
 
 ## Android 固有の注意点
 
-- **APK は約 800 MB あります。** シムではなく本物のツールを同梱しているからです。bash、
+- **APK は約 700 MB あります。** シムではなく本物のツールを同梱しているからです。bash、
   Node.js、Python 3、git、curl、ripgrep、jq、tmux、vim、less、sqlite3、
   make、ssh――加えて OpenAI Codex CLI ランタイムまでが APK の中に入っています。
   Termux もリポジトリサーバーもパッケージマネージャのブートストラップもありません。
@@ -205,9 +211,18 @@ CLI ベースの AI ツールを使っている開発者には見慣れたワー
 
 アプリストアのような更新管理を使いたい場合は、[Obtainium](https://github.com/ImranR98/Obtainium) で GitHub から Shelly を入れて、新しいバージョンの通知を受け取れます。スマホでバッジをタップするか、Obtainium に `https://github.com/RYOITABASHI/Shelly` を追加してください。追いかけるのはタグ付きの `vX.Y.Z` リリース（それぞれタグのコミットからビルドした APK を添付）なので、`android-latest` の全ビルドを追うアプリ内更新よりも更新の頻度は少なめです。
 
-一度インストールすれば、あとはアプリ内から自己更新できます。上部バーのクラウドダウンロードボタン、または **Settings → Updates** を開いてください。Shelly は公開されている `android-latest/latest.json` マニフェストを読み、Android の `versionCode` を比較し、Android DownloadManager で `/sdcard/Download/shelly-update-<versionCode>/` に APK をキューイングし、SHA-256 を検証してから Android のパッケージインストーラを開きます。システム側のダウンロードは、Shelly をバックグラウンドに回しても再起動しても継続します。Play ストア外配布なので、インストールの確認は Android が改めて求めてきます。
+一度インストールすれば、あとはアプリ内から自己更新できます。上部バーのクラウドダウンロードボタン、または **Settings → Updates** を開いてください。Shelly は公開されている `android-latest/latest.json` マニフェストを読み、Android の `versionCode` を比較し、Android DownloadManager で `/sdcard/Android/data/dev.shelly.terminal/files/Download/Shelly-android-*.apk` として APK をキューイングし、SHA-256 を検証してから Android のパッケージインストーラを開きます。システム側のダウンロードは、Shelly をバックグラウンドに回しても再起動しても継続します。ダウンロード済みの古い APK は自動で削除されます（v8.2.0 以降）。Play ストア外配布なので、インストールの確認は Android が改めて求めてきます。
 
 リリース APK では Expo OTA を無効にしています。JS・ネイティブ・同梱ツールの変更は新しい APK としてまとめて配布され、インストール済みバイナリとアプリコードのズレが起きないようにしています。
+
+#### 署名鍵のローテーション（2026-10）
+
+v8.0.x までの Shelly ビルドは、誰でも使える公開の React Native / Expo デバッグ鍵で署名されていました。新しいビルドは Shelly の非公開リリース鍵（証明書 SHA-256 `14:76:D9:52:0A:49:BF:8D:A7:A7:67:CB:41:39:18:CC:D5:C5:FC:D7:F6:26:03:76:6A:F6:52:1F:30:DE:21:2D`）で、**APK Signature Scheme v3 の鍵ローテーション**を使って署名しています。APK には旧鍵から新鍵への proof-of-rotation の系譜が入っています。
+
+- **Android 9（API 28）以降 — 何もする必要はありません。** いつもどおりアプリ内アップデータで更新（または [GitHub Releases](https://github.com/RYOITABASHI/Shelly/releases) から APK をインストール）してください。Android が系譜を検証して Shelly をその場で更新し（データ・API キー・ログインはすべて保持）、以後は新しい鍵だけを信頼します。系譜は旧鍵のロールバック権限を取り消すので、公開デバッグ鍵だけで署名された APK がローテーション済みのインストールを更新することはできなくなります。
+- **Android 7〜8（API 24〜27）** は鍵ローテーションを理解しません。旧鍵の署名を検証し続けるため、更新はその場でインストールされますが、それらの端末の信頼レベルは旧来の公開鍵のままです。
+- **安全策: Settings → Backup & restore。** 大きな更新の前に、`/sdcard/Download/` へ `shelly-backup-<timestamp>.tar`（プロジェクトなどの普通のファイル。秘密情報、シェルや AI CLI の履歴・トランスクリプトは含まない）と `shelly-backup-<timestamp>.shellybak`（設定、API キーなど SecureStore の秘密情報、`~/.shelly` の中身すべて ―― エージェント・ワークフロー・メモリ ――、`~/.codex`・`~/.claude`・`~/.aws` などの AI / クラウド CLI の設定、任意で Codex のログイン。パスフレーズから scrypt で導いた鍵で AES-256-GCM 暗号化）を書き出せます。パスフレーズは控えておいてください。復元できません。`/sdcard/Download` のファイルはストレージ権限を持つ他のアプリから読めます。秘密情報が入るのは暗号化されたファイルだけです。再インストールが必要になった場合（たとえば新しい鍵で署名されているが系譜を持たない APK）は、インストール → Restore → パスフレーズ入力 → Shelly を再起動、の順に行い、そのあと ChatGPT アプリから Codex リモート操作をペアリングし直してください（`shelly codex pair`）。その登録は古いインストールに紐付いているためです。
+- アップデータは、署名者がインストール済みの鍵でもピン留めしたリリース鍵でもない APK を拒否します。Shelly 用 ClosePaw ビルドは新しい鍵だけを信頼するので、Shelly のローテーション後に更新してください。
 
 ### ソースからビルド
 
@@ -218,7 +233,7 @@ pnpm install && pnpm android
 
 **必要なもの:**
 
-- Android 端末
+- arm64 の Android 端末、Android 7.0 以上（minSdk 24）
 - Node.js 22 以上（CI は現在 Node 22 でビルドしています）
 - pnpm
 - Android NDK 26.1.10909125（またはこの固定 NDK を解決できる Android SDK / Gradle 環境）
@@ -237,11 +252,13 @@ Termux は不要です。bash、Node.js、Python 3、git、curl、ssh、sqlite3�
 
 ### サインイン
 
-Shelly のフォアグラウンド AI CLI は **Codex** です。それ以外はすべて、キーを設定して使う API プロバイダです。
+Shelly に同梱している AI CLI は **Codex** です。**Claude Code** は自分で配置すれば使えます（[Claude Code（手動配置）](#claude-code手動配置)参照）。Google の **Antigravity** CLI（`agy`）もターミナル用にインストールできます。それ以外はすべて、キーを設定して使う API プロバイダです。
 
 | 対象 | サインイン方法 | 補足 |
 |---|---|---|
-| **Codex CLI**（ChatGPT サブスクリプション） | `codex` を実行、または `codex-login --open` を直接実行 | 唯一サポートされているフォアグラウンド CLI です。`~/.codex/auth.json` が無い、または無効な場合、`codex` ラッパーが Shelly のデバイスコードログインを開始し、OpenAI のデバイスコードページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT サブスクリプションに乗ります。 |
+| **Codex CLI**（ChatGPT サブスクリプション） | `codex` を実行、または `codex-login --open` を直接実行 | APK に同梱。`~/.codex/auth.json` が無い、または無効な場合、`codex` ラッパーが Shelly のデバイスコードログインを開始し、OpenAI のデバイスコードページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT サブスクリプションに乗ります。 |
+| **Claude Code**（手動配置） | `claude` を実行してサインイン、または **Settings → Anthropic API Key** を設定 | サインインは `claude` の TUI の中で行います。サインイン URL はタップしたときだけ開きます（Shelly がターミナル出力の URL を勝手に開くことはありません）。エージェントのステップでは、Anthropic API キーがあればそれを使い、無ければ有人実行はサインイン中のサブスクリプション、無人実行は **Settings →「Claude subscription for unattended runs」**（既定 ON）に従います。 |
+| **Antigravity**（`agy`） | `agy-install` のあと `agy` | ターミナルの TUI 専用（ダウンロードは SHA-512 で検証）。エージェントやスケジュールから起動することはありません。 |
 | **API プロバイダ**（Gemini・Cerebras・Groq・Perplexity・OpenRouter・ローカル） | **Settings → API Keys** または `shelly config` | AI ペイン / `@mention` / `@team` / バックグラウンドエージェント用に、プロバイダごとにキーを貼り付けます（OpenRouter は有人時のみ）。キーは `expo-secure-store` に保存されます。ローカル / OpenAI 互換サーバーはベース URL だけで動きます。 |
 
 > **Codex ログインについて。** REPL 内の `codex /login` は Shelly でのサポート対象パスではありません。素の `codex` を実行して Shelly のラッパーにデバイスコード認証を任せるか、bash から `codex-login --open` を実行してください。
@@ -252,20 +269,24 @@ Shelly のフォアグラウンド AI CLI は **Codex** です。それ以外は
 |---|---|
 | `codex` | ネイティブターミナル内でフォアグラウンドの Codex TUI を起動。認証が無い場合は、先にデバイスコードログインを開始します。 |
 | `codex-login --open` | ChatGPT サブスクリプションのデバイスコード認証を開始し、Shelly のブラウザペインで検証ページを開きます。 |
-| `shelly-doctor` | シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、Codex 認証ファイルの有無をチェック。 |
+| `claude` | 配置済みなら Claude Code の TUI を起動（[Claude Code（手動配置）](#claude-code手動配置)参照）。無ければ `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)` と表示します。 |
+| `agy-install` / `agy` | Google の Antigravity CLI をインストール（SHA-512 検証）し、その TUI を起動。ターミナル専用で、エージェントやスケジュールからは起動しません。**Settings → Front agent（起動時の窓口）** で、起動時に最初のターミナルタブで `agy` か `claude` の TUI を開けます。 |
+| `shelly-doctor` / `shelly doctor [--report]` | シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、Codex 認証ファイルの有無をチェック。`shelly doctor` も同じチェックで、`--report` は端末レポートにそのまま貼れる形で出力します。 |
 | `shelly-codex-diagnose` | Codex のスモーク / カナリア / 編集 / パッチのより深い診断を実行。 |
 | `shelly-update-clis codex --check-only` | 現在の Codex ランタイムをプローブ。ランタイムのインストールは通常 Updates UI から行います。 |
 | `shelly-cs` / `cs` | GitHub Codespaces のヘルパーコマンド。 |
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | 実行したコマンドを再利用可能なワークフローとして記録します（[学習ループ](#学習ループ)参照）。 |
 | `shelly install <pack>` / `shelly install --list` / `shelly uninstall <pack>` | 追加ツールパック（`dev-tools`: python3, sqlite3, jq, make, gh / `editor-tools`: vim, tmux, nano, less, unzip, rg）。各リリースビルドがパックアーカイブの sha256 を固定しており、ダウンロード後に検証してから展開します。インストールしたツールはオフラインでも、開いたままのタブでもすぐ使えます。パックのツールが無いときは `<cmd> is available: shelly install <pack>` と表示され、コマンドを実行しない限り何もダウンロードしません。現状これらのツールは APK にも同梱されているため、パックが意味を持つのはコピーが欠けている場合だけです。 |
 | `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | 保存済みワークフローの一覧・表示・現在のターミナルでの再生・削除。 |
+| `shelly agent add "<依頼>"` / `show` / `confirm` / `reject` / `list` | **Experimental。** 普通の言葉からエージェントの下書きを作らせ（AI ペインの `@agent` と同じフロー）、解析した要約を表示します。承認されるまで何も登録されません。承認は Shelly のチャット、通知（端末のロック解除が必要）、または —— Settings で許可していれば —— 要約を確認したうえで `shelly agent confirm <requestId> <hash>`。`list` は登録済みエージェントを表示します（読み取り専用）。 |
 | `shelly device <battery\|info\|clipboard\|notify\|toast\|vibrate\|tts\|share>` | スクリプト・エージェント・Codex から使えるスマホ機能。バッテリーと端末情報（JSON）、クリップボード、通知、トースト、バイブ、読み上げ、共有シート（[シェルからスマホの機能を使う](#シェルからスマホの機能を使う)参照）。 |
+| `shelly codex pair` / `code` / `trust` / `untrust` / `status` / `stop` / `autostart` | **Experimental。** Codex のリモート操作（`codex remote-control --no-daemon`）をこのタブで（`pair --background` なら切り離して）ホストし、ChatGPT アプリの Codex に入力するペアリングコードを有効期限つきで表示します。`code` は新しいコードを表示、`trust <dir>` はフォルダを信頼済みの Codex プロジェクトにしてアプリから開けるようにし、`untrust <dir>` で外します。`status` / `stop` はバックグラウンドのホストを管理、`autostart off\|status` は「ChatGPT との接続を維持」を操作します（オンにできるのは Settings だけ）。ChatGPT のサインインが必要です。 |
 
-**まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 月・火・水・木・金の朝8時に、最新の STEAM×AI 教育に関する論文とニュースを集めて、要約して Obsidian に保存して`（曜日は「平日」とまとめず区切って並べ、直後に時刻を続けるのがコツです）。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
+**まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 毎朝8時に、最新の STEAM×AI 教育に関する論文とニュースを集めて、要約して Obsidian に保存して`。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
 
 ### シェルからスマホの機能を使う
 
-`shelly device` を使うと、スクリプト・エージェント・Codex が、別のアドオンアプリを入れなくてもスマホの機能をいくつか使えます。よく使われる Termux:API コマンドの一部を Shelly に組み込んだものです。*実装済み、実機では未検証。*
+`shelly device` を使うと、スクリプト・エージェント・Codex が、別のアドオンアプリを入れなくてもスマホの機能をいくつか使えます。よく使われる Termux:API コマンドの一部を Shelly に組み込んだものです。*実機検証済み（Galaxy Z Fold6、N=1、2026-11-03）: `battery`、`info`、`notify`（表示・置き換え・削除）、Shelly が画面に出ているときの `clipboard get`。実機未検証: `clipboard set`、`toast`、`vibrate`、`tts`、`share`、レート制限。*
 
 | コマンド | 内容 |
 |---|---|
@@ -312,7 +333,7 @@ Termux や proot、あるいは別の Android ターミナル環境で AI コー
 - **ネイティブ実行パス** — Codex はリモートブリッジやソケットターミナルではなく、Shelly がアプリとして所有するネイティブ PTY（JNI `forkpty`）上で動きます。
 - **「最新」を盲信せず、管理する** — 各 APK には固定バージョンの Codex ランタイムが同梱されており、Updates UI からはローリングの `codex-runtime-latest` リリースにある検証済みの新しいランタイムを、次の APK を待たずにインストールできます。
 - **状態が見える** — 直近のターミナルログをアプリ側で表示できるので、バージョンのズレや起動失敗を端末上でそのままデバッグできます。
-- **コンプライアンス境界** — Codex はフォアグラウンドの、ユーザーが操作するターミナル CLI です。AI ペインやバックグラウンド自動化は明示的な API プロバイダを使い、隠れたサブスクリプションワーカーは動かしません。
+- **どのアカウントが何を動かすか** — AI ペインのチャットは、あなたが設定した明示的な API プロバイダだけを使います。エージェントのステップは CLI ワーカーでも動きます: Codex（あなたの ChatGPT サインイン）と Claude Code（Settings → Anthropic API Key があればそれ。無ければ、有人実行はサインイン中のサブスクリプション、無人実行は Settings →「Claude subscription for unattended runs」がオン〈既定〉のときだけサブスクリプション）。CLI のステップはすべて同じコマンドゲートを通ります。
 
 ここが Shelly を「ターミナルの皮」以上のものにしている部分です。動きの速い CLI を Android 上で配布しつつ、更新作業をユーザーに押し付けずに済んでいる理由でもあります。
 
@@ -320,9 +341,26 @@ Termux や proot、あるいは別の Android ターミナル環境で AI コー
 
 | 対象 | 状態 | 意味 |
 |---|---|---|
-| **Codex CLI** | サポート対象 | フォアグラウンド CLI。素の `codex` は、Shelly がアプリ内デバイスコード認証で `~/.codex/auth.json` を検証・作成したあと、ネイティブ PTY 上で通常の Codex TUI を起動します。 |
-| **AI ペイン / バックグラウンドエージェント** | API 経由でサポート | 設定済みプロバイダ（Gemini API・Cerebras・Groq・Perplexity・OpenRouter〈有人の AI ペイン利用のみ〉・ローカルの OpenAI 互換サーバー）を使います。プロバイダキーベースで、サブスクリプションの隠れた再利用はありません。 |
+| **Codex CLI** | サポート対象（同梱） | 素の `codex` は、Shelly がアプリ内デバイスコード認証で `~/.codex/auth.json` を検証・作成したあと、ネイティブ PTY 上で通常の Codex TUI を起動します。エージェントのワーカーにもなります。 |
+| **Claude Code** | サポート対象、手動配置 | 同梱せず、Shelly がダウンロードすることもありません。公式の linux-arm64 glibc 版を自分で配置します（[手順](#claude-code手動配置)）。`claude` で TUI が起動し、エージェントのステップは Codex と同じゲートを通るワーカーとしてこれを使えます。無人での Claude Code 実行は実機未検証です。 |
+| **Antigravity**（`agy`） | ターミナルのみ | `agy-install` / `agy`。エージェントのワーカーやロールのエンジンにはならず、エージェントやスケジュールから起動することもありません。Settings → Front agent で、最初のターミナルタブにその TUI（または `claude`）を開けます。 |
+| **AI ペインのチャット** | API 経由でサポート | 設定済みプロバイダ（Gemini API・Cerebras・Groq・Perplexity・OpenRouter〈有人の AI ペイン利用のみ〉・ローカルの OpenAI 互換サーバー）を使います。 |
+| **バックグラウンド / エージェントのステップ** | API・ローカル LLM・CLI ワーカー | API とローカルのステップは上のプロバイダを使います。CLI のステップは Codex（ChatGPT サインイン）か Claude Code（Anthropic API キー、または[サインイン](#サインイン)に書いたとおりサインイン中のサブスクリプション）で動き、すべて同じコマンドゲートを通ります。 |
 | **Gemini API** | 設定済みなら利用可 | Gemini API キーを設定すると、AI ペイン、`@gemini` ルーティング、`@team`、マルチモーダル / API ベースのタスク、バックグラウンドエージェントで使えます。（これは API プロバイダとしての話で、Gemini CLI は同梱していません。） |
+
+### Claude Code（手動配置）
+
+Shelly は Claude Code を同梱もダウンロードもしません。使う場合は、公式の改変していない Claude Code **linux-arm64（glibc）** 版と glibc ランタイムを次の配置で置いてください:
+
+```
+~/.shelly-runtime/claude-glibc/
+├── claude                        # 公式の linux-arm64 glibc バイナリ
+└── lib/
+    ├── ld-linux-aarch64.so.1     # glibc の動的ローダ
+    └── ...                       # それが必要とする glibc の共有ライブラリ
+```
+
+Shelly は自前のユーザーランドのローダでこれを起動します（root も proot も不要）。そのあと `claude` を実行してサインインするか、Settings → Anthropic API Key を設定してください。ファイルが無い場合、`claude` は `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)` と表示します。
 
 ---
 
@@ -350,7 +388,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **端末上で動く自律エージェント** | 普通の言葉で言えば、スケジュール済みエージェントがスマホの上で*自分だけで*（画面が消えた状態で）動き、あなた自身のキーとツールを使い、実行したことを知らせます。クラウドエージェントが届かない場所――あなたのファイル、ターミナル、ローカル LLM、端末そのもの――で動くのが強みです。*現時点では N=1 の検証です。[ステータス](#ステータス)を参照してください。* （[詳細](#自律エージェント)） |
 | **Shellyコンパニオン** | 既定のローカル人格のAIペインは、プロバイダー名を冠したフォームではなく、**Shelly**という一人の常駐する相棒です――どの返信にもプロバイダータグは付きません。会話はAIペインや分割をまたいで続き、プロバイダーを切り替えるたびに会話内容を自動でShelly自身のメモリへ蒸留し（Settingsから閲覧/編集可能）、確認して覚えた好みはShelly自身とすべてのバックグラウンドエージェントで共有され、完了したエージェントの結果も同じスレッドへ自動で入ります。明示的なプロバイダールートはペインごとの独立した履歴を保ち、そこへ切り替える/そこから抜けるときには直近のコンテキストを短く引き継ぎます。 |
 | **マルチプラットフォーム配信** | エージェントの成果物は通知や Obsidian の下書きに限りません。Bluesky・Discord・Slack・Telegram・Mastodon・Misskey・WordPress・X に直接投稿したり、Webhook を叩いたりできます。プラットフォームごとのキーを一度保存すれば、あとは普通の言葉でエージェントに向き先を指示するだけ。*Bluesky はライブで端から端まで検証済みです。* |
-| **通知トリガーのエージェント** | エージェントはスケジュールだけでなく、他アプリ（LINE、Discord、Slackなど、許可リストに入れたもの）が条件に合う通知を出したときにも発火できます。まずパッケージの許可リストで絞り込み、次に送信者名の完全一致でさらに絞ります（未設定なら fail-closed）。トリガーとなったテキストは常に「信頼できないデータ」として注入され、指示としては扱われません。これとは別に、オプトインの **Telegram inbound gateway**（既定OFF）は認可した1つのチャットから`@agent`メッセージを受け取り確認カードをキューします。認可・サニタイズのコアはテスト済みですが、実bot tokenによるlong-poll → 確認の通し動作はライブ未検証です。 |
+| **通知トリガーのエージェント** | エージェントはスケジュールだけでなく、他アプリ（LINE、Discord、Slackなど、許可リストに入れたもの）が条件に合う通知を出したときにも発火できます。まずパッケージの許可リストで絞り込み、次に送信者名の完全一致でさらに絞ります（未設定なら fail-closed）。トリガーとなったテキストは常に「信頼できないデータ」として注入され、指示としては扱われません。これとは別に、オプトインの **Telegram inbound gateway**（既定OFF）は認可した1つのチャットから`@agent`メッセージを受け取り、Shelly での確認待ちとしてキューします。認可・サニタイズのコアはテスト済みですが、実bot tokenによるlong-poll → 確認の通し動作はライブ未検証です。 |
 | **エージェントによるブラウザ自動操作** | エージェントは Browser ペインで既に開いているページに対して click / fill / テキスト抽出ができます。意図的に狭いアクション集合（ナビゲーションも任意スクリプト注入もなし）で、明示的なページURL許可リストとアクションごとの承認タップでゲートされます。ページ由来の出力は次のケイパビリティ境界で常に「信頼できない」扱いです。 |
 | **ペインをまたぐ知能** | 「エラーを直して」と言うだけ。AI がターミナルを読み、修正を提案し、ワンタップで実行。コピペはゼロです。 |
 | **Ask AI（AI への引用）** | ターミナル出力を長押し → 選択メニューの **Ask AI** で、AI ペインの入力欄に引用されます（1 行なら引用ブロック、複数行ならフェンス付きブロック）。あくまで下書きで、あなたが送信するまで何も送られず、伏字の秘密入力欄には決して引用されません。*実機検証済み（Galaxy Z Fold6、N=1）。* |
@@ -363,7 +401,11 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **バッテリー同梱** | bash、Node.js、Python 3、git、curl、ssh、sqlite3、tmux、vim、less、make、ripgrep、jq が APK の中に入っています。Termux は不要です。 |
 | **10 種類のペイン** | Terminal、Agent Chat、AI、Browser（+ バックグラウンド再生）、Markdown、Preview、Ask、Agent Runs、Memory Workbench、Monitor。最大 4 つまで自由に分割でき、ペインのヘッダーから任意の 2 つを入れ替えられます。 |
 | **マルチエージェント AI** | API ベースの Gemini・Cerebras・Groq・Perplexity・OpenRouter・ローカル LLM に加え、フォアグラウンドの Codex ターミナル CLI。エージェントのステップは Codex や Claude Code を CLI ワーカーとして使うこともでき、どちらも同じコマンドゲートを通ります。自動ルーティング、または対応するものは `@mention` で指定できます。 |
-| **MONITOR ペイン + ウィジェット** | 実行中のエージェントをカメラの壁のように表示します。ステップごとに 1 チャンネル（ロール名つき）、プロバイダー、進捗、トークンと料金、OK / NO と打って答える承認待ち、ステップの MAP 表示。4×3 / 4×2 のホーム画面ウィジェットでも同じ実行を表示します。*ペインは実機検証済み（Galaxy Z Fold6、N=1）、ウィジェットはまだです。* |
+| **MONITOR ペイン + ウィジェット** | 実行中のエージェントをカメラの壁のように表示します。ステップごとに 1 チャンネル（ロール名つき）、プロバイダー、進捗、トークンと料金、OK / NO と打って答える承認待ち、ステップの MAP 表示。チャンネルをタップすると、そのステップのプロバイダーを実行中に切り替えられます。4×3 / 4×2 のホーム画面ウィジェットは、待機中はロールの一覧を、実行中は同じ実行を REC 表示します。*ペインとウィジェット（待機中のロール一覧、実行中の REC）は実機検証済み（Galaxy Z Fold6、N=1）。実行中のプロバイダー切り替えは未検証です。* |
+| **打って承認** | エージェントの承認待ちはエージェントのチャットと MONITOR に表示され、OK / NO と打って答えます（2 件待っているときは `ok <hash>`）。有人の CLI ステップは最大 10 分、答えを待ちます。答えになるのはチャットの入力欄で打った文字だけで、音声の文字起こしでは承認できません。 |
+| **裏でも実行が続く** | 有人の実行は、Shelly を閉じても端末を折りたたんでも続き、その間も「承認なしで実行」の自動応答が動きます。*実機検証済み（Galaxy Z Fold6、N=1）。* |
+| **継続モード** | 「止めるまで続けて」と言うと、エージェントをクールダウンを挟んだ短い反復として動かします。停止は Stop、STOP-ALL、50 回、24 時間、3 回連続の失敗、または有料 API の日次予算（既定 0）。*実機ではまだ観測していません。* |
+| **STOP-ALL** | すべてのエージェントを止めます。今後のアラームだけでなく、実行中のチェーンや executor の実行も止め（止めた実行は「Done.」ではなく「止まった」と報告）、RESUME で戻せます。*実行中の Codex ステップの停止は実機検証済み（N=1）。アラーム経路、ローカル LLM のステップ中、承認待ちの実行はまだ確認していません。* |
 | **ローカル LLM（端末上、llama.cpp）** | Qwen3.5 系モデルを同梱の llama.cpp / llama-server フローで端末上で動かします。実際のデフォルトはQwen3.5-0.8B(バックグラウンド/自律実行でも常駐できる軽さ)、RAM・バッテリーに余裕があるオンデマンド用途にはQwen3.5-2Bへのアップグレードを推奨、Qwen3 1.7Bはその中間、4B以上は短時間の品質確認に限定しています。llama.cpp のダウンロードはリリース b11433 に固定し、sha256 で検証します。MiniCPM5-2B は **Experimental** として載せているだけで、Fold6 で評価したうえで不採用としました（[ステータス](#ステータス)参照）。 |
 | **Android 上の Codex** | 上流を盲信せずに Codex を「管理された最新」に保ちます。各 APK は固定ランタイムを同梱し、Updates UI は検証済みランタイムリリースへ昇格でき、Reset で同梱ランタイムに戻せます。Codex は Shelly 自前のデバイスコードログインラッパーとともに、ネイティブ PTY 上で動きます。proot も root も不要です。 |
 | **Scouter ホームウィジェット** | ホーム画面のエージェント起動パッド兼ヘルス一覧です。アプリを開かずに、直近実行予定のエージェント最大3件をそれぞれのステータスグリフ（前回実行の成功 / 失敗 / スキップ）と次回発火時刻つきで表示します。しかも操作可能で、**RUN** は登録済みエージェントを無人実行のゲートを通して起動し、**ASK** は新規エージェントの登録にも使えます——`@agent ...` と打つ（または話す）と、AI ペインに直接打ったときと同じ確認フローに合流します。 |
@@ -390,7 +432,7 @@ and write the primary-source links + a short summary to my Obsidian vault
 
 このスケジュールで登録されたエージェントは、発火するとスマホを起こし、Perplexity で調査し、日付とソース付きのサマリを Obsidian に落とします。無人で、上のデモと同じ実行です。スケジュールもソースも出力先も、自分のものに置き換えてください。
 
-スケジュール指定は繰り返しだけでなく、相対的な*開始時点*も理解します。「来週から毎朝ニュースをチェックして」と言えば、エージェントはいま登録されつつ、最初の発火は解決された日付まで保留され、うっかり明日動き出すことはありません。（登録 / 確認カードのパスは実機で確認済みです。）
+スケジュール指定は繰り返しだけでなく、相対的な*開始時点*も理解します。「来週から毎朝ニュースをチェックして」と言えば、エージェントはいま登録されつつ、最初の発火は解決された日付まで保留され、うっかり明日動き出すことはありません。（登録とチャットでの確認のパスは実機で確認済みです。）
 
 スケジュールは **1 回きり**にもできます。「5分後に」「今日の14時55分」「明日の朝8時」、"in 5 minutes"、"at 14:55" と言えば、正確なアラームで 1 回だけ発火し、そのあとは退役するエージェントとして登録されます（実行ログ付きで一覧には残ります）。相対的な遅延はあなたが確認をタップした時点から数え、繰り返しを表す語のない時刻だけの指定は、登録前に必ず「1 回きり」という解釈として提示されます。再起動をまたいだ場合、取りこぼした 1 回きりの実行は 10 分の猶予内なら追いつき実行し、それを過ぎたものは「実行漏れ」として記録します――遅れて発火することはありません。（"in 5 minutes"、"at 14:55"、「5分後に」で実機検証済み。）
 
@@ -398,7 +440,7 @@ and write the primary-source links + a short summary to my Obsidian vault
 
 無人実行のうち、アクションがローカルの `draft` ファイル（スコープされた出力フォルダ内）か `notify` だけのものは、手動承認のタップを待たなくなりました――どちらも端末の外に出ないからです。それ以外のアクション（webhook、CLI、SNS 投稿など）は引き続き承認が必要で、安全ルールを有効にしている場合はそちらが優先されます。
 
-**ClosePaw への引き継ぎ（Experimental）。** エージェントから、オープンソース（Apache-2.0）の Android スマホ操作エージェント [ClosePaw](https://github.com/imoonkey/closepaw) にタスクを引き継げます。「ClosePawでChromeを開いて東京の天気を検索して」（"have ClosePaw open Chrome and search the weather in Tokyo"）のように言うだけです。実行のたびにまず Shelly の Review で「ClosePaw に引き継ぎ: <ゴール>」を確認し（自動承認はされません）、さらに ClosePaw 側でも「External Goal」の確認が出てから動きます。ClosePaw は結果を返さないため、実行は結果つきの成功ではなく **「ClosePaw に引き継ぎ済み」** で終わります。ClosePaw は GitHub のリリースから各自でインストールし、API キー / OpenAI 互換エンドポイントで設定してください（Shelly の小型オンデバイスモデルでは ClosePaw を動かせません）。Shelly のターミナル（その中で動く Codex セッションを含む）からは `shelly closepaw "Chromeを開いて東京の天気を検索して"` で直接引き継げます（同意は ClosePaw 側の Run 確認。5 秒に 1 回まで、30 秒より古い要求は破棄）。Shelly がバックグラウンドのとき（ChatGPT アプリから Codex を操作している時など）も動きます。Android はバックグラウンドのアプリから別アプリを開かせないため、その場合は「ClosePaw に引き継ぎ」通知が出るので、タップして続行してください。*実機未検証です。* **バックグラウンド実行（Shelly 用 ClosePaw ビルド v0.1.0-4 以降）:** [shelly-v0.1.0-4](https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-4) 以降の Shelly 用ビルドでは、承認済みの引き継ぎで ClosePaw が前面に出なくなります。Shelly は ClosePaw のバックグラウンド入口に依頼を送り、ClosePaw は自分の仮想ディスプレイ上で作業します（Shizuku の起動が必要）。その間もスマホはそのまま使えます（ClosePaw が操作中のアプリだけは避けてください）。結果はターミナル・エージェント実行結果・チャットに「バックグラウンドで作業中」と表示され、失敗時は対処法（Shizuku を起動、ClosePaw のユーザー補助をオン、重ねて表示の許可、認証情報の追加、ClosePaw が実行中）を具体的に示します。Shelly が ClosePaw にメイン画面の操作を求めることはありません。古い ClosePaw ビルドでは従来どおりの起動になります。*実機未検証です。*
+**ClosePaw への引き継ぎ（Experimental）。** エージェントから、オープンソース（Apache-2.0）の Android スマホ操作エージェント [ClosePaw](https://github.com/imoonkey/closepaw) にタスクを引き継げます。「ClosePawでChromeを開いて東京の天気を検索して」（"have ClosePaw open Chrome and search the weather in Tokyo"）のように言うだけです。実行のたびにまず Shelly の Review で「ClosePaw に引き継ぎ: <ゴール>」を確認し（自動承認はされません）、さらに ClosePaw 側でも「External Goal」の確認が出てから動きます。公式の ClosePaw は結果を返さないため、実行は結果つきの成功ではなく **「ClosePaw に引き継ぎ済み」** で終わります（Shelly 用ビルドのバックグラウンド実行では結果が返ります。後述）。ClosePaw は GitHub のリリースから各自でインストールし、API キー / OpenAI 互換エンドポイントで設定してください（Shelly の小型オンデバイスモデルでは ClosePaw を動かせません）。Shelly のターミナル（その中で動く Codex セッションを含む）からは `shelly closepaw "Chromeを開いて東京の天気を検索して"` で直接引き継げます（同意は ClosePaw 側の Run 確認。5 秒に 1 回まで、30 秒より古い要求は破棄）。Shelly がバックグラウンドのとき（ChatGPT アプリから Codex を操作している時など）も動きます。Android はバックグラウンドのアプリから別アプリを開かせないため、その場合は「ClosePaw に引き継ぎ」通知が出るので、タップして続行してください。*実機未検証です。* **Shelly が信頼する ClosePaw ビルド（任意）:** [RYOITABASHI/closepaw](https://github.com/RYOITABASHI/closepaw) からビルドした ClosePaw の変種（`shelly-trusted-caller`、APK は https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-2 ）は、Shelly から起動されたときは ClosePaw 自身の確認を省きます。Shelly がすでにあなたに確認しているからです。インストールするには、先に公式の ClosePaw をアンインストールする必要があります（署名が異なるため）。Shelly はその署名証明書がピン留めしたものと一致するときだけ信頼済みとして扱い、公式の ClosePaw にはトークンを渡さないので、公式版では確認ダイアログが残ります。変種を入れると、`shelly closepaw "<ゴール>"` は直接は発火しなくなります。Shelly がまず、スマホの上でだけあなたに確認します ―― 通知の **Approve** をタップする（端末のロック解除が必要）か、Shelly のチャットで `approve <hash>` と返信してください（ただの「OK」は承認になりません）。ChatGPT やターミナルからは拒否（`shelly closepaw reject <requestId>`）はできても承認はできず、依頼ごとに承認が必要です。同じく、変種を入れている間は、ClosePaw のステップを含むエージェントを ChatGPT から承認することはできません。スマホで承認すると、そのエージェントが編集されるまで、以後の実行でもそのステップは承認済みになります。**バックグラウンド実行（Shelly 用 ClosePaw ビルド v0.1.0-4 以降）:** [shelly-v0.1.0-4](https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-4) 以降の Shelly 用ビルドでは、承認済みの引き継ぎで ClosePaw が前面に出なくなります。Shelly は ClosePaw のバックグラウンド入口に依頼を送り、ClosePaw は自分の仮想ディスプレイ上で作業します（Shizuku の起動が必要）。その間もスマホはそのまま使えます（ClosePaw が操作中のアプリだけは避けてください）。結果はターミナル・エージェント実行結果・チャットに「バックグラウンドで作業中」と表示され、失敗時は対処法（Shizuku を起動、ClosePaw のユーザー補助をオン、重ねて表示の許可、認証情報の追加、ClosePaw が実行中）を具体的に示します。Shelly が ClosePaw にメイン画面の操作を求めることはありません。古い ClosePaw ビルドでは従来どおりの起動になります。ClosePaw の結果が返るのはこのバックグラウンド実行のときだけです: `shelly closepaw --wait "<ゴール>"`（または `shelly closepaw wait <requestId>`）があなたの承認と ClosePaw の回答を待って表示します。それ以外では `--wait` は exit 3（引き継ぎのみ、結果なし）で終わります。*ChatGPT → `shelly closepaw --wait` → バックグラウンド実行 → 結果、の経路は実機検証済み（Galaxy Z Fold6、N=1、[ステータス](#ステータス)参照）。エージェントの ClosePaw アクションのステップは実機未検証です。*
 
 そもそもリクエストが曖昧すぎて動きようがない場合――目的語もドメインもない「なんか手伝って」のような場合――Shelly は空のタスクでエージェントを登録したりせず、いつ動かすかを聞く*前に*、実際に何をしてほしいのかを尋ねます。
 
@@ -413,7 +455,7 @@ Claude Codeでコードのバグとセキュリティの問題を重大度つき
 Codexを使う実装役というロールを作って。ワークスペースの中で動くコードを書いて構文チェックまでする
 ローカルLLMで2つの実装を比べて良い方を選ぶ審査役を作って
 @agent Right now, build a brick breaker game in ~/demo
-今すぐ、~/demoにブロック崩しゲームを作って競わせて
+@agent 今すぐ、~/demoで2つの実装役にブロック崩しゲームを作らせて競わせて
 ```
 
 - ツールを指定していない `@agent` の依頼は登録済みのロールに割り当てられ、確認文に `[ロール · エンジン]` の行として表示されます。使わないときは「ロールなしで」と言うか、ツールを自分で指定してください。
@@ -422,7 +464,7 @@ Codexを使う実装役というロールを作って。ワークスペースの
 - MONITOR は各チャンネルをロール名で表示します（2 往復目は `REVIEWER·R2` など）。「ロール一覧」で確認できます。Antigravity はロールのエンジンにできません。
 - ロールは `~/.shelly/agents/roles.json` に保存され、Keystore で守られたストレージにあるハッシュで封印されます（ファイルが書き換わるとリセットするまでロールは無効）。レベルはそのストレージにだけ保存され、エージェントには割り当てられたロールのうち最も低いレベルが使われます。
 
-**承認なしで実行** はエージェントごとの設定で、既定は OFF です。*標準* は純粋な読み取りと、エージェントのワークスペース内への書き込みを自動で許可します。*すべて* ——チャットで「すべて承認なしで実行」と打ったときだけ、有人実行だけ、Web・URL・通知の入力を読むエージェントには適用されない——は、ワークスペース・ホーム・`$TMPDIR` でのファイル操作と、読み取り専用の構文チェック（`node --check`、`python3 -m py_compile`、`bash -n`）も許可します。どちらのレベルでも、スクリプトの実行、ネットワーク、秘密情報、Shelly 自身のランタイムのパス、リンクを作る操作は人に聞き、自動許可した内容はエージェントのチャットに残ります。依頼文のパスが 1 つのフォルダにまとまる場合（例: `~/demo/a.html` と `~/demo/b.html`）は、そのフォルダがエージェントのワークスペースになり、確認文に表示されます。
+**承認なしで実行** はエージェントごとの設定で、既定は OFF、効くのは有人実行だけです。*標準* は場所を問わない純粋な読み取り、エージェントのワークスペース内への書き込み、エージェントの `draft` / `notify` のアクション承認を自動で許可します（command-safety が CRITICAL / HIGH と判定したコマンドは対象外）。*すべて* ——チャットで「すべて承認なしで実行」と打ったときだけ、Web・URL・通知の入力を読むエージェントには適用されない——は、ワークスペース・ホーム・`$TMPDIR`・`/tmp` でのファイルの作成・編集・移動・削除（そこでの `rm -rf` を含む。隠しフォルダ・鍵・`.env` 系は除く）と、読み取り専用の構文チェック（`node --check`、`python3 -m py_compile`、`bash -n`）も許可します。どちらのレベルでも、スクリプトの実行、ネットワーク、秘密情報、Shelly 自身のランタイムのパス、リンクを作る操作は人に聞き、外部送信や投稿も人に聞きます。無人実行では自動許可は一切せず、自動許可した内容はエージェントのチャットに残ります。依頼文のパスが 1 つのフォルダにまとまる場合（例: `~/demo/a.html` と `~/demo/b.html`）は、そのフォルダがエージェントのワークスペースになり、確認文に表示されます。
 
 ### 学習ループ
 
@@ -469,6 +511,13 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 - **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には `.ci-versions/` の固定された Android ネイティブの統合 `codex_tui` バイナリが同梱され、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
 - **管理された昇格** — 新しいランタイム候補は、ダウンロード・SHA-256 検証・展開・実行可能性チェック・`codex_tui --version` / `codex_tui exec --help` のスモークチェックをすべて通ってから初めて昇格します。
 - **修復 / リセットのパス** — アプリデータ側のランタイムが壊れている、あるいは不要な場合は、Updates UI から最新のランタイムリリースで修復するか、APK 同梱の Codex ランタイムにリセットできます。
+- **リモート操作（Experimental）** — `shelly codex pair` は Codex 公式の `codex remote-control` をターミナルのタブでホストし、ChatGPT アプリの Codex に入力する短時間有効のペアリングコードを表示します。`shelly codex code` で新しいコードを表示します。ChatGPT のサインインが必要です（API キーは非対応）。ペアリングとアプリからのコマンド実行は実機で検証済みで、以下の追加分はまだです。
+  - **プロジェクト** — ChatGPT アプリが開けるのは Codex が信頼しているフォルダだけです（それ以外では、プロジェクトの信頼設定を確認できないと報告されます）。`shelly codex pair` は信頼済みのプロジェクトを一覧表示し、`shelly codex trust <dir>` で追加します。書き込むのは Codex 自身の信頼確認が書くのと同じ `[projects."<realpath>"] trust_level = "trusted"` のエントリです（フォルダの中で一度 `codex` を実行して確認を承認しても同じ）。`/`、ストレージのルート、Shelly のホーム自体とその親は拒否します。共有ストレージ（`/sdcard`、`/storage`）上のフォルダには `--yes` も必要です。`shelly codex untrust <dir>` で信頼済みエントリを外せます。
+  - **ホスト名** — アプリには端末が `localhost` ではなく `Shelly (<機種>)` と表示されます。別の名前にするには `SHELLY_CODEX_HOST_NAME` を設定してください（63 バイトまで）。Codex にはこの名前の設定が無いため、Shelly の exec ラッパーが `gethostname()` 経由で渡します。これは Codex のプロセス自身の中だけで、Codex が実行するコマンドには本来のホスト名が見えます。
+  - **ChatGPT に頼んでエージェントを登録** — ChatGPT アプリの Codex で、たとえば *Run: `shelly agent add "毎朝8時にAIニュースを調べてブリーフィングにまとめて"`* と頼みます。Shelly は通常の `@agent` フローでエージェントの下書きを作り、Codex が要約（名前、スケジュール、ステップ、スマホ上で ClosePaw が担う部分）と、リクエスト id、短い定義ハッシュを表示します。承認は 3 通り: Shelly のチャットで OK と返信する、Shelly の通知の **Approve** をタップする（端末のロック解除が必要、Android 12 以降）、または ChatGPT に `shelly agent confirm <requestId> <hash>` を実行させる（Settings → *Approve Agents from ChatGPT*、既定 ON。ハッシュがあなたの見た要約そのものに承認を結び付けます）。AI 自身がそのコマンドを実行できてしまうため、ChatGPT からの承認はすべて、ワンタップでそのエージェントを無効にできる通知で知らせ、チャットにも記録します。投稿・webhook・コマンド・API 呼び出し・ブラウザ操作・自律モード・通知トリガーを含むプランは Shelly 自身でしか承認できません。ステップが他アプリの画面を操作する必要があり（「LINEで自分に送って」、"open Spotify and play …"）、[ClosePaw](https://github.com/imoonkey/closepaw) がインストールされている場合は、そのステップだけが ClosePaw に渡され、要約にもそう書かれます。エージェントを承認すると、エージェントが編集されるまで、以後の実行でもその ClosePaw のステップは承認済みになります。結果は `shelly agent list` で Codex から確認できます。Shelly がバックグラウンドのときは、代わりに「Codex から新しいエージェントの依頼 — タップして確認」の通知が出ます。*実機未検証です。*
+  - **バックグラウンド** — `shelly codex pair --background` は、タブを閉じたあともホストを動かし続けます。`shelly codex status` で確認、`shelly codex stop` で停止します。
+  - **ChatGPT との接続を維持** — Settings → Codex Login で、ホストを Shelly のフォアグラウンドサービスの中で動かし続けられます。アプリの再起動・更新・端末の再起動・ネットワークの切り替えのあとも、ChatGPT が自分で再接続します。オンにできるのは Settings だけで、シェルからはオフ（`shelly codex autostart off`）と確認（`shelly codex autostart status`）しかできません。Disconnect、STOP-ALL、または通知がオフになると止まります。*アプリ内アップデート後の再接続は実機検証済み、それ以外のケースはまだです。*
+  - **サインアウト** — Settings → Codex Login → **Sign out of Codex** は、先にリモート操作を止めてから `codex logout` を実行します。
 
 ---
 
@@ -490,20 +539,27 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | エージェントのチャットスレッドへの受け渡しナレーション行 | ✅ 実機検証済み（Galaxy Z Fold6、N=1） |
 | キーボード / IME を考慮したペインレイアウト — 実際の IME の重なり分だけを確保 | ✅ 実機検証済み（Galaxy Z Fold6、N=1） |
 | テーマのライブ切り替え — Case File ほかのプリセットを再起動なしで適用、ターミナルの配色も含む | ✅ 実機検証済み（Galaxy Z Fold6、N=1） |
-| エージェントのロール — 再利用できるロール（「Claude Codeで…レビュー役を作って」）、`@agent` の依頼を自動で割り当て、実装 → レビュー → 修正（最大 2 往復）、審査役つきの「競わせて」、確認文の `[ロール · エンジン]` 行をチャットで OK、「ロールなしで」で無効化 | 🟡 実装済み、実機では未検証 |
+| エージェントのロール — 再利用できるロール（「Claude Codeで…レビュー役を作って」）、`@agent` の依頼を自動で割り当て、実装 → レビュー → 修正（最大 2 往復）、審査役つきの「競わせて」、確認文の `[ロール · エンジン]` 行をチャットで OK、「ロールなしで」で無効化 | ✅ 実機検証済み（Galaxy Z Fold6、N=1、2026-11-02）: チャットでのロール作成、ツール指定なしの依頼が実装役（Codex）→ レビュー役（Claude Code）に割り当てられ REVISE → 修正 → PASS の 1 往復、`cli=2` の競わせる実行をローカル LLM の審査役が両候補のファイルを読んで判定（`WINNER: B`）、枝ごとに別フォルダ（`a/`、`b/`）。🟡 未検証: `roles.json` 改ざん時のルーティング停止、Antigravity をエンジンにする依頼の拒否 |
 | CLI ステップの並列実行 — 1 回の有人実行の中で Codex と Claude Code のステップを同時に実行（CLI ワーカーは最大 2、エンジンごとに 1） | ✅ 実機検証済み（Galaxy Z Fold6、N=1、2026-11-01）: `cli=2`、実行後にワーカーのプロセスが残らない |
 | エージェントのワーカーとしての Claude Code — 公式の linux-arm64 glibc バイナリを `~/.shelly-runtime/claude-glibc/` に配置、ツール呼び出しはすべて Codex と同じゲートを通る | ✅ 並列ワーカーとして実機で動作（Galaxy Z Fold6、N=1）。無人での Claude Code 実行は未検証 |
 | 承認なしで実行 — エージェントごとに OFF / 標準 / すべて | 🟡 「すべて」で `~/demo` での Codex / Claude Code 並列作業が実機で通った（2026-11-02）。その後のリンク検査・字句解析・環境変数の強化は実機未検証 |
-| MONITOR ペイン（LIVE）とホーム画面ウィジェット | ✅ ペインは 3 ブランチの並列実行で実機検証済み（2026-10-31）。🟡 ウィジェットと CLI ステップのハートビートは未検証 |
+| MONITOR ペイン（LIVE）とホーム画面ウィジェット | ✅ ペインは 3 ブランチの並列実行で実機検証済み（2026-10-31）。ウィジェットは待機中のロール一覧と実行中の REC 表示を実機で確認済み。🟡 CLI ステップのハートビートと、実行中のステップのプロバイダー切り替えは未検証 |
+| Shelly を閉じた・端末を折りたたんだ状態での有人実行 — 実行が続き、「承認なしで実行」の自動応答も動く | ✅ 実機検証済み（Galaxy Z Fold6、N=1、build 2815 / 2818）: 6 ステップのレビューループの実行が Shelly がバックグラウンドの間に完了し、MONITOR は `DONE 6/6` |
+| STOP-ALL が実行中の run も止める（今後のアラームだけでなく）、RESUME で復帰 | ✅ 実機検証済み（Galaxy Z Fold6、N=1、build 2818）: 実行中の Codex ステップが 10 秒以内に終了。🟡 アラーム経路、ローカル LLM のステップ中、承認待ちの実行は未確認 |
+| 打って承認 — エージェントのチャットか MONITOR で OK / NO（2 件待ちなら `ok <hash>`）、有人の CLI ステップは最大 10 分待つ | 🟡 実装済み。通知からの承認は実機検証済み、打って答える経路は個別には記録していない |
+| 継続モード — 「止めるまで続けて」 | 🟡 実装済み、実機ではまだ観測していない |
+| Antigravity の `agy-install` / `agy`、Settings → Front agent（最初のタブで `agy` か `claude` の TUI） | 🟡 `agy --version` は実機で確認済み。Front agent の設定は未検証 |
 | エージェントの安全ルール（POLICY-001）— 自然言語ルール、自分で起動していない実行の読み取り専用の床、trust ramp | 🟡 実装済み、実機では未検証。フラグは既定 OFF |
 | MCP サーバーの仕様 2026-07-28（ステートレス）対応、旧リビジョンと併存 | 🟡 実装済み、実機では未検証 |
 | 端末内音声認識（キー不要、Android SpeechRecognizer） | 🟡 実装済み、実機では未検証 |
+| Codex リモート操作のホスト — `shelly codex pair` が公式の `codex remote-control --no-daemon` を動かし、ChatGPT アプリの Codex からこの端末を操作できる（ChatGPT サインインが必要）。`trust` / `untrust` / ホスト名 / `--background` / ChatGPT との接続を維持 | 🟡 Experimental — ペアリング、コマンド実行、「ChatGPT との接続を維持」でのアプリ内アップデート後の再接続は実機検証済み。trust / ホスト名 / バックグラウンド / ほかの再接続ケースはまだ |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |
+| `shelly agent add` — ChatGPT に頼んでエージェントを登録（Codex リモート操作）。承認はチャット、通知（ロック解除が必要）、または `shelly agent confirm`（監査通知 + ワンタップの無効化）。UI 操作のステップは自動で ClosePaw へ | 🟡 Experimental — 実装済み、実機では未検証 |
 | ChatGPT からのスマホアプリ操作 — Codex が `shelly closepaw --wait "<ゴール>"` を実行 → 持ち主がスマホで承認 → Shelly 用 ClosePaw ビルドがバックグラウンドの仮想ディスプレイで操作 → 結果が ChatGPT に返る | ✅ 実機検証済み（Galaxy Z Fold6、N=1）。例: Spotify のプレイリスト保存、Google マップのリストへの保存。長い多段のゴールはまだ不安定 |
-| ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
+| ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。エージェントのアクションとしては実装済み・実機未検証。公式の ClosePaw からは結果が返らない（上流の変更が必要）。Shelly 用 ClosePaw ビルドのバックグラウンド実行では結果が返る（上の ✅ の行） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
 | 追加ツールパック — `shelly install <pack>` / `--list` / `uninstall`、ビルドごとの sha256 固定、アトミックなインストール、未導入コマンドの案内 | 🟡 `dev-tools` のダウンロード→展開→実行は実機検証済み（2026-08-29、Galaxy Z Fold6、N=1）。2026-10-29 の sha256 固定・アトミック差し替え・オフライン時のエラー・`--list`・`uninstall` は実装・テスト済みだが実機未検証。パックのツールは今も APK に同梱されているため、APK はまだ小さくなっていない |
-| `shelly device` — シェルから battery / info / clipboard / notify / toast / vibrate / tts / share（Termux:API の一部を組み込み、レート制限あり、エージェントのクリップボード読み取りは要承認） | ✅ 実機検証済み（Galaxy Z Fold6、N=1、2026-10-29）: battery、info、clipboard set/get（読み取り通知とバックグラウンドでの拒否を含む）、notify と削除、toast、vibrate、tts、前面での共有シート、隠しファイルの共有拒否、回数制限。バックグラウンド時の「タップして共有」通知はまだ未確認 |
+| `shelly device` — シェルから battery / info / clipboard / notify / toast / vibrate / tts / share（Termux:API の一部を組み込み、レート制限あり、エージェントのクリップボード読み取りは要承認） | ✅ 実機検証済み（Galaxy Z Fold6、N=1、2026-11-03）: battery、info、notify（表示・置き換え・削除）、Shelly が画面に出ているときの clipboard get。🟡 実機未検証: clipboard set、toast、vibrate、tts、share、レート制限 |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 
 ---
@@ -674,9 +730,10 @@ AI がターミナルを読む。ターミナルが AI を実行する。ユー�
 
 | 対象 | 実態 | なぜそのコストになるか |
 |---|---|---|
-| APK サイズ | 約 800 MB | bash / Node.js / Python 3 / git / ripgrep …に加え、Codex ランタイムをシムではない実バイナリとして同梱しているため |
+| APK サイズ | 約 700 MB | bash / Node.js / Python 3 / git / ripgrep …に加え、Codex ランタイムをシムではない実バイナリとして同梱しているため |
 | Codex ランタイム | 同梱 + 独立レーンで管理（約 160 MB） | APK より速く動けるよう、別に昇格させているため |
 | リリースの検証 | インストーラに渡す前に SHA-256 を検証 | マニフェストとハッシュが一致しない APK をアップデータは拒否します |
+| リリースの署名 | APK Signature Scheme v3 の鍵ローテーションによる非公開リリース鍵、CI で `apksigner` が確認 | API 28 以降の署名者がピン留めした証明書（`14:76:D9:52:…:21:2D`）で、debug → release の系譜を持っていなければ CI が失敗します。アップデータは未知の署名者を拒否します |
 | ランタイムの検証 | SHA-256 + `codex_tui --version` / `codex_tui exec --help` のスモークテスト | ランタイム候補は、実際に動いてから初めて昇格します |
 | リリースごとの CI | lint · typecheck · ユニットテスト · ネイティブリリースビルド · 署名済み APK + マニフェストの公開 | すべてのリリース成果物を GitHub Actions がビルドし検証します |
 
@@ -729,11 +786,11 @@ AI がターミナルを読む。ターミナルが AI を実行する。ユー�
 
 2 年後、スマホは AI チャットを動かすだけでなく、あなたが見ていない間に働くエージェントを動かしているはずです。ハードウェアはもう揃っています――40 TOPS を超える NPU、12 GB の RAM、実用速度で端末上を走る数十億パラメータのモデル。足りなかったのは計算能力ではありませんでした。本物のターミナルと、本物のツールチェーンと、本物のスケジューラを、すでに持ち歩いている 1 つの場所にまとめて置けるインターフェースです。
 
-ローカル LLM の推論が外に問い合わせなくてよくなり、スケジュールされたタスクがスマホ自身を起こせるようになると、クラウドランナーが届かない場所から、自分のキーで動くエージェントが手に入ります。つけっぱなしのノート PC も、支払うサーバーも、結果をどこかへ送るまでは Wi-Fi さえ要りません。Wi-Fi のない飛行機の中から、本物の無人作業を最初に出荷する人は、こういうものを使っているはずです。
+ローカル LLM の推論が外に問い合わせなくてよくなり、スケジュールされたタスクがスマホ自身を起こせるようになると、クラウドランナーが届かない場所から、自分のキーで動くエージェントが手に入ります。つけっぱなしのノート PC も、支払うサーバーも、結果をどこかへ送るまでは Wi-Fi さえ要りません。Wi-Fi のない飛行機の中で本物の無人作業をこなすには、こういうものが必要です。
 
 Shelly はその未来のために、エージェント前提で作られています。ローカルとクラウドのバックエンドをまたぐエスカレーションラダーはすでに結線され、スケジューラと品質ゲートは実機テストの中で固まりつつあり、その下にはネイティブのターミナルがあります。スケジュール済みエージェントが使う環境は、あなたが開いて手で動かせる環境そのものです。
 
-問いは「無人で端末上の AI が実現するかどうか」ではありません。誰が先にそのための道具を作るのか、そしてその道具が「実際に何を検証できたのか」について正直でいられるかどうかです。
+問いは「無人で端末上の AI が実現するかどうか」ではありません。そのために作られる道具が、「実際に何を検証できたのか」について正直でいられるかどうかです。
 
 ---
 
@@ -776,14 +833,14 @@ Shelly は個人による自己資金のプロジェクトです。Termux のセ
 
 Shelly はリリース前の Android ソフトウェアです。まだ完璧でないと分かっていることを書いておきます。
 
-- **実機検証は 1 台だけです** — 「検証済み」と書いてあるものは、すべて実機の Galaxy Z Fold6（N=1）で確認したものです。ほかの端末で Shelly を動かした方は、`shelly doctor --report` の出力を貼って[端末レポート](https://github.com/RYOITABASHI/Shelly/issues/new?template=device-report.yml)を送ってください。その端末で何が動き、何が壊れるかが分かります。詳しくは [docs/device-testing.md](docs/device-testing.md)。
+- **実機検証は 1 台だけです** — 「検証済み」と書いてあるものは、すべて実機の Galaxy Z Fold6（N=1）で確認したものです。ほかの端末で Shelly を動かした方は、`shelly doctor --report` の出力を貼って[端末レポート](https://github.com/RYOITABASHI/Shelly/issues/new?template=device-report.yml)を送ってください。その端末で何が動き、何が壊れるかが分かります。詳しくは [docs/device-testing.md](docs/device-testing.md)（英語）。
 
 - **デフォルトではオフラインモードがありません** — クラウド AI 機能にはインターネット接続が必要です。`@local` によるローカル LLM は、同梱カタログと llama.cpp / llama-server のコントロールでオフラインでも動きます。実際のデフォルトは Qwen3.5-0.8B Q4_K_M、オンデマンド用途への推奨アップグレードが Qwen3.5-2B Q4_K_M、Qwen3 1.7B はその中間、4B / 9B は短時間の品質確認用です。
 - **同梱セット以外のツール** — Shelly には bash、Node.js、Python 3、git、curl、ssh、sqlite3、tmux、vim、less、jq、make、および GNU coreutils 一式が入っています。**入っていない**主なものは `busybox`、`watch`（procps-ng）、`htop`、そしてほとんどのネットワークデーモンです。`watch`が必要な場合は回避策`while true; do clear; <cmd>; sleep 1; done`を使う(bug #34として追跡中)か、Termuxを併用してください。それ以外が必要なら、`modules/terminal-emulator/android/src/main/jniLibs/` にバイナリを追加する PR を送ってください。
 - **`busybox` は同梱していません** — `busybox httpd`、`busybox nc` などの applet は `command not found` になります。使える範囲で単体版（`curl`、同梱の `nc`、`python3 -m http.server`）を使うか、自分で `busybox-static` を同梱してください。bug #35 として追跡中です。
 - **`@team` は複数の API に同時にルーティングします** — 実行前の確認ステップなしに、すべてのプロバイダのクレジットを一度に消費します。意識して使ってください。
 - **一部編集済みのファイルに対する複数 hunk の Accept** — hunk 単位の Accept はファジー再アンカーを使うので後続の hunk も着地しますが、AI の diff がすでに別内容へ編集済みのコンテキストを参照している場合、その hunk は拒否され、再生成を促すトーストが出ます。
-- **ターミナルフォントの不一致** — アップグレード後に保存済みのレガシーテーマの表示が崩れる場合は、Settings → Display → Theme で 3 つのカラープリセットのいずれかに切り替えてください。
+- **ターミナルフォントの不一致** — アップグレード後に保存済みのレガシーテーマの表示が崩れる場合は、Settings → Display → Theme で 5 つのカラープリセット（Case File、Blue、Red、Purple、Green）のいずれかに切り替えてください。
 - **Codex CLI は Shelly が管理するランタイムルーティングを通ります** — Shelly はまず `~/.shelly-runtime/codex/current` の健全なアプリデータ側ランタイムを優先し、次に APK 同梱ランタイムにフォールバックします。`codex --version` が失敗する場合は `shelly-doctor`、`shelly-update-clis codex --check-only` を実行するか、**Settings → Updates → Repair Codex / Reset** を使ってください。
 - **Codex のログインはアプリ内デバイスコード OAuth フローです** — 任意のターミナルペインで素の `codex` か `codex-login --open` を実行します。Shelly は `~/.codex/auth.json` を検証し、無い / 無効なら OpenAI の検証ページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT の Plus / Pro / Business / Enterprise サブスクリプションに乗ります。デバイスコードには 15 分のタイムアウトがあるので、切れたら再実行してください。確認は `shelly-doctor` で行えます（`~/.codex/auth.json` の有無を報告します）。
 - **`/sdcard` へのアクセスには MANAGE_EXTERNAL_STORAGE が必要です** — Android 11 以降の Scoped Storage は、この権限なしでは `/sdcard` 配下への直接の `open(2)` をブロックします。Shelly は初回起動時に要求しますが、拒否すると `source /sdcard/Download/foo.sh` は `Permission denied` で失敗します。あとから付与する場合はシステムの 設定 → アプリ → Shelly → 権限 → ファイルとメディア → すべてのファイルの管理を許可 から。
@@ -812,11 +869,12 @@ Shelly の配布は当面 GitHub Releases 経由で、Google Play や F-Droid �
 Shelly はあなたの端末上でコマンドを実行します。安全機構はベストエフォートの層であって、保証ではありません。
 
 - **セキュリティモデル** — Shelly は堅牢化された VM ではなく、通常の Android アプリサンドボックスです。ターミナルのコマンドと承認済みの AI エージェントのアクションは、アプリの uid として動き、アプリがアクセスできるものは読み書きできます。
-- **コマンドの安全性は正規表現ベースです** — 5 段階のリスク評価はパターンマッチングで動きます。よくある危険なパターン（`rm -rf /`、`dd if=` など）は捕まえますが、サンドボックスではありません。ファイアウォールではなくシートベルトだと考えてください。
-- **APK は CI のリリース APK で配布しています** — GitHub Actions がリリース APK をビルドし、ローリングの `android-latest` リリースに公開します。本番相当の署名保証が必要なら、リポジトリを clone して自分の keystore でビルドしてください。[ソースからビルド](#ソースからビルド)を参照。
-- **自律エージェントはゲートされていて、自由に動き回りません** — AI ペインとバックグラウンドエージェントは、隠れたサブスクリプションの再利用ではなく明示的な API プロバイダを使います。シェルコマンドの実行やリスクのあるアクションは、引き続き Shelly の承認 / コマンド安全性のパスを通ります。エージェントが無人で動いていて承認が必要なアクションに当たった場合は、未レビューのまま走るのではなく fail-closed で止まります。隠れたサブスクリプションワーカーは存在しません。
+- **コマンドの安全性はベストエフォートのパターンマッチングです** — 5 段階のリスク評価はパターンマッチングで動き、現在は引用符を解釈する字句解析と、シェルの引用符で分割したネットワークツール（`cu''rl`、`"c"url`、`w\get`）の検出も含みます。よくある危険なパターン（`rm -rf /`、`dd if=` など）は捕まえますが、サンドボックスではありません。ファイアウォールではなくシートベルトだと考えてください。
+- **エージェントのコマンドゲート** — CLI ワーカー（Codex や Claude Code）が実行しようとするコマンドは、すべて 1 つのゲートを通ります: command-safety、ワークスペースの境界チェック（オプションに付いたパスやリダイレクトを含む）、有効にしていればエージェントの安全ルール（POLICY-001）。無人実行で承認が必要なものに当たった場合は拒否されます。エージェントごとに **承認なしで実行** を OFF（既定）/ *標準* / *すべて* にでき（[詳細](#エージェントのロール)）、効くのは有人実行だけで、自動許可はすべてエージェントのチャットに記録されます。
+- **APK は CI のリリース APK で配布しています** — GitHub Actions がリリース APK をビルドし、Shelly の非公開リリース鍵で署名して（[署名鍵のローテーション](#署名鍵のローテーション2026-10)参照）、ローリングの `android-latest` リリースに公開します。本番相当の署名保証が必要なら、リポジトリを clone して自分の keystore でビルドしてください。[ソースからビルド](#ソースからビルド)を参照。
+- **自律エージェントはゲートされていて、自由に動き回りません** — AI ペインのチャットは明示的な API プロバイダを使います。エージェントのステップは Codex（あなたの ChatGPT サインイン）や Claude Code（Settings → Anthropic API Key があればそれ。無ければ有人実行はサインイン中のサブスクリプション、無人実行は Settings →「Claude subscription for unattended runs」がオン〈既定〉のときだけ）でも動きます。どのエンジンで動いても、シェルコマンドの実行やリスクのあるアクションは Shelly の承認 / コマンドゲートのパスを通ります。エージェントが無人で動いていて承認が必要なアクションに当たった場合は、未レビューのまま走るのではなく fail-closed で止まります。
 - **API キーは SecureStore に保存されます** — キーがログやデバッグ出力に書き出されることはありません。SecureStore は対応端末では Android Keystore の暗号化を使います。
-- **`shelly-doctor`** — シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、`~/.codex/auth.json` の有無を報告します。何かおかしいと感じたら実行してください。
+- **`shelly-doctor` / `shelly doctor`** — シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、`~/.codex/auth.json` の有無を報告します。何かおかしいと感じたら実行してください。
 - **ログの秘匿化** — Shelly はアプリのデバッグログを書く前に、よくある API キーやトークンのパターンを伏せ字にします。これはガードレールであって、シークレットをプロンプトやターミナル出力に貼ってよいという意味ではありません。
 - **利便性 ≠ セキュリティ** — Shelly はシェルの実行、AI のディスパッチ、ファイル編集、API キーの保管、広いストレージアクセスを 1 つのアプリに束ねています。強力ですが、どれか 1 層が破られると他の層にも影響しうるということでもあります。ソースを読み、自分の keystore でビルドし、Shelly は開発ツールとして扱ってください。本番のサーバー環境としてではなく。
 
@@ -829,13 +887,14 @@ ChatGPT リモート操作、ClosePaw への引き渡し、MCP サーバー、�
 ## プライバシー
 
 - **ユーザープロファイルの学習** — Shelly はあなたのコマンドの傾向と AI の使い方を観察して、提案をパーソナライズします（`lib/user-profile.ts`）。このデータは AsyncStorage に端末内で保持されます。Profile Learningが有効な状態でクラウドAIへメッセージを送ると、応答品質を上げるためにプロファイルのコンテキストがAPIリクエストに含まれます。設定 → AgentsにはProfile LearningトグルとReset Profileアクションがあります。
+- **コンパニオンの頭脳のルーティング** — コンパニオン（既定の Shelly 人格）のスレッドの返信は、「Companion brain」（Settings → Agents）を既定の Auto のままにしている場合、明示的に選んだプロバイダと同じくクラウドに送られます。Cerebras・Groq・Gemini・OpenRouter のいずれかのキーが設定されていれば、そのプロバイダがコンパニオンの返信を生成します（失敗したとき、またはキーが無いときは端末上にフォールバック）。設定済みのキーに関係なくコンパニオンを完全にローカルに保つには「On-device only」に切り替えてください（`lib/companion-brain.ts`）。
 - **永続エージェントメモリ** — `MEMORY_ENABLED`は`true`で、エージェント別の想起・書き込み・一覧は既定でMEMORY-001を使います。このJSONレコードはAES-256-GCMと端末のSecureStoreに保管した鍵で保存時暗号化されますが、新ストアが失敗すると旧G2 markdown/Obsidian経路へフォールバックし、共有`_global`の書き込みも現在はG2を直接使います。旧平文ファイルが実機に一切残らないこと、アンインストール後に旧レコードを復号できないことは未検証です。また`touchesPii`分類シグナルは生成されますがmodel eligibilityをまだ制御しないため、secret patternではない機微な文章がcloud routingから除外されるとは仮定しないでください。
 - **テレメトリなし** — Shelly は外部に情報を送りません。アナリティクスも、クラッシュレポートも、利用状況のトラッキングもありません。ネットワーク通信が発生するのは、あなたが起こしたことだけです――AI API の呼び出し、Codex の認証、更新チェック / ダウンロード、ブラウザペインの利用、そしてあなたが設定したローカル / API のエンドポイント。
 - **ローカル LLM モード** — 完全にプライベートに使いたい場合は、llama.cpp 経由でローカルの GGUF モデルを設定してください。実際のデフォルトは Qwen3.5-0.8B Q4_K_M、メモリに余裕があるときの推奨アップグレードが Qwen3.5-2B Q4_K_M、Qwen3 1.7B はその中間、4B / 9B は短時間の品質確認用に用意しています。処理はすべて端末上で完結します。
 
 ---
 
-レビュアー・ライター向けの事実資料（作者による記述、検証手順つき）: [docs/press-kit.md](./docs/press-kit.md)
+レビュアー・ライター向けの事実資料（作者による記述、検証手順つき）: [docs/press-kit.md](./docs/press-kit.md)（英語）
 
 ---
 
