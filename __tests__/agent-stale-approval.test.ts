@@ -60,7 +60,8 @@ describe('deleteAgent approval-request cleanup', () => {
   it('removes escalation and action-approval requests whose agentId is exactly this agent', async () => {
     await deleteAgent('agent-x');
     const calls = mockTerminalEmulator.execCommand.mock.calls as unknown as Array<[string, number?]>;
-    const command = calls[0]?.[0] ?? '';
+    // The final MONITOR progress read (PROGRESS_FINAL_READ) runs first.
+    const command = calls.find(([cmd]) => cmd.includes('rm -rf "$d/logs/agent-x"'))?.[0] ?? '';
     expect(command).toContain('for f in "$d"/escalations/req-*.json; do');
     expect(command).toContain('for f in "$d"/action-approvals/action-*.json; do');
     // Exact agentId field match (closing quote included) — never a bare
