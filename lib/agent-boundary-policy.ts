@@ -472,6 +472,21 @@ const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
  * `leaves-root` either. Adversarial review 2026-07-28.
  */
 const SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
+/**
+ * Network use, matched on the raw command AND its dequoted forms (same two
+ * passes as readsDeviceSecret): `cu''rl`, `"c"url`, `$'\x63'url`, `\curl` and
+ * `bash -lc "w'g'et …"` are the plain tool name to the shell. Security review
+ * M2 (2026-11-01): the raw-only match let quote-split tool names through.
+ * The loopback exemption is judged on the same form that matched.
+ */
+export function sendsOverNetwork(command: string): boolean {
+  const raw = String(command || '');
+  const words = dequoteShellWords(raw);
+  const twice = dequoteShellWords(words);
+  return [raw, words, twice].some(
+    (c) => (NETWORK_RE.test(c) && !isLoopbackOnlyNetworkCommand(c)) || SHELL_NET_DEVICE_RE.test(c),
+  );
+}
 const READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
 const LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
 
@@ -992,10 +1007,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   ) {
     signals.push('leaves-root');
   }
-  if (
-    (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) ||
-    SHELL_NET_DEVICE_RE.test(command)
-  ) {
+  if (sendsOverNetwork(command)) {
     signals.push('network-send');
   }
   if (

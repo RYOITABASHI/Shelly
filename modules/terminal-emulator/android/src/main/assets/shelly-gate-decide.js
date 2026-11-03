@@ -1160,6 +1160,14 @@ function readsDeviceSecret(command) {
 }
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 var SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
+function sendsOverNetwork(command) {
+  const raw2 = String(command || "");
+  const words = dequoteShellWords(raw2);
+  const twice = dequoteShellWords(words);
+  return [raw2, words, twice].some(
+    (c) => NETWORK_RE.test(c) && !isLoopbackOnlyNetworkCommand(c) || SHELL_NET_DEVICE_RE.test(c)
+  );
+}
 var READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
 var LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
 var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh)\b\s+\S/;
@@ -1549,7 +1557,7 @@ function classifyProposedCommand(command, ctx) {
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) || hasUnsafeCd(command, ctx.workspaceRoot)) {
     signals.push("leaves-root");
   }
-  if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command) || SHELL_NET_DEVICE_RE.test(command)) {
+  if (sendsOverNetwork(command)) {
     signals.push("network-send");
   }
   if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
