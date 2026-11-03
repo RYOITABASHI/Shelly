@@ -125,7 +125,7 @@
 - **(3) ワークスペースのファイル経由の指示混入**: ワーカーが読むワークスペース内のファイル（取得したリポジトリ等）に指示が混ざりうる。ツールの許可リストがあるので、最悪でもホーム内のファイル操作にとどまりコード実行には至らない。
 - ALL_LEVEL_TOOLS（cp / mv / ln / tee / chmod / patch の行き先とリダイレクト解析）の道具ごとの攻撃側パスは、レビューが途中で打ち切られたため未完。実機での "all" 動作も未検証。
 
-### gate の NETWORK_RE が生のコマンド文字列で判定される（引用で分割したコマンド名が素通り）— ✅ 修正済み（2026-11-03）
+### gate の NETWORK_RE が生のコマンド文字列で判定される（引用で分割したコマンド名が素通り）— ✅ 修正済み・実機 VERIFIED（build 2821: 端末上の gate で `cu''rl`・`"c"url`・`$'\x63'url`・`w\get` が escalate、loopback は allow。修正前の 2818 では `cu''rl` が allow だった）
 - 修正: `sendsOverNetwork()` が生の文字列と `dequoteShellWords` 1 回・2 回の 3 形で NETWORK_RE / SHELL_NET_DEVICE_RE を判定（loopback 除外は一致した形で判定）。APK asset `shelly-gate-decide.js` を `pnpm build:gate` で再生成、gate-cases fixture に 5 件（`cu''rl`・`"c"url`・`$'\x63'url`・`w\get` → escalate、`cu''rl http://127.0.0.1` → allow）。TS / bundle 両方 PASS。URL 形トークンを extractPaths から除くのは見送り（network-send が立てば L2 で人に回るため不要）。
 - 2026-11-01 セキュリティレビュー（`feat/cli-workspace-full-auto` のレビュー M2、既存の問題）: `lib/agent-boundary-policy.ts` の `classifyProposedCommand`（〜569 行、`NETWORK_RE.test(command)`）と同じロジックの APK asset `shelly-gate-decide.js` は、ネットワークツール名を dequote 前の生文字列で照合する。`cu''rl`・`"c"url`・`$'\x63'url` のように引用で分割したコマンド名は `network-send` にならず、URL（`https://…`）は `/` を含むトークンとして workspace 内と判定されうる。対応案: `readsDeviceSecret` と同様に `dequoteShellWords` を 1〜2 回かけた文字列でも NETWORK_RE / SHELL_NET_DEVICE_RE を判定し、URL 形のトークンを extractPaths から除外する。asset 版と gate-cases fixture も同時に更新すること。「承認なしで実行（すべて）」は `network-send` を hard にしているが、シグナル自体が立たないとこの穴を塞げない（「すべて」の許可リストはファイル操作ツールのみなので `curl` 自体は `tool:curl` で止まる）。
 
