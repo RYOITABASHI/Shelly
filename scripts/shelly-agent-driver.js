@@ -547,7 +547,112 @@ function codexChildEnv(input) {
   return env;
 }
 
-function codexAppServerSpawnSpec(config) {
+// ─── MCP servers / ChatGPT apps are off for the Codex worker ──────────────
+// MCP and app (connector) tool calls run inside Codex: app-server sends no
+// approval request for them that this driver could gate (only command and
+// file-change approvals), so they would reach the network outside Shelly's
+// gate. The worker therefore never loads them (the Claude worker does the
+// same with --strict-mcp-config). Verified against codex-cli 0.144.4 on the
+// dev PC (2026-11-04): `-c mcp_servers={}` does NOT clear the table (config
+// layers merge), so every configured server is disabled by name with
+// `mcp_servers.<name>.enabled=false` (documented key); `features.plugins=false`
+// drops plugin-bundled servers; `features.apps=false` + `apps._default.enabled
+// =false` turn ChatGPT apps off (documented keys). `-c features.<unknown>=false`
+// is ignored, while `--disable <unknown>` is a hard error, so features are
+// passed with -c (they differ between Codex versions). The server names come
+// from `codex mcp list --json`, and a second listing must show every server
+// disabled, or the worker does not start (codexMcpPreflight).
+const CODEX_WORKER_DISABLED_FEATURES = [
+  'apps',
+  'plugins',
+  'enable_mcp_apps',
+  'skill_mcp_dependency_install',
+  'tool_suggest',
+  'browser_use',
+  'browser_use_external',
+  'computer_use',
+  'in_app_browser',
+];
+
+// Codex itself only accepts these characters in an MCP server name; anything
+// else could not be addressed safely as a dotted -c key, so it fails closed.
+const CODEX_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+function codexMcpDisableArgs(serverNames = []) {
+  const args = [];
+  for (const feature of CODEX_WORKER_DISABLED_FEATURES) args.push('-c', `features.${feature}=false`);
+  args.push('-c', 'apps._default.enabled=false');
+  for (const name of serverNames) {
+    if (!CODEX_MCP_SERVER_NAME.test(name)) throw new Error(`unsafe MCP server name: ${String(name).slice(0, 80)}`);
+    args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
+  return args;
+}
+
+/** `codex mcp list --json` → {servers: [{name, enabled}]} or {error}. */
+function parseCodexMcpList(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout || '').trim());
+  } catch (error) {
+    return { error: `mcp list output is not JSON: ${error.message}` };
+  }
+  if (!Array.isArray(parsed)) return { error: 'mcp list output is not an array' };
+  const servers = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
+      return { error: 'mcp list entry without a name' };
+    }
+    if (!CODEX_MCP_SERVER_NAME.test(entry.name)) {
+      return { error: `unsafe MCP server name: ${entry.name.slice(0, 80)}` };
+    }
+    servers.push({ name: entry.name, enabled: entry.enabled !== false });
+  }
+  return { servers };
+}
+
+function defaultCodexMcpListRunner(spec, args, cwd) {
+  return execFileSync(spec.command, args, {
+    cwd,
+    env: spec.env,
+    encoding: 'utf8',
+    timeout: 30000,
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+// Lists the MCP servers this Codex would load for the worker, disables each by
+// name, and lists again: the worker starts only when every listed server is
+// disabled. Any failure (no listing, unsafe name, a server still enabled) is
+// {ok:false} and the driver refuses to start Codex.
+function codexMcpPreflight(config, runner = defaultCodexMcpListRunner) {
+  const list = (names) => {
+    const spec = codexAppServerSpawnSpec(config, names);
+    const args = [...spec.prefixArgs, 'mcp', 'list', ...codexMcpDisableArgs(names), '--json'];
+    let stdout;
+    try {
+      stdout = runner(spec, args, config.cwd);
+    } catch (error) {
+      return { error: `mcp list failed: ${String(error && error.message ? error.message : error).slice(0, 300)}` };
+    }
+    return parseCodexMcpList(stdout);
+  };
+  const first = list([]);
+  if (first.error) return { ok: false, reason: first.error, names: [] };
+  const names = [...new Set(first.servers.map((s) => s.name))].sort();
+  if (names.length === 0) return { ok: true, names, configuredCount: 0 };
+  const second = list(names);
+  if (second.error) return { ok: false, reason: second.error, names };
+  const stillEnabled = second.servers.filter((s) => s.enabled || !names.includes(s.name)).map((s) => s.name);
+  if (stillEnabled.length > 0) {
+    return { ok: false, reason: 'MCP servers still enabled after disabling them by name', names, stillEnabled };
+  }
+  return { ok: true, names, configuredCount: names.length };
+}
+
+function codexAppServerSpawnSpec(config, mcpServerNames = []) {
+  const mcpArgs = codexMcpDisableArgs(mcpServerNames);
   const android = androidLauncherContext();
   if (android) {
     const codexTui = resolveAndroidCodexTui(android.libDir);
@@ -564,10 +669,12 @@ function codexAppServerSpawnSpec(config) {
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
     });
-    const args = [codexTui, ...codexPolicyEnvArgs(env), 'app-server', '--listen', 'stdio://'];
+    const prefixArgs = [codexTui, ...codexPolicyEnvArgs(env)];
+    const args = [...prefixArgs, 'app-server', ...mcpArgs, '--listen', 'stdio://'];
     return {
       mode: 'android-linker64-codex_tui',
       command: ANDROID_LINKER64,
+      prefixArgs,
       args,
       env,
       display: [ANDROID_LINKER64, ...args],
@@ -576,10 +683,11 @@ function codexAppServerSpawnSpec(config) {
       libDir: android.libDir,
     };
   }
-  const args = ['app-server', '--listen', 'stdio://'];
+  const args = ['app-server', ...mcpArgs, '--listen', 'stdio://'];
   return {
     mode: 'host-path',
     command: config.codexBin,
+    prefixArgs: [],
     args,
     env: codexChildEnv(process.env),
     display: [config.codexBin, ...args],
@@ -1804,8 +1912,61 @@ async function runDriver(config) {
   ensureEscalationVerifierKey(config, audit);
   if (config.answerFile) unlinkIfExists(config.answerFile);
   if (config.usageFile) unlinkIfExists(config.usageFile);
-  const codexSpawn = codexAppServerSpawnSpec(config);
+  const mcpPreflight = codexMcpPreflight(config);
+  const codexSpawn = codexAppServerSpawnSpec(config, mcpPreflight.ok ? mcpPreflight.names : []);
   const gateSpawn = gateSpawnSpec(config);
+  const driverStartRecord = () => ({
+    cwd: config.cwd,
+    gateScript: config.gateScript,
+    codexBin: config.codexBin,
+    codexLaunchMode: codexSpawn.mode,
+    codexSpawn: codexSpawn.display,
+    codexBinary: codexSpawn.codexBinary,
+    codexTui: codexSpawn.codexTui,
+    codexMcp: {
+      ok: mcpPreflight.ok,
+      disabledServers: mcpPreflight.names,
+      disabledFeatures: CODEX_WORKER_DISABLED_FEATURES,
+      reason: mcpPreflight.reason || null,
+    },
+    nodeBin: config.nodeBin,
+    gateLaunchMode: gateSpawn.mode,
+    gateSpawn: gateSpawn.display,
+    gateNode: gateSpawn.nodePath,
+    approvalPolicy: config.approvalPolicy,
+    runId: config.runId,
+    agentId: config.agentId,
+    escalationDir: config.escalationDir,
+    escalationReplyDir: process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
+      ? config.escalationReplyDir
+      : '[native-reply-channel]',
+    escalationPublicKey: config.escalationPublicKey,
+    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
+    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
+    escalationTimeoutMs: config.escalationTimeoutMs,
+    escalationTimeoutAction: config.escalationTimeoutAction,
+    preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
+      ? config.preapprovalGrantsFile
+      : '[native-grant-channel]',
+    escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
+    preapprovalGrantRequirement: 'grant JSONL records must be Android-Keystore-signed, exact-command-hash scoped, unexpired, and one-shot by default',
+    policy: {
+      ...config.policy,
+      workspaceRoot: config.policy.workspaceRoot,
+    },
+  });
+  if (!mcpPreflight.ok) {
+    // Fail closed: without proof that no MCP server / app loads, Codex never starts.
+    audit('driver_start', driverStartRecord());
+    audit('codex_mcp_preflight_failed', {
+      reason: mcpPreflight.reason,
+      servers: mcpPreflight.names,
+      stillEnabled: mcpPreflight.stillEnabled || [],
+    });
+    audit('driver_finish', { reason: 'codex_mcp_preflight_failed', exitCode: 1, threadId: null });
+    setTimeout(() => process.exit(1), 50);
+    return;
+  }
   const child = spawn(codexSpawn.command, codexSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: config.cwd,
@@ -1893,6 +2054,48 @@ async function runDriver(config) {
     }
     respondedIds.add(key);
     send({ id, error: { code, message, data: redactDeep(data || null) } });
+  };
+
+  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
+  // inside Codex with no approval request to gate, so any sign of one stops
+  // the turn and fails the run. Only names are recorded, never arguments.
+  const blockMcpActivity = (kind, details) => {
+    if (completed) return;
+    sawFailure = true;
+    const turnId = details && typeof details.turnId === 'string' ? details.turnId : null;
+    audit(kind, details);
+    gateLine(config.auditLog, {
+      threadId: details && details.threadId,
+      turnId,
+      itemId: details && details.itemId,
+      approvalKind: kind,
+      command: '',
+      cwd: config.cwd,
+      answer: 'n',
+      decision: 'abort',
+      reason: 'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+    });
+    if (threadId && turnId) {
+      try {
+        request('turnInterrupt', 'turn/interrupt', { threadId, turnId });
+      } catch {}
+    }
+    finish(kind, 1);
+  };
+
+  const safeName = (value) => (typeof value === 'string' ? value.slice(0, 120) : null);
+
+  const mcpToolCallDetails = (params) => {
+    const item = params && params.item ? params.item : {};
+    return {
+      threadId: params && params.threadId,
+      turnId: params && params.turnId,
+      itemId: safeName(item.id),
+      server: safeName(item.server),
+      tool: safeName(item.tool),
+      pluginId: safeName(item.pluginId),
+      status: safeName(item.status),
+    };
   };
 
   const handleInitialize = () => {
@@ -2233,6 +2436,31 @@ async function runDriver(config) {
       await handleFileChangeApproval(message, 'applyPatchApproval');
       return;
     }
+    if (message.method === 'mcpServer/elicitation/request') {
+      const params = message.params || {};
+      respond(message.id, { action: 'decline', content: null });
+      blockMcpActivity('mcp_elicitation_blocked', {
+        requestId: message.id,
+        method: message.method,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        server: safeName(params.serverName),
+        mode: safeName(params.mode),
+      });
+      return;
+    }
+    if (/^mcp/i.test(message.method)) {
+      respondError(message.id, -32000, `MCP requests are disabled for the Shelly agent worker: ${message.method}`, { method: message.method });
+      const params = message.params || {};
+      blockMcpActivity('mcp_request_blocked', {
+        requestId: message.id,
+        method: message.method,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        server: safeName(params.serverName),
+      });
+      return;
+    }
     sawFailure = true;
     audit('unknown_server_request', {
       requestId: message.id,
@@ -2248,6 +2476,9 @@ async function runDriver(config) {
   };
 
   const handleMessage = async (message) => {
+    // After finish() (e.g. a blocked MCP call) nothing more is answered or
+    // written — in particular no answer file from a late turn/completed.
+    if (completed) return;
     if (isClientResponse(message)) {
       handleClientResponse(message);
       return;
@@ -2259,7 +2490,35 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/started') {
+      const item = message.params && message.params.item;
+      if (item && item.type === 'mcpToolCall') {
+        blockMcpActivity('mcp_tool_call_blocked', { phase: 'started', ...mcpToolCallDetails(message.params) });
+        return;
+      }
       auditItemStarted(message.params);
+      return;
+    }
+
+    if (message.method === 'item/mcpToolCall/progress') {
+      const params = message.params || {};
+      blockMcpActivity('mcp_tool_call_blocked', {
+        phase: 'progress',
+        threadId: params.threadId,
+        turnId: params.turnId,
+        itemId: safeName(params.itemId),
+      });
+      return;
+    }
+
+    if (message.method === 'mcpServer/startupStatus/updated') {
+      // Recorded, not fatal: the preflight should leave nothing to start, and a
+      // started server can still not be used (tool calls are blocked above).
+      const params = message.params || {};
+      audit('mcp_server_startup_observed', {
+        server: safeName(params.name),
+        status: safeName(params.status),
+        threadId: params.threadId || null,
+      });
       return;
     }
 
@@ -2276,6 +2535,11 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/completed') {
+      const item = message.params && message.params.item;
+      if (item && item.type === 'mcpToolCall') {
+        blockMcpActivity('mcp_tool_call_blocked', { phase: 'completed', ...mcpToolCallDetails(message.params) });
+        return;
+      }
       checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
       return;
@@ -2364,40 +2628,7 @@ async function runDriver(config) {
     finish(`timeout_${config.timeoutMs}ms`, 124);
   }, config.timeoutMs);
 
-  audit('driver_start', {
-    cwd: config.cwd,
-    gateScript: config.gateScript,
-    codexBin: config.codexBin,
-    codexLaunchMode: codexSpawn.mode,
-    codexSpawn: codexSpawn.display,
-    codexBinary: codexSpawn.codexBinary,
-    codexTui: codexSpawn.codexTui,
-    nodeBin: config.nodeBin,
-    gateLaunchMode: gateSpawn.mode,
-    gateSpawn: gateSpawn.display,
-    gateNode: gateSpawn.nodePath,
-    approvalPolicy: config.approvalPolicy,
-    runId: config.runId,
-    agentId: config.agentId,
-    escalationDir: config.escalationDir,
-    escalationReplyDir: process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
-      ? config.escalationReplyDir
-      : '[native-reply-channel]',
-    escalationPublicKey: config.escalationPublicKey,
-    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
-    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
-    escalationTimeoutMs: config.escalationTimeoutMs,
-    escalationTimeoutAction: config.escalationTimeoutAction,
-    preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
-      ? config.preapprovalGrantsFile
-      : '[native-grant-channel]',
-    escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
-    preapprovalGrantRequirement: 'grant JSONL records must be Android-Keystore-signed, exact-command-hash scoped, unexpired, and one-shot by default',
-    policy: {
-      ...config.policy,
-      workspaceRoot: config.policy.workspaceRoot,
-    },
-  });
+  audit('driver_start', driverStartRecord());
   request('initialize', 'initialize', {
     clientInfo: { name: 'shelly-agent-driver', version: '0.1.0' },
     capabilities: {},
@@ -3239,6 +3470,10 @@ module.exports = {
   sanitizeWorkerEnv,
   codexChildEnv,
   codexAppServerSpawnSpec,
+  CODEX_WORKER_DISABLED_FEATURES,
+  codexMcpDisableArgs,
+  parseCodexMcpList,
+  codexMcpPreflight,
   claudeRunnerSpawnSpec,
   gateSpawnSpec,
   isUnattendedPolicy,
