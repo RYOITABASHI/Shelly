@@ -4,6 +4,10 @@
  *
  * MCP and app tool calls run inside Codex with no approval request the driver
  * could gate, so:
+ *  - prevention: the app-server and its preflight run with a fresh, per-run
+ *    CODEX_HOME (generated config.toml without MCP servers / profiles / trust
+ *    / hooks / notify, auth.json symlinked to the real one), removed after the
+ *    run; no isolated home → Codex never starts;
  *  - the app-server is started with apps / plugins off and every configured
  *    MCP server disabled by name (names from a `codex mcp list --json`
  *    preflight; a second listing must show all of them disabled, or Codex is
@@ -49,6 +53,85 @@ describe('Codex worker spawn args: MCP servers and apps are disabled', () => {
     for (const bad of ['a.b', 'a b', 'x"y', '', 'a=b']) {
       expect(() => driver.codexMcpDisableArgs([bad])).toThrow(/unsafe MCP server name/);
     }
+  });
+});
+
+describe('isolated CODEX_HOME for the Codex worker', () => {
+  const mk = () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-iso-'));
+    const real = path.join(base, 'real');
+    const parent = path.join(base, 'tmp');
+    fs.mkdirSync(real);
+    fs.writeFileSync(path.join(real, 'auth.json'), '{"t":1}');
+    fs.writeFileSync(path.join(real, 'config.toml'), '[mcp_servers.x]\ncommand="x"\n');
+    return { base, real, parent, env: { HOME: base, CODEX_HOME: real, TMPDIR: parent } };
+  };
+  const prefixed = (dir: string) => fs.readdirSync(dir).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX));
+
+  it('the generated config.toml has no MCP servers, profiles, project trust, hooks or notify', () => {
+    const toml: string = driver.codexWorkerConfigToml();
+    // only comment lines may mention the excluded tables
+    const body = toml.split('\n').filter((l) => !l.startsWith('#')).join('\n');
+    for (const banned of ['mcp_servers', '[profiles', '[projects', 'notify', 'hooks.json', 'trust_level', 'profile =']) {
+      expect(body).not.toContain(banned);
+    }
+    expect(body).toContain('[features]');
+    for (const f of ['apps', 'plugins', 'hooks', 'codex_hooks']) expect(body).toMatch(new RegExp(`^${f} = false$`, 'm'));
+    expect(body).toContain('[apps._default]\nenabled = false');
+    expect(body).toContain('check_for_update_on_startup = false');
+  });
+
+  it('creates a 0700 home with the generated config and an auth.json symlink to the real one; removal keeps the real file', () => {
+    const t = mk();
+    const r = driver.createCodexIsolatedHome(t.env);
+    expect(r.ok).toBe(true);
+    expect(path.dirname(r.dir)).toBe(t.parent);
+    expect(r.dir).not.toBe(t.real);
+    expect(fs.readdirSync(r.dir).sort()).toEqual(['auth.json', 'config.toml']);
+    expect(fs.readFileSync(path.join(r.dir, 'config.toml'), 'utf8')).toBe(driver.codexWorkerConfigToml());
+    const link = path.join(r.dir, 'auth.json');
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(path.resolve(path.dirname(link), fs.readlinkSync(link))).toBe(path.join(t.real, 'auth.json'));
+    if (process.platform !== 'win32') expect(fs.statSync(r.dir).mode & 0o777).toBe(0o700);
+    driver.removeCodexIsolatedHome(r.dir);
+    expect(fs.existsSync(r.dir)).toBe(false);
+    expect(fs.readFileSync(path.join(t.real, 'auth.json'), 'utf8')).toBe('{"t":1}');
+    fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  it('defaults the real home to ~/.codex when CODEX_HOME is unset', () => {
+    expect(driver.realCodexHome({ HOME: '/h' })).toBe(path.join('/h', '.codex'));
+  });
+
+  it('fails closed (and leaves nothing behind) when the auth.json symlink cannot be made', () => {
+    const t = mk();
+    const failing = { ...fs, symlinkSync: () => { throw Object.assign(new Error('nope'), { code: 'EPERM' }); } };
+    const r = driver.createCodexIsolatedHome(t.env, failing);
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/auth\.json symlink failed: EPERM/);
+    expect(prefixed(t.parent)).toEqual([]);
+    fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  it('sweeps isolated homes left by a killed driver more than a day ago, keeps fresh ones', () => {
+    const t = mk();
+    fs.mkdirSync(t.parent);
+    const old = path.join(t.parent, `${driver.CODEX_ISOLATED_HOME_PREFIX}old`);
+    const fresh = path.join(t.parent, `${driver.CODEX_ISOLATED_HOME_PREFIX}fresh`);
+    fs.mkdirSync(old);
+    fs.mkdirSync(fresh);
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(old, twoDaysAgo, twoDaysAgo);
+    const r = driver.createCodexIsolatedHome(t.env);
+    expect(r.ok).toBe(true);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  it('the app-server (and preflight) spawn env carries the isolated CODEX_HOME', () => {
+    const spec = driver.codexAppServerSpawnSpec({ codexBin: 'codex', codexHome: '/iso/home' });
+    expect(spec.env.CODEX_HOME).toBe('/iso/home');
   });
 });
 
@@ -116,8 +199,25 @@ describe('codexMcpPreflight', () => {
 // driver's answer to each server request (recorded immediately).
 const FAKE_APP_SERVER = `
 const fs = require('fs');
+const path = require('path');
 const readline = require('readline');
 fs.writeFileSync(process.env.FAKE_ARGV_RECORD, JSON.stringify(process.argv.slice(2)));
+if (process.env.FAKE_HOME_RECORD) {
+  const h = process.env.CODEX_HOME || '';
+  const authPath = path.join(h, 'auth.json');
+  let auth;
+  try {
+    const st = fs.lstatSync(authPath);
+    auth = { symlink: st.isSymbolicLink(), target: st.isSymbolicLink() ? fs.readlinkSync(authPath) : null, content: fs.readFileSync(authPath, 'utf8') };
+  } catch (e) { auth = { error: e.code }; }
+  let config = null;
+  try { config = fs.readFileSync(path.join(h, 'config.toml'), 'utf8'); } catch (_) {}
+  let entries = null;
+  try { entries = fs.readdirSync(h).sort(); } catch (_) {}
+  let mode = null;
+  try { mode = fs.statSync(h).mode & 0o777; } catch (_) {}
+  fs.writeFileSync(process.env.FAKE_HOME_RECORD, JSON.stringify({ codexHome: h, entries, config, auth, mode }));
+}
 const script = JSON.parse(process.env.FAKE_SCRIPT || '[]');
 const record = process.env.FAKE_RECORD;
 const responses = {};
@@ -157,6 +257,15 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     fs.mkdirSync(ws);
     fs.writeFileSync(path.join(ws, 'app-server'), FAKE_APP_SERVER);
     fs.writeFileSync(path.join(ws, 'mcp'), FAKE_CODEX_MCP_LIST);
+    // The user's real Codex home: config with an MCP server + login.
+    const realHome = path.join(home, 'real-codex');
+    fs.mkdirSync(realHome);
+    fs.writeFileSync(path.join(realHome, 'config.toml'), '[mcp_servers.realsrv]\ncommand = "x"\nnotify = ["x"]\n');
+    fs.writeFileSync(path.join(realHome, 'auth.json'), '{"REAL":"AUTH"}');
+    const tmpParent = path.join(home, 'tmp');
+    fs.mkdirSync(tmpParent);
+    const homeRec = path.join(home, 'home.json');
+    const mcpHomeRec = path.join(home, 'mcp-home.txt');
     const rec = path.join(home, 'rec.json');
     const argvRec = path.join(home, 'argv.json');
     const auditLog = path.join(home, 'audit.jsonl');
@@ -181,13 +290,20 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       env: {
         ...process.env,
         HOME: home,
+        CODEX_HOME: realHome,
+        TMPDIR: tmpParent,
         FAKE_SCRIPT: JSON.stringify(script),
         FAKE_RECORD: rec,
         FAKE_ARGV_RECORD: argvRec,
+        FAKE_HOME_RECORD: homeRec,
+        FAKE_MCP_HOME_RECORD: mcpHomeRec,
         ...env,
       },
     });
     const read = (p: string) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null);
+    const leftover = fs.statSync(tmpParent).isDirectory()
+      ? fs.readdirSync(tmpParent).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX))
+      : [];
     const result = {
       status: r.status,
       out: `${r.stdout}${r.stderr}`,
@@ -195,6 +311,12 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       appServerArgv: read(argvRec) as string[] | null,
       answerWritten: fs.existsSync(answerFile),
       audit: fs.existsSync(auditLog) ? fs.readFileSync(auditLog, 'utf8') : '',
+      workerHome: read(homeRec),
+      mcpListHomes: fs.existsSync(mcpHomeRec) ? fs.readFileSync(mcpHomeRec, 'utf8').split('\n').filter(Boolean) : [],
+      leftover,
+      realHome,
+      tmpParent,
+      realAuthAfter: fs.existsSync(path.join(realHome, 'auth.json')) ? fs.readFileSync(path.join(realHome, 'auth.json'), 'utf8') : null,
     };
     fs.rmSync(home, { recursive: true, force: true });
     return result;
@@ -212,6 +334,62 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
     expect(start.codexMcp).toEqual(expect.objectContaining({ ok: true, disabledServers: ['mercari', 'shelly-phone'] }));
     expect(r.out).not.toContain('do-not-log');
+  }, 60_000);
+
+  it('the worker and its preflight run with an isolated CODEX_HOME that is removed afterwards', () => {
+    const r = run([]);
+    expect(r.status).toBe(0);
+    const w = r.workerHome;
+    expect(w).not.toBeNull();
+    expect(w.codexHome).not.toBe('');
+    expect(path.resolve(w.codexHome)).not.toBe(path.resolve(r.realHome));
+    expect(path.dirname(w.codexHome)).toBe(r.tmpParent);
+    expect(path.basename(w.codexHome).startsWith(driver.CODEX_ISOLATED_HOME_PREFIX)).toBe(true);
+    // the user's config (MCP server, notify) is not there; only the generated one
+    expect(w.entries).toEqual(['auth.json', 'config.toml']);
+    expect(w.config).toBe(driver.codexWorkerConfigToml());
+    expect(w.config).not.toMatch(/^\[mcp_servers/m);
+    expect(w.config).not.toContain('realsrv');
+    // login via a symlink to the real auth.json
+    expect(w.auth.symlink).toBe(true);
+    expect(path.resolve(w.codexHome, w.auth.target)).toBe(path.join(r.realHome, 'auth.json'));
+    expect(w.auth.content).toBe('{"REAL":"AUTH"}');
+    if (process.platform !== 'win32') expect(w.mode).toBe(0o700);
+    // the preflight listing saw the same isolated home
+    expect(r.mcpListHomes).toEqual([w.codexHome]);
+    // removed on finish; the real login is untouched
+    expect(r.leftover).toEqual([]);
+    expect(fs.existsSync(w.codexHome)).toBe(false);
+    expect(r.realAuthAfter).toBe('{"REAL":"AUTH"}');
+    const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+    expect(start.codexHome).toBe('isolated');
+    expect(r.audit).not.toContain('codex_isolated_auth_replaced');
+  }, 60_000);
+
+  it('the isolated home is also removed when the run fails', () => {
+    const r = run([
+      { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready' } },
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.workerHome).not.toBeNull();
+    expect(r.leftover).toEqual([]);
+  }, 60_000);
+
+  it('no isolated home (TMPDIR unusable) → Codex and its preflight never start, the run fails closed', () => {
+    const blocker = path.join(os.tmpdir(), `codex-iso-blocker-${process.pid}`);
+    fs.writeFileSync(blocker, 'not a directory');
+    try {
+      const r = run([], { TMPDIR: blocker });
+      expect(r.status).toBe(1);
+      expect(r.appServerArgv).toBeNull();
+      expect(r.mcpListHomes).toEqual([]);
+      expect(auditKinds(r.audit)).toEqual(expect.arrayContaining(['driver_start', 'codex_home_isolation_failed', 'driver_finish']));
+      expect(auditKinds(r.audit)).not.toContain('codex_mcp_preflight_failed');
+      const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+      expect(start.codexHome).toBe('isolation_failed');
+    } finally {
+      fs.rmSync(blocker, { force: true });
+    }
   }, 60_000);
 
   it('preflight failure (a server stays enabled) never starts Codex and fails the run', () => {
