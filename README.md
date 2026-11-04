@@ -80,6 +80,26 @@
 
 ## See it run
 
+**Codex vs Claude Code on one phone — an on-device judge picks the winner**
+
+https://github.com/user-attachments/assets/f6509457-d845-424e-9d72-436eae06d122
+
+One line in chat — *"have both implementers build a neon snake game and compare"* — and Codex and Claude Code build it at the same time, each in its own folder. A judge running on the local LLM reads both codebases as "Candidate A/B" (no engine names) and answers `WINNER:`. MONITOR shows both steps recording live.
+
+<sub>Waits are sped up (20x build, 15x judging); the A/B play footage is real time.</sub>
+
+<br>
+
+**One AI writes, another reviews — and it keeps going with the app closed**
+
+https://github.com/user-attachments/assets/700e7547-5645-435d-ba93-c5e2e2ce68ca
+
+Codex implements → Claude Code reviews and sends it back → Codex revises → the second review answers `VERDICT: PASS`. Every command both CLIs run goes through Shelly's gate, and MONITOR follows each step.
+
+<sub>Captioned and sped up.</sub>
+
+<br>
+
 **Drive your phone from ChatGPT — Shelly is the bridge**
 
 https://github.com/user-attachments/assets/2fe4de3b-1c8f-4171-b61e-a88ddf8664b6

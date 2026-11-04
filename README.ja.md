@@ -80,6 +80,26 @@
 
 ## 動作デモ
 
+**スマホ1台で Codex と Claude Code を競わせる ―― 審査は端末内の AI**
+
+https://github.com/user-attachments/assets/f6509457-d845-424e-9d72-436eae06d122
+
+チャットに1行 ――「両方の実装役にネオンのスネークゲームを作らせて比べて」―― と打つと、Codex と Claude Code がそれぞれ別のフォルダで同時に作ります。審査役（端末内のローカル LLM）はエンジン名を伏せた「候補 A / B」として両方のコードを読み、`WINNER:` を返します。MONITOR では2つのステップが同時に REC 中なのが見えます。
+
+<sub>待ち時間は早送り（実装 20 倍、審査 15 倍）。A / B を遊ぶ場面は等速です。</sub>
+
+<br>
+
+**書く AI と見る AI ―― アプリを閉じても最後まで進む**
+
+https://github.com/user-attachments/assets/700e7547-5645-435d-ba93-c5e2e2ce68ca
+
+Codex が実装 → Claude Code がレビューして差し戻し → Codex が修正 → 2回目のレビューで `VERDICT: PASS`。両方の CLI が実行するコマンドはすべて Shelly のゲートを通り、MONITOR で各ステップを追えます。
+
+<sub>字幕付き・早送りあり。</sub>
+
+<br>
+
 **ChatGPT からスマホを動かす ―― Shelly がその橋渡し**
 
 https://github.com/user-attachments/assets/2fe4de3b-1c8f-4171-b61e-a88ddf8664b6
