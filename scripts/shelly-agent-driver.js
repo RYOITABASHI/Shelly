@@ -695,7 +695,7 @@ function codexMcpPreflight(config, runner = defaultCodexMcpListRunner) {
 //   - auth.json: a symlink to the real $CODEX_HOME/auth.json (default
 //     ~/.codex/auth.json), so the ChatGPT login works and a token refresh
 //     writes the real file. If the link cannot be made the run fails closed.
-// Nothing else is copied: Codex recreates what it needs (installation_id,
+// Apart from the carried settings below, nothing else is copied: Codex recreates what it needs (installation_id,
 // models cache, log/, sessions/ — threads are ephemeral anyway). Without a
 // [projects] trust entry Codex does not load the workspace's project layer
 // (`.codex/config.toml`, hooks): checked against codex-cli 0.144.4 on the dev
@@ -704,9 +704,30 @@ function codexMcpPreflight(config, runner = defaultCodexMcpListRunner) {
 // skips its PATH helper aliases (`<CODEX_HOME>/tmp/path`, e.g. `apply_patch`
 // as a shell command) when CODEX_HOME is under the system temp dir, with a
 // warning; patches still arrive as fileChange approvals. The interactive
-// `codex` and ~/.codex are unchanged. ~/.codex/AGENTS.md (Shelly's ClosePaw
-// guide) is not loaded by the worker either.
+// `codex` and ~/.codex are unchanged.
+// Two things are carried over from the real home so the worker behaves like
+// the user's Codex:
+//   - model settings: only the allowlisted top-level string keys in
+//     CODEX_WORKER_CARRIED_CONFIG_KEYS (model_provider only when it names a
+//     built-in provider), read by readCarriedCodexConfig from the lines before
+//     the first [table]; values must match CODEX_CARRIED_VALUE. Tables
+//     ([model_providers.*], [mcp_servers.*], [profiles.*], …), base_url,
+//     env_key, notify, hooks, shell env, sandbox / approval keys and anything
+//     unparseable are never copied.
+//   - AGENTS.md (Shelly's guide, e.g. ClosePaw usage): copied (not linked)
+//     when it is a regular file, not a symlink, of at most 64 KiB.
 const CODEX_ISOLATED_HOME_PREFIX = 'shelly-codex-home-';
+const CODEX_WORKER_CARRIED_CONFIG_KEYS = Object.freeze([
+  'model',
+  'model_reasoning_effort',
+  'model_reasoning_summary',
+  'model_verbosity',
+  'model_provider',
+]);
+const CODEX_BUILTIN_MODEL_PROVIDERS = Object.freeze(['openai']);
+const CODEX_CARRIED_VALUE = /^[A-Za-z0-9._:-]{1,64}$/;
+const CODEX_REAL_CONFIG_MAX_BYTES = 1024 * 1024;
+const CODEX_AGENTS_MD_MAX_BYTES = 64 * 1024;
 // Leftovers of a driver that was SIGKILLed (no exit handler ran). Runs are
 // capped far below this, so a live run's home is never swept.
 const CODEX_ISOLATED_HOME_STALE_MS = 24 * 60 * 60 * 1000;
@@ -722,10 +743,115 @@ function codexIsolatedHomeParent(env = process.env) {
   return os.tmpdir();
 }
 
-function codexWorkerConfigToml() {
+/**
+ * Allowlisted model settings from the real config.toml text →
+ * {values: {key: value}, keys: [...]}. Only `key = "value"` / `key = 'value'`
+ * lines before the first table header count; a duplicated key is dropped, as
+ * is anything inside a multi-line string. Never throws.
+ */
+function parseCarriedCodexConfig(text) {
+  const found = new Map();
+  const dropped = new Set();
+  if (typeof text !== 'string') return { values: {}, keys: [] };
+  let inMultiline = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (inMultiline) {
+      if (line.split(inMultiline).length % 2 === 0) inMultiline = null;
+      continue;
+    }
+    if (line === '' || line.startsWith('#')) continue;
+    if (line.startsWith('[')) break;
+    for (const delim of ['"""', "'''"]) {
+      if (line.split(delim).length % 2 === 0) { inMultiline = delim; break; }
+    }
+    if (inMultiline) continue;
+    const m = /^([A-Za-z0-9_-]+)\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$/.exec(line);
+    if (!m) continue;
+    const key = m[1];
+    const value = m[2] !== undefined ? m[2] : m[3];
+    if (!CODEX_WORKER_CARRIED_CONFIG_KEYS.includes(key)) continue;
+    if (found.has(key) || dropped.has(key)) {
+      found.delete(key);
+      dropped.add(key);
+      continue;
+    }
+    if (!CODEX_CARRIED_VALUE.test(value)) { dropped.add(key); continue; }
+    if (key === 'model_provider' && !CODEX_BUILTIN_MODEL_PROVIDERS.includes(value)) { dropped.add(key); continue; }
+    found.set(key, value);
+  }
+  const keys = CODEX_WORKER_CARRIED_CONFIG_KEYS.filter((key) => found.has(key));
+  const values = {};
+  for (const key of keys) values[key] = found.get(key);
+  return { values, keys };
+}
+
+/** Reads the real $CODEX_HOME/config.toml (≤ 1 MiB); missing / unreadable → nothing carried. */
+function readCarriedCodexConfig(realHome, fsImpl = fs) {
+  try {
+    const file = path.join(realHome, 'config.toml');
+    const st = fsImpl.statSync(file);
+    if (!st.isFile() || st.size > CODEX_REAL_CONFIG_MAX_BYTES) return { values: {}, keys: [] };
+    return parseCarriedCodexConfig(fsImpl.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return { values: {}, keys: [] };
+  }
+}
+
+/**
+ * Copies the real AGENTS.md into the isolated home when it is a regular file
+ * (not a symlink) of at most 64 KiB → 'copied' | 'absent' | 'skipped_*'.
+ * Never throws; a failed copy leaves no partial file.
+ */
+function copyCodexAgentsMd(realHome, dir, fsImpl = fs) {
+  const src = path.join(realHome, 'AGENTS.md');
+  const dest = path.join(dir, 'AGENTS.md');
+  let st;
+  try {
+    st = fsImpl.lstatSync(src);
+  } catch (_) {
+    return 'absent';
+  }
+  if (st.isSymbolicLink()) return 'skipped_symlink';
+  if (!st.isFile()) return 'skipped_not_file';
+  if (st.size > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+  let fd = null;
+  try {
+    const noFollow = fs.constants && fs.constants.O_NOFOLLOW ? fs.constants.O_NOFOLLOW : 0;
+    fd = fsImpl.openSync(src, fs.constants.O_RDONLY | noFollow);
+    const fst = fsImpl.fstatSync(fd);
+    if (!fst.isFile()) return 'skipped_not_file';
+    if (fst.size > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+    const buf = Buffer.alloc(CODEX_AGENTS_MD_MAX_BYTES + 1);
+    let total = 0;
+    for (;;) {
+      const n = fsImpl.readSync(fd, buf, total, buf.length - total, null);
+      if (n <= 0) break;
+      total += n;
+      if (total > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+    }
+    fsImpl.writeFileSync(dest, buf.subarray(0, total), { mode: 0o600 });
+    return 'copied';
+  } catch (error) {
+    try { fsImpl.rmSync(dest, { force: true }); } catch (_) {}
+    return error && error.code === 'ELOOP' ? 'skipped_symlink' : 'skipped_error';
+  } finally {
+    if (fd !== null) { try { fsImpl.closeSync(fd); } catch (_) {} }
+  }
+}
+
+function codexWorkerConfigToml(carried = {}) {
+  const carriedLines = [];
+  for (const key of CODEX_WORKER_CARRIED_CONFIG_KEYS) {
+    const value = carried ? carried[key] : undefined;
+    if (typeof value !== 'string' || !CODEX_CARRIED_VALUE.test(value)) continue;
+    if (key === 'model_provider' && !CODEX_BUILTIN_MODEL_PROVIDERS.includes(value)) continue;
+    carriedLines.push(`${key} = ${JSON.stringify(value)}`);
+  }
   const lines = [
     '# Generated by shelly-agent-driver for one Codex worker run; removed when the run ends.',
     '# Deliberately no [mcp_servers], [profiles], [projects] (trust), hooks or notify.',
+    ...(carriedLines.length ? ['# Model settings carried over from the real config.toml (allowlist only).', ...carriedLines] : []),
     'check_for_update_on_startup = false',
     'cli_auth_credentials_store = "file"',
     '',
@@ -766,10 +892,14 @@ function removeCodexIsolatedHome(dir, fsImpl = fs) {
   } catch (_) {}
 }
 
-/** → {ok:true, dir, realHome} or {ok:false, reason}; never leaves a half-made home. */
+/**
+ * → {ok:true, dir, realHome, carried: [keys], agentsMd: status} or
+ * {ok:false, reason}; never leaves a half-made home.
+ */
 function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
   const parent = codexIsolatedHomeParent(env);
   const realHome = realCodexHome(env);
+  const carried = readCarriedCodexConfig(realHome, fsImpl);
   let dir = null;
   try {
     fsImpl.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -777,7 +907,7 @@ function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
     dir = fsImpl.mkdtempSync(path.join(parent, CODEX_ISOLATED_HOME_PREFIX));
     fsImpl.chmodSync(dir, 0o700);
     if (path.resolve(dir) === realHome) throw new Error('isolated home equals the real Codex home');
-    fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(), { mode: 0o600 });
+    fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(carried.values), { mode: 0o600 });
   } catch (error) {
     removeCodexIsolatedHome(dir, fsImpl);
     return { ok: false, reason: `isolated CODEX_HOME could not be created: ${String(error && error.message ? error.message : error).slice(0, 200)}` };
@@ -789,7 +919,8 @@ function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
     removeCodexIsolatedHome(dir, fsImpl);
     return { ok: false, reason: `auth.json symlink failed: ${String(error && error.code ? error.code : error && error.message ? error.message : error).slice(0, 200)}` };
   }
-  return { ok: true, dir, realHome };
+  const agentsMd = copyCodexAgentsMd(realHome, dir, fsImpl);
+  return { ok: true, dir, realHome, carried: carried.keys, agentsMd };
 }
 
 function codexHomeEnv(config) {
@@ -2090,6 +2221,8 @@ async function runDriver(config) {
     codexBinary: codexSpawn.codexBinary,
     codexTui: codexSpawn.codexTui,
     codexHome: 'isolated',
+    codexHomeCarried: isolatedHome.carried,
+    codexHomeAgentsMd: isolatedHome.agentsMd,
     codexMcp: {
       ok: mcpPreflight.ok,
       disabledServers: mcpPreflight.names,
@@ -3675,6 +3808,10 @@ module.exports = {
   CODEX_ISOLATED_HOME_PREFIX,
   realCodexHome,
   codexWorkerConfigToml,
+  CODEX_WORKER_CARRIED_CONFIG_KEYS,
+  parseCarriedCodexConfig,
+  readCarriedCodexConfig,
+  copyCodexAgentsMd,
   createCodexIsolatedHome,
   removeCodexIsolatedHome,
   claudeRunnerSpawnSpec,

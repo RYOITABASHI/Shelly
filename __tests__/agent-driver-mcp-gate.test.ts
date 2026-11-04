@@ -129,6 +129,153 @@ describe('isolated CODEX_HOME for the Codex worker', () => {
     fs.rmSync(t.base, { recursive: true, force: true });
   });
 
+  describe('carried model settings', () => {
+    const bodyOf = (toml: string) => toml.split('\n').filter((l) => !l.startsWith('#')).join('\n');
+
+    it('copies only the allowlisted top-level keys into the generated config.toml', () => {
+      const t = mk();
+      fs.writeFileSync(path.join(t.real, 'config.toml'), [
+        '# my config',
+        'model = "gpt-5.5"',
+        "model_reasoning_effort = 'high' # comment",
+        'model_reasoning_summary = "detailed"',
+        'model_verbosity = "low"',
+        'model_provider = "openai"',
+        'approval_policy = "never"',
+        'sandbox_mode = "danger-full-access"',
+        'profile = "work"',
+        '',
+        '[mcp_servers.x]',
+        'command = "x"',
+        'model = "from-table"',
+      ].join('\n'));
+      const r = driver.createCodexIsolatedHome(t.env);
+      expect(r.ok).toBe(true);
+      expect(r.carried).toEqual(['model', 'model_reasoning_effort', 'model_reasoning_summary', 'model_verbosity', 'model_provider']);
+      const toml = fs.readFileSync(path.join(r.dir, 'config.toml'), 'utf8');
+      expect(toml).toBe(driver.codexWorkerConfigToml({
+        model: 'gpt-5.5', model_reasoning_effort: 'high', model_reasoning_summary: 'detailed', model_verbosity: 'low', model_provider: 'openai',
+      }));
+      const body = bodyOf(toml);
+      expect(body).toMatch(/^model = "gpt-5\.5"$/m);
+      expect(body).toMatch(/^model_reasoning_effort = "high"$/m);
+      expect(body).toMatch(/^model_provider = "openai"$/m);
+      for (const banned of ['approval_policy', 'sandbox_mode', 'profile =', 'from-table', 'mcp_servers']) expect(body).not.toContain(banned);
+      // carried keys come before the first table
+      expect(body.indexOf('model = ')).toBeLessThan(body.indexOf('[features]'));
+      driver.removeCodexIsolatedHome(r.dir);
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+
+    it('never copies disallowed keys or tables, even when they come before any table', () => {
+      const text = [
+        'mcp_servers.evil.command = "x"',
+        'notify = ["x"]',
+        'hooks = "x"',
+        'base_url = "http://evil"',
+        'env_key = "OPENAI"',
+        'model_providers.evil.base_url = "http://evil"',
+        'profiles.p.model = "x"',
+        'projects."/w".trust_level = "trusted"',
+        '"model" = "quoted-key"',
+        '[model_providers.evil]',
+        'base_url = "http://evil"',
+        '[profiles.p]',
+        'model = "p-model"',
+        '[projects."/w"]',
+        'trust_level = "trusted"',
+      ].join('\n');
+      expect(driver.parseCarriedCodexConfig(text)).toEqual({ values: {}, keys: [] });
+      const body = bodyOf(driver.codexWorkerConfigToml({ notify: 'x', base_url: 'http://evil', mcp_servers: 'x', profile: 'p' } as Record<string, string>));
+      for (const banned of ['notify', 'base_url', 'mcp_servers', 'profile']) expect(body).not.toContain(banned);
+    });
+
+    it('skips invalid values, non-built-in providers, duplicates, multi-line strings and non-strings', () => {
+      const r = driver.parseCarriedCodexConfig([
+        'model = "gpt 5"',
+        'model_verbosity = "a\\"b"',
+        'model_provider = "evilproxy"',
+        `model_reasoning_summary = "${'x'.repeat(65)}"`,
+        'model_reasoning_effort = 5',
+        'x = """',
+        'model = "inside-multiline"',
+        '"""',
+      ].join('\n'));
+      expect(r).toEqual({ values: {}, keys: [] });
+      expect(driver.parseCarriedCodexConfig('model = "a"\nmodel = "b"\n')).toEqual({ values: {}, keys: [] });
+      expect(driver.parseCarriedCodexConfig('model = "o3:mini-2.0"\r\n')).toEqual({ values: { model: 'o3:mini-2.0' }, keys: ['model'] });
+      expect(driver.parseCarriedCodexConfig(undefined)).toEqual({ values: {}, keys: [] });
+      const body = bodyOf(driver.codexWorkerConfigToml({ model: 'bad"value', model_provider: 'evilproxy' }));
+      expect(body).not.toContain('model');
+    });
+
+    it('an unreadable or missing real config carries nothing and the home is still made', () => {
+      const t = mk();
+      fs.rmSync(path.join(t.real, 'config.toml'));
+      const r = driver.createCodexIsolatedHome(t.env);
+      expect(r.ok).toBe(true);
+      expect(r.carried).toEqual([]);
+      expect(fs.readFileSync(path.join(r.dir, 'config.toml'), 'utf8')).toBe(driver.codexWorkerConfigToml());
+      driver.removeCodexIsolatedHome(r.dir);
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+  });
+
+  describe('AGENTS.md', () => {
+    it('copies a regular AGENTS.md (a copy, not a link) and keeps the real one on removal', () => {
+      const t = mk();
+      fs.writeFileSync(path.join(t.real, 'AGENTS.md'), '# ClosePaw guide\n');
+      const r = driver.createCodexIsolatedHome(t.env);
+      expect(r.ok).toBe(true);
+      expect(r.agentsMd).toBe('copied');
+      const copy = path.join(r.dir, 'AGENTS.md');
+      expect(fs.lstatSync(copy).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(copy, 'utf8')).toBe('# ClosePaw guide\n');
+      fs.writeFileSync(copy, 'changed');
+      expect(fs.readFileSync(path.join(t.real, 'AGENTS.md'), 'utf8')).toBe('# ClosePaw guide\n');
+      driver.removeCodexIsolatedHome(r.dir);
+      expect(fs.existsSync(path.join(t.real, 'AGENTS.md'))).toBe(true);
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+
+    it('accepts exactly 64 KiB, skips anything larger', () => {
+      const t = mk();
+      fs.writeFileSync(path.join(t.real, 'AGENTS.md'), 'a'.repeat(64 * 1024));
+      const ok = driver.createCodexIsolatedHome(t.env);
+      expect(ok.agentsMd).toBe('copied');
+      expect(fs.statSync(path.join(ok.dir, 'AGENTS.md')).size).toBe(64 * 1024);
+      driver.removeCodexIsolatedHome(ok.dir);
+      fs.writeFileSync(path.join(t.real, 'AGENTS.md'), 'a'.repeat(64 * 1024 + 1));
+      const big = driver.createCodexIsolatedHome(t.env);
+      expect(big.ok).toBe(true);
+      expect(big.agentsMd).toBe('skipped_too_large');
+      expect(fs.existsSync(path.join(big.dir, 'AGENTS.md'))).toBe(false);
+      driver.removeCodexIsolatedHome(big.dir);
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+
+    it('skips a symlinked AGENTS.md, a directory, and a missing one', () => {
+      const t = mk();
+      expect(driver.createCodexIsolatedHome(t.env).agentsMd).toBe('absent');
+      fs.mkdirSync(path.join(t.real, 'AGENTS.md'));
+      const d = driver.createCodexIsolatedHome(t.env);
+      expect(d.agentsMd).toBe('skipped_not_file');
+      expect(fs.existsSync(path.join(d.dir, 'AGENTS.md'))).toBe(false);
+      fs.rmSync(path.join(t.real, 'AGENTS.md'), { recursive: true });
+      const target = path.join(t.base, 'elsewhere.md');
+      fs.writeFileSync(target, 'secret');
+      let linked = true;
+      try { fs.symlinkSync(target, path.join(t.real, 'AGENTS.md'), 'file'); } catch (_) { linked = false; }
+      if (linked) {
+        const s = driver.createCodexIsolatedHome(t.env);
+        expect(s.ok).toBe(true);
+        expect(s.agentsMd).toBe('skipped_symlink');
+        expect(fs.existsSync(path.join(s.dir, 'AGENTS.md'))).toBe(false);
+      }
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+  });
+
   it('the app-server (and preflight) spawn env carries the isolated CODEX_HOME', () => {
     const spec = driver.codexAppServerSpawnSpec({ codexBin: 'codex', codexHome: '/iso/home' });
     expect(spec.env.CODEX_HOME).toBe('/iso/home');
@@ -251,7 +398,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
   type Msg = Record<string, unknown>;
   const SECRET_ARG = 'SECRET-ARGUMENT-VALUE';
 
-  function run(script: Msg[], env: Record<string, string> = {}) {
+  function run(script: Msg[], env: Record<string, string> = {}, real: { configPrefix?: string; agentsMd?: string } = {}) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-'));
     const ws = path.join(home, 'demo');
     fs.mkdirSync(ws);
@@ -260,8 +407,9 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     // The user's real Codex home: config with an MCP server + login.
     const realHome = path.join(home, 'real-codex');
     fs.mkdirSync(realHome);
-    fs.writeFileSync(path.join(realHome, 'config.toml'), '[mcp_servers.realsrv]\ncommand = "x"\nnotify = ["x"]\n');
+    fs.writeFileSync(path.join(realHome, 'config.toml'), `${real.configPrefix || ''}[mcp_servers.realsrv]\ncommand = "x"\nnotify = ["x"]\n`);
     fs.writeFileSync(path.join(realHome, 'auth.json'), '{"REAL":"AUTH"}');
+    if (real.agentsMd !== undefined) fs.writeFileSync(path.join(realHome, 'AGENTS.md'), real.agentsMd);
     const tmpParent = path.join(home, 'tmp');
     fs.mkdirSync(tmpParent);
     const homeRec = path.join(home, 'home.json');
@@ -363,7 +511,28 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(r.realAuthAfter).toBe('{"REAL":"AUTH"}');
     const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
     expect(start.codexHome).toBe('isolated');
+    expect(start.codexHomeCarried).toEqual([]);
+    expect(start.codexHomeAgentsMd).toBe('absent');
     expect(r.audit).not.toContain('codex_isolated_auth_replaced');
+  }, 60_000);
+
+  it('the worker home carries the allowlisted model settings and a copy of AGENTS.md; driver_start records them', () => {
+    const r = run([], {}, {
+      configPrefix: 'model = "gpt-5.5"\nmodel_provider = "evilproxy"\nnotify = ["x"]\nmodel_reasoning_effort = "high"\n',
+      agentsMd: '# ClosePaw guide\n',
+    });
+    expect(r.status).toBe(0);
+    const w = r.workerHome;
+    expect(w.entries).toEqual(['AGENTS.md', 'auth.json', 'config.toml']);
+    expect(w.config).toBe(driver.codexWorkerConfigToml({ model: 'gpt-5.5', model_reasoning_effort: 'high' }));
+    expect(w.config).not.toContain('evilproxy');
+    expect(w.config).not.toContain('realsrv');
+    expect(w.config.split('\n').filter((l: string) => !l.startsWith('#')).join('\n')).not.toContain('notify');
+    const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+    expect(start.codexHomeCarried).toEqual(['model', 'model_reasoning_effort']);
+    expect(start.codexHomeAgentsMd).toBe('copied');
+    expect(r.audit).not.toContain('gpt-5.5');
+    expect(r.leftover).toEqual([]);
   }, 60_000);
 
   it('the isolated home is also removed when the run fails', () => {
