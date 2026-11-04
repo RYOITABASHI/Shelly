@@ -578,6 +578,31 @@ const CODEX_WORKER_DISABLED_FEATURES = [
 // else could not be addressed safely as a dotted -c key, so it fails closed.
 const CODEX_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
+// mcpServer/startupStatus/updated statuses (lowercased, letters only) that
+// mean the server is not running. Anything else — starting, ready, connecting,
+// running, an unknown or missing value — is treated as running and blocks.
+const MCP_STARTUP_NOT_RUNNING = new Set([
+  'disabled',
+  'notstarted',
+  'failed',
+  'cancelled',
+  'canceled',
+  'stopped',
+]);
+
+// The status is a plain string, or an object keyed by the state name
+// (e.g. { failed: { error } }); only the state name is kept, never details.
+function mcpStartupStatusName(status) {
+  if (typeof status === 'string') return status.slice(0, 40);
+  if (status && typeof status === 'object' && !Array.isArray(status)) {
+    if (typeof status.state === 'string') return status.state.slice(0, 40);
+    if (typeof status.status === 'string') return status.status.slice(0, 40);
+    const keys = Object.keys(status);
+    if (keys.length === 1) return keys[0].slice(0, 40);
+  }
+  return null;
+}
+
 function codexMcpDisableArgs(serverNames = []) {
   const args = [];
   for (const feature of CODEX_WORKER_DISABLED_FEATURES) args.push('-c', `features.${feature}=false`);
@@ -1981,6 +2006,7 @@ async function runDriver(config) {
   let initialized = false;
   let threadId = null;
   let turnStarted = false;
+  let activeTurnId = null;
   let completed = false;
   let sawFailure = false;
   let answerText = '';
@@ -2394,6 +2420,7 @@ async function runDriver(config) {
         return;
       }
       turnStarted = true;
+      activeTurnId = typeof message.result.turn.id === 'string' ? message.result.turn.id : null;
       audit('turn_started', {
         threadId,
         turnId: message.result.turn.id,
@@ -2511,14 +2538,25 @@ async function runDriver(config) {
     }
 
     if (message.method === 'mcpServer/startupStatus/updated') {
-      // Recorded, not fatal: the preflight should leave nothing to start, and a
-      // started server can still not be used (tool calls are blocked above).
+      // The preflight should leave nothing to start. A server that is starting
+      // or running anyway (e.g. ChatGPT apps `codex_apps`, which `mcp list`
+      // never shows, or a feature key the on-device fork ignores) fails the run
+      // before any tool call. Only a status that clearly means "not running"
+      // is recorded without failing; an unknown or missing status blocks.
+      // Only the server name and status are recorded.
       const params = message.params || {};
-      audit('mcp_server_startup_observed', {
+      const status = mcpStartupStatusName(params.status);
+      const details = {
         server: safeName(params.name),
-        status: safeName(params.status),
-        threadId: params.threadId || null,
-      });
+        status,
+        threadId: params.threadId || threadId || null,
+        turnId: typeof params.turnId === 'string' ? params.turnId : activeTurnId,
+      };
+      if (status && MCP_STARTUP_NOT_RUNNING.has(status.toLowerCase().replace(/[^a-z]/g, ''))) {
+        audit('mcp_server_startup_observed', details);
+        return;
+      }
+      blockMcpActivity('mcp_server_startup_blocked', details);
       return;
     }
 

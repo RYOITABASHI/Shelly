@@ -242,6 +242,9 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     const blocked = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'mcp_tool_call_blocked');
     expect(blocked).toEqual(expect.objectContaining({ server: 'codex_apps', tool: 'mercari_search', itemId: 'mcp-1', phase: 'started' }));
     expect(r.out).toMatch(/C->S \{"id":\d+,"method":"turn\/interrupt","params":\{"threadId":"th1","turnId":"t1"\}\}/);
+    // The audit log never carries MCP arguments. (The driver's raw wire log on
+    // stdout — the `S->C …` lines — still echoes the message verbatim,
+    // arguments included; that is existing behavior and not changed here.)
     expect(r.audit).not.toContain(SECRET_ARG);
     expect(r.answerWritten).toBe(false);
     expect(auditKinds(r.audit)).not.toContain('turn_completed');
@@ -258,8 +261,9 @@ describe('driver E2E: MCP / app activity is blocked', () => {
 
   it('an MCP elicitation request is declined (never accepted) and fails the run', () => {
     const r = run([
-      { id: 'el-1', method: 'mcpServer/elicitation/request', params: { threadId: 'th1', turnId: 't1', serverName: 'mercari', mode: 'form', message: 'Confirm purchase?', requestedSchema: {} } },
+      { id: 'el-1', method: 'mcpServer/elicitation/request', params: { threadId: 'th1', turnId: 't1', serverName: 'mercari', mode: 'form', message: `Confirm purchase? ${SECRET_ARG}`, requestedSchema: { default: SECRET_ARG } } },
     ]);
+    expect(r.audit).not.toContain(SECRET_ARG);
     // The driver's own wire log (the fake may be killed before it records).
     expect(r.out).toContain('C->S {"id":"el-1","result":{"action":"decline","content":null}}');
     expect(r.out).not.toMatch(/"action":"accept"/);
@@ -275,6 +279,52 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(r.out).toContain('C->S {"id":"m-1","error":');
     expect(r.status).toBe(1);
     expect(r.audit).toContain('mcp_request_blocked');
+    expect(r.audit).not.toContain(SECRET_ARG);
+  }, 60_000);
+
+  it('MCP tool-call progress is blocked without recording its payload', () => {
+    const r = run([
+      { method: 'item/mcpToolCall/progress', params: { threadId: 'th1', turnId: 't1', itemId: 'mcp-3', message: SECRET_ARG } },
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.audit).toContain('"phase":"progress"');
+    expect(r.audit).not.toContain(SECRET_ARG);
+    expect(r.answerWritten).toBe(false);
+  }, 60_000);
+
+  it('an MCP server reported as starting / ready (e.g. codex_apps) fails the run before any tool call', () => {
+    const r = run([
+      { method: 'mcpServer/startupStatus/updated', params: { name: 'codex_apps', status: 'ready', error: SECRET_ARG } },
+    ]);
+    expect(r.status).toBe(1);
+    const blocked = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'mcp_server_startup_blocked');
+    expect(blocked).toEqual(expect.objectContaining({ server: 'codex_apps', status: 'ready' }));
+    expect(r.out).toMatch(/C->S \{"id":\d+,"method":"turn\/interrupt","params":\{"threadId":"th1","turnId":"t1"\}\}/);
+    expect(r.audit).not.toContain(SECRET_ARG);
+    expect(r.answerWritten).toBe(false);
+    expect(auditKinds(r.audit)).not.toContain('turn_completed');
+
+    for (const status of ['starting', 'connecting', 'running', 'somethingNew']) {
+      const s = run([{ method: 'mcpServer/startupStatus/updated', params: { name: 'mercari', status } }]);
+      expect(s.status).toBe(1);
+      expect(s.audit).toContain('mcp_server_startup_blocked');
+    }
+    const missing = run([{ method: 'mcpServer/startupStatus/updated', params: { name: 'mercari' } }]);
+    expect(missing.status).toBe(1);
+    expect(missing.audit).toContain('mcp_server_startup_blocked');
+  }, 180_000);
+
+  it('a disabled / not-started / failed server status is recorded and the run still succeeds', () => {
+    const r = run([
+      { method: 'mcpServer/startupStatus/updated', params: { name: 'mercari', status: 'disabled' } },
+      { method: 'mcpServer/startupStatus/updated', params: { name: 'shelly-phone', status: 'not_started' } },
+      { method: 'mcpServer/startupStatus/updated', params: { name: 'x', status: { failed: { error: SECRET_ARG } } } },
+    ]);
+    expect(r.status).toBe(0);
+    expect(r.answerWritten).toBe(true);
+    expect(auditKinds(r.audit)).not.toContain('mcp_server_startup_blocked');
+    const observed = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_server_startup_observed');
+    expect(observed.map((e) => e.status)).toEqual(['disabled', 'not_started', 'failed']);
     expect(r.audit).not.toContain(SECRET_ARG);
   }, 60_000);
 });
