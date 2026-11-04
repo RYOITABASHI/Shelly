@@ -66,7 +66,11 @@ describe('isolated CODEX_HOME for the Codex worker', () => {
     fs.writeFileSync(path.join(real, 'config.toml'), '[mcp_servers.x]\ncommand="x"\n');
     return { base, real, parent, env: { HOME: base, CODEX_HOME: real, TMPDIR: parent } };
   };
-  const prefixed = (dir: string) => fs.readdirSync(dir).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX));
+  const homesOf = (parent: string) => path.join(parent, driver.CODEX_ISOLATED_HOMES_PARENT);
+  const prefixed = (dir: string) => (fs.existsSync(homesOf(dir))
+    ? fs.readdirSync(homesOf(dir)).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX))
+    : []);
+  const MARKER = driver.CODEX_ISOLATED_HOME_MARKER as string;
 
   it('the generated config.toml has no MCP servers, profiles, project trust, hooks or notify', () => {
     const toml: string = driver.codexWorkerConfigToml();
@@ -85,9 +89,10 @@ describe('isolated CODEX_HOME for the Codex worker', () => {
     const t = mk();
     const r = driver.createCodexIsolatedHome(t.env);
     expect(r.ok).toBe(true);
-    expect(path.dirname(r.dir)).toBe(t.parent);
+    expect(path.dirname(r.dir)).toBe(fs.realpathSync(homesOf(t.parent)));
     expect(r.dir).not.toBe(t.real);
-    expect(fs.readdirSync(r.dir).sort()).toEqual(['auth.json', 'config.toml']);
+    expect(fs.readdirSync(r.dir).sort()).toEqual([MARKER, 'auth.json', 'config.toml']);
+    expect(fs.readFileSync(path.join(r.dir, MARKER), 'utf8')).toMatch(/^[0-9a-f]{32}\n$/);
     expect(fs.readFileSync(path.join(r.dir, 'config.toml'), 'utf8')).toBe(driver.codexWorkerConfigToml());
     const link = path.join(r.dir, 'auth.json');
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
@@ -113,20 +118,151 @@ describe('isolated CODEX_HOME for the Codex worker', () => {
     fs.rmSync(t.base, { recursive: true, force: true });
   });
 
-  it('sweeps isolated homes left by a killed driver more than a day ago, keeps fresh ones', () => {
+  it('sweeps only marked homes in the fixed parent left more than a day ago; keeps fresh, unmarked, symlinked ones and never touches TMPDIR itself', () => {
     const t = mk();
-    fs.mkdirSync(t.parent);
-    const old = path.join(t.parent, `${driver.CODEX_ISOLATED_HOME_PREFIX}old`);
-    const fresh = path.join(t.parent, `${driver.CODEX_ISOLATED_HOME_PREFIX}fresh`);
-    fs.mkdirSync(old);
-    fs.mkdirSync(fresh);
+    const homes = homesOf(t.parent);
+    fs.mkdirSync(homes, { recursive: true, mode: 0o700 });
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    fs.utimesSync(old, twoDaysAgo, twoDaysAgo);
+    const mkHome = (dir: string, marked: boolean) => {
+      fs.mkdirSync(dir);
+      if (marked) fs.writeFileSync(path.join(dir, MARKER), 'x\n');
+      fs.utimesSync(dir, twoDaysAgo, twoDaysAgo);
+    };
+    const old = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}old`);
+    const fresh = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}fresh`);
+    const unmarked = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}unmarked`);
+    const markerDir = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}markerdir`);
+    const inTmp = path.join(t.parent, `${driver.CODEX_ISOLATED_HOME_PREFIX}intmp`);
+    mkHome(old, true);
+    fs.mkdirSync(fresh);
+    fs.writeFileSync(path.join(fresh, MARKER), 'x\n');
+    mkHome(unmarked, false);
+    fs.mkdirSync(markerDir);
+    fs.mkdirSync(path.join(markerDir, MARKER));
+    fs.utimesSync(markerDir, twoDaysAgo, twoDaysAgo);
+    mkHome(inTmp, true);
+    // a symlinked child pointing at a marked old dir elsewhere is skipped (its target survives)
+    const victim = path.join(t.base, 'victim');
+    mkHome(victim, true);
+    fs.writeFileSync(path.join(victim, 'keep.txt'), 'keep');
+    const linked = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}linked`);
+    let linkMade = true;
+    try { fs.symlinkSync(victim, linked, 'dir'); } catch (_) { linkMade = false; }
     const r = driver.createCodexIsolatedHome(t.env);
     expect(r.ok).toBe(true);
+    expect(r.swept).toBe(1);
     expect(fs.existsSync(old)).toBe(false);
     expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(unmarked)).toBe(true);
+    expect(fs.existsSync(markerDir)).toBe(true);
+    expect(fs.existsSync(inTmp)).toBe(true);
+    if (linkMade) {
+      expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(path.join(victim, 'keep.txt'), 'utf8')).toBe('keep');
+    }
     fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  it('sweep skips homes owned by another uid (POSIX owner check, injected fs)', () => {
+    const t = mk();
+    const homes = homesOf(t.parent);
+    fs.mkdirSync(homes, { recursive: true });
+    const foreign = path.join(homes, `${driver.CODEX_ISOLATED_HOME_PREFIX}foreign`);
+    fs.mkdirSync(foreign);
+    fs.writeFileSync(path.join(foreign, MARKER), 'x\n');
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(foreign, twoDaysAgo, twoDaysAgo);
+    const real = fs.realpathSync(homes);
+    // the test process "is" uid 1000; every entry reports uid 2000
+    const foreignFs = { ...fs, lstatSync: (p: fs.PathLike) => Object.assign(fs.lstatSync(p), { uid: 2000 }) };
+    expect(driver.sweepStaleCodexIsolatedHomes(real, foreignFs, Date.now(), 1000)).toEqual([]);
+    expect(fs.existsSync(foreign)).toBe(true);
+    const ownFs = { ...fs, lstatSync: (p: fs.PathLike) => Object.assign(fs.lstatSync(p), { uid: 1000 }) };
+    expect(driver.sweepStaleCodexIsolatedHomes(real, ownFs, Date.now(), 1000)).toEqual([path.basename(foreign)]);
+    expect(fs.existsSync(foreign)).toBe(false);
+    fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  it('fails closed when the fixed parent is a symlink, not a directory, foreign-owned or group/other-writable', () => {
+    const t = mk();
+    fs.mkdirSync(t.parent);
+    const elsewhere = path.join(t.base, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    let linkMade = true;
+    try { fs.symlinkSync(elsewhere, homesOf(t.parent), 'dir'); } catch (_) { linkMade = false; }
+    if (linkMade) {
+      const r = driver.createCodexIsolatedHome(t.env);
+      expect(r.ok).toBe(false);
+      expect(r.reason).toMatch(/isolated home parent is a symlink/);
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      fs.unlinkSync(homesOf(t.parent));
+    }
+    fs.writeFileSync(homesOf(t.parent), 'file');
+    const notDir = driver.createCodexIsolatedHome(t.env);
+    expect(notDir.ok).toBe(false);
+    fs.rmSync(homesOf(t.parent));
+    const dirStat = fs.lstatSync(t.base);
+    const fakeStat = (over: Record<string, unknown>) => Object.assign(Object.create(Object.getPrototypeOf(dirStat)), dirStat, over);
+    expect(() => driver.assertPrivateDir(fakeStat({ uid: 2000, mode: 0o40700 }), 'p', 1000)).toThrow(/not owned/);
+    expect(() => driver.assertPrivateDir(fakeStat({ uid: 1000, mode: 0o40770 }), 'p', 1000)).toThrow(/group\/other-writable/);
+    expect(() => driver.assertPrivateDir(fakeStat({ uid: 1000, mode: 0o40702 }), 'p', 1000)).toThrow(/group\/other-writable/);
+    expect(() => driver.assertPrivateDir(fakeStat({ uid: 1000, mode: 0o40700 }), 'p', 1000)).not.toThrow();
+    fs.rmSync(t.base, { recursive: true, force: true });
+  });
+
+  describe('persisting a refreshed auth.json that replaced the link', () => {
+    it('a symlink that is still in place → nothing to do', () => {
+      const t = mk();
+      const r = driver.createCodexIsolatedHome(t.env);
+      expect(driver.persistIsolatedCodexAuth(r.dir, t.real)).toEqual({ status: 'linked' });
+      expect(fs.readFileSync(path.join(t.real, 'auth.json'), 'utf8')).toBe('{"t":1}');
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+
+    it('temp+rename refresh → copied back to the real auth.json (0600, no temp left)', () => {
+      const t = mk();
+      const r = driver.createCodexIsolatedHome(t.env);
+      const tmp = path.join(r.dir, 'auth.json.tmp');
+      fs.writeFileSync(tmp, '{"t":2,"tokens":{"refresh_token":"NEW"}}');
+      fs.renameSync(tmp, path.join(r.dir, 'auth.json'));
+      const p = driver.persistIsolatedCodexAuth(r.dir, t.real);
+      expect(p.status).toBe('persisted');
+      expect(fs.lstatSync(path.join(t.real, 'auth.json')).isFile()).toBe(true);
+      expect(fs.readFileSync(path.join(t.real, 'auth.json'), 'utf8')).toBe('{"t":2,"tokens":{"refresh_token":"NEW"}}');
+      if (process.platform !== 'win32') expect(fs.statSync(path.join(t.real, 'auth.json')).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(t.real).filter((n) => n.includes('.tmp'))).toEqual([]);
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
+
+    it('invalid JSON, a JSON array, an oversized file, or a real auth.json that is gone / a symlink → not persisted', () => {
+      for (const [content, why] of [['{not json', /JSON object/], ['[1,2]', /JSON object/], [`{"x":"${'a'.repeat(70 * 1024)}"}`, /too large/]] as const) {
+        const t = mk();
+        const r = driver.createCodexIsolatedHome(t.env);
+        fs.unlinkSync(path.join(r.dir, 'auth.json'));
+        fs.writeFileSync(path.join(r.dir, 'auth.json'), content);
+        const p = driver.persistIsolatedCodexAuth(r.dir, t.real);
+        expect(p.status).toBe('failed');
+        expect(p.reason).toMatch(why);
+        expect(fs.readFileSync(path.join(t.real, 'auth.json'), 'utf8')).toBe('{"t":1}');
+        fs.rmSync(t.base, { recursive: true, force: true });
+      }
+      const t = mk();
+      const r = driver.createCodexIsolatedHome(t.env);
+      fs.unlinkSync(path.join(r.dir, 'auth.json'));
+      fs.writeFileSync(path.join(r.dir, 'auth.json'), '{"t":3}');
+      fs.rmSync(path.join(t.real, 'auth.json'));
+      expect(driver.persistIsolatedCodexAuth(r.dir, t.real)).toEqual(expect.objectContaining({ status: 'failed', reason: 'real auth.json is missing' }));
+      expect(fs.existsSync(path.join(t.real, 'auth.json'))).toBe(false);
+      const other = path.join(t.base, 'other.json');
+      fs.writeFileSync(other, '{"o":1}');
+      let linkMade = true;
+      try { fs.symlinkSync(other, path.join(t.real, 'auth.json'), 'file'); } catch (_) { linkMade = false; }
+      if (linkMade) {
+        expect(driver.persistIsolatedCodexAuth(r.dir, t.real)).toEqual(expect.objectContaining({ status: 'failed', reason: 'real auth.json is not a regular file' }));
+        expect(fs.readFileSync(other, 'utf8')).toBe('{"o":1}');
+      }
+      fs.rmSync(t.base, { recursive: true, force: true });
+    });
   });
 
   describe('carried model settings', () => {
@@ -363,7 +499,14 @@ if (process.env.FAKE_HOME_RECORD) {
   try { entries = fs.readdirSync(h).sort(); } catch (_) {}
   let mode = null;
   try { mode = fs.statSync(h).mode & 0o777; } catch (_) {}
-  fs.writeFileSync(process.env.FAKE_HOME_RECORD, JSON.stringify({ codexHome: h, entries, config, auth, mode }));
+  const routingEnv = Object.keys(process.env).filter((k) => /^(CODEX_|OPENAI_)/i.test(k)).sort();
+  fs.writeFileSync(process.env.FAKE_HOME_RECORD, JSON.stringify({ codexHome: h, entries, config, auth, mode, routingEnv }));
+}
+// Simulates a token refresh written as temp file + rename over auth.json.
+if (process.env.FAKE_AUTH_REFRESH) {
+  const h = process.env.CODEX_HOME || '';
+  fs.writeFileSync(path.join(h, 'auth.json.refresh-tmp'), process.env.FAKE_AUTH_REFRESH);
+  fs.renameSync(path.join(h, 'auth.json.refresh-tmp'), path.join(h, 'auth.json'));
 }
 const script = JSON.parse(process.env.FAKE_SCRIPT || '[]');
 const record = process.env.FAKE_RECORD;
@@ -414,6 +557,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     fs.mkdirSync(tmpParent);
     const homeRec = path.join(home, 'home.json');
     const mcpHomeRec = path.join(home, 'mcp-home.txt');
+    const mcpEnvRec = path.join(home, 'mcp-env.txt');
     const rec = path.join(home, 'rec.json');
     const argvRec = path.join(home, 'argv.json');
     const auditLog = path.join(home, 'audit.jsonl');
@@ -445,11 +589,18 @@ describe('driver E2E: MCP / app activity is blocked', () => {
         FAKE_ARGV_RECORD: argvRec,
         FAKE_HOME_RECORD: homeRec,
         FAKE_MCP_HOME_RECORD: mcpHomeRec,
+        FAKE_MCP_ENV_RECORD: mcpEnvRec,
         ...env,
       },
     });
     const read = (p: string) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null);
-    const leftover = fs.statSync(tmpParent).isDirectory()
+    const homesParent = path.join(tmpParent, driver.CODEX_ISOLATED_HOMES_PARENT);
+    const homesParentReal = fs.existsSync(homesParent) ? fs.realpathSync(homesParent) : null;
+    const leftover = homesParentReal
+      ? fs.readdirSync(homesParentReal).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX))
+      : [];
+    // the old layout (homes directly in TMPDIR) is never used
+    const leftoverInTmp = fs.statSync(tmpParent).isDirectory()
       ? fs.readdirSync(tmpParent).filter((n) => n.startsWith(driver.CODEX_ISOLATED_HOME_PREFIX))
       : [];
     const result = {
@@ -461,9 +612,12 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       audit: fs.existsSync(auditLog) ? fs.readFileSync(auditLog, 'utf8') : '',
       workerHome: read(homeRec),
       mcpListHomes: fs.existsSync(mcpHomeRec) ? fs.readFileSync(mcpHomeRec, 'utf8').split('\n').filter(Boolean) : [],
+      mcpListEnv: fs.existsSync(mcpEnvRec) ? fs.readFileSync(mcpEnvRec, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [],
       leftover,
+      leftoverInTmp,
       realHome,
       tmpParent,
+      homesParentReal,
       realAuthAfter: fs.existsSync(path.join(realHome, 'auth.json')) ? fs.readFileSync(path.join(realHome, 'auth.json'), 'utf8') : null,
     };
     fs.rmSync(home, { recursive: true, force: true });
@@ -491,10 +645,11 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(w).not.toBeNull();
     expect(w.codexHome).not.toBe('');
     expect(path.resolve(w.codexHome)).not.toBe(path.resolve(r.realHome));
-    expect(path.dirname(w.codexHome)).toBe(r.tmpParent);
+    expect(path.dirname(w.codexHome)).toBe(r.homesParentReal);
+    expect(r.leftoverInTmp).toEqual([]);
     expect(path.basename(w.codexHome).startsWith(driver.CODEX_ISOLATED_HOME_PREFIX)).toBe(true);
     // the user's config (MCP server, notify) is not there; only the generated one
-    expect(w.entries).toEqual(['auth.json', 'config.toml']);
+    expect(w.entries).toEqual([driver.CODEX_ISOLATED_HOME_MARKER, 'auth.json', 'config.toml']);
     expect(w.config).toBe(driver.codexWorkerConfigToml());
     expect(w.config).not.toMatch(/^\[mcp_servers/m);
     expect(w.config).not.toContain('realsrv');
@@ -513,7 +668,51 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(start.codexHome).toBe('isolated');
     expect(start.codexHomeCarried).toEqual([]);
     expect(start.codexHomeAgentsMd).toBe('absent');
-    expect(r.audit).not.toContain('codex_isolated_auth_replaced');
+    expect(r.audit).not.toContain('codex_isolated_auth_persist');
+  }, 60_000);
+
+  it('CODEX_* / OPENAI_* routing vars from the parent env never reach the preflight or the app-server; names only are audited', () => {
+    const hostile = {
+      OPENAI_BASE_URL: 'https://evil.example/v1',
+      OPENAI_API_BASE: 'https://evil.example/v1',
+      OPENAI_ORGANIZATION: 'org-evil',
+      OPENAI_PROJECT: 'proj-evil',
+      OPENAI_API_KEY: 'sk-hostile-value',
+      CODEX_PROFILE: 'evil',
+      CODEX_CONFIG: '/evil/config.toml',
+      CODEX_API_KEY: 'hostile-codex-key',
+      CODEX_CA_CERTIFICATE: '/evil/ca.pem',
+      codex_lowercase: 'x',
+    };
+    const r = run([], hostile);
+    expect(r.status).toBe(0);
+    // only the driver-set CODEX_HOME is left
+    expect(r.workerHome.routingEnv).toEqual(['CODEX_HOME']);
+    expect(r.mcpListEnv).toEqual([['CODEX_HOME']]);
+    const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+    expect(start.codexEnvDropped).toEqual(expect.arrayContaining(Object.keys(hostile)));
+    expect(start.codexEnvDropped).not.toContain('CODEX_HOME');
+    for (const value of Object.values(hostile)) {
+      if (value.length > 3) expect(r.audit).not.toContain(value);
+    }
+  }, 60_000);
+
+  it('a temp+rename token refresh in the isolated home is persisted to the real auth.json', () => {
+    const r = run([], { FAKE_AUTH_REFRESH: '{"REAL":"REFRESHED"}' });
+    expect(r.status).toBe(0);
+    expect(r.realAuthAfter).toBe('{"REAL":"REFRESHED"}');
+    expect(auditKinds(r.audit)).toContain('codex_isolated_auth_persisted');
+    expect(r.audit).not.toContain('REFRESHED');
+    expect(r.leftover).toEqual([]);
+  }, 60_000);
+
+  it('an invalid refreshed auth.json is not persisted; the run result stays, the failure is audited and warned', () => {
+    const r = run([], { FAKE_AUTH_REFRESH: '{broken' });
+    expect(r.status).toBe(0);
+    expect(r.realAuthAfter).toBe('{"REAL":"AUTH"}');
+    expect(auditKinds(r.audit)).toContain('codex_isolated_auth_persist_failed');
+    expect(r.out).toMatch(/could not be saved/);
+    expect(r.leftover).toEqual([]);
   }, 60_000);
 
   it('the worker home carries the allowlisted model settings and a copy of AGENTS.md; driver_start records them', () => {
@@ -523,7 +722,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     });
     expect(r.status).toBe(0);
     const w = r.workerHome;
-    expect(w.entries).toEqual(['AGENTS.md', 'auth.json', 'config.toml']);
+    expect(w.entries).toEqual([driver.CODEX_ISOLATED_HOME_MARKER, 'AGENTS.md', 'auth.json', 'config.toml']);
     expect(w.config).toBe(driver.codexWorkerConfigToml({ model: 'gpt-5.5', model_reasoning_effort: 'high' }));
     expect(w.config).not.toContain('evilproxy');
     expect(w.config).not.toContain('realsrv');

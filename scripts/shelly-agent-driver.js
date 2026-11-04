@@ -547,6 +547,34 @@ function codexChildEnv(input) {
   return env;
 }
 
+// 2026-11-04 review: the isolated CODEX_HOME only helps if nothing in the
+// environment reroutes Codex around the generated config. CODEX_* (profile /
+// config / home / CA selectors) and OPENAI_* (OPENAI_BASE_URL, ORG, PROJECT,
+// API keys) are therefore removed from the Codex worker's children (preflight
+// and app-server); the only CODEX_* var they get is the CODEX_HOME the driver
+// sets. API keys are dropped too: the worker authenticates with the ChatGPT
+// login in auth.json (lib/agent-credential-policy.ts: codex = OAuth, "NO API
+// key in env"), and nothing in Shelly sets OPENAI_API_KEY / CODEX_API_KEY for
+// it. Proxy vars (HTTPS_PROXY & co.) are kept: Shelly sets them only for the
+// Claude runner, a host user may need one, and TLS still has to verify (the CA
+// override CODEX_CA_CERTIFICATE is dropped by the prefix rule). Only the NAMES
+// of dropped vars are audited (driver_start.codexEnvDropped), never values.
+const CODEX_WORKER_ENV_ROUTING = /^(CODEX_|OPENAI_)/i;
+
+/** → {env, dropped: [names]}; CODEX_HOME is set only from `codexHome`. */
+function codexWorkerEnv(input, codexHome) {
+  const env = { ...input };
+  const dropped = [];
+  for (const key of Object.keys(env)) {
+    if (CODEX_WORKER_ENV_ROUTING.test(key)) {
+      delete env[key];
+      if (key !== 'CODEX_HOME') dropped.push(key);
+    }
+  }
+  if (codexHome) env.CODEX_HOME = codexHome;
+  return { env, dropped: dropped.sort() };
+}
+
 // ─── MCP servers / ChatGPT apps are off for the Codex worker ──────────────
 // MCP and app (connector) tool calls run inside Codex: app-server sends no
 // approval request for them that this driver could gate (only command and
@@ -688,13 +716,16 @@ function codexMcpPreflight(config, runner = defaultCodexMcpListRunner) {
 // missing from `mcp list`, config drift between the preflight and app-server,
 // or another profile / config layer bypasses them. So the worker (and its
 // preflight) never reads the user's Codex home at all: each run gets a fresh
-// CODEX_HOME under $TMPDIR (mode 0700, removed when the driver exits) holding
-// only
+// CODEX_HOME under $TMPDIR/shelly-codex-homes (mode 0700, removed when the
+// driver exits; see ensureCodexIsolatedHomesParent) holding only a marker file
+// and
 //   - config.toml written here (codexWorkerConfigToml): no [mcp_servers],
 //     [profiles], [projects] trust entries, hooks or notify;
 //   - auth.json: a symlink to the real $CODEX_HOME/auth.json (default
 //     ~/.codex/auth.json), so the ChatGPT login works and a token refresh
-//     writes the real file. If the link cannot be made the run fails closed.
+//     writes the real file (a refresh that replaces the link is copied back
+//     at exit: persistIsolatedCodexAuth). If the link cannot be made the run
+//     fails closed.
 // Apart from the carried settings below, nothing else is copied: Codex recreates what it needs (installation_id,
 // models cache, log/, sessions/ — threads are ephemeral anyway). Without a
 // [projects] trust entry Codex does not load the workspace's project layer
@@ -865,23 +896,80 @@ function codexWorkerConfigToml(carried = {}) {
   return lines.join('\n');
 }
 
-function sweepStaleCodexIsolatedHomes(parent, fsImpl = fs, now = Date.now()) {
+// 2026-11-04 review: TMPDIR may be chosen (or symlinked) by someone else, so
+// the per-run homes never live directly in it and the stale sweep never reads
+// it. They live in one fixed parent, <tmp>/shelly-codex-homes (inside the
+// temp dir; no new persistent directory), which must be a real directory (not
+// a symlink) owned by this uid and not group/other-writable — otherwise the
+// run fails closed (codex_home_isolation_failed). Each home holds a marker
+// file (CODEX_ISOLATED_HOME_MARKER, a random 128-bit token, regular file,
+// owned by this uid); the sweep only removes direct children of the verified
+// parent that are real directories with that marker, owned by this uid, older
+// than a day. fs.rmSync({recursive}) lstat()s every entry and unlinks a
+// symlink instead of descending into it (Node's rimraf), so the auth.json
+// link and anything Codex left there are removed without touching their
+// targets. Owner / mode checks need POSIX uids (process.getuid); on Windows
+// (dev PC tests only) just the symlink / directory / marker checks apply.
+const CODEX_ISOLATED_HOMES_PARENT = 'shelly-codex-homes';
+const CODEX_ISOLATED_HOME_MARKER = '.shelly-codex-home';
+
+function processUid() {
+  return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+/** Throws unless `st` is a real directory owned by `uid` and not group/other-writable. */
+function assertPrivateDir(st, label, uid = processUid()) {
+  if (st.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!st.isDirectory()) throw new Error(`${label} is not a directory`);
+  if (uid !== null) {
+    if (st.uid !== uid) throw new Error(`${label} is not owned by this user`);
+    if ((st.mode & 0o022) !== 0) throw new Error(`${label} is group/other-writable`);
+  }
+}
+
+/** Creates / verifies <tmp>/shelly-codex-homes → its real path; throws on anything unsafe. */
+function ensureCodexIsolatedHomesParent(env = process.env, fsImpl = fs) {
+  const parent = path.join(codexIsolatedHomeParent(env), CODEX_ISOLATED_HOMES_PARENT);
+  fsImpl.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertPrivateDir(fsImpl.lstatSync(parent), 'isolated home parent');
+  const real = fsImpl.realpathSync(parent);
+  assertPrivateDir(fsImpl.lstatSync(real), 'isolated home parent');
+  return real;
+}
+
+function isMarkedCodexIsolatedHome(dir, fsImpl = fs, uid = processUid()) {
+  try {
+    const st = fsImpl.lstatSync(path.join(dir, CODEX_ISOLATED_HOME_MARKER));
+    if (st.isSymbolicLink() || !st.isFile()) return false;
+    return uid === null || st.uid === uid;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** `parent` must come from ensureCodexIsolatedHomesParent. → names removed. */
+function sweepStaleCodexIsolatedHomes(parent, fsImpl = fs, now = Date.now(), uid = processUid()) {
+  const removed = [];
   let names = [];
   try {
     names = fsImpl.readdirSync(parent);
   } catch (_) {
-    return;
+    return removed;
   }
   for (const name of names) {
     if (!name.startsWith(CODEX_ISOLATED_HOME_PREFIX)) continue;
     const dir = path.join(parent, name);
     try {
       const st = fsImpl.lstatSync(dir);
-      if (st.isDirectory() && now - st.mtimeMs > CODEX_ISOLATED_HOME_STALE_MS) {
-        fsImpl.rmSync(dir, { recursive: true, force: true });
-      }
+      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      if (uid !== null && st.uid !== uid) continue;
+      if (now - st.mtimeMs <= CODEX_ISOLATED_HOME_STALE_MS) continue;
+      if (!isMarkedCodexIsolatedHome(dir, fsImpl, uid)) continue;
+      fsImpl.rmSync(dir, { recursive: true, force: true });
+      removed.push(name);
     } catch (_) {}
   }
+  return removed;
 }
 
 function removeCodexIsolatedHome(dir, fsImpl = fs) {
@@ -892,21 +980,107 @@ function removeCodexIsolatedHome(dir, fsImpl = fs) {
   } catch (_) {}
 }
 
+// ─── Persisting a token refresh that replaced the auth.json link ──────────
+// Codex may refresh the ChatGPT token by writing a temp file and renaming it
+// over auth.json; in the isolated home that replaces the symlink with a
+// regular file, so the refreshed (and possibly rotated) token would be lost
+// with the home. At exit the driver copies such a file back to the real
+// auth.json: ≤ 64 KiB, a JSON object, and only when the real auth.json is
+// still a regular file (not a symlink); written as a 0600 temp file in the
+// real home, fsync'd and renamed over it. Failure does not change the run's
+// result (the work is done, and failing it would not restore the token) but
+// is audited (codex_isolated_auth_persist_failed) and printed on stderr — the
+// user may have to sign in to Codex again.
+const CODEX_AUTH_MAX_BYTES = 64 * 1024;
+
+function readRegularFileCapped(file, maxBytes, fsImpl = fs) {
+  const noFollow = fs.constants && fs.constants.O_NOFOLLOW ? fs.constants.O_NOFOLLOW : 0;
+  const fd = fsImpl.openSync(file, fs.constants.O_RDONLY | noFollow);
+  try {
+    const st = fsImpl.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a regular file');
+    if (st.size > maxBytes) throw new Error('too large');
+    const buf = Buffer.alloc(maxBytes + 1);
+    let total = 0;
+    for (;;) {
+      const n = fsImpl.readSync(fd, buf, total, buf.length - total, null);
+      if (n <= 0) break;
+      total += n;
+      if (total > maxBytes) throw new Error('too large');
+    }
+    return buf.subarray(0, total);
+  } finally {
+    try { fsImpl.closeSync(fd); } catch (_) {}
+  }
+}
+
+/**
+ * → {status: 'linked' | 'persisted' | 'failed', reason?, bytes?}. Never throws.
+ * 'linked': auth.json is still the symlink (refreshes went to the real file).
+ */
+function persistIsolatedCodexAuth(isolatedDir, realHome, fsImpl = fs) {
+  const isolated = path.join(isolatedDir, 'auth.json');
+  let st;
+  try {
+    st = fsImpl.lstatSync(isolated);
+  } catch (error) {
+    return { status: 'failed', reason: `isolated auth.json missing (${error && error.code ? error.code : 'error'})` };
+  }
+  if (st.isSymbolicLink()) return { status: 'linked' };
+  if (!st.isFile()) return { status: 'failed', reason: 'isolated auth.json is not a regular file' };
+  let data;
+  try {
+    data = readRegularFileCapped(isolated, CODEX_AUTH_MAX_BYTES, fsImpl);
+  } catch (error) {
+    return { status: 'failed', reason: `isolated auth.json unreadable: ${String(error && error.message ? error.message : error).slice(0, 80)}` };
+  }
+  try {
+    const parsed = JSON.parse(data.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+  } catch (_) {
+    return { status: 'failed', reason: 'isolated auth.json is not a JSON object' };
+  }
+  const real = path.join(realHome, 'auth.json');
+  try {
+    const rst = fsImpl.lstatSync(real);
+    if (rst.isSymbolicLink() || !rst.isFile()) return { status: 'failed', reason: 'real auth.json is not a regular file' };
+  } catch (_) {
+    return { status: 'failed', reason: 'real auth.json is missing' };
+  }
+  const tmp = path.join(realHome, `.auth.json.shelly-${crypto.randomBytes(8).toString('hex')}.tmp`);
+  let fd = null;
+  try {
+    fd = fsImpl.openSync(tmp, 'wx', 0o600);
+    fsImpl.writeSync(fd, data, 0, data.length, 0);
+    fsImpl.fsyncSync(fd);
+    fsImpl.closeSync(fd);
+    fd = null;
+    fsImpl.renameSync(tmp, real);
+    return { status: 'persisted', bytes: data.length };
+  } catch (error) {
+    if (fd !== null) { try { fsImpl.closeSync(fd); } catch (_) {} }
+    try { fsImpl.rmSync(tmp, { force: true }); } catch (_) {}
+    return { status: 'failed', reason: `write failed: ${String(error && error.code ? error.code : error && error.message ? error.message : error).slice(0, 80)}` };
+  }
+}
+
 /**
  * → {ok:true, dir, realHome, carried: [keys], agentsMd: status} or
  * {ok:false, reason}; never leaves a half-made home.
  */
 function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
-  const parent = codexIsolatedHomeParent(env);
   const realHome = realCodexHome(env);
   const carried = readCarriedCodexConfig(realHome, fsImpl);
   let dir = null;
+  let swept = [];
   try {
-    fsImpl.mkdirSync(parent, { recursive: true, mode: 0o700 });
-    sweepStaleCodexIsolatedHomes(parent, fsImpl);
+    const parent = ensureCodexIsolatedHomesParent(env, fsImpl);
+    swept = sweepStaleCodexIsolatedHomes(parent, fsImpl);
     dir = fsImpl.mkdtempSync(path.join(parent, CODEX_ISOLATED_HOME_PREFIX));
     fsImpl.chmodSync(dir, 0o700);
+    assertPrivateDir(fsImpl.lstatSync(dir), 'isolated home');
     if (path.resolve(dir) === realHome) throw new Error('isolated home equals the real Codex home');
+    fsImpl.writeFileSync(path.join(dir, CODEX_ISOLATED_HOME_MARKER), `${crypto.randomBytes(16).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
     fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(carried.values), { mode: 0o600 });
   } catch (error) {
     removeCodexIsolatedHome(dir, fsImpl);
@@ -920,11 +1094,7 @@ function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
     return { ok: false, reason: `auth.json symlink failed: ${String(error && error.code ? error.code : error && error.message ? error.message : error).slice(0, 200)}` };
   }
   const agentsMd = copyCodexAgentsMd(realHome, dir, fsImpl);
-  return { ok: true, dir, realHome, carried: carried.keys, agentsMd };
-}
-
-function codexHomeEnv(config) {
-  return config && config.codexHome ? { CODEX_HOME: config.codexHome } : {};
+  return { ok: true, dir, realHome, carried: carried.keys, agentsMd, swept: swept.length };
 }
 
 function codexAppServerSpawnSpec(config, mcpServerNames = []) {
@@ -933,10 +1103,9 @@ function codexAppServerSpawnSpec(config, mcpServerNames = []) {
   if (android) {
     const codexTui = resolveAndroidCodexTui(android.libDir);
     const codexDir = path.dirname(codexTui);
-    const env = codexChildEnv({
+    const { env, dropped } = codexWorkerEnv(codexChildEnv({
       ...androidBaseEnv(android.libDir),
       ...androidToolEnv(android.libDir),
-      ...codexHomeEnv(config),
       // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_tui.
       // The shell wrapper's native-crash fallback is not duplicated here; this
       // selector health-gates app-data runtime before bundled codex_tui fallback.
@@ -945,7 +1114,7 @@ function codexAppServerSpawnSpec(config, mcpServerNames = []) {
       SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
-    });
+    }), config && config.codexHome);
     const prefixArgs = [codexTui, ...codexPolicyEnvArgs(env)];
     const args = [...prefixArgs, 'app-server', ...mcpArgs, '--listen', 'stdio://'];
     return {
@@ -954,6 +1123,7 @@ function codexAppServerSpawnSpec(config, mcpServerNames = []) {
       prefixArgs,
       args,
       env,
+      droppedEnv: dropped,
       display: [ANDROID_LINKER64, ...args],
       codexBinary: codexTui,
       codexTui,
@@ -961,12 +1131,14 @@ function codexAppServerSpawnSpec(config, mcpServerNames = []) {
     };
   }
   const args = ['app-server', ...mcpArgs, '--listen', 'stdio://'];
+  const { env, dropped } = codexWorkerEnv(codexChildEnv(process.env), config && config.codexHome);
   return {
     mode: 'host-path',
     command: config.codexBin,
     prefixArgs: [],
     args,
-    env: codexChildEnv({ ...process.env, ...codexHomeEnv(config) }),
+    env,
+    droppedEnv: dropped,
     display: [config.codexBin, ...args],
     codexBinary: null,
     codexTui: null,
@@ -2206,8 +2378,21 @@ async function runDriver(config) {
     setTimeout(() => process.exit(1), 50);
     return;
   }
-  // Every exit path ends in process.exit (or a signal handled below).
-  process.once('exit', () => removeCodexIsolatedHome(isolatedHome.dir));
+  // Every exit path ends in process.exit (or a signal handled below). A token
+  // refresh that replaced the auth.json link is copied back first (the run's
+  // result is kept either way; a failure is audited and printed on stderr).
+  process.once('exit', () => {
+    const persisted = persistIsolatedCodexAuth(isolatedHome.dir, isolatedHome.realHome);
+    if (persisted.status === 'persisted') {
+      audit('codex_isolated_auth_persisted', { bytes: persisted.bytes });
+    } else if (persisted.status === 'failed') {
+      audit('codex_isolated_auth_persist_failed', { reason: persisted.reason });
+      try {
+        process.stderr.write(`shelly-agent-driver: warning: the Codex login refreshed during this run could not be saved (${persisted.reason}); you may need to sign in to Codex again.\n`);
+      } catch {}
+    }
+    removeCodexIsolatedHome(isolatedHome.dir);
+  });
   config = { ...config, codexHome: isolatedHome.dir };
   const mcpPreflight = codexMcpPreflight(config);
   const codexSpawn = codexAppServerSpawnSpec(config, mcpPreflight.ok ? mcpPreflight.names : []);
@@ -2223,6 +2408,8 @@ async function runDriver(config) {
     codexHome: 'isolated',
     codexHomeCarried: isolatedHome.carried,
     codexHomeAgentsMd: isolatedHome.agentsMd,
+    codexHomeSwept: isolatedHome.swept,
+    codexEnvDropped: codexSpawn.droppedEnv,
     codexMcp: {
       ok: mcpPreflight.ok,
       disabledServers: mcpPreflight.names,
@@ -2321,13 +2508,6 @@ async function runDriver(config) {
     if (completed) return;
     completed = true;
     clearTimeout(timeout);
-    try {
-      // A refresh that replaced the link (instead of writing through it)
-      // would leave the real auth.json stale; record it for on-device checks.
-      if (!fs.lstatSync(path.join(config.codexHome, 'auth.json')).isSymbolicLink()) {
-        audit('codex_isolated_auth_replaced', { note: 'auth.json in the isolated CODEX_HOME is no longer a symlink' });
-      }
-    } catch {}
     audit('driver_finish', { reason, exitCode, threadId });
     if (child.exitCode === null && child.signalCode === null) {
       try {
@@ -3814,6 +3994,13 @@ module.exports = {
   copyCodexAgentsMd,
   createCodexIsolatedHome,
   removeCodexIsolatedHome,
+  codexWorkerEnv,
+  CODEX_ISOLATED_HOMES_PARENT,
+  CODEX_ISOLATED_HOME_MARKER,
+  assertPrivateDir,
+  ensureCodexIsolatedHomesParent,
+  sweepStaleCodexIsolatedHomes,
+  persistIsolatedCodexAuth,
   claudeRunnerSpawnSpec,
   gateSpawnSpec,
   isUnattendedPolicy,
