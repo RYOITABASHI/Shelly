@@ -547,12 +547,563 @@ function codexChildEnv(input) {
   return env;
 }
 
-function codexAppServerSpawnSpec(config) {
+// 2026-11-04 review: the isolated CODEX_HOME only helps if nothing in the
+// environment reroutes Codex around the generated config. CODEX_* (profile /
+// config / home / CA selectors) and OPENAI_* (OPENAI_BASE_URL, ORG, PROJECT,
+// API keys) are therefore removed from the Codex worker's children (preflight
+// and app-server); the only CODEX_* var they get is the CODEX_HOME the driver
+// sets. API keys are dropped too: the worker authenticates with the ChatGPT
+// login in auth.json (lib/agent-credential-policy.ts: codex = OAuth, "NO API
+// key in env"), and nothing in Shelly sets OPENAI_API_KEY / CODEX_API_KEY for
+// it. Proxy vars (HTTPS_PROXY & co.) are kept: Shelly sets them only for the
+// Claude runner, a host user may need one, and TLS still has to verify (the CA
+// override CODEX_CA_CERTIFICATE is dropped by the prefix rule). Only the NAMES
+// of dropped vars are audited (driver_start.codexEnvDropped), never values.
+const CODEX_WORKER_ENV_ROUTING = /^(CODEX_|OPENAI_)/i;
+
+/** → {env, dropped: [names]}; CODEX_HOME is set only from `codexHome`. */
+function codexWorkerEnv(input, codexHome) {
+  const env = { ...input };
+  const dropped = [];
+  for (const key of Object.keys(env)) {
+    if (CODEX_WORKER_ENV_ROUTING.test(key)) {
+      delete env[key];
+      if (key !== 'CODEX_HOME') dropped.push(key);
+    }
+  }
+  if (codexHome) env.CODEX_HOME = codexHome;
+  return { env, dropped: dropped.sort() };
+}
+
+// ─── MCP servers / ChatGPT apps are off for the Codex worker ──────────────
+// MCP and app (connector) tool calls run inside Codex: app-server sends no
+// approval request for them that this driver could gate (only command and
+// file-change approvals), so they would reach the network outside Shelly's
+// gate. The worker therefore never loads them (the Claude worker does the
+// same with --strict-mcp-config). Verified against codex-cli 0.144.4 on the
+// dev PC (2026-11-04): `-c mcp_servers={}` does NOT clear the table (config
+// layers merge), so every configured server is disabled by name with
+// `mcp_servers.<name>.enabled=false` (documented key); `features.plugins=false`
+// drops plugin-bundled servers; `features.apps=false` + `apps._default.enabled
+// =false` turn ChatGPT apps off (documented keys). `-c features.<unknown>=false`
+// is ignored, while `--disable <unknown>` is a hard error, so features are
+// passed with -c (they differ between Codex versions). The server names come
+// from `codex mcp list --json`, and a second listing must show every server
+// disabled, or the worker does not start (codexMcpPreflight).
+const CODEX_WORKER_DISABLED_FEATURES = [
+  'apps',
+  'plugins',
+  'enable_mcp_apps',
+  'skill_mcp_dependency_install',
+  'tool_suggest',
+  'browser_use',
+  'browser_use_external',
+  'computer_use',
+  'in_app_browser',
+  'remote_plugin',
+  // Lifecycle hooks run commands outside the gate (codex-cli 0.144.4 lists
+  // the feature as `hooks`; older builds called it `codex_hooks`).
+  'hooks',
+  'codex_hooks',
+];
+
+// Codex itself only accepts these characters in an MCP server name; anything
+// else could not be addressed safely as a dotted -c key, so it fails closed.
+const CODEX_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+// mcpServer/startupStatus/updated statuses (lowercased, letters only) that
+// mean the server is not running. Anything else — starting, ready, connecting,
+// running, an unknown or missing value — is treated as running and blocks.
+const MCP_STARTUP_NOT_RUNNING = new Set([
+  'disabled',
+  'notstarted',
+  'failed',
+  'cancelled',
+  'canceled',
+  'stopped',
+]);
+
+// The status is a plain string, or an object keyed by the state name
+// (e.g. { failed: { error } }); only the state name is kept, never details.
+function mcpStartupStatusName(status) {
+  if (typeof status === 'string') return status.slice(0, 40);
+  if (status && typeof status === 'object' && !Array.isArray(status)) {
+    if (typeof status.state === 'string') return status.state.slice(0, 40);
+    if (typeof status.status === 'string') return status.status.slice(0, 40);
+    const keys = Object.keys(status);
+    if (keys.length === 1) return keys[0].slice(0, 40);
+  }
+  return null;
+}
+
+function codexMcpDisableArgs(serverNames = []) {
+  const args = [];
+  for (const feature of CODEX_WORKER_DISABLED_FEATURES) args.push('-c', `features.${feature}=false`);
+  args.push('-c', 'apps._default.enabled=false');
+  for (const name of serverNames) {
+    if (!CODEX_MCP_SERVER_NAME.test(name)) throw new Error(`unsafe MCP server name: ${String(name).slice(0, 80)}`);
+    args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
+  return args;
+}
+
+/** `codex mcp list --json` → {servers: [{name, enabled}]} or {error}. */
+function parseCodexMcpList(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout || '').trim());
+  } catch (error) {
+    return { error: `mcp list output is not JSON: ${error.message}` };
+  }
+  if (!Array.isArray(parsed)) return { error: 'mcp list output is not an array' };
+  const servers = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
+      return { error: 'mcp list entry without a name' };
+    }
+    if (!CODEX_MCP_SERVER_NAME.test(entry.name)) {
+      return { error: `unsafe MCP server name: ${entry.name.slice(0, 80)}` };
+    }
+    servers.push({ name: entry.name, enabled: entry.enabled !== false });
+  }
+  return { servers };
+}
+
+function defaultCodexMcpListRunner(spec, args, cwd) {
+  return execFileSync(spec.command, args, {
+    cwd,
+    env: spec.env,
+    encoding: 'utf8',
+    timeout: 30000,
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+// Lists the MCP servers this Codex would load for the worker, disables each by
+// name, and lists again: the worker starts only when every listed server is
+// disabled. Any failure (no listing, unsafe name, a server still enabled) is
+// {ok:false} and the driver refuses to start Codex.
+function codexMcpPreflight(config, runner = defaultCodexMcpListRunner) {
+  const list = (names) => {
+    const spec = codexAppServerSpawnSpec(config, names);
+    const args = [...spec.prefixArgs, 'mcp', 'list', ...codexMcpDisableArgs(names), '--json'];
+    let stdout;
+    try {
+      stdout = runner(spec, args, config.cwd);
+    } catch (error) {
+      return { error: `mcp list failed: ${String(error && error.message ? error.message : error).slice(0, 300)}` };
+    }
+    return parseCodexMcpList(stdout);
+  };
+  const first = list([]);
+  if (first.error) return { ok: false, reason: first.error, names: [] };
+  const names = [...new Set(first.servers.map((s) => s.name))].sort();
+  if (names.length === 0) return { ok: true, names, configuredCount: 0 };
+  const second = list(names);
+  if (second.error) return { ok: false, reason: second.error, names };
+  const stillEnabled = second.servers.filter((s) => s.enabled || !names.includes(s.name)).map((s) => s.name);
+  if (stillEnabled.length > 0) {
+    return { ok: false, reason: 'MCP servers still enabled after disabling them by name', names, stillEnabled };
+  }
+  return { ok: true, names, configuredCount: names.length };
+}
+
+// ─── Isolated CODEX_HOME for the Codex worker (prevention) ────────────────
+// The -c overrides, the preflight and the notification blocks above only
+// react to what Codex reports: an MCP server's startup command (or a hook /
+// `notify` command) can run before the driver sees anything, and a server
+// missing from `mcp list`, config drift between the preflight and app-server,
+// or another profile / config layer bypasses them. So the worker (and its
+// preflight) never reads the user's Codex home at all: each run gets a fresh
+// CODEX_HOME under $TMPDIR/shelly-codex-homes (mode 0700, removed when the
+// driver exits; see ensureCodexIsolatedHomesParent) holding only a marker file
+// and
+//   - config.toml written here (codexWorkerConfigToml): no [mcp_servers],
+//     [profiles], [projects] trust entries, hooks or notify;
+//   - auth.json: a symlink to the real $CODEX_HOME/auth.json (default
+//     ~/.codex/auth.json), so the ChatGPT login works and a token refresh
+//     writes the real file (a refresh that replaces the link is copied back
+//     at exit: persistIsolatedCodexAuth). If the link cannot be made the run
+//     fails closed.
+// Apart from the carried settings below, nothing else is copied: Codex recreates what it needs (installation_id,
+// models cache, log/, sessions/ — threads are ephemeral anyway). Without a
+// [projects] trust entry Codex does not load the workspace's project layer
+// (`.codex/config.toml`, hooks): checked against codex-cli 0.144.4 on the dev
+// PC (2026-11-04) — an untrusted project's `.codex/config.toml` MCP server is
+// not listed, the same project with a trust entry is. Also seen there: Codex
+// skips its PATH helper aliases (`<CODEX_HOME>/tmp/path`, e.g. `apply_patch`
+// as a shell command) when CODEX_HOME is under the system temp dir, with a
+// warning; patches still arrive as fileChange approvals. The interactive
+// `codex` and ~/.codex are unchanged.
+// Two things are carried over from the real home so the worker behaves like
+// the user's Codex:
+//   - model settings: only the allowlisted top-level string keys in
+//     CODEX_WORKER_CARRIED_CONFIG_KEYS (model_provider only when it names a
+//     built-in provider), read by readCarriedCodexConfig from the lines before
+//     the first [table]; values must match CODEX_CARRIED_VALUE. Tables
+//     ([model_providers.*], [mcp_servers.*], [profiles.*], …), base_url,
+//     env_key, notify, hooks, shell env, sandbox / approval keys and anything
+//     unparseable are never copied.
+//   - AGENTS.md (Shelly's guide, e.g. ClosePaw usage): copied (not linked)
+//     when it is a regular file, not a symlink, of at most 64 KiB.
+const CODEX_ISOLATED_HOME_PREFIX = 'shelly-codex-home-';
+const CODEX_WORKER_CARRIED_CONFIG_KEYS = Object.freeze([
+  'model',
+  'model_reasoning_effort',
+  'model_reasoning_summary',
+  'model_verbosity',
+  'model_provider',
+]);
+const CODEX_BUILTIN_MODEL_PROVIDERS = Object.freeze(['openai']);
+const CODEX_CARRIED_VALUE = /^[A-Za-z0-9._:-]{1,64}$/;
+const CODEX_REAL_CONFIG_MAX_BYTES = 1024 * 1024;
+const CODEX_AGENTS_MD_MAX_BYTES = 64 * 1024;
+// Leftovers of a driver that was SIGKILLed (no exit handler ran). Runs are
+// capped far below this, so a live run's home is never swept.
+const CODEX_ISOLATED_HOME_STALE_MS = 24 * 60 * 60 * 1000;
+
+function realCodexHome(env = process.env) {
+  if (env.CODEX_HOME) return path.resolve(env.CODEX_HOME);
+  return path.join(env.HOME || os.homedir(), '.codex');
+}
+
+function codexIsolatedHomeParent(env = process.env) {
+  if (env.TMPDIR) return env.TMPDIR;
+  if (androidLauncherContext() && env.HOME) return path.join(env.HOME, 'tmp');
+  return os.tmpdir();
+}
+
+/**
+ * Allowlisted model settings from the real config.toml text →
+ * {values: {key: value}, keys: [...]}. Only `key = "value"` / `key = 'value'`
+ * lines before the first table header count; a duplicated key is dropped, as
+ * is anything inside a multi-line string. Never throws.
+ */
+function parseCarriedCodexConfig(text) {
+  const found = new Map();
+  const dropped = new Set();
+  if (typeof text !== 'string') return { values: {}, keys: [] };
+  let inMultiline = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (inMultiline) {
+      if (line.split(inMultiline).length % 2 === 0) inMultiline = null;
+      continue;
+    }
+    if (line === '' || line.startsWith('#')) continue;
+    if (line.startsWith('[')) break;
+    for (const delim of ['"""', "'''"]) {
+      if (line.split(delim).length % 2 === 0) { inMultiline = delim; break; }
+    }
+    if (inMultiline) continue;
+    const m = /^([A-Za-z0-9_-]+)\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$/.exec(line);
+    if (!m) continue;
+    const key = m[1];
+    const value = m[2] !== undefined ? m[2] : m[3];
+    if (!CODEX_WORKER_CARRIED_CONFIG_KEYS.includes(key)) continue;
+    if (found.has(key) || dropped.has(key)) {
+      found.delete(key);
+      dropped.add(key);
+      continue;
+    }
+    if (!CODEX_CARRIED_VALUE.test(value)) { dropped.add(key); continue; }
+    if (key === 'model_provider' && !CODEX_BUILTIN_MODEL_PROVIDERS.includes(value)) { dropped.add(key); continue; }
+    found.set(key, value);
+  }
+  const keys = CODEX_WORKER_CARRIED_CONFIG_KEYS.filter((key) => found.has(key));
+  const values = {};
+  for (const key of keys) values[key] = found.get(key);
+  return { values, keys };
+}
+
+/** Reads the real $CODEX_HOME/config.toml (≤ 1 MiB); missing / unreadable → nothing carried. */
+function readCarriedCodexConfig(realHome, fsImpl = fs) {
+  try {
+    const file = path.join(realHome, 'config.toml');
+    const st = fsImpl.statSync(file);
+    if (!st.isFile() || st.size > CODEX_REAL_CONFIG_MAX_BYTES) return { values: {}, keys: [] };
+    return parseCarriedCodexConfig(fsImpl.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return { values: {}, keys: [] };
+  }
+}
+
+/**
+ * Copies the real AGENTS.md into the isolated home when it is a regular file
+ * (not a symlink) of at most 64 KiB → 'copied' | 'absent' | 'skipped_*'.
+ * Never throws; a failed copy leaves no partial file.
+ */
+function copyCodexAgentsMd(realHome, dir, fsImpl = fs) {
+  const src = path.join(realHome, 'AGENTS.md');
+  const dest = path.join(dir, 'AGENTS.md');
+  let st;
+  try {
+    st = fsImpl.lstatSync(src);
+  } catch (_) {
+    return 'absent';
+  }
+  if (st.isSymbolicLink()) return 'skipped_symlink';
+  if (!st.isFile()) return 'skipped_not_file';
+  if (st.size > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+  let fd = null;
+  try {
+    const noFollow = fs.constants && fs.constants.O_NOFOLLOW ? fs.constants.O_NOFOLLOW : 0;
+    fd = fsImpl.openSync(src, fs.constants.O_RDONLY | noFollow);
+    const fst = fsImpl.fstatSync(fd);
+    if (!fst.isFile()) return 'skipped_not_file';
+    if (fst.size > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+    const buf = Buffer.alloc(CODEX_AGENTS_MD_MAX_BYTES + 1);
+    let total = 0;
+    for (;;) {
+      const n = fsImpl.readSync(fd, buf, total, buf.length - total, null);
+      if (n <= 0) break;
+      total += n;
+      if (total > CODEX_AGENTS_MD_MAX_BYTES) return 'skipped_too_large';
+    }
+    fsImpl.writeFileSync(dest, buf.subarray(0, total), { mode: 0o600 });
+    return 'copied';
+  } catch (error) {
+    try { fsImpl.rmSync(dest, { force: true }); } catch (_) {}
+    return error && error.code === 'ELOOP' ? 'skipped_symlink' : 'skipped_error';
+  } finally {
+    if (fd !== null) { try { fsImpl.closeSync(fd); } catch (_) {} }
+  }
+}
+
+function codexWorkerConfigToml(carried = {}) {
+  const carriedLines = [];
+  for (const key of CODEX_WORKER_CARRIED_CONFIG_KEYS) {
+    const value = carried ? carried[key] : undefined;
+    if (typeof value !== 'string' || !CODEX_CARRIED_VALUE.test(value)) continue;
+    if (key === 'model_provider' && !CODEX_BUILTIN_MODEL_PROVIDERS.includes(value)) continue;
+    carriedLines.push(`${key} = ${JSON.stringify(value)}`);
+  }
+  const lines = [
+    '# Generated by shelly-agent-driver for one Codex worker run; removed when the run ends.',
+    '# Deliberately no [mcp_servers], [profiles], [projects] (trust), hooks or notify.',
+    ...(carriedLines.length ? ['# Model settings carried over from the real config.toml (allowlist only).', ...carriedLines] : []),
+    'check_for_update_on_startup = false',
+    'cli_auth_credentials_store = "file"',
+    '',
+    '[features]',
+    ...CODEX_WORKER_DISABLED_FEATURES.map((feature) => `${feature} = false`),
+    '',
+    '[apps._default]',
+    'enabled = false',
+    '',
+  ];
+  return lines.join('\n');
+}
+
+// 2026-11-04 review: TMPDIR may be chosen (or symlinked) by someone else, so
+// the per-run homes never live directly in it and the stale sweep never reads
+// it. They live in one fixed parent, <tmp>/shelly-codex-homes (inside the
+// temp dir; no new persistent directory), which must be a real directory (not
+// a symlink) owned by this uid and not group/other-writable — otherwise the
+// run fails closed (codex_home_isolation_failed). Each home holds a marker
+// file (CODEX_ISOLATED_HOME_MARKER, a random 128-bit token, regular file,
+// owned by this uid); the sweep only removes direct children of the verified
+// parent that are real directories with that marker, owned by this uid, older
+// than a day. fs.rmSync({recursive}) lstat()s every entry and unlinks a
+// symlink instead of descending into it (Node's rimraf), so the auth.json
+// link and anything Codex left there are removed without touching their
+// targets. Owner / mode checks need POSIX uids (process.getuid); on Windows
+// (dev PC tests only) just the symlink / directory / marker checks apply.
+const CODEX_ISOLATED_HOMES_PARENT = 'shelly-codex-homes';
+const CODEX_ISOLATED_HOME_MARKER = '.shelly-codex-home';
+
+function processUid() {
+  return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+/** Throws unless `st` is a real directory owned by `uid` and not group/other-writable. */
+function assertPrivateDir(st, label, uid = processUid()) {
+  if (st.isSymbolicLink()) throw new Error(`${label} is a symlink`);
+  if (!st.isDirectory()) throw new Error(`${label} is not a directory`);
+  if (uid !== null) {
+    if (st.uid !== uid) throw new Error(`${label} is not owned by this user`);
+    if ((st.mode & 0o022) !== 0) throw new Error(`${label} is group/other-writable`);
+  }
+}
+
+/** Creates / verifies <tmp>/shelly-codex-homes → its real path; throws on anything unsafe. */
+function ensureCodexIsolatedHomesParent(env = process.env, fsImpl = fs) {
+  const parent = path.join(codexIsolatedHomeParent(env), CODEX_ISOLATED_HOMES_PARENT);
+  fsImpl.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertPrivateDir(fsImpl.lstatSync(parent), 'isolated home parent');
+  const real = fsImpl.realpathSync(parent);
+  assertPrivateDir(fsImpl.lstatSync(real), 'isolated home parent');
+  return real;
+}
+
+function isMarkedCodexIsolatedHome(dir, fsImpl = fs, uid = processUid()) {
+  try {
+    const st = fsImpl.lstatSync(path.join(dir, CODEX_ISOLATED_HOME_MARKER));
+    if (st.isSymbolicLink() || !st.isFile()) return false;
+    return uid === null || st.uid === uid;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** `parent` must come from ensureCodexIsolatedHomesParent. → names removed. */
+function sweepStaleCodexIsolatedHomes(parent, fsImpl = fs, now = Date.now(), uid = processUid()) {
+  const removed = [];
+  let names = [];
+  try {
+    names = fsImpl.readdirSync(parent);
+  } catch (_) {
+    return removed;
+  }
+  for (const name of names) {
+    if (!name.startsWith(CODEX_ISOLATED_HOME_PREFIX)) continue;
+    const dir = path.join(parent, name);
+    try {
+      const st = fsImpl.lstatSync(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      if (uid !== null && st.uid !== uid) continue;
+      if (now - st.mtimeMs <= CODEX_ISOLATED_HOME_STALE_MS) continue;
+      if (!isMarkedCodexIsolatedHome(dir, fsImpl, uid)) continue;
+      fsImpl.rmSync(dir, { recursive: true, force: true });
+      removed.push(name);
+    } catch (_) {}
+  }
+  return removed;
+}
+
+function removeCodexIsolatedHome(dir, fsImpl = fs) {
+  if (!dir) return;
+  try {
+    // rmSync does not follow the auth.json symlink: the real file stays.
+    fsImpl.rmSync(dir, { recursive: true, force: true });
+  } catch (_) {}
+}
+
+// ─── Persisting a token refresh that replaced the auth.json link ──────────
+// Codex may refresh the ChatGPT token by writing a temp file and renaming it
+// over auth.json; in the isolated home that replaces the symlink with a
+// regular file, so the refreshed (and possibly rotated) token would be lost
+// with the home. At exit the driver copies such a file back to the real
+// auth.json: ≤ 64 KiB, a JSON object, and only when the real auth.json is
+// still a regular file (not a symlink); written as a 0600 temp file in the
+// real home, fsync'd and renamed over it. Failure does not change the run's
+// result (the work is done, and failing it would not restore the token) but
+// is audited (codex_isolated_auth_persist_failed) and printed on stderr — the
+// user may have to sign in to Codex again.
+const CODEX_AUTH_MAX_BYTES = 64 * 1024;
+
+function readRegularFileCapped(file, maxBytes, fsImpl = fs) {
+  const noFollow = fs.constants && fs.constants.O_NOFOLLOW ? fs.constants.O_NOFOLLOW : 0;
+  const fd = fsImpl.openSync(file, fs.constants.O_RDONLY | noFollow);
+  try {
+    const st = fsImpl.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a regular file');
+    if (st.size > maxBytes) throw new Error('too large');
+    const buf = Buffer.alloc(maxBytes + 1);
+    let total = 0;
+    for (;;) {
+      const n = fsImpl.readSync(fd, buf, total, buf.length - total, null);
+      if (n <= 0) break;
+      total += n;
+      if (total > maxBytes) throw new Error('too large');
+    }
+    return buf.subarray(0, total);
+  } finally {
+    try { fsImpl.closeSync(fd); } catch (_) {}
+  }
+}
+
+/**
+ * → {status: 'linked' | 'persisted' | 'failed', reason?, bytes?}. Never throws.
+ * 'linked': auth.json is still the symlink (refreshes went to the real file).
+ */
+function persistIsolatedCodexAuth(isolatedDir, realHome, fsImpl = fs) {
+  const isolated = path.join(isolatedDir, 'auth.json');
+  let st;
+  try {
+    st = fsImpl.lstatSync(isolated);
+  } catch (error) {
+    return { status: 'failed', reason: `isolated auth.json missing (${error && error.code ? error.code : 'error'})` };
+  }
+  if (st.isSymbolicLink()) return { status: 'linked' };
+  if (!st.isFile()) return { status: 'failed', reason: 'isolated auth.json is not a regular file' };
+  let data;
+  try {
+    data = readRegularFileCapped(isolated, CODEX_AUTH_MAX_BYTES, fsImpl);
+  } catch (error) {
+    return { status: 'failed', reason: `isolated auth.json unreadable: ${String(error && error.message ? error.message : error).slice(0, 80)}` };
+  }
+  try {
+    const parsed = JSON.parse(data.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+  } catch (_) {
+    return { status: 'failed', reason: 'isolated auth.json is not a JSON object' };
+  }
+  const real = path.join(realHome, 'auth.json');
+  try {
+    const rst = fsImpl.lstatSync(real);
+    if (rst.isSymbolicLink() || !rst.isFile()) return { status: 'failed', reason: 'real auth.json is not a regular file' };
+  } catch (_) {
+    return { status: 'failed', reason: 'real auth.json is missing' };
+  }
+  const tmp = path.join(realHome, `.auth.json.shelly-${crypto.randomBytes(8).toString('hex')}.tmp`);
+  let fd = null;
+  try {
+    fd = fsImpl.openSync(tmp, 'wx', 0o600);
+    fsImpl.writeSync(fd, data, 0, data.length, 0);
+    fsImpl.fsyncSync(fd);
+    fsImpl.closeSync(fd);
+    fd = null;
+    fsImpl.renameSync(tmp, real);
+    return { status: 'persisted', bytes: data.length };
+  } catch (error) {
+    if (fd !== null) { try { fsImpl.closeSync(fd); } catch (_) {} }
+    try { fsImpl.rmSync(tmp, { force: true }); } catch (_) {}
+    return { status: 'failed', reason: `write failed: ${String(error && error.code ? error.code : error && error.message ? error.message : error).slice(0, 80)}` };
+  }
+}
+
+/**
+ * → {ok:true, dir, realHome, carried: [keys], agentsMd: status} or
+ * {ok:false, reason}; never leaves a half-made home.
+ */
+function createCodexIsolatedHome(env = process.env, fsImpl = fs) {
+  const realHome = realCodexHome(env);
+  const carried = readCarriedCodexConfig(realHome, fsImpl);
+  let dir = null;
+  let swept = [];
+  try {
+    const parent = ensureCodexIsolatedHomesParent(env, fsImpl);
+    swept = sweepStaleCodexIsolatedHomes(parent, fsImpl);
+    dir = fsImpl.mkdtempSync(path.join(parent, CODEX_ISOLATED_HOME_PREFIX));
+    fsImpl.chmodSync(dir, 0o700);
+    assertPrivateDir(fsImpl.lstatSync(dir), 'isolated home');
+    if (path.resolve(dir) === realHome) throw new Error('isolated home equals the real Codex home');
+    fsImpl.writeFileSync(path.join(dir, CODEX_ISOLATED_HOME_MARKER), `${crypto.randomBytes(16).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
+    fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(carried.values), { mode: 0o600 });
+  } catch (error) {
+    removeCodexIsolatedHome(dir, fsImpl);
+    return { ok: false, reason: `isolated CODEX_HOME could not be created: ${String(error && error.message ? error.message : error).slice(0, 200)}` };
+  }
+  try {
+    fsImpl.symlinkSync(path.join(realHome, 'auth.json'), path.join(dir, 'auth.json'), 'file');
+    if (!fsImpl.lstatSync(path.join(dir, 'auth.json')).isSymbolicLink()) throw new Error('auth.json is not a symlink');
+  } catch (error) {
+    removeCodexIsolatedHome(dir, fsImpl);
+    return { ok: false, reason: `auth.json symlink failed: ${String(error && error.code ? error.code : error && error.message ? error.message : error).slice(0, 200)}` };
+  }
+  const agentsMd = copyCodexAgentsMd(realHome, dir, fsImpl);
+  return { ok: true, dir, realHome, carried: carried.keys, agentsMd, swept: swept.length };
+}
+
+function codexAppServerSpawnSpec(config, mcpServerNames = []) {
+  const mcpArgs = codexMcpDisableArgs(mcpServerNames);
   const android = androidLauncherContext();
   if (android) {
     const codexTui = resolveAndroidCodexTui(android.libDir);
     const codexDir = path.dirname(codexTui);
-    const env = codexChildEnv({
+    const { env, dropped } = codexWorkerEnv(codexChildEnv({
       ...androidBaseEnv(android.libDir),
       ...androidToolEnv(android.libDir),
       // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_tui.
@@ -563,25 +1114,31 @@ function codexAppServerSpawnSpec(config) {
       SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
-    });
-    const args = [codexTui, ...codexPolicyEnvArgs(env), 'app-server', '--listen', 'stdio://'];
+    }), config && config.codexHome);
+    const prefixArgs = [codexTui, ...codexPolicyEnvArgs(env)];
+    const args = [...prefixArgs, 'app-server', ...mcpArgs, '--listen', 'stdio://'];
     return {
       mode: 'android-linker64-codex_tui',
       command: ANDROID_LINKER64,
+      prefixArgs,
       args,
       env,
+      droppedEnv: dropped,
       display: [ANDROID_LINKER64, ...args],
       codexBinary: codexTui,
       codexTui,
       libDir: android.libDir,
     };
   }
-  const args = ['app-server', '--listen', 'stdio://'];
+  const args = ['app-server', ...mcpArgs, '--listen', 'stdio://'];
+  const { env, dropped } = codexWorkerEnv(codexChildEnv(process.env), config && config.codexHome);
   return {
     mode: 'host-path',
     command: config.codexBin,
+    prefixArgs: [],
     args,
-    env: codexChildEnv(process.env),
+    env,
+    droppedEnv: dropped,
     display: [config.codexBin, ...args],
     codexBinary: null,
     codexTui: null,
@@ -1804,13 +2361,115 @@ async function runDriver(config) {
   ensureEscalationVerifierKey(config, audit);
   if (config.answerFile) unlinkIfExists(config.answerFile);
   if (config.usageFile) unlinkIfExists(config.usageFile);
-  const codexSpawn = codexAppServerSpawnSpec(config);
+  // Prevention first: the preflight and the worker only ever see a fresh
+  // CODEX_HOME with no MCP servers / apps / plugins / hooks / notify /
+  // profiles / project trust. No isolated home → Codex never starts.
+  const isolatedHome = createCodexIsolatedHome(process.env);
+  if (!isolatedHome.ok) {
+    audit('driver_start', {
+      cwd: config.cwd,
+      codexBin: config.codexBin,
+      codexHome: 'isolation_failed',
+      runId: config.runId,
+      agentId: config.agentId,
+    });
+    audit('codex_home_isolation_failed', { reason: isolatedHome.reason });
+    audit('driver_finish', { reason: 'codex_home_isolation_failed', exitCode: 1, threadId: null });
+    setTimeout(() => process.exit(1), 50);
+    return;
+  }
+  // Every exit path ends in process.exit (or a signal handled below). A token
+  // refresh that replaced the auth.json link is copied back first (the run's
+  // result is kept either way; a failure is audited and printed on stderr).
+  process.once('exit', () => {
+    const persisted = persistIsolatedCodexAuth(isolatedHome.dir, isolatedHome.realHome);
+    if (persisted.status === 'persisted') {
+      audit('codex_isolated_auth_persisted', { bytes: persisted.bytes });
+    } else if (persisted.status === 'failed') {
+      audit('codex_isolated_auth_persist_failed', { reason: persisted.reason });
+      try {
+        process.stderr.write(`shelly-agent-driver: warning: the Codex login refreshed during this run could not be saved (${persisted.reason}); you may need to sign in to Codex again.\n`);
+      } catch {}
+    }
+    removeCodexIsolatedHome(isolatedHome.dir);
+  });
+  config = { ...config, codexHome: isolatedHome.dir };
+  const mcpPreflight = codexMcpPreflight(config);
+  const codexSpawn = codexAppServerSpawnSpec(config, mcpPreflight.ok ? mcpPreflight.names : []);
   const gateSpawn = gateSpawnSpec(config);
+  const driverStartRecord = () => ({
+    cwd: config.cwd,
+    gateScript: config.gateScript,
+    codexBin: config.codexBin,
+    codexLaunchMode: codexSpawn.mode,
+    codexSpawn: codexSpawn.display,
+    codexBinary: codexSpawn.codexBinary,
+    codexTui: codexSpawn.codexTui,
+    codexHome: 'isolated',
+    codexHomeCarried: isolatedHome.carried,
+    codexHomeAgentsMd: isolatedHome.agentsMd,
+    codexHomeSwept: isolatedHome.swept,
+    codexEnvDropped: codexSpawn.droppedEnv,
+    codexMcp: {
+      ok: mcpPreflight.ok,
+      disabledServers: mcpPreflight.names,
+      disabledFeatures: CODEX_WORKER_DISABLED_FEATURES,
+      reason: mcpPreflight.reason || null,
+    },
+    nodeBin: config.nodeBin,
+    gateLaunchMode: gateSpawn.mode,
+    gateSpawn: gateSpawn.display,
+    gateNode: gateSpawn.nodePath,
+    approvalPolicy: config.approvalPolicy,
+    runId: config.runId,
+    agentId: config.agentId,
+    escalationDir: config.escalationDir,
+    escalationReplyDir: process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
+      ? config.escalationReplyDir
+      : '[native-reply-channel]',
+    escalationPublicKey: config.escalationPublicKey,
+    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
+    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
+    escalationTimeoutMs: config.escalationTimeoutMs,
+    escalationTimeoutAction: config.escalationTimeoutAction,
+    preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
+      ? config.preapprovalGrantsFile
+      : '[native-grant-channel]',
+    escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
+    preapprovalGrantRequirement: 'grant JSONL records must be Android-Keystore-signed, exact-command-hash scoped, unexpired, and one-shot by default',
+    policy: {
+      ...config.policy,
+      workspaceRoot: config.policy.workspaceRoot,
+    },
+  });
+  if (!mcpPreflight.ok) {
+    // Fail closed: without proof that no MCP server / app loads, Codex never starts.
+    audit('driver_start', driverStartRecord());
+    audit('codex_mcp_preflight_failed', {
+      reason: mcpPreflight.reason,
+      servers: mcpPreflight.names,
+      stillEnabled: mcpPreflight.stillEnabled || [],
+    });
+    audit('driver_finish', { reason: 'codex_mcp_preflight_failed', exitCode: 1, threadId: null });
+    setTimeout(() => process.exit(1), 50);
+    return;
+  }
   const child = spawn(codexSpawn.command, codexSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: config.cwd,
     env: codexSpawn.env,
   });
+  // SIGTERM / SIGINT would otherwise end node without the exit handler that
+  // removes the isolated home.
+  const onSignal = (signal) => {
+    audit('driver_signal', { signal });
+    try {
+      child.kill('SIGKILL');
+    } catch {}
+    process.exit(143);
+  };
+  process.once('SIGTERM', onSignal);
+  process.once('SIGINT', onSignal);
 
   let buffer = '';
   let nextId = 1;
@@ -1820,6 +2479,7 @@ async function runDriver(config) {
   let initialized = false;
   let threadId = null;
   let turnStarted = false;
+  let activeTurnId = null;
   let completed = false;
   let sawFailure = false;
   let answerText = '';
@@ -1893,6 +2553,48 @@ async function runDriver(config) {
     }
     respondedIds.add(key);
     send({ id, error: { code, message, data: redactDeep(data || null) } });
+  };
+
+  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
+  // inside Codex with no approval request to gate, so any sign of one stops
+  // the turn and fails the run. Only names are recorded, never arguments.
+  const blockMcpActivity = (kind, details) => {
+    if (completed) return;
+    sawFailure = true;
+    const turnId = details && typeof details.turnId === 'string' ? details.turnId : null;
+    audit(kind, details);
+    gateLine(config.auditLog, {
+      threadId: details && details.threadId,
+      turnId,
+      itemId: details && details.itemId,
+      approvalKind: kind,
+      command: '',
+      cwd: config.cwd,
+      answer: 'n',
+      decision: 'abort',
+      reason: 'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+    });
+    if (threadId && turnId) {
+      try {
+        request('turnInterrupt', 'turn/interrupt', { threadId, turnId });
+      } catch {}
+    }
+    finish(kind, 1);
+  };
+
+  const safeName = (value) => (typeof value === 'string' ? value.slice(0, 120) : null);
+
+  const mcpToolCallDetails = (params) => {
+    const item = params && params.item ? params.item : {};
+    return {
+      threadId: params && params.threadId,
+      turnId: params && params.turnId,
+      itemId: safeName(item.id),
+      server: safeName(item.server),
+      tool: safeName(item.tool),
+      pluginId: safeName(item.pluginId),
+      status: safeName(item.status),
+    };
   };
 
   const handleInitialize = () => {
@@ -2191,6 +2893,7 @@ async function runDriver(config) {
         return;
       }
       turnStarted = true;
+      activeTurnId = typeof message.result.turn.id === 'string' ? message.result.turn.id : null;
       audit('turn_started', {
         threadId,
         turnId: message.result.turn.id,
@@ -2233,6 +2936,31 @@ async function runDriver(config) {
       await handleFileChangeApproval(message, 'applyPatchApproval');
       return;
     }
+    if (message.method === 'mcpServer/elicitation/request') {
+      const params = message.params || {};
+      respond(message.id, { action: 'decline', content: null });
+      blockMcpActivity('mcp_elicitation_blocked', {
+        requestId: message.id,
+        method: message.method,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        server: safeName(params.serverName),
+        mode: safeName(params.mode),
+      });
+      return;
+    }
+    if (/^mcp/i.test(message.method)) {
+      respondError(message.id, -32000, `MCP requests are disabled for the Shelly agent worker: ${message.method}`, { method: message.method });
+      const params = message.params || {};
+      blockMcpActivity('mcp_request_blocked', {
+        requestId: message.id,
+        method: message.method,
+        threadId: params.threadId,
+        turnId: params.turnId,
+        server: safeName(params.serverName),
+      });
+      return;
+    }
     sawFailure = true;
     audit('unknown_server_request', {
       requestId: message.id,
@@ -2248,6 +2976,9 @@ async function runDriver(config) {
   };
 
   const handleMessage = async (message) => {
+    // After finish() (e.g. a blocked MCP call) nothing more is answered or
+    // written — in particular no answer file from a late turn/completed.
+    if (completed) return;
     if (isClientResponse(message)) {
       handleClientResponse(message);
       return;
@@ -2259,7 +2990,46 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/started') {
+      const item = message.params && message.params.item;
+      if (item && item.type === 'mcpToolCall') {
+        blockMcpActivity('mcp_tool_call_blocked', { phase: 'started', ...mcpToolCallDetails(message.params) });
+        return;
+      }
       auditItemStarted(message.params);
+      return;
+    }
+
+    if (message.method === 'item/mcpToolCall/progress') {
+      const params = message.params || {};
+      blockMcpActivity('mcp_tool_call_blocked', {
+        phase: 'progress',
+        threadId: params.threadId,
+        turnId: params.turnId,
+        itemId: safeName(params.itemId),
+      });
+      return;
+    }
+
+    if (message.method === 'mcpServer/startupStatus/updated') {
+      // The preflight should leave nothing to start. A server that is starting
+      // or running anyway (e.g. ChatGPT apps `codex_apps`, which `mcp list`
+      // never shows, or a feature key the on-device fork ignores) fails the run
+      // before any tool call. Only a status that clearly means "not running"
+      // is recorded without failing; an unknown or missing status blocks.
+      // Only the server name and status are recorded.
+      const params = message.params || {};
+      const status = mcpStartupStatusName(params.status);
+      const details = {
+        server: safeName(params.name),
+        status,
+        threadId: params.threadId || threadId || null,
+        turnId: typeof params.turnId === 'string' ? params.turnId : activeTurnId,
+      };
+      if (status && MCP_STARTUP_NOT_RUNNING.has(status.toLowerCase().replace(/[^a-z]/g, ''))) {
+        audit('mcp_server_startup_observed', details);
+        return;
+      }
+      blockMcpActivity('mcp_server_startup_blocked', details);
       return;
     }
 
@@ -2276,6 +3046,11 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/completed') {
+      const item = message.params && message.params.item;
+      if (item && item.type === 'mcpToolCall') {
+        blockMcpActivity('mcp_tool_call_blocked', { phase: 'completed', ...mcpToolCallDetails(message.params) });
+        return;
+      }
       checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
       return;
@@ -2364,40 +3139,7 @@ async function runDriver(config) {
     finish(`timeout_${config.timeoutMs}ms`, 124);
   }, config.timeoutMs);
 
-  audit('driver_start', {
-    cwd: config.cwd,
-    gateScript: config.gateScript,
-    codexBin: config.codexBin,
-    codexLaunchMode: codexSpawn.mode,
-    codexSpawn: codexSpawn.display,
-    codexBinary: codexSpawn.codexBinary,
-    codexTui: codexSpawn.codexTui,
-    nodeBin: config.nodeBin,
-    gateLaunchMode: gateSpawn.mode,
-    gateSpawn: gateSpawn.display,
-    gateNode: gateSpawn.nodePath,
-    approvalPolicy: config.approvalPolicy,
-    runId: config.runId,
-    agentId: config.agentId,
-    escalationDir: config.escalationDir,
-    escalationReplyDir: process.env.SHELLY_AGENT_DEBUG_REPLY_PATH === '1'
-      ? config.escalationReplyDir
-      : '[native-reply-channel]',
-    escalationPublicKey: config.escalationPublicKey,
-    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
-    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
-    escalationTimeoutMs: config.escalationTimeoutMs,
-    escalationTimeoutAction: config.escalationTimeoutAction,
-    preapprovalGrantsFile: process.env.SHELLY_AGENT_DEBUG_GRANTS_PATH === '1'
-      ? config.preapprovalGrantsFile
-      : '[native-grant-channel]',
-    escalationReplyChannelRequirement: 'reply files must carry an Android-Keystore-backed SHA256withRSA human signature; unsigned or invalid replies fail closed',
-    preapprovalGrantRequirement: 'grant JSONL records must be Android-Keystore-signed, exact-command-hash scoped, unexpired, and one-shot by default',
-    policy: {
-      ...config.policy,
-      workspaceRoot: config.policy.workspaceRoot,
-    },
-  });
+  audit('driver_start', driverStartRecord());
   request('initialize', 'initialize', {
     clientInfo: { name: 'shelly-agent-driver', version: '0.1.0' },
     capabilities: {},
@@ -3239,6 +3981,26 @@ module.exports = {
   sanitizeWorkerEnv,
   codexChildEnv,
   codexAppServerSpawnSpec,
+  CODEX_WORKER_DISABLED_FEATURES,
+  codexMcpDisableArgs,
+  parseCodexMcpList,
+  codexMcpPreflight,
+  CODEX_ISOLATED_HOME_PREFIX,
+  realCodexHome,
+  codexWorkerConfigToml,
+  CODEX_WORKER_CARRIED_CONFIG_KEYS,
+  parseCarriedCodexConfig,
+  readCarriedCodexConfig,
+  copyCodexAgentsMd,
+  createCodexIsolatedHome,
+  removeCodexIsolatedHome,
+  codexWorkerEnv,
+  CODEX_ISOLATED_HOMES_PARENT,
+  CODEX_ISOLATED_HOME_MARKER,
+  assertPrivateDir,
+  ensureCodexIsolatedHomesParent,
+  sweepStaleCodexIsolatedHomes,
+  persistIsolatedCodexAuth,
   claudeRunnerSpawnSpec,
   gateSpawnSpec,
   isUnattendedPolicy,
