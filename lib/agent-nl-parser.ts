@@ -19,7 +19,7 @@
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
-import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
+import { buildArticleDigestPipeline, buildArticlePipeline, buildSteamPipeline, type ArticleStream, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import { detectRunWithoutApprovalLevel, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
 import { deriveWorkspaceRootFromText } from './agent-workspace-from-request';
@@ -103,6 +103,12 @@ export interface ParsedAgentDraft {
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
+  /** Article pipeline: Agent.orchestration.longform. */
+  longform?: boolean;
+  /** Article pipeline: the output folder and file name the agent is created
+   *  with. Distinct from the free-text `outputPath` hint below, which the
+   *  summary displays but registration does not store. */
+  presetOutput?: { outputPath: string; outputTemplate: string };
   /** Set when the utterance asked for a delivery action that isn't backed by a
    *  real `action.type` (LINE-posting — "LINEに投稿して" has no wired dispatch
    *  at all; X-posting without a registered connector — see
@@ -1775,6 +1781,7 @@ function detectSocialPost(text: string, connectors: SocialConnectorMeta[]): Soci
 // this is a caveat surfaced verbatim in the chat/card, not a static UI label.
 const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
   'SNS投稿には登録済みのコネクタが必要です。まず Settings → Social Connectors でコネクタを登録してください。今回は下書き（ファイル保存）として登録します。';
+const PRESET_DRAFT_ONLY_CAVEAT = '記事パイプラインは投稿しません。下書き（ファイル保存）として登録します。公開は手動です。';
 
 // ── Multi-platform social-post detection (2026-07-28 — DEFERRED.md's "エージェ
 // ント1件から複数プラットフォームへ同時配信できない" entry, authoring-side
@@ -2413,6 +2420,22 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   return s || text.trim();
 }
 
+/** Which daily article stream an utterance names, or the digest. English comes
+ *  from the words 英語 / English, or from a medium that is only used in English. */
+function detectArticleStream(text: string): ArticleStream | 'digest' | null {
+  if (!/記事|下書き|\barticles?\b|\bdrafts?\b/i.test(text)) return null;
+  // "STEAMの記事を集めるパイプライン" asks for the collection preset.
+  if (/集め|収集|\bcollect|\bgather/i.test(text)) return null;
+  if (/ダイジェスト|\bdigest\b/i.test(text)) return 'digest';
+  if (/steam/i.test(text)) return 'ai-steam';
+  const english = /英語|\benglish\b/i.test(text);
+  if (/substack/i.test(text)) return 'vintage-en';
+  if (/古着|ビンテージ|ヴィンテージ|\bvintage\b|はてな|\bhatena\b/i.test(text)) return english ? 'vintage-en' : 'vintage-ja';
+  if (/dev\.to/i.test(text)) return 'dev-en';
+  if (/開発記|開発ログ|開発の記事|\bdevlog\b|\bzenn\b/i.test(text)) return english ? 'dev-en' : 'dev-ja';
+  return null;
+}
+
 /**
  * G6: an explicit "パイプライン" / "pipeline" request builds the ready-made STEAM
  * collection pipeline (search → primary source → summarize → char-limited
@@ -2432,6 +2455,11 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
   ) {
     return null;
   }
+  // "AI×STEAMの記事パイプライン": a daily article stream or the digest, not the
+  // collection preset below.
+  const articleStream = detectArticleStream(text);
+  if (articleStream === 'digest') return buildArticleDigestPipeline();
+  if (articleStream) return buildArticlePipeline(articleStream);
   const m = text.match(
     /(.+?)(?:の|を|に関する)?\s*(?:最新の?)?\s*(?:ニュース|論文|情報|動向)?\s*(?:を)?\s*(?:パイプライン|pipeline)/i,
   );
@@ -2689,8 +2717,13 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   if (preset) {
     const presetSched = parseSchedule(rawText);
     const presetSuggestion = suggestTool(preset.prompt);
-    const presetAction = detectAction(rawText);
-    const presetActionCaveat = presetAction.type === 'draft' ? detectActionCaveat(rawText) : undefined;
+    const detectedAction = detectAction(rawText);
+    // A preset that fixes its action (the article pipeline only ever saves a
+    // draft) still says so when the user asked for something else.
+    const presetAction = preset.action ?? detectedAction;
+    const presetActionCaveat = preset.action
+      ? (detectedAction.type !== preset.action.type || /投稿|公開|\bpost\b|\bpublish\b/i.test(rawText) ? PRESET_DRAFT_ONLY_CAVEAT : undefined)
+      : presetAction.type === 'draft' ? detectActionCaveat(rawText) : undefined;
     // Use the preset's Mon/Fri default ONLY when the user gave no schedule cue at
     // all. If they stated one that we couldn't confidently parse (e.g. "90分ごと"),
     // fall to manual selection rather than silently rewriting it to Mon/Fri.
@@ -2709,24 +2742,32 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       // tool mentions to detect) — normalize + extract the instruction so an
       // object-shaped preset step entry can't leak through un-normalized. The
       // Phase 6 tool-pin detector (detectToolPinnedSteps) only runs in the
-      // non-preset branch below, on the user's own utterance text.
-      orchestrationSteps: normalizeSteps(preset.orchestration).map((s) => s.instruction),
+      // non-preset branch below, on the user's own utterance text. A longform
+      // preset's steps carry their pins and hand-offs, so they stay objects.
+      orchestrationSteps: preset.orchestration.longform
+        ? normalizeSteps(preset.orchestration)
+        : normalizeSteps(preset.orchestration).map((s) => s.instruction),
       charLimit: preset.orchestration.charLimit,
+      ...(preset.orchestration.longform ? { longform: true } : {}),
+      ...(preset.output ? { presetOutput: preset.output, outputPath: preset.output.outputPath } : {}),
       schedule,
       scheduleConfident: presetSched.confident || usePresetDefault,
       scheduleLabel: presetSched.confident
         ? presetSched.label
         : usePresetDefault
-        ? '毎週 月・金 8:00'
+        ? preset.scheduleLabel ?? '毎週 月・金 8:00'
         : presetSched.label,
       suggestedTime: presetSched.suggestedTime
         ? { hour: presetSched.suggestedTime.hour, minute: presetSched.suggestedTime.minute }
         : undefined,
       action: presetAction,
-      tool: presetSuggestion.tool,
-      toolLabel: presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),
-      autonomous: true,
-      memory: detectMemory(rawText),
+      tool: preset.tool ?? presetSuggestion.tool,
+      toolLabel: preset.tool ? toolChoiceToLabel(preset.tool) : presetSuggestion.label ?? toolChoiceToLabel(presetSuggestion.tool),
+      // A preset's own tool is stored as-is (RUN ON = Auto would otherwise
+      // store `auto`, see resolveConfirmedToolAndRunOn).
+      ...(preset.tool ? { toolExplicit: true } : {}),
+      autonomous: preset.autonomous,
+      memory: preset.memoryOff ? undefined : detectMemory(rawText),
       actionCaveat: presetActionCaveat,
       scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
       oneShotImplicit: (presetSched.confident && presetSched.oneShotImplicit) || undefined,

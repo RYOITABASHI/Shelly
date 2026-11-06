@@ -83,6 +83,7 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
     memory: agent.memory,
     orchestrationSteps: agent.orchestration?.steps,
     charLimit: agent.orchestration?.charLimit,
+    ...(agent.orchestration?.longform ? { longform: true } : {}),
     notificationTrigger: agent.notificationTrigger ?? undefined,
     // 2026-10-30: a registered agent with no schedule and no trigger is a
     // manual-only agent — keep it one when edited (not a run-now one-shot).
@@ -374,6 +375,9 @@ const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
  * are trusted unconditionally.
  */
 function tryPatchAction(draft: ParsedAgentDraft, text: string): ParsedAgentDraft['action'] | null {
+  // An article pipeline only ever saves a draft (the executor refuses anything
+  // else too).
+  if (draft.longform) return null;
   const detected = detectAction(text);
   const isExplicitHit = detected.type !== 'draft' || EXPLICIT_DRAFT_KEYWORD_RE.test(text);
   if (!isExplicitHit) return null;
@@ -396,6 +400,7 @@ function tryPatchAction(draft: ParsedAgentDraft, text: string): ParsedAgentDraft
  */
 function tryPatchAutonomous(draft: ParsedAgentDraft, text: string): boolean | null {
   if (draft.autonomous === true) return null; // already on — nothing to change
+  if (draft.longform) return null; // an article pipeline stays non-autonomous
   return detectAutonomousIntent(text) === true ? true : null;
 }
 
@@ -651,6 +656,8 @@ export function tryPatchStepTools(
 ): StepToolPatch | { notice: StepProviderNotice } | null {
   const req = parseStepProviderRequest(text);
   if (!req) return null;
+  // An article pipeline has no CLI step (the executor refuses one too).
+  if (draft.longform && req.provider.type === 'cli') return { changedFields: [] };
   const steps = draft.orchestrationSteps ?? [];
   if (steps.length >= 2) {
     const resolved = resolveStepRef(steps, req.ref);
@@ -661,7 +668,7 @@ export function tryPatchStepTools(
     const changedFields: string[] = [];
     const next = steps.map((step, i) => {
       if (!indices.includes(i)) return step;
-      if (typeof step !== 'string' && step.apiCall) return step;
+      if (typeof step !== 'string' && (step.apiCall || step.local)) return step;
       // 「全部Codexで」 never pins a send / post / save / notify step.
       if (req.ref.kind === 'all' && tool.type !== 'auto' && ACTION_LIKE_STEP_RE.test(stepInstruction(step))) return step;
       const current = typeof step === 'string' ? undefined : step.tool;

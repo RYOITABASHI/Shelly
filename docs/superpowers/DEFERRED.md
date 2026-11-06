@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-06: CC（feat/article-pipeline、未push）が記事の毎日下書き Inc 2〜5 を実装（ダイジェスト、キュー、残り 4 ストリーム、ドキュメント）。レビュー指摘を修正して executor v30（査読の偽合格、material の fail-open、投稿経路の executor 強制ほか）。Inc 1 の `.sh` ミラー変更は既存エージェントに影響するので撤回し、スクリプト版は 77 に戻した。実機未検証。確認項目は下記「記事の毎日下書き」エントリ。
 - 2026-11-02: CC（feat/agent-roles-wp3、未push）がエージェントロール Inc A の WP3（`lib/agent-role-router.ts` の決定的ルーティング、確認文の `[ロール · エンジン]` 表示・ワークスペース・最小レベル行・「ロールなしで」での取り消し、確定時のロール最小レベル書き込み）を実装。暗黙ルーティングはロール名／チーム語のときだけ（「実装＋ホームパス」トリガーは見送り）。残課題は下記「エージェントロール Inc A」エントリ。実機未検証。
 - 2026-10-31: CC（fix/rwa-draft-origin、未push）が build 2739 の実機発見「承認なしで実行 ON でも下書き保存の承認が人に回る」を修正（原因はネイティブの minted コピーに origin が無かったこと）。拒否理由のログ、run log 読み取りの潜在バグ、MONITOR の注記残り、詳細ポップアップの操作行を修正。Codex のトークン数は driver 変更が要るため P2 として記録。実機未検証。
 - 2026-10-31: CC（fix/approvals-review、integ/approvals 上、未push）がセキュリティレビュー指摘 H1/H2/M1-M4/L1/L2 を修正。「承認なしで実行」の自動許可を「純粋な読み取り（場所不問）」と「ワークスペース内に収まる書き込み」に限定（ワークスペース外への書き込み・削除は常に人に聞く）、フラグをエージェント定義のハッシュに束縛、チャット/MONITOR の承認表示を署名対象と同じネイティブ読み取りから作るよう変更、通知の nonce をチャネル別に。下記 P1 エントリ 2 件を更新。実機未検証。
@@ -72,6 +73,36 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
+設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v31。下はテストでは確かめられず、実機でしか分からないこと。
+- **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
+- **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
+- **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても 5 本とも下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
+- **実際の出力**: 記事の長さと finish reason（Gemini `MAX_TOKENS`、Cerebras `length`）。途中で切れるなら Inc 6（章分割プリセット）に進む。
+- **無料枠**: 5 本×毎日で Gemini / Cerebras の上限に当たらないか。CAP-001 の 10 分の壁に 8 ステップのチェーンが当たらないか（broker の予算は run ごとにリセットだが、1 run が 10 分を超える可能性がある）。
+- **`/sdcard` の直接読み取り**: `queue-pop` と `list-drafts` は broker を通さず executor の node から読む。`/sdcard/Documents/ObsidianVault` を読めること、realpath（`/storage/emulated/0/…`）が vault の内側と判定されることを確認。読めない場合はダイジェストがエラーになる設計（全ストリーム「未作成」とは出さない）。
+- **`_queue.md` の更新**: broker の fs.write で `[x]` に変わること。Obsidian で開いたままでも壊れないこと。broker の書き込みは atomic でない（`O_TRUNC`）ので、書き込み中に落ちるとキューが欠ける。
+- **アラーム**: Samsung の Doze で 6 本（6:00〜8:00）が発火すること。8:00 のダイジェストが最後のストリームより後になること。
+- **Obsidian と X**: `[[path|title]]` の wikilink が開くこと、intent リンクで X アプリが文面入りで開くこと。
+- **確認の流れ**: 5 本とダイジェストの NL 登録が平文の確認で通ること。ダイジェストの確認文にはツールとして Gemini が出るが、ダイジェストはモデルを呼ばない（表示だけの問題。`tool` は必須項目で、local にするとネイティブがローカル LLM を起動するため避けた）。
+- **通知**: ストリームの成功では通知が出ず、ダイジェストだけが出ること。失敗は通知されること。キューが空の日は通知なしでダイジェストに「未作成」と出ること。
+- **種まき（手作業）**: `docs/promo/articles/devlog/queue-seed.md` を `50_Drafts/Dev/_queue.md` と `50_Drafts/DevEn/_queue.md` に置く。古着の 2 ストリームのキューはまだ無いので、置くまでは毎日「未作成」になる。
+
+### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
+`REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。
+
+### 記事パイプラインの vault パスがプリセットに直書き — 未対応 (P2)
+`lib/agent-pipeline-presets.ts` の `ARTICLE_VAULT_DRAFTS` は `/sdcard/Documents/ObsidianVault/50_Drafts` 固定で、`OBSIDIAN_VAULT_PATH` を別の場所にしている端末では broker が保存を拒否し、キューとダイジェストは設定側の vault を見るので食い違う。直すなら、エージェント作成時に設定の vault から出力先を組み立てる。
+
+### `sanitizeDigestText` がゼロ幅文字を残す — 未対応 (P3)
+U+200B〜U+200D と U+2060 は消さないので、タイトルに入っていても見えないまま wikilink の別名や intent リンクの文面に残る。絵文字の結合に使う U+200D を壊さずに扱う必要がある。正規表現にこの範囲の文字を足す修正は、エスケープの扱いに注意してスクリプトで行う。
+
+### ダイジェストのタイトルに `<` `>` が残る — 未対応 (P3)
+`sanitizeDigestText` は改行・`]]`・`|` などを消すが `<` `>` は残す。Obsidian のノートでは HTML として解釈されうる。本人が読むノートで、タイトルはモデルの出力。実害が出たら文字を落とす。
+
+### Web 調査の後のロール間ハンドオフで `VERDICT: PASS` が捨てられ、レビューが早く終わらない — 未対応 (P2)
+`enforceSourcedIntermediate`（`scripts/shelly-plan-executor.js`、`lib/agent-manager.ts`）は引用のない行を落とすので、調査の後ろにある review ステップの 1 行目 `VERDICT:` が消える。`parseReviewVerdict` が null を返し、`shouldSkipHandoffStep` は修正ステップを飛ばさない。記事パイプライン（`orchestration.longform`）はこの処理を通らないので影響なし。ロールのループは残る。直すなら、handoff ステップの結果を `enforceSourcedIntermediate` の対象から外す。
 
 ### Codex ワーカーの ChatGPT アプリ（MCP）ツール呼び出しがゲートを通るか未確認 — ブランチ `fix/codex-worker-mcp-gate` で無効化を実装・実機未検証 (P1)
 - **2026-11-04 実装（未 push・実機未検証）**: エージェントの Codex ワーカーでは MCP / アプリを一切読み込ませない（fail-closed、`scripts/shelly-agent-driver.js` ＋ asset ミラー）。対話の `codex` は不変。

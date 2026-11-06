@@ -194,6 +194,9 @@ export interface AgentPlanSpecV1 {
      *  step has candidateDirs and the root validates; the executor re-checks
      *  it (absolute, inside home, physical paths) before reading anything. */
     candidateRoot?: string;
+    /** Article pipeline (executor v28): Agent.orchestration.longform. Additive
+     *  (no schema bump): an older executor is refreshed natively first. */
+    longform?: boolean;
   };
   /** Continuous mode (Agent.continuous, lib/agent-continuous.ts): present only
    *  for a continuous agent. The executor (v14+) treats an UNATTENDED run of
@@ -441,6 +444,7 @@ export function buildAgentPlanSpec(
         budget: resolveBudget(agent.orchestration),
         ...(isolation.some((x) => x !== null) ? { isolation } : {}),
         ...(safeWorkspaceRoot && resolvedStepList.some((s) => s.handoff?.candidateDirs) ? { candidateRoot: safeWorkspaceRoot } : {}),
+        ...(agent.orchestration?.longform === true ? { longform: true } : {}),
       }
     : undefined;
 

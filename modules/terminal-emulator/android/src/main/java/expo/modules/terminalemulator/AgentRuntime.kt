@@ -536,7 +536,15 @@ object AgentRuntime {
     // v27 (judge evidence): a judge step with `handoff.candidateDirs` also
     // gets a bounded snapshot of the candidates' folders (read with node fs
     // under `steps.candidateRoot`). JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 27
+    // v28 (article pipeline Inc 1): `steps.longform` chains and the non-model
+    // `assemble` step; no Obsidian mirror for a draft already in the vault. JS-only.
+    // v29 (article pipeline Inc 2-3): `list-drafts` and `queue-pop` local steps,
+    // and a stream's saved draft no longer writes a success notification. JS-only.
+    // v30 (article pipeline review): a longform plan must be one draft action on
+    // a non-autonomous agent, and a stream with today's draft is skipped. JS-only.
+    // v31 (article pipeline re-review): a failed review loop keeps the draft as
+    // unresolved, and the digest reads saved_at and configured folders. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 31
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

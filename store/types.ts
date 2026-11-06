@@ -1402,6 +1402,78 @@ export interface AgentOrchestrationStep {
      *  run time (real dir, not a symlink, inside the workspace). */
     candidateDirs?: string[];
   };
+  /** Article pipeline (2026-11-06, executor v28): a non-model step run by the
+   *  PlanSpec executor itself, only on an `orchestration.longform` chain. No
+   *  prompt is sent anywhere; `instruction` is a display label. Mutually
+   *  exclusive with `tool` / `apiCall` / `handoff`. Re-validated by
+   *  normalizeStepLocal (lib/agent-orchestration.ts). The attended serial chain
+   *  cannot run one, so Run now is refused (lib/agent-manager.ts). */
+  local?: AgentLocalStepConfig;
+}
+
+export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentInvalidLocalStepConfig;
+
+/**
+ * A longform step whose local config failed validation. It stays a local step
+ * so the executor refuses it: dropping `local` would turn the step into a model
+ * step and send its display label to a cloud engine.
+ */
+export interface AgentInvalidLocalStepConfig {
+  kind: 'invalid';
+}
+
+/**
+ * `assemble`: builds the finished draft from earlier step results, adding
+ * frontmatter, a programmatic Sources section and a fixed footer. Falls
+ * through to the agent's normal final action.
+ */
+export interface AgentAssembleStepConfig {
+  kind: 'assemble';
+  /** Each list yields the last non-skipped result of its step indexes, joined
+   *  in order: `[[1,3,5]]` = the draft, or its latest revision. */
+  parts: number[][];
+  /** Frontmatter `stream` value. */
+  stream: string;
+  /** Fixed footer text (AI use, final checker). */
+  footer: string;
+  /** Terms flagged in frontmatter `lint`; the text itself is never rewritten. */
+  lintTerms?: string[];
+  /** Flags name forms other than `canonical` (also frontmatter `lint`). */
+  nameLint?: { canonical: string; forms: string[] };
+  /** Keep the parts as they are, adding only the footer (the digest). */
+  plain?: boolean;
+  /** Lint the chain's source titles and URLs too (vintage: no listing links). */
+  lintSources?: boolean;
+}
+
+/** One stream the digest expects a draft from. */
+export interface AgentDigestStream {
+  /** Folder next to the digest's own output folder (under 50_Drafts). */
+  folder: string;
+  /** Shown in the digest, also when the stream has no draft today. */
+  label: string;
+  /** One X intent link for the stream's draft. Set here only, never by a draft. */
+  intent?: boolean;
+}
+
+/**
+ * `list-drafts` (executor v29): reads today's `<date>-*.md` drafts from the
+ * folders beside the digest's output folder, inside the vault, and renders the
+ * digest. No model call.
+ */
+export interface AgentListDraftsStepConfig {
+  kind: 'list-drafts';
+  streams: AgentDigestStream[];
+}
+
+/**
+ * `queue-pop` (executor v29): takes the first open `- [ ]` block of
+ * `<outputDir>/_queue.md` as the run's topic and ticks it once the draft saved.
+ * An empty or missing queue ends the run skipped. No path in the config: the
+ * file name is fixed and the folder is the agent's output folder.
+ */
+export interface AgentQueuePopStepConfig {
+  kind: 'queue-pop';
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
@@ -1417,6 +1489,12 @@ export interface AgentOrchestrationConfig {
   /** G6: target character budget for the FINAL step (e.g. an X/Twitter digest).
    *  Enforced by the PlanSpec executor before result persistence/draft writes. */
   charLimit?: number;
+  /** Article pipeline (2026-11-06, executor v28): the chain produces a long
+   *  document, not a briefing. The PlanSpec executor carries bigger results
+   *  with their newlines, skips briefing post-processing, fails a step whose
+   *  model stopped on a token limit, and never falls back to the local LLM.
+   *  Attended Run now is refused. Absent = previous behavior. */
+  longform?: boolean;
 }
 
 // ─── Chat message (formerly store/chat-store.ts) ──────────────────────────────

@@ -205,6 +205,8 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  */
 export function isAutoRegisterEligibleDraft(draft: ParsedAgentDraft): boolean {
   if (draft.roleRouting) return false;
+  // Article pipeline: the digest has no pinned step, and still takes the typed OK.
+  if (draft.longform) return false;
   if ((draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool)) return false;
   const toolType = (draft.tool as { type?: string } | undefined)?.type;
   if (toolType === 'cli' || toolType === 'ab-article-eval') return false;
@@ -767,7 +769,9 @@ export function summarizeAgentDraftAsText(
       const revises = allSteps.slice(idx + 1).filter((x) => handoffOfStep(x)?.kind === 'revise');
       if (!revises.length) return '';
       const first = revises[0];
-      const implementer = (typeof first === 'string' ? undefined : first.role?.name) ?? '';
+      // A preset's loop has no role: name the revising step's engine instead.
+      const firstTool = typeof first === 'string' ? undefined : first.tool;
+      const implementer = (typeof first === 'string' ? undefined : first.role?.name) ?? (firstTool ? toolChoiceToLabel(firstTool) : '');
       return joinSuffix(tl(revises.length === 1 ? 'roles.route.loop_suffix_one' : 'roles.route.loop_suffix', { rounds: revises.length, implementer }));
     };
     const hiddenStep = (s: (typeof allSteps)[number]) => {
@@ -975,6 +979,8 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     skillId: draft.matchedSkill?.id,
     skillPlanFingerprint: draft.matchedSkill ? (draft.matchedSkill.planFingerprint ?? null) : undefined,
     orchestrationSteps: draft.orchestrationSteps,
+    ...(draft.longform ? { longform: true } : {}),
+    ...(draft.presetOutput ? { presetOutput: draft.presetOutput } : {}),
     notificationTrigger: draft.notificationTrigger ?? null,
     startNotBefore: draft.startNotBefore ?? null,
     // 2026-07-28 bug fix: pass through unedited — see

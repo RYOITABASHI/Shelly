@@ -11,7 +11,8 @@
  * a "summarize" step to the on-device model — so the preset only has to author
  * the right step instructions.
  */
-import type { AgentOrchestrationConfig } from '@/store/types';
+import type { AgentAction, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { REVIEW_OUTPUT_CONTRACT } from './agent-orchestration';
 
 export interface PipelinePreset {
   /** Human-friendly agent name (editable in the confirm card). */
@@ -24,6 +25,17 @@ export interface PipelinePreset {
   schedule: string | null;
   /** Pipelines collect from the web unattended → autonomous. */
   autonomous: boolean;
+  /** Fixed by the preset instead of derived from the utterance. Absent = the
+   *  parser derives them, as for the collection preset. */
+  tool?: ToolChoice;
+  action?: AgentAction;
+  /** Shown in the plain-text confirm when `schedule` is the preset's own. */
+  scheduleLabel?: string;
+  /** Where the agent's draft action saves. */
+  output?: { outputPath: string; outputTemplate: string };
+  /** No "remember that …" from the utterance (recall is off for longform
+   *  chains, lib/agent-manager.ts applyMemoryAndSkills). */
+  memoryOff?: boolean;
 }
 
 /** North Star default cadence: Mon & Fri at 08:00. */
@@ -81,6 +93,333 @@ export function buildSteamPipeline(opts: {
     orchestration,
     schedule,
     autonomous: true,
+  };
+}
+
+// ── Daily article drafts (docs/superpowers/specs/2026-11-06-article-pipeline-plan.md) ──
+
+export type ArticleStream = 'ai-steam' | 'dev-ja' | 'dev-en' | 'vintage-ja' | 'vintage-en';
+
+const ARTICLE_VAULT_DRAFTS = '/sdcard/Documents/ObsidianVault/50_Drafts';
+const ARTICLE_DIGEST_FOLDER = 'Digest';
+/** The writer leaves this where the owner's own material belongs; `assemble`
+ *  then sets `material: missing`. Mirrored by ARTICLE_MATERIAL_MISSING_RE in
+ *  scripts/shelly-plan-executor.js. */
+export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】';
+
+// Pinned free-tier engines. The writer and the reviser share an engine, and the
+// reviewer's pin is a different one. A ladder fallback can still bring them
+// together, so the executor checks what ran and leaves that draft unresolved.
+// Research is Gemini grounded
+// (no Perplexity: the owner wants no new costs).
+const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
+const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };
+const ARTICLE_REVIEWER_ENGINE: ToolChoice = { type: 'cerebras' };
+
+/** docs/promo/brand/claims-ledger.md: claims that must not reach a public
+ *  page. Matched by the executor's assemble step; flags only. */
+const ARTICLE_LINT_TERMS = [
+  '世界初',
+  'world first',
+  "world's first",
+  'スマホだけで',
+  'スマホ一台だけで',
+  'デスクトップに一度も触れず',
+  'built entirely on a phone',
+  'without ever touching a desktop',
+  'no desktop, no laptop',
+  'このリポジトリの全行',
+  'every line in this repo',
+  "can't write code",
+  'twenty years',
+  '20 年分',
+  '20年分',
+];
+
+/** Name forms other than the canonical one. The ledger's other banned form,
+ *  the name in kanji, is not checked: that would put it in the repo. */
+const ARTICLE_NAME_LINT = { canonical: 'RYO ITABASHI', forms: ['itabashi', 'イタバシ', 'いたばし'] };
+
+const ARTICLE_FOOTER_JA =
+  'AI 利用: この記事の調査・下書き・査読には AI を使いました。\n最終確認者: RYO ITABASHI（本人が内容を確認してから公開します）';
+const ARTICLE_FOOTER_EN =
+  'AI disclosure: AI tools were used for the research, drafting and review of this post.\nFinal check: RYO ITABASHI (the author read and verified it before it went out).';
+
+/** Vintage drafts: no images, no listing links, no claim that an item is real.
+ *  Mercari checks stay attended (docs/promo/research/plan-v2.md). Flags only. */
+const ARTICLE_VINTAGE_LINT_TERMS = ['![', '<img', 'mercari', 'merc.li', 'メルカリ', '本物です', '正規品', 'authentic', 'genuine'];
+
+interface ArticleStreamConfig {
+  name: string;
+  /** Shown in the digest. */
+  label: string;
+  /** Folder under 50_Drafts. */
+  folder: string;
+  cron: string;
+  cronLabel: string;
+  /** Language of the instructions and of the draft. */
+  lang: 'ja' | 'en';
+  /** The chain starts with `queue-pop`: the topic comes from
+   *  50_Drafts/<folder>/_queue.md, which the owner fills by hand. */
+  queue: boolean;
+  /** One X intent link in the digest. Off for a stream with no X account. */
+  intent: boolean;
+  footer: string;
+  /** Added to ARTICLE_LINT_TERMS. */
+  extraLintTerms?: string[];
+  /** Also lint the chain's source titles and URLs. */
+  lintSources?: boolean;
+  /** Added to the review instruction, before the output contract. */
+  reviewExtra?: string;
+  /** Base prompt, prefixed onto every step. NEUTRAL like buildSteamPipeline's:
+   *  no freshness word (ニュース / 最新 / …), or detectRouteSignals reads the
+   *  agent as web-mandatory and the plan prompt turns into a link-list task. */
+  prompt: string;
+  researchInstruction: string;
+  writeInstruction: string;
+}
+
+const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
+  'ai-steam': {
+    name: 'AI×STEAM 記事下書き',
+    label: 'AI×STEAM',
+    folder: 'Steam',
+    cron: '0 6 * * *',
+    cronLabel: '毎日 6:00',
+    lang: 'ja',
+    queue: false,
+    intent: true,
+    footer: ARTICLE_FOOTER_JA,
+    prompt: [
+      'AI×STEAM（科学・技術・工学・芸術・数学とAI）の解説記事シリーズ。媒体は note、読者は教員・親子・学生。日本語で書く。',
+      '共通ルール:',
+      '- 資料はプレプリント・学会論文・学術誌を区別し、査読前か査読後かを必ず書く。',
+      '- 自分の文章が主で、引用は従。原文は要約し、細かく追いすぎない。全文訳はしない（CC-BY / CC0 と確認できた資料だけ例外。NC・ND・arXiv 標準ライセンスは不可）。',
+      '- 図表は転載しない。',
+      '- 数値・結論・限界は資料のとおりに書く。「世界初」のような言い切りは書かない。',
+    ].join('\n'),
+    // "Web" is what makes this the chain's research step (grounded search +
+    // captured sources); 最近 keeps the search to the last 30 days.
+    researchInstruction:
+      'Webで検索し、最近のAI×STEAMの話題をひとつ選んで調査メモを作る。プレプリント・学会論文・学術誌を優先し、資料ごとに査読前か査読後か、主な数値・結論・限界、わかればライセンスを書く。6000字以内。',
+    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+  },
+  // Dev: docs/promo/research/plan-v2.md and docs/promo/brand/claims-ledger.md.
+  'dev-ja': {
+    name: '開発記 記事下書き',
+    label: '開発記（Zenn）',
+    folder: 'Dev',
+    cron: '20 6 * * *',
+    cronLabel: '毎日 6:20',
+    lang: 'ja',
+    queue: true,
+    intent: true,
+    footer: ARTICLE_FOOTER_JA,
+    prompt: [
+      'Shelly（Android で動く AI ターミナル）の開発記シリーズ。媒体は Zenn、読者は開発者。日本語の技術記事として書く。',
+      '共通ルール:',
+      '- テーマはキューの項目のとおり。連載の順に縛られず、そのテーマだけで読める記事にする。',
+      '- 要点と材料のコミットハッシュは、項目にあるものだけ使う。ないコミットや数字を作らない。項目の「要確認」は事実として書かない。',
+      '- コミット数などの数字には取得日と対象ブランチを併記する。行数を見出しにしない。',
+      '- 当時の話と今の話を混ぜない。当時の設計が今も残っていると書くなら、項目か調査メモに根拠が要る。',
+      '- 位置づけは「コードは書かない。AI を率いて、実機で動くまで完了と呼ばない。」。開発は Galaxy Z Fold6 での設計・検証と、スマホと PC の AI コーディングエージェントによる実装で、実機検証は Fold6 の 1 台。',
+      '- 作者の名前は初出だけ RYO ITABASHI、以降は「私」。Codex を「公式」と呼ばない。Shelly の宣伝はしない。',
+    ].join('\n'),
+    researchInstruction:
+      'Webで検索し、項目のテーマの背景を調べて調査メモを作る。公式ドキュメント・仕様・一次資料を優先し、資料ごとに分かることと分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。6000字以内。',
+    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の技術記事を書く。1行目は「# 」で始まる見出し。問題、原因、やったこと、結果の順に書き、コミットハッシュは短縮形のまま本文に出す。外部の事実には Sources の番号 [n] を付ける。「## 既知の限界」の節を作る。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+    reviewExtra: '当時と今の混同、項目にないコミットや数字、製品の宣伝も指摘する。',
+  },
+  'dev-en': {
+    name: 'Dev log EN article draft',
+    label: 'Dev log EN (dev.to)',
+    folder: 'DevEn',
+    cron: '40 6 * * *',
+    cronLabel: '毎日 6:40',
+    lang: 'en',
+    queue: true,
+    intent: true,
+    footer: ARTICLE_FOOTER_EN,
+    prompt: [
+      'A dev log about Shelly, an AI terminal that runs on Android. It appears on dev.to for developers outside Japan. Write in plain, direct English.',
+      'Rules for every step:',
+      '- Rebuild the topic for an overseas reader. This is not a translation of a Japanese post: open with the problem they would recognize, and explain anything specific to Samsung, Knox or Japan.',
+      '- Use only the commit hashes and points in the queue item. Invent no commits and no numbers. Anything marked 要確認 is unconfirmed: do not state it as fact.',
+      '- Give any count with its date and branch. Never lead with line counts.',
+      '- Keep then and now apart. Say the old design still exists only if the item or the research notes back it.',
+      '- Position: "I don\'t write the code. I direct the AI — and nothing is called done until it works on real hardware." It was designed and verified on one Galaxy Z Fold6, and built with AI coding agents on the phone and a PC.',
+      '- Use the name RYO ITABASHI once, then "I". Do not call Codex official.',
+      '- No promotion in the body: no download or install pitch, no call to action. dev.to does not allow it.',
+    ].join('\n'),
+    researchInstruction:
+      'Search the web for the background of the queue item and write research notes. Prefer official documentation, specifications and primary sources, and say what each one does and does not establish. Copy the points and commit hashes of the item to the top of the notes unchanged. 6000 characters at most.',
+    writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from the problem to the cause, what was tried, and the result, and keep commit hashes in their short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
+    reviewExtra: 'Also flag text that reads translated, then/now mix-ups, commits or numbers not in the item, and promotion.',
+  },
+  // Vintage: no listing links, no images, nothing that reads as an appraisal.
+  'vintage-ja': {
+    name: '古着 記事下書き',
+    label: '古着（はてな）',
+    folder: 'Vintage',
+    cron: '0 7 * * *',
+    cronLabel: '毎日 7:00',
+    lang: 'ja',
+    queue: true,
+    intent: false,
+    footer: `この記事は鑑定ではありません。特定の商品の真贋を鑑定・保証するものではありません。\n${ARTICLE_FOOTER_JA}`,
+    extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
+    lintSources: true,
+    reviewExtra: '真贋の断定、出品へのリンク、画像の指定、作品の絵柄の詳しい描写も指摘する。',
+    prompt: [
+      'ビンテージ古着の読み物シリーズ。媒体ははてなブログ、読者は映画Tやアニメ、古着が好きな人。日本語で書く。',
+      '共通ルール:',
+      '- 主役は服としての特徴と、作品や時代の背景。柄（著作物・商標）の説明は必要な範囲にとどめる。',
+      '- 真贋を断定しない。ある品が本物だとも偽物だとも書かず、見るところを判断の材料として書く。',
+      '- 出品へのリンクを貼らない。画像を使わない。写真の転載も、画像の指定も書かない。',
+      '- 価格や相場は資料にあるものだけ書き、自分で確かめた値段のように書かない。',
+      '- 海外の記事は全文を訳さず、自分の構成で書く。',
+      '- 現物を見たように書かない。実物の確認は本人の仕事。',
+    ].join('\n'),
+    researchInstruction:
+      'Webで検索し、項目のテーマについて調査メモを作る。作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて書く。出品ページは資料にしない。6000字以内。',
+    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の読み物を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付ける。真贋を断定せず、出品リンクも画像も入れない。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+  },
+  'vintage-en': {
+    name: 'Vintage EN article draft',
+    label: 'Vintage EN (Substack)',
+    folder: 'VintageEn',
+    cron: '20 7 * * *',
+    cronLabel: '毎日 7:20',
+    lang: 'en',
+    queue: true,
+    intent: false,
+    footer: `This is not an appraisal. Nothing here authenticates or guarantees any item.\n${ARTICLE_FOOTER_EN}`,
+    extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
+    lintSources: true,
+    reviewExtra: 'Also flag calling an item real or fake, listing links, images, and detailed print descriptions.',
+    prompt: [
+      'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
+      'Rules for every step:',
+      '- Lead with the garment and with the film, the era or the scene around it. Mention prints and logos only as far as the story needs.',
+      '- Never say an item is authentic or fake. Describe what to look at, as things to weigh.',
+      '- No links to listings. No images, no image suggestions.',
+      '- Give prices only as the sources give them, never as prices you checked yourself.',
+      '- Do not translate foreign articles whole. Use your own structure.',
+      '- Do not write as if you had the item in hand. Checking the real thing is the owner\'s job.',
+    ].join('\n'),
+    researchInstruction:
+      'Search the web for the queue item and write research notes. Cover the release year or source material and how the garment is made, source by source. Do not use listing pages as sources. 6000 characters at most.',
+    writeInstruction: `Using the queue item and the research notes, write a letter of 800 to 1500 words. The first line is a heading starting with "# ". Mark facts with their Sources number [n]. Never say an item is authentic or fake, and add no listing links and no images. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
+  },
+};
+
+// Digest order and the streams it expects.
+const ARTICLE_STREAM_ORDER: ArticleStream[] = ['ai-steam', 'dev-ja', 'dev-en', 'vintage-ja', 'vintage-en'];
+
+// A function: agent-orchestration may still be loading when this module is.
+const articleReviewInstruction = (cfg: ArticleStreamConfig): string => {
+  const extra = cfg.reviewExtra ? `${cfg.lang === 'en' ? ' ' : ''}${cfg.reviewExtra}` : '';
+  const body = cfg.lang === 'en'
+    ? `Check each claim in the draft against the research notes. The source pages are not visible to you; the notes are your only evidence. Flag claims not in the notes, wrong numbers and overstatement.${extra} Do not flag ${ARTICLE_MATERIAL_MISSING_MARKER}.`
+    : `下書きの主張を一つずつ調査メモの本文と照合する。原文ページはあなたには見えないので、根拠にできるのは調査メモだけ。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎを指摘する。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`;
+  return `${body}\n\n${REVIEW_OUTPUT_CONTRACT}`;
+};
+const articleReviseInstruction = (cfg: ArticleStreamConfig): string =>
+  cfg.lang === 'en'
+    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
+    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
+
+/**
+ * One stream's daily draft agent:
+ * [research, write, review1, revise1, review2, revise2, assemble], with
+ * `queue-pop` first on a queued stream, run by the PlanSpec executor on the
+ * cron (longform chain; Run now is refused). The chain ends in the draft
+ * action: it saves to the vault and publishes nothing. autonomous:false keeps
+ * the pinned HTTP engines and the local steps (an autonomous plan strips
+ * Groq/Cerebras pins). The queue text only reaches the models as a carried
+ * result: steps, engines, action and output path are all fixed here.
+ */
+export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
+  const cfg = ARTICLE_STREAMS[stream];
+  // `of` and `parts` count from the research step.
+  const at = (k: number) => k + (cfg.queue ? 1 : 0);
+  const review = articleReviewInstruction(cfg);
+  const revise = articleReviseInstruction(cfg);
+  const assemble: AgentLocalStepConfig = {
+    kind: 'assemble',
+    parts: [[at(1), at(3), at(5)]],
+    stream,
+    footer: cfg.footer,
+    lintTerms: [...ARTICLE_LINT_TERMS, ...(cfg.extraLintTerms ?? [])],
+    nameLint: ARTICLE_NAME_LINT,
+    ...(cfg.lintSources ? { lintSources: true } : {}),
+  };
+  const steps: AgentOrchestrationStep[] = [
+    ...(cfg.queue
+      ? [{ instruction: cfg.lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
+      : []),
+    { instruction: cfg.researchInstruction, tool: ARTICLE_RESEARCH_ENGINE, toolPinned: true },
+    { instruction: cfg.writeInstruction, tool: ARTICLE_WRITER_ENGINE, toolPinned: true },
+    { instruction: review, tool: ARTICLE_REVIEWER_ENGINE, toolPinned: true, handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
+    { instruction: revise, tool: ARTICLE_WRITER_ENGINE, toolPinned: true, handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },
+    { instruction: review, tool: ARTICLE_REVIEWER_ENGINE, toolPinned: true, handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
+    { instruction: revise, tool: ARTICLE_WRITER_ENGINE, toolPinned: true, handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
+    { instruction: cfg.lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）', local: assemble },
+  ];
+  return {
+    name: cfg.name,
+    prompt: cfg.prompt,
+    orchestration: { steps, longform: true },
+    schedule: cfg.cron,
+    scheduleLabel: cfg.cronLabel,
+    autonomous: false,
+    tool: ARTICLE_RESEARCH_ENGINE,
+    action: { type: 'draft' },
+    output: { outputPath: `${ARTICLE_VAULT_DRAFTS}/${cfg.folder}/`, outputTemplate: `{date}-${stream}.md` },
+    memoryOff: true,
+  };
+}
+
+/**
+ * The daily digest agent: [list-drafts, assemble], no model call anywhere. It
+ * runs after the last stream has had time to finish: the vintage-en cron plus
+ * the 30-minute chain budget, and a margin. It alone notifies on success (its
+ * first lines are the notification). `tool` is required by an agent but is
+ * never called; Gemini matches the streams, and a local tool would make native
+ * start the local LLM for nothing.
+ */
+export function buildArticleDigestPipeline(): PipelinePreset {
+  const listDrafts: AgentLocalStepConfig = {
+    kind: 'list-drafts',
+    streams: ARTICLE_STREAM_ORDER.map((stream) => {
+      const cfg = ARTICLE_STREAMS[stream];
+      return { folder: cfg.folder, label: cfg.label, ...(cfg.intent ? { intent: true } : {}) };
+    }),
+  };
+  const save: AgentLocalStepConfig = {
+    kind: 'assemble',
+    parts: [[0]],
+    stream: 'digest',
+    footer: 'このノートは自動で作られます。投稿はしません。公開は本人が手で行います。',
+    plain: true,
+  };
+  return {
+    name: '記事ダイジェスト',
+    prompt: '記事下書きの一覧',
+    orchestration: {
+      steps: [
+        { instruction: 'きょうの下書きを一覧にする（モデルは使わない）', local: listDrafts },
+        { instruction: '一覧をダイジェストとして保存する（モデルは使わない）', local: save },
+      ],
+      longform: true,
+    },
+    schedule: '0 8 * * *',
+    scheduleLabel: '毎日 8:00',
+    autonomous: false,
+    tool: ARTICLE_RESEARCH_ENGINE,
+    action: { type: 'draft' },
+    output: { outputPath: `${ARTICLE_VAULT_DRAFTS}/${ARTICLE_DIGEST_FOLDER}/`, outputTemplate: '{date}-digest.md' },
+    memoryOff: true,
   };
 }
 

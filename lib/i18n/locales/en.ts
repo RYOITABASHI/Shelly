@@ -426,6 +426,7 @@ const en: Record<string, string> = {
   // api-call (v1): attended "Run now" guard — this action type is
   // PlanSpec-executor-only (scheduled/unattended runs only).
   'agents.api_call_attended_unsupported': 'This agent includes an API-call step, which currently only supports scheduled execution — it can\'t be run now.',
+  'agents.longform_attended_unsupported': 'This article pipeline only runs on its schedule, so it can\'t be run now. To test it, set the schedule a few minutes ahead.',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',
