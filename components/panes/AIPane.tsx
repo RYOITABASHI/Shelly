@@ -55,7 +55,6 @@ import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';
 import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadinessCard';
-import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
 import { TypewriterText } from '@/components/panes/TypewriterText';
 import { ChatMarkdownText } from '@/components/panes/ChatMarkdownText';
@@ -211,10 +210,11 @@ const MessageBubble = React.memo(function MessageBubble({
   // replaces the bubble text; once confirmed/cancelled it falls through to the
   // normal assistant text render (which now holds the result line).
   if (message.agentDraft && message.agentCardState === 'pending') {
-    // Phase 7: social-post / tool-pinned-orchestration drafts render chat-native —
-    // the plan is plain assistant text (message.content, set by
-    // summarizeAgentDraftAsText at creation) with a trailing inline
-    // Confirm/Cancel row, NOT a card. Everything else keeps AgentConfirmCard.
+    // Phase 7: chat-native drafts are plain assistant text (message.content, set
+    // by summarizeAgentDraftAsText at creation) and nothing else: no buttons.
+    // The owner confirms by replying in chat (dispatch()'s pendingAgentSession
+    // route). Everything else keeps AgentConfirmCard, whose picker is still the
+    // only confirm path those drafts have.
     if (message.agentChatConfirm) {
       return (
         <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
@@ -224,11 +224,6 @@ const MessageBubble = React.memo(function MessageBubble({
           <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }, isCaseFile && bubbleStyles.assistantContentCaseFileShadow, isCaseFile && { borderColor: C.border }]}>
             <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{message.content}</Text>
           </View>
-          <AgentChatConfirm
-            draft={message.agentDraft}
-            onConfirm={(c) => onConfirmAgentDraft?.(message.id, c)}
-            onCancel={() => onCancelAgentDraft?.(message.id)}
-          />
         </View>
       );
     }

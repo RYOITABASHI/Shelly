@@ -3690,8 +3690,10 @@ async function captureRunMemoryFromSyncedLogs(
     // explicit Run Now path. While runAgentNow owns that foreground turn, its
     // caller supplies the confirm-mode save offer; do not misclassify the same
     // log as an unattended alarm fire during the run's internal log sync.
+    // A daily article stream is a preset already; it has nothing to learn here.
     if (
       (agent.schedule || agent.notificationTrigger) &&
+      !agent.orchestration?.longform &&
       !inFlightAgentRuns.has(agent.id) &&
       !attendedAgentRunLogIdentities.has(agentRunLogIdentity(latest))
     ) {

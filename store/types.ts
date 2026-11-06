@@ -1444,6 +1444,10 @@ export interface AgentAssembleStepConfig {
   plain?: boolean;
   /** Lint the chain's source titles and URLs too (vintage: no listing links). */
   lintSources?: boolean;
+  /** Flags in frontmatter `lint`, nothing rewritten: a body under the minimum
+   *  (characters for Japanese, words for English), too few sources. With this
+   *  set, redirect-only source URLs are flagged too. */
+  quality?: { minChars?: number; minWords?: number; minSources?: number };
 }
 
 /** One stream the digest expects a draft from. */

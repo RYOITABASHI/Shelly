@@ -110,9 +110,10 @@ export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】
 // Pinned free-tier engines. The writer and the reviser share an engine, and the
 // reviewer's pin is a different one. A ladder fallback can still bring them
 // together, so the executor checks what ran and leaves that draft unresolved.
-// Research is Gemini grounded
-// (no Perplexity: the owner wants no new costs).
+// Research is Gemini grounded, except the academic stream: owner decision
+// 2026-11-06, Perplexity only for papers.
 const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
+const ARTICLE_ACADEMIC_RESEARCH_ENGINE: ToolChoice = { type: 'perplexity' };
 const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };
 const ARTICLE_REVIEWER_ENGINE: ToolChoice = { type: 'cerebras' };
 
@@ -171,6 +172,8 @@ interface ArticleStreamConfig {
   lintSources?: boolean;
   /** Added to the review instruction, before the output contract. */
   reviewExtra?: string;
+  /** Flagged in frontmatter `lint`, never enforced. */
+  quality: { minChars?: number; minWords?: number; minSources: number };
   /** Base prompt, prefixed onto every step. NEUTRAL like buildSteamPipeline's:
    *  no freshness word (ニュース / 最新 / …), or detectRouteSignals reads the
    *  agent as web-mandatory and the plan prompt turns into a link-list task. */
@@ -190,6 +193,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     queue: false,
     intent: true,
     footer: ARTICLE_FOOTER_JA,
+    quality: { minChars: 2500, minSources: 2 },
     prompt: [
       'AI×STEAM（科学・技術・工学・芸術・数学とAI）の解説記事シリーズ。媒体は note、読者は教員・親子・学生。日本語で書く。',
       '共通ルール:',
@@ -201,8 +205,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     // "Web" is what makes this the chain's research step (grounded search +
     // captured sources); 最近 keeps the search to the last 30 days.
     researchInstruction:
-      'Webで検索し、最近のAI×STEAMの話題をひとつ選んで調査メモを作る。プレプリント・学会論文・学術誌を優先し、資料ごとに査読前か査読後か、主な数値・結論・限界、わかればライセンスを書く。6000字以内。',
-    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+      'Webで検索し、最近のAI×STEAMの話題をひとつに絞って調査メモを作る。別々の資料を3件以上使い、プレプリント・学会論文・学術誌を優先する。資料ごとに査読前か査読後か、具体的な数値・結論・限界、わかればライセンスを書く。4000〜6000字。',
+    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。一つの事例から一般化しない。単一の事例に「実証した」と書かない。子どもの未来で締めるような定型の結びは書かない。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
   },
   // Dev: docs/promo/research/plan-v2.md and docs/promo/brand/claims-ledger.md.
   'dev-ja': {
@@ -215,6 +219,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     queue: true,
     intent: true,
     footer: ARTICLE_FOOTER_JA,
+    quality: { minChars: 2500, minSources: 2 },
     prompt: [
       'Shelly（Android で動く AI ターミナル）の開発記シリーズ。媒体は Zenn、読者は開発者。日本語の技術記事として書く。',
       '共通ルール:',
@@ -226,7 +231,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- 作者の名前は初出だけ RYO ITABASHI、以降は「私」。Codex を「公式」と呼ばない。Shelly の宣伝はしない。',
     ].join('\n'),
     researchInstruction:
-      'Webで検索し、項目のテーマの背景を調べて調査メモを作る。公式ドキュメント・仕様・一次資料を優先し、資料ごとに分かることと分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。6000字以内。',
+      'Webで検索し、項目のテーマひとつの背景を調べて調査メモを作る。別々の資料を3件以上使い、公式ドキュメント・仕様・一次資料を優先する。資料ごとに具体的な数値・結論・限界と、分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。4000〜6000字。',
     writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の技術記事を書く。1行目は「# 」で始まる見出し。問題、原因、やったこと、結果の順に書き、コミットハッシュは短縮形のまま本文に出す。外部の事実には Sources の番号 [n] を付ける。「## 既知の限界」の節を作る。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
     reviewExtra: '当時と今の混同、項目にないコミットや数字、製品の宣伝も指摘する。',
   },
@@ -240,6 +245,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     queue: true,
     intent: true,
     footer: ARTICLE_FOOTER_EN,
+    quality: { minWords: 1000, minSources: 2 },
     prompt: [
       'A dev log about Shelly, an AI terminal that runs on Android. It appears on dev.to for developers outside Japan. Write in plain, direct English.',
       'Rules for every step:',
@@ -252,7 +258,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- No promotion in the body: no download or install pitch, no call to action. dev.to does not allow it.',
     ].join('\n'),
     researchInstruction:
-      'Search the web for the background of the queue item and write research notes. Prefer official documentation, specifications and primary sources, and say what each one does and does not establish. Copy the points and commit hashes of the item to the top of the notes unchanged. 6000 characters at most.',
+      'Search the web for the background of the one topic in the queue item and write research notes from at least 3 separate sources. Prefer official documentation, specifications and primary sources. For each source give concrete numbers, conclusions and limits, and what it does not establish. Copy the points and commit hashes of the item to the start of the notes unchanged. 4000 to 6000 characters.',
     writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from the problem to the cause, what was tried, and the result, and keep commit hashes in their short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
     reviewExtra: 'Also flag text that reads translated, then/now mix-ups, commits or numbers not in the item, and promotion.',
   },
@@ -269,6 +275,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     footer: `この記事は鑑定ではありません。特定の商品の真贋を鑑定・保証するものではありません。\n${ARTICLE_FOOTER_JA}`,
     extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
     lintSources: true,
+    quality: { minChars: 2500, minSources: 2 },
     reviewExtra: '真贋の断定、出品へのリンク、画像の指定、作品の絵柄の詳しい描写も指摘する。',
     prompt: [
       'ビンテージ古着の読み物シリーズ。媒体ははてなブログ、読者は映画Tやアニメ、古着が好きな人。日本語で書く。',
@@ -281,7 +288,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- 現物を見たように書かない。実物の確認は本人の仕事。',
     ].join('\n'),
     researchInstruction:
-      'Webで検索し、項目のテーマについて調査メモを作る。作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて書く。出品ページは資料にしない。6000字以内。',
+      'Webで検索し、項目のテーマひとつについて調査メモを作る。別々の資料を3件以上使い、作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて具体的な数値・結論・限界とともに書く。出品ページは資料にしない。4000〜6000字。',
     writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の読み物を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付ける。真贋を断定せず、出品リンクも画像も入れない。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
   },
   'vintage-en': {
@@ -296,6 +303,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     footer: `This is not an appraisal. Nothing here authenticates or guarantees any item.\n${ARTICLE_FOOTER_EN}`,
     extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
     lintSources: true,
+    quality: { minWords: 600, minSources: 2 },
     reviewExtra: 'Also flag calling an item real or fake, listing links, images, and detailed print descriptions.',
     prompt: [
       'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
@@ -308,7 +316,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- Do not write as if you had the item in hand. Checking the real thing is the owner\'s job.',
     ].join('\n'),
     researchInstruction:
-      'Search the web for the queue item and write research notes. Cover the release year or source material and how the garment is made, source by source. Do not use listing pages as sources. 6000 characters at most.',
+      'Search the web for the one topic in the queue item and write research notes from at least 3 separate sources. Cover the release year or source material and how the garment is made, source by source, with concrete numbers, conclusions and limits. Do not use listing pages as sources. 4000 to 6000 characters.',
     writeInstruction: `Using the queue item and the research notes, write a letter of 800 to 1500 words. The first line is a heading starting with "# ". Mark facts with their Sources number [n]. Never say an item is authentic or fake, and add no listing links and no images. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
   },
 };
@@ -353,12 +361,13 @@ export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
     lintTerms: [...ARTICLE_LINT_TERMS, ...(cfg.extraLintTerms ?? [])],
     nameLint: ARTICLE_NAME_LINT,
     ...(cfg.lintSources ? { lintSources: true } : {}),
+    quality: cfg.quality,
   };
   const steps: AgentOrchestrationStep[] = [
     ...(cfg.queue
       ? [{ instruction: cfg.lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
       : []),
-    { instruction: cfg.researchInstruction, tool: ARTICLE_RESEARCH_ENGINE, toolPinned: true },
+    { instruction: cfg.researchInstruction, tool: stream === 'ai-steam' ? ARTICLE_ACADEMIC_RESEARCH_ENGINE : ARTICLE_RESEARCH_ENGINE, toolPinned: true },
     { instruction: cfg.writeInstruction, tool: ARTICLE_WRITER_ENGINE, toolPinned: true },
     { instruction: review, tool: ARTICLE_REVIEWER_ENGINE, toolPinned: true, handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
     { instruction: revise, tool: ARTICLE_WRITER_ENGINE, toolPinned: true, handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },

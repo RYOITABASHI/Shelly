@@ -727,8 +727,12 @@ export function summarizeAgentDraftAsText(
   // 2026-10-15 (review L2): a tool the user NAMED is shown, so they can see the
   // request was understood ("パープレで…" → Perplexity API).
   const toolDisclosure = describeDraftTool(draft, opts.cloudConsent === true);
-  if (toolDisclosure.pinned && !toolDisclosure.substitution && !draft.roleRouting && (opts.cloudConsent !== undefined || !draft.autonomous)) {
-    lines.push(tl('agentplan.summary_tool_pinned', { tool: toolDisclosure.label }));
+  // An article preset's engine is the preset's, not something the owner named,
+  // and its step lines below show what each step really uses. The digest's
+  // steps use no model at all, so it says nothing here.
+  const noModelSteps = !!draft.longform && (draft.orchestrationSteps ?? []).every((s) => typeof s !== 'string' && !!s.local);
+  if (!noModelSteps && toolDisclosure.pinned && !toolDisclosure.substitution && !draft.roleRouting && (opts.cloudConsent !== undefined || !draft.autonomous)) {
+    lines.push(tl(draft.longform ? 'agentplan.summary_tool_preset' : 'agentplan.summary_tool_pinned', { tool: toolDisclosure.label }));
   }
   // Follow-up item 2 (2026-10-15): never swap a named / suggested cloud
   // backend for Codex silently — say so, and why (consent off vs. outside the

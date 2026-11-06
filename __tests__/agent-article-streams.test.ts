@@ -76,8 +76,10 @@ describe.each(ALL)('stream %s', (stream) => {
     expect(steps[4 + offset].tool?.type).not.toBe(write.tool?.type);
     expect(steps[3 + offset].tool?.type).toBe(write.tool?.type);
     expect(steps[5 + offset].tool?.type).toBe(write.tool?.type);
-    steps.filter((s) => !s.local).forEach((s) => {
-      expect(['gemini-api', 'cerebras', 'groq']).toContain(s.tool?.type);
+    steps.filter((s) => !s.local).forEach((s, i) => {
+      // Perplexity is for academic research only (owner decision 2026-11-06).
+      const allowed = i === 0 && stream === 'ai-steam' ? ['perplexity'] : ['gemini-api', 'cerebras', 'groq'];
+      expect(allowed).toContain(s.tool?.type);
       expect(s.toolPinned).toBe(true);
     });
   });
@@ -147,6 +149,50 @@ describe.each(ALL)('stream %s', (stream) => {
     expect(plan.action.type).toBe('draft');
     expect(plan.toolLadder.map((t: { type: string }) => t.type)).not.toContain('perplexity');
     expect(() => executor.validatePlan(plan)).not.toThrow();
+  });
+});
+
+describe('research depth and draft flags', () => {
+  it.each(ALL)('%s asks for one topic, 3 sources and 4000-6000 characters of concrete notes', (stream) => {
+    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const research = stepsOf(stream)[offset].instruction;
+    expect(research.length).toBeLessThanOrEqual(500);
+    if (ENGLISH.includes(stream)) {
+      expect(research).toMatch(/one topic/);
+      expect(research).toMatch(/at least 3 separate sources/);
+      expect(research).toMatch(/4000 to 6000 characters/);
+      expect(research).toMatch(/concrete numbers, conclusions and limits/);
+    } else {
+      expect(research).toMatch(/ひとつ/);
+      expect(research).toContain('別々の資料を3件以上');
+      expect(research).toContain('4000〜6000字');
+      expect(research).toContain('具体的な数値・結論・限界');
+    }
+  });
+
+  it('the AI×STEAM writer may not generalise from one case or close on a stock line', () => {
+    const write = stepsOf('ai-steam')[1].instruction;
+    expect(write).toContain('一つの事例から一般化しない');
+    expect(write).toContain('「実証した」と書かない');
+    expect(write).toContain('定型の結びは書かない');
+  });
+
+  it.each<[ArticleStream, object]>([
+    ['ai-steam', { minChars: 2500, minSources: 2 }],
+    ['dev-ja', { minChars: 2500, minSources: 2 }],
+    ['vintage-ja', { minChars: 2500, minSources: 2 }],
+    ['dev-en', { minWords: 1000, minSources: 2 }],
+    ['vintage-en', { minWords: 600, minSources: 2 }],
+  ])('%s sets its minimums', (stream, quality) => {
+    expect(assembleOf(stream).quality).toEqual(quality);
+  });
+
+  it('the digest shows a flag, so the owner sees it', () => {
+    const item = { folder: 'Steam', path: 'a', title: '題', review: 'pass', reviewNote: '', material: 'ok', lint: ['sources: 1 or fewer', 'Sources に転送リンク（公開前に差し替え）'], savedAtMs: 0 };
+    const text = executor.renderDraftDigest({ kind: 'list-drafts', streams: [{ folder: 'Steam', label: 'S' }] }, { items: [item], missing: [], truncated: false }, '2026-11-06');
+    expect(text).toContain('sources: 1 or fewer');
+    expect(text).toContain('転送リンク');
+    expect(text).toContain('題【要確認】');
   });
 });
 
@@ -327,6 +373,62 @@ describe('NL triggers', () => {
     const d = parseAgentNL('古着の記事パイプラインを作ってXに投稿して');
     expect(d.action).toEqual({ type: 'draft' });
     expect(d.actionCaveat).toContain('投稿しません');
+  });
+});
+
+describe('the confirmation text', () => {
+  const ja = { cloudConsent: false };
+
+  it('says an article preset set the engine, not the owner', () => {
+    const text = summarizeAgentDraftAsText(parseAgentNL('AI×STEAMの記事パイプラインを作って'), undefined, false, ja);
+    expect(text).not.toContain('named in your request');
+    expect(text).not.toContain('リクエストで指定');
+  });
+
+  it('the digest names no engine: it calls no model', () => {
+    const text = summarizeAgentDraftAsText(parseAgentNL('記事ダイジェストのパイプラインを作って'), undefined, false, ja);
+    expect(text).not.toContain('named in your request');
+    expect(text).not.toContain('リクエストで指定');
+    expect(text).not.toContain('このパイプラインの設定');
+    expect(text).not.toContain('set by this pipeline');
+  });
+
+  it('has the same key in both languages', () => {
+    const en = fs.readFileSync(path.join(root, 'lib/i18n/locales/en.ts'), 'utf8');
+    const jaFile = fs.readFileSync(path.join(root, 'lib/i18n/locales/ja.ts'), 'utf8');
+    expect(en).toContain("'agentplan.summary_tool_preset'");
+    expect(jaFile).toContain("'agentplan.summary_tool_preset'");
+  });
+
+  it('REGRESSION: a tool the owner really named still says so', () => {
+    const d = { ...parseAgentNL('毎朝パープレでニュースを集めて保存して'), longform: undefined };
+    const text = summarizeAgentDraftAsText(d, undefined, false, ja);
+    expect(text).toMatch(/named in your request|リクエストで指定/);
+  });
+});
+
+describe('agent registration is confirmed in plain chat text', () => {
+  const pane = fs.readFileSync(path.join(root, 'components/panes/AIPane.tsx'), 'utf8');
+
+  it('renders no Confirm / Cancel row under a chat-native draft', () => {
+    expect(pane).not.toContain('AgentChatConfirm');
+    const branch = pane.slice(pane.indexOf('if (message.agentChatConfirm) {'), pane.indexOf('<AgentConfirmCard'));
+    expect(branch).toContain('{message.content}');
+    expect(branch).not.toMatch(/TouchableOpacity|Pressable|onConfirmAgentDraft|onCancelAgentDraft/);
+  });
+
+  it('the summary still tells the owner how to answer', () => {
+    const text = summarizeAgentDraftAsText(parseAgentNL('開発記の記事パイプラインを作って'), undefined, false, { cloudConsent: false });
+    expect(text).toMatch(/OK|Say the word/);
+  });
+
+  it('no message sends the owner to a button that is gone', () => {
+    for (const file of ['en', 'ja']) {
+      const locale = fs.readFileSync(path.join(root, `lib/i18n/locales/${file}.ts`), 'utf8');
+      const notices = locale.split('\n').filter((l) => l.includes("'agentplan.superseded_notice"));
+      expect(notices).toHaveLength(2);
+      notices.forEach((l) => expect(l).not.toMatch(/button|ボタン/));
+    }
   });
 });
 

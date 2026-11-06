@@ -69,16 +69,20 @@ describe('buildArticlePipeline', () => {
     expect(preset.output?.outputTemplate).toBe('{date}-ai-steam.md');
   });
 
-  it('pins HTTP engines: research on Gemini, the reviewer on a different engine than the writer, no Perplexity', () => {
+  it('pins HTTP engines: academic research on Perplexity, the reviewer on a different engine than the writer', () => {
     const steps = presetSteps();
-    expect(steps[0].tool?.type).toBe('gemini-api');
+    expect(steps[0].tool?.type).toBe('perplexity');
+    ['dev-ja', 'dev-en', 'vintage-ja', 'vintage-en'].forEach((stream) => {
+      const other = buildArticlePipeline(stream as never).orchestration.steps as AgentOrchestrationStep[];
+      other.forEach((s) => expect(s.tool?.type).not.toBe('perplexity'));
+    });
     const writer = steps[1].tool?.type;
     expect(steps[3].tool?.type).toBe(writer);
     expect(steps[5].tool?.type).toBe(writer);
     expect(steps[2].tool?.type).not.toBe(writer);
     expect(steps[4].tool?.type).not.toBe(writer);
     const http = ['gemini-api', 'cerebras', 'groq'];
-    steps.slice(0, 6).forEach((s) => expect(http).toContain(s.tool?.type));
+    steps.slice(1, 6).forEach((s) => expect(http).toContain(s.tool?.type));
     expect(steps[6].tool).toBeUndefined();
   });
 
@@ -129,7 +133,7 @@ describe('buildArticlePipeline', () => {
 
   it('only the first step is web research, by instruction', () => {
     const steps = presetSteps();
-    expect(executor.isResearchStep(steps[0].instruction, 'gemini-api')).toBe(true);
+    expect(executor.isResearchStep(steps[0].instruction, 'perplexity')).toBe(true);
     expect(executor.isResearchStep(steps[1].instruction, 'gemini-api')).toBe(false);
   });
 
@@ -147,7 +151,7 @@ describe('the NL trigger', () => {
     expect(d.longform).toBe(true);
     expect(d.orchestrationSteps).toHaveLength(7);
     const steps = d.orchestrationSteps as AgentOrchestrationStep[];
-    expect(steps[0].tool?.type).toBe('gemini-api');
+    expect(steps[0].tool?.type).toBe('perplexity');
     expect(steps[2].handoff?.kind).toBe('review');
     expect(steps[6].local?.kind).toBe('assemble');
     expect(d.tool.type).toBe('gemini-api');
@@ -252,7 +256,7 @@ describe('the plan', () => {
     expect(plan.tool.type).toBe('gemini-api');
   });
 
-  it('never reaches Perplexity through the ladder (no new costs)', () => {
+  it('never falls back to Perplexity through the ladder: only the academic research pin uses it', () => {
     expect(plan.toolLadder.map((t: { type: string }) => t.type)).not.toContain('perplexity');
   });
 

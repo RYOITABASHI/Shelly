@@ -3,7 +3,7 @@
 Owner goal: one draft per day per stream, saved to the Obsidian vault, one digest a day, the owner presses publish by hand. Nothing here publishes anything. Business plan: `docs/promo/research/plan-v2.md`.
 
 Decisions taken without asking (cheap to change, recorded here):
-- Research uses Gemini grounded by default, not Perplexity `sonar-pro`, because the owner wants no new costs.
+- Research uses Gemini grounded, except ai-steam, which is pinned to Perplexity: owner decision, Perplexity for academic research only. No ladder falls back to it.
 - Agents are `autonomous:false` with pinned HTTP engines and memory off. `autonomous:true` strips Groq/Cerebras pins and blocks the new local steps. Autonomous Cloud consent stays off.
 - `review: unresolved` drafts are kept and flagged in the digest. That includes a review that could not run: a failed review or revise step (for example no Cerebras key on a Gemini-only device) ends the loop as `skipped`, the last good version is saved, and `review_note` says why. A failed research or write step still fails the run.
 - Run now refuses these chains (the serial TS chain cannot run the new `local` steps). Test with a near-future cron.
@@ -19,6 +19,8 @@ Chain: `[research, write, review1, revise1, review2, revise2, assemble]`; dev an
 - A plan that is not one `draft` action on a non-autonomous agent, or that has an api-call or CLI step, is refused before any model call. A stream whose non-empty draft for today exists is skipped before `queue-pop`, with no notification.
 - No briefing post-processing. `enforceSourcedIntermediate` otherwise drops the `VERDICT:` line and strips the article.
 - Handoff and local steps excluded from `researchFlags`.
+- A transient failure (429, 5xx, network, timeout) retries the pinned engine once after 4 seconds, before the ladder, unless the run is past 8 minutes (the CAP-001 wall is 10). Auth and no-secret errors do not retry. On the first device run a 2.5-second Gemini 503 moved the last revise to Groq.
+- `review_note` leads with the real reason: a last review that said REVISE means the final text is unreviewed. Assemble also flags, in `lint`, a body under the stream's minimum (JA 2500 characters, dev-en 1000 words, vintage-en 600 words), one source or none, and redirect-only source URLs. Flags only, nothing is rewritten.
 - A Gemini finish reason other than `STOP`, and `length` / `max_tokens` / `content_filter`, fail the step, and local is dropped from candidates, as are the other side's pinned engines. That does not guarantee separation: a ladder can land writer and reviewer on Groq and Cerebras, which serve the same default models. The engine that actually answered each step is recorded, and a final writer and last reviewer of one family pin `review: unresolved` without failing the run. Local caps at 1024/2048 tokens; cloud engines send no cap (plan-v2 line 58 was wrong).
 - Non-model `local` steps: `assemble` (joins the last non-skipped result per part, adds frontmatter, Sources, fixed footer), `list-drafts`, `queue-pop`.
 

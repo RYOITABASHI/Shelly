@@ -250,6 +250,18 @@ describe('loadAgentsFromDisk — scheduled-run memory capture (G2 follow-up)', (
     expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
   });
 
+  it('does not auto-save a skill from a longform article agent, which is a preset already', async () => {
+    const agent = makeAgent({ orchestration: { steps: ['a', 'b'], longform: true } });
+    const log = makeRunLog();
+    const { runCommand, skillWrites } = buildRunCommand({ agent, log });
+
+    await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await settleMicrotasks(20);
+
+    expect(skillWrites).toHaveLength(0);
+    expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+  });
+
   it('does not double-fire the synced hook for an attended manual @agent run', async () => {
     const agent = makeAgent({
       schedule: null,

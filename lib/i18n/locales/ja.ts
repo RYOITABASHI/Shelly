@@ -629,6 +629,7 @@ const ja: Record<string, string> = {
   // 常に返すため)。将来のリファクタでfallback参照される場合に備え念のため用意。
   'agentplan.action_label_browser-pane': 'ブラウザで操作',
   'agentplan.summary_tool_pinned': 'エンジン: {{tool}}（リクエストで指定）',
+  'agentplan.summary_tool_preset': 'エンジン: {{tool}}（このパイプラインの設定。各ステップのエンジンは下の一覧のとおり）',
   'agentplan.tool_substituted_no_consent': '注意: {{from}} を指定しましたが、この自律エージェントは {{to}} で実行されます — 自律クラウド同意が OFF のため、無人実行では API キー型バックエンドを使いません。{{from}} を使うには設定（自律エージェント）で同意を ON にしてください。',
   'agentplan.tool_substituted_scope': '注意: {{from}} を指定しましたが、この自律エージェントは {{to}} で実行されます — 自律クラウド同意が {{from}} を許可するのは Web/リサーチ系タスク（ニュース・論文・「〜を調べて」など）だけです。',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
@@ -697,8 +698,8 @@ const ja: Record<string, string> = {
   // bug #157 fix (docs/superpowers/DEFERRED.md): 別の下書きが割り込んで
   // pendingAgentSession（型入力での確認/取消の宛先）を奪ったとき、奪われた
   // 側のバブルに追記する注記。タップでの確認は引き続き機能する。
-  'agentplan.superseded_notice': '⚠ 別の依頼が入ったため、この下書きの確認は上のボタンをタップして行ってください（テキストでの返信は新しい方に届きます）。',
-  'agentplan.superseded_notice_edit': '⚠ 別の依頼が入ったため、この編集の確定は上のボタンをタップして行ってください（テキストでの返信は新しい方に届きます）。',
+  'agentplan.superseded_notice': '⚠ 別の依頼が入ったため、返信は新しい方に届きます。この下書きを登録するには、もう一度依頼してください。',
+  'agentplan.superseded_notice_edit': '⚠ 別の依頼が入ったため、返信は新しい方に届きます。この編集を行うには、もう一度依頼してください。',
   'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
   // 開始遅延（「来週あたりから…」）のアンカー行 — startNotBefore が未来の
   // 日時に設定されているときだけ、スケジュール行の直後に表示する。

@@ -1,6 +1,10 @@
 /**
  * components/panes/AgentChatConfirm.tsx
  *
+ * NOT RENDERED since 2026-11-06: the owner's standing rule is plain chat text
+ * only, so components/panes/AIPane.tsx no longer shows these buttons and a
+ * draft is confirmed by a typed reply. Kept only until it is deleted.
+ *
  * Chat-native confirmation affordance for NL-self-registered agents whose draft
  * is social-post (e.g. X-posting) or a tool-pinned multi-step orchestration (Phase 7).
  * The project owner rejected a structured card/modal for this: "カードも要らない

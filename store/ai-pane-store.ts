@@ -738,8 +738,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       // is short-lived interaction state (created moments before the user's
       // next reply is expected) — an app kill in that narrow window losing
       // it just means the typed-confirm affordance is lost for that one
-      // draft (the tap-to-confirm buttons on the draft message itself, which
-      // ARE part of the debounced-persisted message list, still work).
+      // draft: the owner asks again. Nothing registers without a typed OK.
     },
 
     setJustRegisteredAgent: (paneId, ref) => {

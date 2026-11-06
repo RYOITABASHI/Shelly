@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=31
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=32
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -139,7 +139,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // saved_at and the configured folders only; a longform plan with an api-call or
 // CLI step is refused. Other plans run exactly as before. Bumped so a stale v30
 // copy, which throws away a finished draft, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 31;
+// v32 (2026-11-06, first on-device run): a longform step retries its pinned
+// engine once on a transient failure before moving down the ladder; review_note
+// leads with a last review that did not pass; assemble flags a short body, too
+// few sources and redirect-only source URLs. Other plans run exactly as before.
+// Bumped so a stale v31 copy, which drops `quality`, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 32;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -873,6 +878,15 @@ const LONGFORM_HANDOFF_STOPPED_MESSAGE = 'Skipped: the review loop stopped, so t
 const ARTICLE_REVIEW_FAILED_NOTE = '査読が動かなかった';
 const ARTICLE_PROMPT_CUT_NOTE = '査読か修正で本文が切れた';
 const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
+const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
+// A brief 503 must not move a step off its pinned engine. The retry waits this
+// long, once, and only while the run is far from the broker's 10-minute CAP-001
+// wall (a run that has used most of it would only trade the 503 for rc=42).
+const LONGFORM_RETRY_WAIT_MS = 4000;
+const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
+// Google's grounding links. The broker's allowlist forbids following them, so
+// the real address is unknown here: the owner replaces the link by hand.
+const ARTICLE_REDIRECT_URL_RE = /^https?:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i;
 // Cerebras and Groq serve the same open models by default, so a reviewer on one
 // is not independent of a writer on the other. Only these cloud engines are
 // compared; the local LLM is never on a longform ladder.
@@ -2239,6 +2253,7 @@ const LOCAL_STEP_MAX_TERMS = 64;
 const LOCAL_STEP_TERM_MAX_CHARS = 64;
 const LOCAL_STEP_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
 const LOCAL_STEP_MAX_STREAMS = 16;
+const LOCAL_STEP_MAX_QUALITY = 100000;
 const LOCAL_STEP_FOLDER_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const LOCAL_STEP_LABEL_MAX_CHARS = 64;
 const ARTICLE_TITLE_MAX_CHARS = 160;
@@ -2292,12 +2307,24 @@ function normalizeStepLocal(raw, index) {
     if (!n || !forms || typeof n.canonical !== 'string' || !n.canonical.trim() || n.canonical.length > LOCAL_STEP_TERM_MAX_CHARS) return undefined;
     nameLint = { canonical: n.canonical, forms };
   }
+  let quality;
+  if (raw.quality !== undefined) {
+    const q = raw.quality;
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return undefined;
+    quality = {};
+    for (const key of ['minChars', 'minWords', 'minSources']) {
+      if (q[key] === undefined) continue;
+      if (!Number.isInteger(q[key]) || q[key] < 1 || q[key] > LOCAL_STEP_MAX_QUALITY) return undefined;
+      quality[key] = q[key];
+    }
+  }
   return Object.assign(
     { kind: 'assemble', parts, stream: raw.stream, footer: raw.footer },
     lintTerms ? { lintTerms } : {},
     nameLint ? { nameLint } : {},
     raw.plain === true ? { plain: true } : {},
     raw.lintSources === true ? { lintSources: true } : {},
+    quality ? { quality } : {},
   );
 }
 
@@ -2378,6 +2405,24 @@ function stripArticleSources(text) {
  * digest's text is built by list-drafts and starts with what the notification
  * must show.
  */
+// Flags only, like articleLint, and listed first so the digest's term cap
+// cannot drop them.
+function articleQualityFlags(quality, body, sources) {
+  if (!quality) return [];
+  const flags = [];
+  if (quality.minChars) {
+    const n = Array.from(body).length;
+    if (n < quality.minChars) flags.push(`本文が短い: ${n}字（目安 ${quality.minChars}字以上）`);
+  }
+  if (quality.minWords) {
+    const n = body.split(/\s+/).filter(Boolean).length;
+    if (n < quality.minWords) flags.push(`本文が短い: ${n} words（目安 ${quality.minWords} words 以上）`);
+  }
+  if (quality.minSources && sources.length < quality.minSources) flags.push(`sources: ${quality.minSources - 1} or fewer`);
+  if (sources.some((s) => ARTICLE_REDIRECT_URL_RE.test(String(s.url)))) flags.push('Sources に転送リンク（公開前に差し替え）');
+  return flags;
+}
+
 function reviewSharesWriterFamily(local, ctx) {
   const engines = ctx.usedEngines || [];
   const familyOf = (k) => ENGINE_FAMILIES[engines[k]];
@@ -2414,13 +2459,18 @@ function assembleArticle(local, ctx) {
   if (local.plain) return `${body}\n\n---\n\n${local.footer.trim()}\n`;
 
   let review = 'unresolved';
+  let reviewRan = false;
   for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
     const h = handoffOf(ctx.steps, j);
     if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
+    reviewRan = true;
     if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
     break;
   }
-  const reviewNotes = (ctx.reviewNotes || []).slice();
+  // The real reason first: a text the last review rejected, then rewritten, has
+  // not been reviewed at all, whatever else also holds.
+  const reviewNotes = reviewRan && review !== 'pass' ? [ARTICLE_LAST_REVIEW_NOTE] : [];
+  reviewNotes.push(...(ctx.reviewNotes || []));
   if (reviewSharesWriterFamily(local, ctx)) reviewNotes.push(ARTICLE_SAME_ENGINE_NOTE);
   if (reviewNotes.length) review = 'unresolved';
   const heading = /^ {0,3}#\s+(.+?)\s*$/m.exec(body);
@@ -2435,7 +2485,7 @@ function assembleArticle(local, ctx) {
     `review: ${review}`,
     ...(reviewNotes.length ? [`review_note: ${JSON.stringify(reviewNotes.join('、'))}`] : []),
     `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'unknown'}`,
-    `lint: ${JSON.stringify(articleLint(local, lintText))}`,
+    `lint: ${JSON.stringify(articleQualityFlags(local.quality, body, ctx.sources).concat(articleLint(local, lintText)))}`,
     '---',
   ].join('\n');
   const sources = ctx.sources.map((s) =>
@@ -6526,10 +6576,21 @@ function stepToolCandidates(plan) {
   return [plan.tool].concat(ladder.filter((tool) => !tool || (tool.type !== 'local' && other.indexOf(tool.type) === -1)));
 }
 
+// True when a longform step should try its pinned engine once more. 'unavailable'
+// is the broker's transient exit (429, 5xx, network, timeout); an auth failure, a
+// missing secret or the budget stop is not.
+function longformRetryDue(plan, opts, candidateIndex, alreadyRetried, error) {
+  if (!(plan.steps && plan.steps.longform === true)) return false;
+  if (candidateIndex !== 0 || alreadyRetried || !error || error.status !== 'unavailable') return false;
+  const startedAt = opts && opts.chainStartedAt;
+  return typeof startedAt === 'number' && Date.now() - startedAt < LONGFORM_RETRY_WINDOW_MS;
+}
+
 async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
   const candidates = stepToolCandidates(plan);
   const longform = !!(plan.steps && plan.steps.longform === true);
   let lastError = new PlanFailure('no tool candidates to try', { handled: true });
+  let pinnedRetried = false;
   for (let i = 0; i < candidates.length; i += 1) {
     const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
     // Continuous mode: with a ¥0 daily budget a loop never calls an API-key
@@ -6632,6 +6693,20 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
       // they did before toolLadder existed — never added to the ladder walk.
       if (error.exitCode === EXIT.TOOL_DENY) throw error;
       lastError = error;
+      if (longformRetryDue(plan, opts, i, pinnedRetried, error)) {
+        pinnedRetried = true;
+        appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event: 'longform_retry',
+          agentId: plan.agent && plan.agent.id,
+          stepIndex: opts && opts.stepIndex,
+          toolType: attemptPlan.tool.type,
+        });
+        await new Promise((resolve) => setTimeout(resolve, LONGFORM_RETRY_WAIT_MS));
+        if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
+        i -= 1; // the loop's increment brings this back to the pinned engine
+      }
     }
   }
   if (plan.toolLadderExhaustedNote) {
@@ -7619,7 +7694,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
     const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
-    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin }, branchCtl ? { branchCtl } : {});
+    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin, chainStartedAt: startedAt }, branchCtl ? { branchCtl } : {});
     if (branchCtl) branchCtl.currentKey = overrideToolKey(stepTool);
     const stepStart = Date.now();
 
@@ -9090,6 +9165,9 @@ module.exports = {
   ARTICLE_REVIEW_FAILED_NOTE,
   ARTICLE_PROMPT_CUT_NOTE,
   ARTICLE_SAME_ENGINE_NOTE,
+  ARTICLE_LAST_REVIEW_NOTE,
+  LONGFORM_RETRY_WINDOW_MS,
+  longformRetryDue,
   composeStepPrompt,
   capLongformResearch,
   longformPlanRefusal,

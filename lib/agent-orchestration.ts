@@ -147,6 +147,7 @@ const LOCAL_STEP_MAX_TERMS = 64;
 const LOCAL_STEP_TERM_MAX_CHARS = 64;
 const LOCAL_STEP_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
 const LOCAL_STEP_MAX_STREAMS = 16;
+const LOCAL_STEP_MAX_QUALITY = 100000;
 const LOCAL_STEP_FOLDER_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const LOCAL_STEP_LABEL_MAX_CHARS = 64;
 
@@ -206,6 +207,18 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
     if (!n || !forms || typeof n.canonical !== 'string' || !n.canonical.trim() || n.canonical.length > LOCAL_STEP_TERM_MAX_CHARS) return undefined;
     nameLint = { canonical: n.canonical, forms };
   }
+  let quality: AgentAssembleStepConfig['quality'];
+  if (r.quality !== undefined) {
+    const q = r.quality as Record<string, unknown> | null;
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return undefined;
+    quality = {};
+    for (const key of ['minChars', 'minWords', 'minSources'] as const) {
+      const value = q[key];
+      if (value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > LOCAL_STEP_MAX_QUALITY) return undefined;
+      quality[key] = value;
+    }
+  }
   return {
     kind: 'assemble',
     parts,
@@ -215,6 +228,7 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
     ...(nameLint ? { nameLint } : {}),
     ...(r.plain === true ? { plain: true } : {}),
     ...(r.lintSources === true ? { lintSources: true } : {}),
+    ...(quality ? { quality } : {}),
   };
 }
 

@@ -171,7 +171,10 @@ describe('shelly-plan-executor.js longform chain', () => {
     expect(result).toMatch(/^date: \d{4}-\d{2}-\d{2}$/m);
     expect(result).toContain('review: pass');
     expect(result).toContain('material: missing');
-    expect(result).toContain('lint: []');
+    // A one-line fixture body with one source: the preset's quality flags.
+    expect(/^lint: (.*)$/m.exec(result)![1]).toContain('sources: 1 or fewer');
+    expect(/^lint: (.*)$/m.exec(result)![1]).toContain('本文が短い');
+    expect(result).toContain(article);
     expect(result).toContain(article);
     expect(result).toContain('## Sources');
     expect(result).toContain(SOURCE_URL);
@@ -282,10 +285,11 @@ describe('shelly-plan-executor.js longform chain', () => {
   it('a failed review keeps the draft: skipped, not an error, and unresolved', async () => {
     const home = makeHome();
     const article = '# 記事\n\n本文です [1]。';
-    replies = [research, article, failed];
+    replies = [research, article, failed, failed];
     expect(await runExecutor(writePlan(home, port, articleChain()), home)).toBe(0);
 
-    expect(prompts).toHaveLength(3);
+    // The engine was tried twice: a transient failure gets one retry.
+    expect(prompts).toHaveLength(4);
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
@@ -298,10 +302,10 @@ describe('shelly-plan-executor.js longform chain', () => {
   it('a failed revise keeps the draft before it, and the second review does not run', async () => {
     const home = makeHome();
     const article = '# 初稿\n\n本文です [1]。';
-    replies = [research, article, 'VERDICT: REVISE\n1. 直す', failed, 'never reached'];
+    replies = [research, article, 'VERDICT: REVISE\n1. 直す', failed, failed, 'never reached'];
     await runExecutor(writePlan(home, port, articleChain()), home);
 
-    expect(prompts).toHaveLength(4);
+    expect(prompts).toHaveLength(5);
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'success']);
@@ -311,10 +315,10 @@ describe('shelly-plan-executor.js longform chain', () => {
 
   it('a failed second review keeps the revised draft', async () => {
     const home = makeHome();
-    replies = [research, '# 初稿\n\n一。', 'VERDICT: REVISE\n1. 直す', '# 改稿\n\n二。', failed];
+    replies = [research, '# 初稿\n\n一。', 'VERDICT: REVISE\n1. 直す', '# 改稿\n\n二。', failed, failed];
     await runExecutor(writePlan(home, port, articleChain()), home);
 
-    expect(prompts).toHaveLength(5);
+    expect(prompts).toHaveLength(6);
     const result = readResult(home);
     expect(result).toContain('# 改稿');
     expect(result).not.toContain('# 初稿');
@@ -323,11 +327,48 @@ describe('shelly-plan-executor.js longform chain', () => {
 
   it('REGRESSION: a failed write step still fails the run', async () => {
     const home = makeHome();
-    replies = [research, failed];
+    replies = [research, failed, failed];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+    expect(prompts).toHaveLength(3);
+    expect(readRunLog(home).status).not.toBe('success');
+    expect(readResult(home)).not.toContain('title:');
+  }, 20000);
+
+  it('a brief 503 retries the same engine once, and the run goes on as if nothing happened', async () => {
+    const home = makeHome();
+    const article = '# 記事\n\n本文です [1]。';
+    replies = [research, { content: 'busy', status: 503 }, article, 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts).toHaveLength(4);
+    expect(prompts[2]).toBe(prompts[1]);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(readResult(home)).toContain('review: pass');
+    expect(readResult(home)).toContain(article);
+  }, 20000);
+
+  it('a 429 retries too', async () => {
+    const home = makeHome();
+    replies = [{ content: 'slow down', status: 429 }, research, '# 記事\n\n本文です [1]。', 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+    expect(prompts).toHaveLength(4);
+    expect(readRunLog(home).status).toBe('success');
+  }, 20000);
+
+  it.each([401, 403, 400])('a %i is not retried', async (status) => {
+    const home = makeHome();
+    replies = [research, { content: 'denied', status }];
     await runExecutor(writePlan(home, port, articleChain()), home);
     expect(prompts).toHaveLength(2);
     expect(readRunLog(home).status).not.toBe('success');
-    expect(readResult(home)).not.toContain('title:');
+  }, 20000);
+
+  it('REGRESSION: a chain without longform does not retry', async () => {
+    const home = makeHome();
+    replies = [{ content: 'busy', status: 503 }];
+    await runExecutor(writePlan(home, port, [{ instruction: 'first' }, { instruction: 'second' }], false), home);
+    expect(prompts).toHaveLength(1);
   }, 20000);
 
   it('research over the limit is cut once, and the writer and the reviewer get the same notes', async () => {
@@ -570,6 +611,16 @@ describe('normalizeStepLocal parity', () => {
     expect(normalizeSteps({ steps })[1].local).toBeUndefined();
   });
 
+  it('keeps quality identically, and refuses a bad one in both', () => {
+    const raw = { ...valid, quality: { minChars: 2500, minSources: 2 } };
+    expect(tsNormalizeStepLocal(raw)).toEqual(raw);
+    expect(executor.normalizeStepLocal(raw, 6)).toEqual(raw);
+    for (const quality of [{ minChars: 0 }, { minWords: 1.5 }, { minSources: '2' }, []]) {
+      expect(tsNormalizeStepLocal({ ...valid, quality })).toBeUndefined();
+      expect(executor.normalizeStepLocal({ ...valid, quality }, 6)).toBeUndefined();
+    }
+  });
+
   it('on a longform chain an invalid local stays local, so the executor refuses it', () => {
     const bad = { instruction: 'label', local: { kind: 'shell' } as never, tool: { type: 'gemini-api' } as never };
     const [invalid] = normalizeSteps({ longform: true, steps: [bad, { instruction: 'next' }] });
@@ -662,6 +713,62 @@ describe('assembleArticle', () => {
     expect(cut.split('\n')).toContain('review: unresolved');
     expect(cut.split('\n')).toContain('review_note: "切れた、動かなかった"');
     expect(assemble(['r', '# 記事', 'VERDICT: PASS'])).not.toContain('review_note');
+  });
+
+  it('a last review that did not pass is the first reason, whatever else holds', () => {
+    const results = ['r', '# 一', 'VERDICT: REVISE', '# 二', 'VERDICT: REVISE', '# 三'];
+    const usedEngines = [undefined, 'gemini-api', 'cerebras', 'gemini-api', 'cerebras', 'groq'];
+    const line = assembleWith({ usedEngines }, results).split('\n').find((l: string) => l.startsWith('review_note:'));
+    expect(line).toBe(`review_note: "${executor.ARTICLE_LAST_REVIEW_NOTE}、${executor.ARTICLE_SAME_ENGINE_NOTE}"`);
+    expect(executor.ARTICLE_LAST_REVIEW_NOTE).toContain('合格していない');
+  });
+
+  it('a review that never ran does not claim the last review failed', () => {
+    const out = assembleWith({ reviewNotes: [executor.ARTICLE_REVIEW_FAILED_NOTE] }, ['r', '# 記事'], [false, false, true]);
+    expect(out).toContain(`review_note: "${executor.ARTICLE_REVIEW_FAILED_NOTE}"`);
+  });
+
+  describe('quality flags', () => {
+    const lintOf = (out: string) => JSON.parse(/^lint: (.*)$/m.exec(out)![1]);
+    const withQuality = (quality: object, body: string, sources: object[] = []) =>
+      executor.assembleArticle({ ...local, quality }, { steps, results: ['r', body, 'VERDICT: PASS'], skipped: [], sources, today: '2026-11-06', fallbackTitle: 'F' });
+    const source = (url: string) => ({ id: 1, title: 'S', url });
+    const REDIRECT = 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123';
+
+    it('flags a short Japanese body by characters, and leaves a long one', () => {
+      expect(lintOf(withQuality({ minChars: 2500 }, `# 記事\n\n${'あ'.repeat(100)}`))[0]).toContain('本文が短い');
+      expect(lintOf(withQuality({ minChars: 2500 }, `# 記事\n\n${'あ'.repeat(2500)}`))).toEqual([]);
+    });
+
+    it('flags a short English body by words', () => {
+      expect(lintOf(withQuality({ minWords: 1000 }, `# Post\n\n${'word '.repeat(50)}`))[0]).toContain('words');
+      expect(lintOf(withQuality({ minWords: 1000 }, `# Post\n\n${'word '.repeat(1000)}`))).toEqual([]);
+    });
+
+    it('flags one source or none, not two', () => {
+      const two = [source('https://a.example/1'), source('https://b.example/2')];
+      expect(lintOf(withQuality({ minSources: 2 }, '# 記事'))).toEqual(['sources: 1 or fewer']);
+      expect(lintOf(withQuality({ minSources: 2 }, '# 記事', [two[0]]))).toEqual(['sources: 1 or fewer']);
+      expect(lintOf(withQuality({ minSources: 2 }, '# 記事', two))).toEqual([]);
+    });
+
+    it('flags a redirect-only source URL and keeps the link as it is', () => {
+      const out = withQuality({ minSources: 1 }, '# 記事', [source(REDIRECT)]);
+      expect(lintOf(out)[0]).toContain('転送リンク');
+      expect(out).toContain(REDIRECT);
+    });
+
+    it('rewrites nothing, and puts its flags before the term hits', () => {
+      const body = `# 記事\n\n世界初`;
+      const out = withQuality({ minChars: 2500 }, body);
+      expect(lintOf(out)[0]).toContain('本文が短い');
+      expect(lintOf(out)).toContain('世界初');
+      expect(out).toContain(body);
+    });
+
+    it('REGRESSION: no flags without the setting', () => {
+      expect(lintOf(assemble(['r', '# 記事', 'VERDICT: PASS']))).toEqual([]);
+    });
   });
 
   it('writes when it was saved', () => {
@@ -782,6 +889,30 @@ describe('truncation and candidates', () => {
     expect(executor.stepToolCandidates({ tool: gemini, toolLadder: ladder, steps: { longform: true }, sourcing: { mode: 'research' } })).toEqual([gemini]);
   });
 
+  describe('longformRetryDue', () => {
+    const plan = { steps: { longform: true } };
+    const opts = { chainStartedAt: Date.now() };
+    const transient = { status: 'unavailable' };
+
+    it('allows one retry of the pinned engine on a transient failure', () => {
+      expect(executor.longformRetryDue(plan, opts, 0, false, transient)).toBe(true);
+    });
+
+    it.each<[string, any, any, number, boolean, any]>([
+      ['a second retry', plan, opts, 0, true, transient],
+      ['a ladder rung', plan, opts, 1, false, transient],
+      ['an auth or budget failure', plan, opts, 0, false, { status: 'error' }],
+      ['an ordinary plan', {}, opts, 0, false, transient],
+      ['a run near the CAP-001 wall', plan, { chainStartedAt: Date.now() - executor.LONGFORM_RETRY_WINDOW_MS - 1 }, 0, false, transient],
+    ])('refuses %s', (_name, p, o, index, retried, error) => {
+      expect(executor.longformRetryDue(p, o, index, retried, error)).toBe(false);
+    });
+
+    it('keeps the window inside the broker wall', () => {
+      expect(executor.LONGFORM_RETRY_WINDOW_MS).toBeLessThan(10 * 60 * 1000);
+    });
+  });
+
   it('keeps the other role\'s engines off a longform ladder', () => {
     const groq = { type: 'groq' };
     const review = { tool: cerebras, toolLadder: [gemini, groq], steps: { longform: true }, longformOtherTools: ['gemini-api'] };
@@ -797,7 +928,7 @@ describe('truncation and candidates', () => {
   it('names each side\'s engines from the real chain', () => {
     const steps = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
     expect([...new Set(executor.longformOtherRoleTools(steps, 1))]).toEqual(['cerebras']);
-    expect([...new Set(executor.longformOtherRoleTools(steps, 2))]).toEqual(['gemini-api']);
+    expect([...new Set(executor.longformOtherRoleTools(steps, 2))]).toEqual(['perplexity', 'gemini-api']);
     expect([...new Set(executor.longformOtherRoleTools(steps, 3))]).toEqual(['cerebras']);
   });
 });

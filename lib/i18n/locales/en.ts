@@ -641,6 +641,7 @@ const en: Record<string, string> = {
   // this fallback doesn't silently render the raw i18n key string.
   'agentplan.action_label_browser-pane': 'act in the browser',
   'agentplan.summary_tool_pinned': 'Engine: {{tool}} (named in your request)',
+  'agentplan.summary_tool_preset': 'Engine: {{tool}} (set by this pipeline; the steps below show what each one uses)',
   'agentplan.tool_substituted_no_consent': 'Note: you named {{from}}, but this autonomous agent will run on {{to}} instead — Autonomous Cloud consent is off, so API-key backends are not used unattended. Turn it on in Settings (Autonomous agents) to keep {{from}}.',
   'agentplan.tool_substituted_scope': 'Note: you named {{from}}, but this autonomous agent will run on {{to}} instead — Autonomous Cloud consent covers {{from}} only for web/research tasks (news, papers, "research …").',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
@@ -714,8 +715,8 @@ const en: Record<string, string> = {
   // that just lost the pane's single pendingAgentSession slot to a newer,
   // unrelated draft — typed confirm/cancel now resolves the newer one
   // instead; the tap-to-confirm buttons on this bubble still work.
-  'agentplan.superseded_notice': '⚠ A different request came in — please use the button above to confirm this draft (a typed reply will resolve the newer one instead).',
-  'agentplan.superseded_notice_edit': '⚠ A different request came in — please use the button above to confirm this edit (a typed reply will resolve the newer one instead).',
+  'agentplan.superseded_notice': '⚠ A different request came in, so a typed reply now goes to the newer one. To register this draft, ask for it again.',
+  'agentplan.superseded_notice_edit': '⚠ A different request came in, so a typed reply now goes to the newer one. To make this edit, ask for it again.',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
   // Deferred-start ("来週あたりから…") anchor line — shown next to the
   // schedule line whenever startNotBefore is set and still in the future.

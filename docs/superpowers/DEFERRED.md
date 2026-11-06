@@ -75,10 +75,10 @@
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
-設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v31。下はテストでは確かめられず、実機でしか分からないこと。
+設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v32。下はテストでは確かめられず、実機でしか分からないこと。
 - **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
 - **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
-- **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても 5 本とも下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
+- **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても ai-steam 以外の 4 本は下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
 - **実際の出力**: 記事の長さと finish reason（Gemini `MAX_TOKENS`、Cerebras `length`）。途中で切れるなら Inc 6（章分割プリセット）に進む。
 - **無料枠**: 5 本×毎日で Gemini / Cerebras の上限に当たらないか。CAP-001 の 10 分の壁に 8 ステップのチェーンが当たらないか（broker の予算は run ごとにリセットだが、1 run が 10 分を超える可能性がある）。
 - **`/sdcard` の直接読み取り**: `queue-pop` と `list-drafts` は broker を通さず executor の node から読む。`/sdcard/Documents/ObsidianVault` を読めること、realpath（`/storage/emulated/0/…`）が vault の内側と判定されることを確認。読めない場合はダイジェストがエラーになる設計（全ストリーム「未作成」とは出さない）。
@@ -91,6 +91,15 @@
 
 ### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
 `REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。
+
+### Gemini grounding の転送リンクを本物の URL に解決できない — 未対応 (P2)
+Gemini の出典 URL は `vertexaisearch.cloud.google.com/grounding-api-redirect/…` の転送リンクで返る。broker の許可リストはこのホストへの通信を許さないので、executor からは転送先を調べられない。今は `assemble` が `lint` に「Sources に転送リンク（公開前に差し替え）」と出すだけで、本人が公開前に手で差し替える。直すなら、許可リストの緩和ではなく、grounding 応答に元 URL が入っていないかを調べるところから。
+
+### Agent Runs にステップごとのエンジンを表示 — 未対応 (P3)
+記事パイプラインでは、ラダーで降格したかどうかが `review_note` の同系統の注記でしか分からない。run log の各ステップに実際に答えたエンジンを載せて Agent Runs に出す。
+
+### チャット確認のボタン撤去で確定できなくなる場面 — 記録 (P3)
+2026-11-06 に Confirm / Cancel ボタンを外した（確認はチャットの平文のみ）。ボタンは次の 3 つの場面で唯一の経路だったので、今はもう一度依頼し直すしかない: 確認待ちが 15 分（`SLOT_FILL_STALE_MS`）を過ぎたとき、別の依頼で新しい下書きに置き換えられたとき（bug #157、複数セッション対応が本筋）、確認待ちの間にアプリが終了・更新されたとき（`pendingAgentSession` は永続化されないので「OK」が通常のチャットに流れる。自動登録はされない）。`components/panes/AgentChatConfirm.tsx` と `__tests__/AgentChatConfirm.test.tsx` は描画されなくなったので削除してよい。`AgentConfirmCard`（チャット確認の対象外の action の下書き）は確認の経路がカードしかないので残っている。全廃するなら `shouldUseChatConfirm` を全 action に広げ、ピッカーでしか決められなかった項目を平文の確認に移す必要がある。
 
 ### 記事パイプラインの vault パスがプリセットに直書き — 未対応 (P2)
 `lib/agent-pipeline-presets.ts` の `ARTICLE_VAULT_DRAFTS` は `/sdcard/Documents/ObsidianVault/50_Drafts` 固定で、`OBSIDIAN_VAULT_PATH` を別の場所にしている端末では broker が保存を拒否し、キューとダイジェストは設定側の vault を見るので食い違う。直すなら、エージェント作成時に設定の vault から出力先を組み立てる。
