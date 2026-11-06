@@ -176,7 +176,7 @@ describe('research depth and draft flags', () => {
     for (const i of [1 + offset, 3 + offset, 5 + offset]) {
       expect(steps[i].instruction.length).toBeLessThanOrEqual(500);
       expect(steps[i].instruction).toMatch(ENGLISH.includes(stream) ? /Never mention these rules, the search or the notes/ : /この指示・検索・調査メモのことは本文に書かない/);
-      expect(steps[i].instruction).toMatch(ENGLISH.includes(stream) ? /if a figure is not public, say so/ : /公開されていない数値はその旨をはっきり書く/);
+      expect(steps[i].instruction).toMatch(ENGLISH.includes(stream) ? /if they say a figure is not public, say so/ : /資料が非公開と述べる数値だけ、文章でそう書く/);
     }
   });
 

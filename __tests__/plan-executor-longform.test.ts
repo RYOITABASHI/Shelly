@@ -907,6 +907,155 @@ describe('assembleArticle', () => {
       expect(out).toContain(body);
     });
 
+    it.each(['この指針は（出典不明）です', '効果量は（具体的数値は未確認）です', '（要確認）', 'Source unknown', 'citation needed'])('flags a bracketed review note in %s', (line) => {
+      expect(lintOf(withQuality({ selfTalk: true }, `# 記事\n\n${line}`))[0]).toContain('作業の話が本文に残っている');
+    });
+
+    it('leaves an honest limit in a known-limits section alone', () => {
+      expect(lintOf(withQuality({ selfTalk: true }, '# 記事\n\n実機では未確認です。The signature was not verified.（年代不明）（2026年）'))).toEqual([]);
+    });
+
+    it.each(['ai-steam', 'dev-ja', 'dev-en', 'vintage-ja', 'vintage-en'] as const)('drops the series line of the real %s prompt', (stream) => {
+      const prompt = buildArticlePipeline(stream).prompt;
+      const series = prompt.split('\n')[0];
+      expect(series.length).toBeGreaterThan(12);
+      const out = executor.assembleArticle(local, { steps, results: ['r', `${series}\n\n# 記事\n\n本文`, 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', basePrompt: `OUTPUT LANGUAGE (REQUIRED): x.\n\n${prompt}` });
+      expect(out).not.toContain(series);
+      expect(out).toContain('title: "記事"');
+    });
+
+    it('unwraps an answer fenced whole, and does not repeat its title', () => {
+      for (const body of ['```markdown\n# 記事\n\n本文\n```', '```\n# 記事\n\n本文\n```', '```md\n# 記事\n\n本文']) {
+        const out = withQuality({ minChars: 1 }, body);
+        expect(out).toContain('title: "記事"');
+        expect(out.split('# 記事').length).toBe(2);
+        expect(out).not.toContain('```');
+      }
+    });
+
+    it.each([
+      ['a bare fence', '```\n# reproduce\nnpm i\n```\n\nここから本文。'],
+      ['a Markdown sample', '```markdown\n# sample heading\n```\n\nここから本文。'],
+      ['two samples', '```\n# a\n```\n\n本文\n\n```\n# b\n```'],
+    ])('leaves an article that opens with %s alone', (_name, body) => {
+      const out = withQuality({ minChars: 1 }, body);
+      expect(out).toContain(body);
+      expect(out).toContain('title: "F"');
+      expect(lintOf(out)[0]).toContain('本文に見出しが無い');
+    });
+
+    it('unwraps a wrapper with a tagged code sample inside it', () => {
+      const out = withQuality({ minChars: 1 }, '```markdown\n# 記事\n\n```bash\nls\n```\n\n本文\n```');
+      expect(out).toContain('title: "記事"');
+      expect(out).toContain('```bash\nls\n```\n\n本文\n\n');
+    });
+
+    it('unwraps a fence behind an echoed prompt line', () => {
+      const out = executor.assembleArticle(local, { steps, results: ['r', 'この記事シリーズの説明の一行です。\n\n```markdown\n# 記事\n\n本文\n```', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', basePrompt: 'この記事シリーズの説明の一行です。' });
+      expect(out).toContain('title: "記事"');
+      expect(out).not.toContain('```');
+    });
+
+    it('reads fences the way Markdown does', () => {
+      expect(withQuality({ minChars: 1 }, '```bash\n~~~\n# install\n```\n本文')).toContain('title: "F"');
+      expect(withQuality({ minChars: 1 }, '#  \n\n本文')).toContain('title: "F"');
+      expect(withQuality({ minChars: 1 }, '```x```\n\n# 記事\n\n本文')).toContain('title: "記事"');
+    });
+
+    it('drops a paragraph of the plan prompt a model echoed before the article, and keeps the rest', () => {
+      const out = executor.assembleArticle(local, {
+        steps,
+        results: ['r', 'この記事シリーズの説明の一行です。\n\n# 記事\n\n本文', 'VERDICT: PASS'],
+        skipped: [],
+        sources: [],
+        today: '2026-11-06',
+        fallbackTitle: 'F',
+        basePrompt: 'OUTPUT LANGUAGE (REQUIRED): Japanese.\n\nこの記事シリーズの説明の一行です。\n規則の行',
+      });
+      expect(out).not.toContain('シリーズの説明の一行');
+      expect(out).toContain('title: "記事"');
+    });
+
+    it('stops at a shell comment: it is not a title', () => {
+      const out = withQuality({ minChars: 1 }, '本文\n\n```bash\n# install deps\n```');
+      expect(out).toContain('title: "F"');
+      expect(lintOf(out)[0]).toContain('本文に見出しが無い');
+    });
+
+    it('does not take a title across a blank line', () => {
+      expect(withQuality({ minChars: 1 }, '#\n\n本文')).toContain('title: "F"');
+    });
+
+    describe('a revision that lost the title line', () => {
+      const chain = { ...local, quality: { minChars: 1 }, parts: [[1, 3]] };
+      const reviseSteps = [{ instruction: 'r' }, { instruction: 'w' }, { instruction: 'v', handoff: { kind: 'review', of: [0, 1], round: 1 } }, { instruction: 'f', handoff: { kind: 'revise', of: [1, 2], round: 1 } }];
+      const run = (first: string, revised = '直した本文', basePrompt?: string) =>
+        executor.assembleArticle(chain, { steps: reviseSteps, results: ['r', first, 'VERDICT: REVISE\n1. x', revised], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', basePrompt });
+
+      it.each([
+        ['only the echoed prompt', 'この記事シリーズの説明の一行です。'],
+        ['only a Sources block', '## Sources\n\n- [1] https://example.com/a'],
+      ])('keeps the earlier draft when the revision is %s', (_name, revised) => {
+        const out = run('# 題\n\n前の版の本文', revised, 'この記事シリーズの説明の一行です。');
+        expect(out).toContain('前の版の本文');
+        expect(out).toContain('title: "題"');
+      });
+
+      it('does not call a draft passed when the pass was on an empty revision', () => {
+        const stepsTwo = [...reviseSteps, { instruction: 'v2', handoff: { kind: 'review', of: [0, 3], round: 2 } }];
+        const out = executor.assembleArticle(chain, { steps: stepsTwo, results: ['r', '# 題\n\n却下された本文', 'VERDICT: REVISE\n1. x', '## Sources\n\n- [1] https://example.com/a', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+        expect(out).toContain('review: unresolved');
+        expect(out).toContain('合格した版を採用できなかった');
+      });
+
+      it('takes the title from the earlier version and flags it', () => {
+        const out = run('# 本当のタイトル\n\n本文');
+        expect(out).toContain('title: "本当のタイトル"');
+        expect(out).toContain('# 本当のタイトル\n\n直した本文');
+        expect(lintOf(out)[0]).toBe('タイトルは修正前の版から復元');
+      });
+
+      it('falls back to the agent name, and says so, when no version has one', () => {
+        const out = run('見出しの無い本文');
+        expect(out).toContain('title: "F"');
+        expect(lintOf(out)[0]).toContain('本文に見出しが無い');
+      });
+    });
+
+    it('flags only an index page the body cites', () => {
+      const sources = [
+        { id: 1, title: 'A', url: 'https://link.springer.com/article/10.1007/s10639-026-14178-8' },
+        { id: 2, title: 'B', url: 'https://www.link.springer.com/journal/40594/articles?filterOpenAccess=false&page=1' },
+        { id: 3, title: 'C', url: 'http://link.springer.com/collections/chdfcibfje' },
+        { id: 4, title: 'D', url: 'https://www.nature.com/subjects/technology-and-design-education?error=cookies_not_supported' },
+        { id: 5, title: 'E', url: 'https://www.frontiersin.org/journals/education/articles/10.3389/feduc.2026.1989485' },
+      ];
+      const flags = lintOf(withQuality({ minChars: 1 }, '# 記事\n\n本文 [1][2][3][5]', sources));
+      expect(flags).toEqual(['目次ページを引用: [2], [3]']);
+      expect(lintOf(withQuality({ minChars: 1 }, '# 記事\n\n本文 [1, 2]、［3］', sources))).toEqual(['目次ページを引用: [2], [3]']);
+    });
+
+    it.each([
+      ['https://link.springer.com/journal/40594/volumes-and-issues', true],
+      ['https://link.springer.com/journal/40594?isSharedLink=true', true],
+      ['https://www.nature.com/nature/articles', true],
+      ['https://www.nature.com/nature/volumes/630/issues/8015', true],
+      ['https://dl.acm.org/toc/toce/2026/26/3', true],
+      ['https://www.sciencedirect.com/journal/computers-and-education/vol/210/suppl/C', true],
+      ['https://arxiv.org/list/cs.AI/recent', true],
+      ['https://www.nature.com/articles/s41586-026-00000-0', false],
+      ['https://dl.acm.org/doi/10.1145/3785651.3831496', false],
+      ['https://www.sciencedirect.com/science/article/pii/S0360131526000001', false],
+      ['https://arxiv.org/abs/2610.00001', false],
+      ['https://github.com/systemd/systemd/blob/main/src/journal/journald.c', false],
+      ['https://github.com/JetBrains/kotlin/blob/master/libraries/stdlib/src/kotlin/collections/Collections.kt', false],
+      ['https://developer.android.com/reference/kotlin/collections/package-summary', false],
+      ['https://shop.example.com/blogs/journal/vintage-tee', false],
+    ])('reads %s as an index page: %s', (url, index) => {
+      const flags = lintOf(withQuality({ minChars: 1 }, '# 記事\n\n本文 [1]', [{ id: 1, title: 'S', url }]));
+      expect(flags).toEqual(index ? ['目次ページを引用: [1]'] : []);
+    });
+
     it('leaves a body with none of those words, and does nothing without the setting', () => {
       expect(lintOf(withQuality({ selfTalk: true }, '# 記事\n\n公開されていない数値です。'))).toEqual([]);
       expect(lintOf(withQuality({ minChars: 1 }, '# 記事\n\n検索結果'))).toEqual([]);

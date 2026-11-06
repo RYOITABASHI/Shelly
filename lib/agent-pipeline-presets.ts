@@ -153,8 +153,8 @@ const ARTICLE_VINTAGE_LINT_TERMS = ['![', '<img', 'mercari', 'merc.li', 'メル�
 
 // In the write and revise instructions: on the second device run the draft held
 // lines addressed to the writer itself, such as 検索結果からは取得できなかった.
-const ARTICLE_NO_SELF_TALK_JA = 'この指示・検索・調査メモのことは本文に書かない。資料に書かれたことだけを書き、公開されていない数値はその旨をはっきり書く。';
-const ARTICLE_NO_SELF_TALK_EN = 'Never mention these rules, the search or the notes. Write only what the sources say; if a figure is not public, say so.';
+const ARTICLE_NO_SELF_TALK_JA = 'この指示・検索・調査メモのことは本文に書かない。資料に書かれたことだけを書く。資料が非公開と述べる数値だけ、文章でそう書く。括弧の注記にしない。';
+const ARTICLE_NO_SELF_TALK_EN = 'Never mention these rules, the search or the notes. Write only what the sources say; if they say a figure is not public, say so.';
 
 interface ArticleStreamConfig {
   name: string;
@@ -256,7 +256,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       'A dev log about Shelly, an AI terminal that runs on Android. It appears on dev.to for developers outside Japan. Write in plain, direct English.',
       'Rules for every step:',
       '- Rebuild the topic for an overseas reader. This is not a translation of a Japanese post: open with the problem they would recognize, and explain anything specific to Samsung, Knox or Japan.',
-      '- Use only the commit hashes and points in the queue item. Invent no commits and no numbers. Anything marked 要確認 is unconfirmed: do not state it as fact.',
+      '- Use only the commit hashes and points in the queue item. Invent no commits and no numbers. Anything the item marks as unconfirmed, in any language, is not a fact: do not state it as one.',
       '- Give any count with its date and branch. Never lead with line counts.',
       '- Keep then and now apart. Say the old design still exists only if the item or the research notes back it.',
       '- Position: "I don\'t write the code. I direct the AI — and nothing is called done until it works on real hardware." It was designed and verified on one Galaxy Z Fold6, and built with AI coding agents on the phone and a PC.',
@@ -266,7 +266,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     researchInstruction:
       'Search the web for the background of the one topic in the queue item and write research notes from at least 3 separate sources. Prefer official documentation, specifications and primary sources, and article pages over journal index pages. For each source give concrete numbers, conclusions and limits, and what it does not establish. Copy the points and commit hashes of the item to the start of the notes unchanged. 4000 to 6000 characters.',
     writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from problem to cause, fix and result, with commit hashes in short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. ${ARTICLE_NO_SELF_TALK_EN} End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
-    reviewExtra: 'Also flag a translated feel, then/now mix-ups, facts not in the item, and promotion.',
+    reviewExtra: 'Flag a translated feel, then/now mix-ups, facts not in the item, and promotion.',
   },
   // Vintage: no listing links, no images, nothing that reads as an appraisal.
   'vintage-ja': {
@@ -310,7 +310,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
     lintSources: true,
     quality: { minWords: 600, minSources: 2 },
-    reviewExtra: 'Also flag real-or-fake claims, listing links, images and detailed print descriptions.',
+    reviewExtra: 'Flag real-or-fake claims, listing links, images and detailed print descriptions.',
     prompt: [
       'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
       'Rules for every step:',
@@ -334,14 +334,14 @@ const ARTICLE_STREAM_ORDER: ArticleStream[] = ['ai-steam', 'dev-ja', 'dev-en', '
 const articleReviewInstruction = (cfg: ArticleStreamConfig): string => {
   const extra = cfg.reviewExtra ? `${cfg.lang === 'en' ? ' ' : ''}${cfg.reviewExtra}` : '';
   const body = cfg.lang === 'en'
-    ? `Check each claim against the research notes, your only evidence. Flag claims not in the notes, wrong numbers, overstatement, any [n] not pointing to the source of the claim, and claims resting on a journal index page.${extra} Do not flag ${ARTICLE_MATERIAL_MISSING_MARKER}.`
-    : `下書きの主張を一つずつ調査メモの本文と照合する。原文ページはあなたには見えないので、根拠にできるのは調査メモだけ。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎを指摘する。各 [n] がその主張を実際に載せている資料を指しているか確かめ、雑誌の目次ページを論文の根拠にしていないかも指摘する。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`;
+    ? `The notes are the only evidence. Flag claims not in them, wrong numbers, overstatement, any [n] not pointing to the source, a journal index page as proof, and notes like "source unknown". Allow advice stating no fact, figure or cause.${extra} Ignore ${ARTICLE_MATERIAL_MISSING_MARKER}.`
+    : `原文ページはあなたには見えないので、調査メモだけを根拠に下書きの主張を一つずつ照合する。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎ、各 [n] がその主張を実際に載せている資料を指していないこと、雑誌の目次ページを根拠にしていること、「出典不明」のような注記を指摘する。事実・数値・因果を含まない助言には根拠を求めない。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`
   return `${body}\n\n${REVIEW_OUTPUT_CONTRACT}`;
 };
 const articleReviseInstruction = (cfg: ArticleStreamConfig): string =>
   cfg.lang === 'en'
-    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. ${ARTICLE_NO_SELF_TALK_EN} Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
-    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。${ARTICLE_NO_SELF_TALK_JA}${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
+    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. Keep the "# " title line. Delete a claim with no source; never add a note such as "source unknown". ${ARTICLE_NO_SELF_TALK_EN} Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
+    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。1行目の「# 」見出しは必ず残す。根拠のない主張は削り、「出典不明」のような注記は足さない。${ARTICLE_NO_SELF_TALK_JA}${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
 
 /**
  * One stream's daily draft agent:

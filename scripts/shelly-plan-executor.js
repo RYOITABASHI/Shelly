@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=33
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=34
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -149,7 +149,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // for that step; assemble can flag a draft that talks about its own research.
 // Other plans run exactly as before. Bumped so a stale v32 copy, which leaves a
 // fallback draft with no independent review, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 33;
+// v34 (third on-device run): an article draft drops an echoed prompt head,
+// skips a version that is empty once cleaned, restores a lost title line, and
+// flags cited index pages and bracketed notes. Bumped so a stale v33 copy is
+// refreshed.
+const EXECUTOR_SCRIPT_VERSION = 34;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -884,6 +888,8 @@ const ARTICLE_REVIEW_FAILED_NOTE = '査読が動かなかった';
 const ARTICLE_PROMPT_CUT_NOTE = '査読か修正で本文が切れた';
 const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
 const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
+const ARTICLE_UNREVIEWED_NOTE = '合格した版を採用できなかった';
+const ARTICLE_ECHO_MIN_CHARS = 12;
 // A brief 503 must not move a step off its pinned engine. The retry waits this
 // long, once, and only while the run is far from the broker's 10-minute CAP-001
 // wall (a run that has used most of it would only trade the 503 for rc=42). On
@@ -891,7 +897,11 @@ const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
 const LONGFORM_RETRY_WAIT_MS = 15000;
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
 // Flagged, never rewritten: a draft writing about its own sources of work.
-const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', 'search results', 'research notes'];
+const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', '出典不明', '出典なし', '要出典', 'search results', 'research notes', 'source unknown', 'source not found', 'citation needed'];
+// A bracketed note a reviser left in the prose. Bare 未確認 stays legal: a dev
+// post's known-limits section says it honestly.
+// 年代不明 and the like stay legal too: a garment's unknown year is a fact.
+const ARTICLE_BRACKET_NOTE_RE = /[（(【［[][^（）()【】［］[\]\n]{0,24}(?:未確認|未検証|要確認|要検証|根拠不明|unverified|unconfirmed)[^（）()【】［］[\]\n]{0,8}[）)】］\]]/i;
 // Google's grounding links. The broker's allowlist forbids following them, so
 // the real address is unknown here: the owner replaces the link by hand.
 const ARTICLE_REDIRECT_URL_RE = /^https?:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i;
@@ -2266,6 +2276,43 @@ const LOCAL_STEP_FOLDER_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const LOCAL_STEP_LABEL_MAX_CHARS = 64;
 const ARTICLE_TITLE_MAX_CHARS = 160;
 const ARTICLE_MATERIAL_MISSING_RE = /【本人の材料[:：]\s*未記入】/;
+// A journal's table of contents, a collection or a subject listing: it shows a
+// paper exists, and cannot back what the paper found. Scholarly hosts only, so
+// a repository path like src/journal/ or a shop's /blogs/journal/ is left alone.
+const ARTICLE_SCHOLARLY_HOSTS = ['springer.com', 'nature.com', 'sciencedirect.com', 'wiley.com', 'tandfonline.com', 'sagepub.com', 'acm.org', 'arxiv.org'];
+const ARTICLE_INDEX_PATH_RE = /^\/(?:journals?\/[^/]+(?:\/(?:articles|online-first|articles-in-press|issues?|volumes?|volumes-and-issues|vol)(?:\/.*)?)?|collections\/[^/]+|subjects(?:\/[^/]+)?|toc(?:\/.*)?|list(?:\/.*)?|[^/]+\/articles|(?:[^/]+\/)?volumes(?:\/.*)?)\/?$/i;
+
+function articleIndexUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch (_) {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return ARTICLE_SCHOLARLY_HOSTS.some((d) => host === d || host.endsWith(`.${d}`)) && ARTICLE_INDEX_PATH_RE.test(parsed.pathname);
+}
+
+// The first "# " heading outside a code fence: a shell comment is not a title.
+function articleTitleLine(text) {
+  let fence = '';
+  for (const line of String(text).split('\n')) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*?)\r?$/.exec(line);
+    if (marker) {
+      const mark = marker[1][0];
+      if (fence) {
+        if (mark === fence && !marker[2].trim()) fence = '';
+      } else if (mark !== '`' || !marker[2].includes('`')) {
+        fence = mark;
+      }
+      continue;
+    }
+    if (fence) continue;
+    const m = /^ {0,3}#[ \t]+(\S.*?)[ \t]*\r?$/.exec(line);
+    if (m) return m[1];
+  }
+  return '';
+}
 
 function validLocalStepTerms(raw) {
   if (!Array.isArray(raw) || raw.length > LOCAL_STEP_MAX_TERMS) return undefined;
@@ -2429,15 +2476,20 @@ function articleQualityFlags(quality, body, sources) {
   }
   if (quality.minSources && sources.length < quality.minSources) flags.push(`sources: ${quality.minSources - 1} or fewer`);
   if (sources.some((s) => ARTICLE_REDIRECT_URL_RE.test(String(s.url)))) flags.push('Sources に転送リンク（公開前に差し替え）');
+  const cited = new Set(Array.from(nfkc(body).matchAll(new RegExp(CITATION_GROUP_RE.source, 'g')), (m) => m[1].split(/\D+/)).flat());
+  const indexCited = sources.filter((s) => cited.has(String(s.id)) && articleIndexUrl(s.url)).map((s) => `[${s.id}]`);
+  if (indexCited.length) flags.push(`目次ページを引用: ${indexCited.join(', ')}`);
   if (quality.selfTalk) {
     const lower = body.toLowerCase();
     const hits = ARTICLE_SELF_TALK_TERMS.filter((term) => lower.includes(term));
+    const note = ARTICLE_BRACKET_NOTE_RE.exec(body);
+    if (note && hits.every((term) => !note[0].includes(term))) hits.push(note[0]);
     if (hits.length) flags.push(`作業の話が本文に残っている: ${hits.join(', ')}`);
   }
   return flags;
 }
 
-function reviewSharesWriterFamily(local, ctx) {
+function reviewSharesWriterFamily(adopted, ctx) {
   const engines = ctx.usedEngines || [];
   const familyOf = (k) => ENGINE_FAMILIES[engines[k]];
   let reviewer;
@@ -2448,25 +2500,70 @@ function reviewSharesWriterFamily(local, ctx) {
     break;
   }
   if (!reviewer) return false;
-  return local.parts.some((list) => {
-    for (let n = list.length - 1; n >= 0; n -= 1) {
-      const k = list[n];
-      if (!ctx.skipped[k] && typeof ctx.results[k] === 'string') return familyOf(k) === reviewer;
-    }
-    return false;
-  });
+  return adopted.some((k) => familyOf(k) === reviewer);
+}
+
+// A whole answer wrapped in a code fence is the article, not code. An article
+// that merely opens with a code sample keeps its fence: the wrapper's closing
+// fence has to be the last line, outside any tagged fence inside it. When in
+// doubt the text stays as it is.
+function unwrapArticleFence(text) {
+  const open = /^```(markdown|md)?[ \t]*\r?\n/i.exec(text);
+  if (!open) return text;
+  const lines = text.slice(open[0].length).split(/\r?\n/);
+  if (!open[1] && !/^\s*#[ \t]/.test(lines[0])) return text;
+  let inner = false;
+  for (let n = 0; n < lines.length; n += 1) {
+    const fence = /^ {0,3}```(.*)$/.exec(lines[n]);
+    if (!fence) continue;
+    if (fence[1].trim()) inner = true;
+    else if (inner) inner = false;
+    else if (lines.slice(n + 1).every((l) => !l.trim())) return lines.slice(0, n).join('\n').trim();
+    else return text;
+  }
+  // Never closed: only a fence that named itself Markdown can be the wrapper.
+  return open[1] ? lines.join('\n').trim() : text;
+}
+
+// A model can echo the prompt before the article (seen on Gemini, on device:
+// the series line alone, not the language directive in front of it). The
+// plan's own lines are never part of the article. A short line could be the
+// start of real prose, so it has to be long and end at a line or a space.
+function articleDraftText(text, ctx) {
+  let draft = unwrapArticleFence(stripArticleSources(stripReasoning(text)).trim());
+  const heads = String(ctx.basePrompt || '').split(/\r?\n/).map((p) => p.trim()).filter((p) => p.length >= ARTICLE_ECHO_MIN_CHARS);
+  const echoed = () => heads.find((p) => draft.startsWith(p) && (draft.length === p.length || /\s/.test(draft[p.length])));
+  for (let hit = echoed(); hit; hit = echoed()) draft = draft.slice(hit.length).trim();
+  return unwrapArticleFence(draft);
 }
 
 function assembleArticle(local, ctx) {
   const parts = [];
+  const adopted = [];
+  let recoveredTitle = false;
   for (const list of local.parts) {
-    let text;
-    for (let n = list.length - 1; n >= 0 && text === undefined; n -= 1) {
-      const k = list[n];
-      if (!ctx.skipped[k] && typeof ctx.results[k] === 'string') text = ctx.results[k];
+    const versions = list.filter((k) => !ctx.skipped[k] && typeof ctx.results[k] === 'string');
+    if (!versions.length) throw new PlanFailure(`assemble: no result for steps ${list.map((k) => k + 1).join(', ')}`, { handled: true });
+    if (local.plain) {
+      parts.push(ctx.results[versions[versions.length - 1]].trim());
+      continue;
     }
-    if (text === undefined) throw new PlanFailure(`assemble: no result for steps ${list.map((k) => k + 1).join(', ')}`, { handled: true });
-    parts.push(local.plain ? text.trim() : stripArticleSources(stripReasoning(text)).trim());
+    // Newest first. A version with nothing left once cleaned (only the echoed
+    // prompt, or only a Sources block) is not a draft: the one before it stands.
+    const drafts = versions.map((k) => ({ step: k, text: articleDraftText(ctx.results[k], ctx) })).filter((d) => d.text).reverse();
+    const texts = drafts.map((d) => d.text);
+    if (drafts.length) adopted.push(drafts[0].step);
+    let part = texts[0] || '';
+    // A revision can lose the title line. The newest earlier version that has
+    // one gives it back, so the draft is not named after the agent.
+    if (part && !parts.length && !articleTitleLine(part)) {
+      const earlier = texts.map(articleTitleLine).find(Boolean);
+      if (earlier) {
+        part = `# ${earlier}\n\n${part}`;
+        recoveredTitle = true;
+      }
+    }
+    parts.push(part);
   }
   const body = parts.filter(Boolean).join('\n\n');
   if (!body) throw new PlanFailure('assemble: the article is empty', { handled: true });
@@ -2474,21 +2571,30 @@ function assembleArticle(local, ctx) {
 
   let review = 'unresolved';
   let reviewRan = false;
+  let reviewedAdopted = true;
   for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
     const h = handoffOf(ctx.steps, j);
     if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
     reviewRan = true;
     if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
+    // What that review read is each part's newest version before it. A pass on
+    // an empty revision says nothing about the earlier version adopted instead.
+    reviewedAdopted = local.parts.every((list, p) => {
+      const seen = list.filter((k) => k < j && !ctx.skipped[k] && typeof ctx.results[k] === 'string');
+      return seen.length === 0 || seen[seen.length - 1] === adopted[p];
+    });
     break;
   }
   // The real reason first: a text the last review rejected, then rewritten, has
   // not been reviewed at all, whatever else also holds.
   const reviewNotes = reviewRan && review !== 'pass' ? [ARTICLE_LAST_REVIEW_NOTE] : [];
+  if (review === 'pass' && !reviewedAdopted) reviewNotes.push(ARTICLE_UNREVIEWED_NOTE);
   reviewNotes.push(...(ctx.reviewNotes || []));
-  if (reviewSharesWriterFamily(local, ctx)) reviewNotes.push(ARTICLE_SAME_ENGINE_NOTE);
+  if (reviewSharesWriterFamily(adopted, ctx)) reviewNotes.push(ARTICLE_SAME_ENGINE_NOTE);
   if (reviewNotes.length) review = 'unresolved';
-  const heading = /^ {0,3}#\s+(.+?)\s*$/m.exec(body);
-  const title = String(heading ? heading[1] : ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
+  const heading = articleTitleLine(body);
+  const title = String(heading || ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
+  const titleFlags = !local.quality ? [] : recoveredTitle ? ['タイトルは修正前の版から復元'] : heading ? [] : ['本文に見出しが無い（タイトルは仮）'];
   const lintText = local.lintSources ? [body].concat(ctx.sources.map((s) => `${s.title || ''} ${s.url}`)).join('\n') : body;
   const frontmatter = [
     '---',
@@ -2499,7 +2605,7 @@ function assembleArticle(local, ctx) {
     `review: ${review}`,
     ...(reviewNotes.length ? [`review_note: ${JSON.stringify(reviewNotes.join('、'))}`] : []),
     `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'unknown'}`,
-    `lint: ${JSON.stringify(articleQualityFlags(local.quality, body, ctx.sources).concat(articleLint(local, lintText)))}`,
+    `lint: ${JSON.stringify(titleFlags.concat(articleQualityFlags(local.quality, body, ctx.sources), articleLint(local, lintText)))}`,
     '---',
   ].join('\n');
   const sources = ctx.sources.map((s) =>
@@ -7630,6 +7736,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         sources: evidence.sources,
         today: sourcingToday,
         fallbackTitle: plan.agent.name,
+        basePrompt: plan.prompt,
         reviewNotes: Array.from(reviewNotes),
         usedEngines: usedEnginesByStep,
       }),

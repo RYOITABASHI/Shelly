@@ -121,7 +121,7 @@ describe('buildArticlePipeline', () => {
 
   it('tells the reviewer to check against the research text, which is all it can see', () => {
     const review = presetSteps()[2].instruction;
-    expect(review).toContain('調査メモの本文と照合');
+    expect(review).toContain('調査メモだけを根拠に');
     expect(review).toContain('原文ページはあなたには見えない');
     // A short review using this wording must not read as "data unavailable".
     expect(executor.isLowQualityCompletion(`VERDICT: PASS\n${review.split('\n')[0]}`)).toBe(false);

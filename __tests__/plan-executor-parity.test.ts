@@ -48,9 +48,10 @@ describe('shelly-plan-executor.js parity', () => {
   it('keeps executor script version lockstep across JS and the native gate', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const executor = require(scriptCopy);
-    expect(executor.EXECUTOR_SCRIPT_VERSION).toBe(33);
-    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain('SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=33');
-    expect(agentRuntime).toContain('private const val CURRENT_EXECUTOR_VERSION = 33');
+    const version = executor.EXECUTOR_SCRIPT_VERSION;
+    expect(version).toBe(34);
+    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain(`SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=${version}`);
+    expect(agentRuntime).toContain(`private const val CURRENT_EXECUTOR_VERSION = ${version}`);
     expect(agentRuntime).toContain('executorVersion != CURRENT_EXECUTOR_VERSION');
   });
 
