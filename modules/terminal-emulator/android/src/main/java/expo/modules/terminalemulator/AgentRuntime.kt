@@ -546,7 +546,9 @@ object AgentRuntime {
     // unresolved, and the digest reads saved_at and configured folders. JS-only.
     // v32 (first on-device run): one retry of the pinned engine on a transient
     // failure, and quality flags on the draft. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 32
+    // v33 (second on-device run): a 15 s retry, and a review that moves to the
+    // other engine family after a writer fallback. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 33
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

@@ -92,7 +92,7 @@ function writePlan(home: string, port: number, vault: string, outputDir: string,
 function runExecutor(planFile: string, home: string, brokerPath = broker, env: Record<string, string> = {}): Promise<number | null> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', brokerPath], {
-      env: { ...process.env, HOME: home, ...env },
+      env: { ...process.env, HOME: home, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.on('close', (status) => resolve(status));

@@ -170,6 +170,31 @@ describe('research depth and draft flags', () => {
     }
   });
 
+  it.each(ALL)('%s tells the writer and the reviser not to talk about their own work', (stream) => {
+    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const steps = stepsOf(stream);
+    for (const i of [1 + offset, 3 + offset, 5 + offset]) {
+      expect(steps[i].instruction.length).toBeLessThanOrEqual(500);
+      expect(steps[i].instruction).toMatch(ENGLISH.includes(stream) ? /Never mention these rules, the search or the notes/ : /この指示・検索・調査メモのことは本文に書かない/);
+      expect(steps[i].instruction).toMatch(ENGLISH.includes(stream) ? /if a figure is not public, say so/ : /公開されていない数値はその旨をはっきり書く/);
+    }
+  });
+
+  it.each(ALL)('%s has the reviewer check each citation number, and keeps the review contract whole', (stream) => {
+    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const raw = stepsOf(stream)[2 + offset].instruction;
+    expect(raw.length).toBeLessThanOrEqual(500);
+    expect(raw).toMatch(ENGLISH.includes(stream) ? /any \[n\] not pointing to the source/ : /各 \[n\] がその主張を実際に載せている資料/);
+    expect(raw).toMatch(ENGLISH.includes(stream) ? /journal index page/ : /雑誌の目次ページ/);
+    const normalized = normalizeSteps(buildArticlePipeline(stream).orchestration);
+    expect(normalized[2 + offset].instruction.endsWith(REVIEW_OUTPUT_CONTRACT)).toBe(true);
+  });
+
+  it.each(ALL)('%s prefers article pages over journal index pages in its research', (stream) => {
+    const offset = QUEUED.includes(stream) ? 1 : 0;
+    expect(stepsOf(stream)[offset].instruction).toMatch(ENGLISH.includes(stream) ? /article pages over journal index pages/ : /雑誌の目次ページより/);
+  });
+
   it('the AI×STEAM writer may not generalise from one case or close on a stock line', () => {
     const write = stepsOf('ai-steam')[1].instruction;
     expect(write).toContain('一つの事例から一般化しない');
@@ -178,11 +203,11 @@ describe('research depth and draft flags', () => {
   });
 
   it.each<[ArticleStream, object]>([
-    ['ai-steam', { minChars: 2500, minSources: 2 }],
-    ['dev-ja', { minChars: 2500, minSources: 2 }],
-    ['vintage-ja', { minChars: 2500, minSources: 2 }],
-    ['dev-en', { minWords: 1000, minSources: 2 }],
-    ['vintage-en', { minWords: 600, minSources: 2 }],
+    ['ai-steam', { minChars: 2500, minSources: 2, selfTalk: true }],
+    ['dev-ja', { minChars: 2500, minSources: 2, selfTalk: true }],
+    ['vintage-ja', { minChars: 2500, minSources: 2, selfTalk: true }],
+    ['dev-en', { minWords: 1000, minSources: 2, selfTalk: true }],
+    ['vintage-en', { minWords: 600, minSources: 2, selfTalk: true }],
   ])('%s sets its minimums', (stream, quality) => {
     expect(assembleOf(stream).quality).toEqual(quality);
   });

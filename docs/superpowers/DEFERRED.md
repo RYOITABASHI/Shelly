@@ -75,7 +75,7 @@
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
-設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v32。下はテストでは確かめられず、実機でしか分からないこと。
+設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v33。下はテストでは確かめられず、実機でしか分からないこと。
 - **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
 - **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
 - **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても ai-steam 以外の 4 本は下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。

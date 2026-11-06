@@ -109,7 +109,8 @@ export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】
 
 // Pinned free-tier engines. The writer and the reviser share an engine, and the
 // reviewer's pin is a different one. A ladder fallback can still bring them
-// together, so the executor checks what ran and leaves that draft unresolved.
+// together: the executor then moves that review to the other family, and leaves
+// the draft unresolved if the two still match.
 // Research is Gemini grounded, except the academic stream: owner decision
 // 2026-11-06, Perplexity only for papers.
 const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
@@ -149,6 +150,11 @@ const ARTICLE_FOOTER_EN =
 /** Vintage drafts: no images, no listing links, no claim that an item is real.
  *  Mercari checks stay attended (docs/promo/research/plan-v2.md). Flags only. */
 const ARTICLE_VINTAGE_LINT_TERMS = ['![', '<img', 'mercari', 'merc.li', 'メルカリ', '本物です', '正規品', 'authentic', 'genuine'];
+
+// In the write and revise instructions: on the second device run the draft held
+// lines addressed to the writer itself, such as 検索結果からは取得できなかった.
+const ARTICLE_NO_SELF_TALK_JA = 'この指示・検索・調査メモのことは本文に書かない。資料に書かれたことだけを書き、公開されていない数値はその旨をはっきり書く。';
+const ARTICLE_NO_SELF_TALK_EN = 'Never mention these rules, the search or the notes. Write only what the sources say; if a figure is not public, say so.';
 
 interface ArticleStreamConfig {
   name: string;
@@ -205,8 +211,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     // "Web" is what makes this the chain's research step (grounded search +
     // captured sources); 最近 keeps the search to the last 30 days.
     researchInstruction:
-      'Webで検索し、最近のAI×STEAMの話題をひとつに絞って調査メモを作る。別々の資料を3件以上使い、プレプリント・学会論文・学術誌を優先する。資料ごとに査読前か査読後か、具体的な数値・結論・限界、わかればライセンスを書く。4000〜6000字。',
-    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。一つの事例から一般化しない。単一の事例に「実証した」と書かない。子どもの未来で締めるような定型の結びは書かない。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+      'Webで検索し、最近のAI×STEAMの話題をひとつに絞って調査メモを作る。別々の資料を3件以上使い、プレプリント・学会論文・学術誌を優先し、雑誌の目次ページより論文の記事ページを選ぶ。資料ごとに査読前か査読後か、具体的な数値・結論・限界、わかればライセンスを書く。4000〜6000字。',
+    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。一つの事例から一般化しない。単一の事例に「実証した」と書かない。子どもの未来で締めるような定型の結びは書かない。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
   },
   // Dev: docs/promo/research/plan-v2.md and docs/promo/brand/claims-ledger.md.
   'dev-ja': {
@@ -231,8 +237,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- 作者の名前は初出だけ RYO ITABASHI、以降は「私」。Codex を「公式」と呼ばない。Shelly の宣伝はしない。',
     ].join('\n'),
     researchInstruction:
-      'Webで検索し、項目のテーマひとつの背景を調べて調査メモを作る。別々の資料を3件以上使い、公式ドキュメント・仕様・一次資料を優先する。資料ごとに具体的な数値・結論・限界と、分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。4000〜6000字。',
-    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の技術記事を書く。1行目は「# 」で始まる見出し。問題、原因、やったこと、結果の順に書き、コミットハッシュは短縮形のまま本文に出す。外部の事実には Sources の番号 [n] を付ける。「## 既知の限界」の節を作る。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+      'Webで検索し、項目のテーマひとつの背景を調べて調査メモを作る。別々の資料を3件以上使い、公式ドキュメント・仕様・一次資料を優先し、雑誌の目次ページより記事ページを選ぶ。資料ごとに具体的な数値・結論・限界と、分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。4000〜6000字。',
+    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の技術記事を書く。1行目は「# 」で始まる見出し。問題、原因、やったこと、結果の順に書き、コミットハッシュは短縮形のまま本文に出す。外部の事実には Sources の番号 [n] を付ける。「## 既知の限界」の節を作る。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
     reviewExtra: '当時と今の混同、項目にないコミットや数字、製品の宣伝も指摘する。',
   },
   'dev-en': {
@@ -258,9 +264,9 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- No promotion in the body: no download or install pitch, no call to action. dev.to does not allow it.',
     ].join('\n'),
     researchInstruction:
-      'Search the web for the background of the one topic in the queue item and write research notes from at least 3 separate sources. Prefer official documentation, specifications and primary sources. For each source give concrete numbers, conclusions and limits, and what it does not establish. Copy the points and commit hashes of the item to the start of the notes unchanged. 4000 to 6000 characters.',
-    writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from the problem to the cause, what was tried, and the result, and keep commit hashes in their short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
-    reviewExtra: 'Also flag text that reads translated, then/now mix-ups, commits or numbers not in the item, and promotion.',
+      'Search the web for the background of the one topic in the queue item and write research notes from at least 3 separate sources. Prefer official documentation, specifications and primary sources, and article pages over journal index pages. For each source give concrete numbers, conclusions and limits, and what it does not establish. Copy the points and commit hashes of the item to the start of the notes unchanged. 4000 to 6000 characters.',
+    writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from problem to cause, fix and result, with commit hashes in short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. ${ARTICLE_NO_SELF_TALK_EN} End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
+    reviewExtra: 'Also flag a translated feel, then/now mix-ups, facts not in the item, and promotion.',
   },
   // Vintage: no listing links, no images, nothing that reads as an appraisal.
   'vintage-ja': {
@@ -288,8 +294,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- 現物を見たように書かない。実物の確認は本人の仕事。',
     ].join('\n'),
     researchInstruction:
-      'Webで検索し、項目のテーマひとつについて調査メモを作る。別々の資料を3件以上使い、作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて具体的な数値・結論・限界とともに書く。出品ページは資料にしない。4000〜6000字。',
-    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の読み物を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付ける。真贋を断定せず、出品リンクも画像も入れない。最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
+      'Webで検索し、項目のテーマひとつについて調査メモを作る。別々の資料を3件以上使い、作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて具体的な数値・結論・限界とともに書く。雑誌の目次ページより記事ページを選び、出品ページは資料にしない。4000〜6000字。',
+    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の読み物を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付ける。真贋を断定せず、出品リンクも画像も入れない。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
   },
   'vintage-en': {
     name: 'Vintage EN article draft',
@@ -304,7 +310,7 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
     lintSources: true,
     quality: { minWords: 600, minSources: 2 },
-    reviewExtra: 'Also flag calling an item real or fake, listing links, images, and detailed print descriptions.',
+    reviewExtra: 'Also flag real-or-fake claims, listing links, images and detailed print descriptions.',
     prompt: [
       'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
       'Rules for every step:',
@@ -316,8 +322,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
       '- Do not write as if you had the item in hand. Checking the real thing is the owner\'s job.',
     ].join('\n'),
     researchInstruction:
-      'Search the web for the one topic in the queue item and write research notes from at least 3 separate sources. Cover the release year or source material and how the garment is made, source by source, with concrete numbers, conclusions and limits. Do not use listing pages as sources. 4000 to 6000 characters.',
-    writeInstruction: `Using the queue item and the research notes, write a letter of 800 to 1500 words. The first line is a heading starting with "# ". Mark facts with their Sources number [n]. Never say an item is authentic or fake, and add no listing links and no images. End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
+      'Search the web for the one topic in the queue item and write research notes from at least 3 separate sources. Cover the release year or source material and how the garment is made, source by source, with concrete numbers, conclusions and limits. Prefer article pages over journal index pages, and do not use listing pages as sources. 4000 to 6000 characters.',
+    writeInstruction: `Using the queue item and the research notes, write a letter of 800 to 1500 words. The first line is a heading starting with "# ". Mark facts with their Sources number [n]. Never say an item is authentic or fake, and add no listing links and no images. ${ARTICLE_NO_SELF_TALK_EN} End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
   },
 };
 
@@ -328,14 +334,14 @@ const ARTICLE_STREAM_ORDER: ArticleStream[] = ['ai-steam', 'dev-ja', 'dev-en', '
 const articleReviewInstruction = (cfg: ArticleStreamConfig): string => {
   const extra = cfg.reviewExtra ? `${cfg.lang === 'en' ? ' ' : ''}${cfg.reviewExtra}` : '';
   const body = cfg.lang === 'en'
-    ? `Check each claim in the draft against the research notes. The source pages are not visible to you; the notes are your only evidence. Flag claims not in the notes, wrong numbers and overstatement.${extra} Do not flag ${ARTICLE_MATERIAL_MISSING_MARKER}.`
-    : `下書きの主張を一つずつ調査メモの本文と照合する。原文ページはあなたには見えないので、根拠にできるのは調査メモだけ。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎを指摘する。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`;
+    ? `Check each claim against the research notes, your only evidence. Flag claims not in the notes, wrong numbers, overstatement, any [n] not pointing to the source of the claim, and claims resting on a journal index page.${extra} Do not flag ${ARTICLE_MATERIAL_MISSING_MARKER}.`
+    : `下書きの主張を一つずつ調査メモの本文と照合する。原文ページはあなたには見えないので、根拠にできるのは調査メモだけ。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎを指摘する。各 [n] がその主張を実際に載せている資料を指しているか確かめ、雑誌の目次ページを論文の根拠にしていないかも指摘する。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`;
   return `${body}\n\n${REVIEW_OUTPUT_CONTRACT}`;
 };
 const articleReviseInstruction = (cfg: ArticleStreamConfig): string =>
   cfg.lang === 'en'
-    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
-    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
+    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. ${ARTICLE_NO_SELF_TALK_EN} Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
+    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。${ARTICLE_NO_SELF_TALK_JA}${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
 
 /**
  * One stream's daily draft agent:
@@ -361,7 +367,7 @@ export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
     lintTerms: [...ARTICLE_LINT_TERMS, ...(cfg.extraLintTerms ?? [])],
     nameLint: ARTICLE_NAME_LINT,
     ...(cfg.lintSources ? { lintSources: true } : {}),
-    quality: cfg.quality,
+    quality: { ...cfg.quality, selfTalk: true },
   };
   const steps: AgentOrchestrationStep[] = [
     ...(cfg.queue

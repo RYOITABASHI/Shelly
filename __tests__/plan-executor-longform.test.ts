@@ -31,9 +31,8 @@ import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec'
 
 const root = path.resolve(__dirname, '..');
 const scriptCopy = path.join(root, 'scripts', 'shelly-plan-executor.js');
-const broker = process.platform === 'win32'
-  ? path.join(root, '__tests__', 'fixtures', 'fs-write-broker.js')
-  : path.join(root, 'scripts', 'shelly-capability-broker.js');
+const fixtureBroker = path.join(root, '__tests__', 'fixtures', 'fs-write-broker.js');
+const broker = process.platform === 'win32' ? fixtureBroker : path.join(root, 'scripts', 'shelly-capability-broker.js');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const executor = require(scriptCopy);
 
@@ -98,10 +97,10 @@ function patchPlan(planFile: string, change: (plan: any) => void): string {
   return planFile;
 }
 
-function runExecutor(planFile: string, home: string): Promise<number | null> {
+function runExecutor(planFile: string, home: string, brokerPath = broker, env: Record<string, string> = {}): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker], {
-      env: { ...process.env, HOME: home },
+    const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', brokerPath], {
+      env: { ...process.env, HOME: home, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.on('close', (status) => resolve(status));
@@ -505,6 +504,141 @@ describe('shelly-plan-executor.js longform chain', () => {
   }, 20000);
 });
 
+describe('an independent review after a writer fallback', () => {
+  const gemini = (text: string) => ({ body: { candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] } });
+  const openAi = (text: string, extra: object = {}) => ({ body: { choices: [{ message: { content: text }, finish_reason: 'stop' }], ...extra } });
+  const busy = { exit: 23 };
+  const PERPLEXITY = 'api.perplexity.ai';
+  const GEMINI = 'generativelanguage';
+  const GROQ = 'api.groq.com';
+  const CEREBRAS = 'api.cerebras.ai';
+  const research = openAi(RESEARCH, { citations: [SOURCE_URL] });
+
+  // The real preset chain with its pins, against scripted cloud engines.
+  async function run(script: Record<string, unknown[]>) {
+    const home = makeHome();
+    const file = path.join(home, 'fake-http.json');
+    fs.writeFileSync(file, JSON.stringify(script));
+    const list = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    const planFile = patchPlan(writePlan(home, 1, list), (plan) => {
+      plan.tool = { type: 'gemini-api', label: 'Gemini' };
+      plan.toolLadder = [{ type: 'groq', label: 'Groq' }];
+    });
+    await runExecutor(planFile, home, fixtureBroker, { SHELLY_TEST_FAKE_HTTP: file });
+    const calls = fs.readFileSync(`${file}.calls`, 'utf8').trim().split('\n');
+    return { calls, result: readResult(home), log: readRunLog(home) };
+  }
+
+  it('a writer on Groq is reviewed by Gemini, and that PASS is a real pass', async () => {
+    const { calls, result, log } = await run({
+      [PERPLEXITY]: [research],
+      [GEMINI]: [busy, busy, gemini('VERDICT: PASS')],
+      [GROQ]: [openAi('# 記事\n\n本文です [1]。')],
+      [CEREBRAS]: [openAi('VERDICT: PASS')],
+    });
+    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GROQ, GEMINI]);
+    expect(log.status).toBe('success');
+    expect(result.split('\n')).toContain('review: pass');
+    expect(result).not.toContain('review_note');
+  }, 20000);
+
+  it('with Gemini down too, the review stops, Cerebras is not asked, and the draft stays unresolved', async () => {
+    const { calls, result, log } = await run({
+      [PERPLEXITY]: [research],
+      [GEMINI]: [busy, busy, busy, busy],
+      [GROQ]: [openAi('# 記事\n\n本文です [1]。')],
+      [CEREBRAS]: [openAi('VERDICT: PASS')],
+    });
+    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GROQ, GEMINI, GEMINI]);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
+    expect(result).toContain('# 記事');
+    expect(result.split('\n')).toContain('review: unresolved');
+    expect(result).toContain(executor.ARTICLE_REVIEW_FAILED_NOTE);
+  }, 20000);
+
+  it('REGRESSION: with no fallback the review stays on its pin', async () => {
+    const { calls, result } = await run({
+      [PERPLEXITY]: [research],
+      [GEMINI]: [gemini('# 記事\n\n本文です [1]。')],
+      [CEREBRAS]: [openAi('VERDICT: PASS')],
+    });
+    expect(calls).toEqual([PERPLEXITY, GEMINI, CEREBRAS]);
+    expect(result.split('\n')).toContain('review: pass');
+  }, 20000);
+
+  it('a revise that fell back is reviewed by the other family too', async () => {
+    const { calls, result } = await run({
+      [PERPLEXITY]: [research],
+      [GEMINI]: [gemini('# 初稿\n\n本文です [1]。'), busy, busy, gemini('VERDICT: PASS')],
+      [GROQ]: [openAi('# 改稿\n\n直しました [1]。')],
+      [CEREBRAS]: [openAi('VERDICT: REVISE\n1. 直す')],
+    });
+    expect(calls).toEqual([PERPLEXITY, GEMINI, CEREBRAS, GEMINI, GEMINI, GROQ, GEMINI]);
+    expect(result).toContain('# 改稿');
+    expect(result.split('\n')).toContain('review: pass');
+  }, 20000);
+
+  describe('longformIndependentReviewEngine', () => {
+    const steps = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    const review1 = 2;
+    const review2 = 4;
+    const pick = (i: number, used: Array<string | undefined>, reviewer = 'cerebras') =>
+      executor.longformIndependentReviewEngine(steps, i, used, reviewer);
+
+    it.each<[string, number, Array<string | undefined>, string, string | null]>([
+      ['writer on Groq, reviewer on Cerebras', review1, [undefined, 'groq'], 'cerebras', 'gemini-api'],
+      ['writer on Cerebras, reviewer on Cerebras', review1, [undefined, 'cerebras'], 'cerebras', 'gemini-api'],
+      ['writer on Gemini, reviewer moved to Gemini', review1, [undefined, 'gemini-api'], 'gemini-api', 'cerebras'],
+      ['the reviser, not the first writer, is what counts', review2, [undefined, 'gemini-api', 'cerebras', 'groq'], 'cerebras', 'gemini-api'],
+      ['writer on Gemini, reviewer on Cerebras', review1, [undefined, 'gemini-api'], 'cerebras', null],
+      ['writer on Perplexity: never Perplexity, no swap', review1, [undefined, 'perplexity'], 'perplexity', null],
+      ['a writer that is not known', review1, [undefined, undefined], 'cerebras', null],
+    ])('%s', (_name, i, used, reviewer, expected) => {
+      expect(pick(i, used, reviewer)).toBe(expected);
+    });
+
+    it('a step that is not a review never moves', () => {
+      expect(pick(1, [undefined, 'groq'])).toBeNull();
+      expect(pick(3, [undefined, 'groq'])).toBeNull();
+    });
+  });
+});
+
+describe('the retry wait', () => {
+  const key = 'SHELLY_TEST_LONGFORM_RETRY_WAIT_MS';
+  const saved = process.env[key];
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  });
+
+  it('is 15 seconds, inside the 8-minute guard', () => {
+    delete process.env[key];
+    expect(executor.LONGFORM_RETRY_WAIT_MS).toBe(15000);
+    expect(executor.longformRetryWaitMs()).toBe(15000);
+    expect(executor.LONGFORM_RETRY_WINDOW_MS).toBe(8 * 60 * 1000);
+  });
+
+  it('the test setting can shorten it, never lengthen it, and nonsense is ignored', () => {
+    process.env[key] = '10';
+    expect(executor.longformRetryWaitMs()).toBe(10);
+    process.env[key] = '999999';
+    expect(executor.longformRetryWaitMs()).toBe(15000);
+    process.env[key] = 'soon';
+    expect(executor.longformRetryWaitMs()).toBe(15000);
+    process.env[key] = '-1';
+    expect(executor.longformRetryWaitMs()).toBe(15000);
+  });
+
+  it('reads the environment only, so a plan or a model cannot set it', () => {
+    const src = fs.readFileSync(scriptCopy, 'utf8');
+    expect(src.match(/SHELLY_TEST_LONGFORM_RETRY_WAIT_MS/g)).toHaveLength(1);
+    expect(src).toContain('process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS');
+  });
+});
+
 describe('longform constants and buildStepPrompt parity', () => {
   it('keeps the budgets lockstep with lib/agent-orchestration.ts', () => {
     expect(executor.LONGFORM_PROMPT_MAX_CHARS).toBe(MAX_LONGFORM_PROMPT_CHARS);
@@ -612,7 +746,7 @@ describe('normalizeStepLocal parity', () => {
   });
 
   it('keeps quality identically, and refuses a bad one in both', () => {
-    const raw = { ...valid, quality: { minChars: 2500, minSources: 2 } };
+    const raw = { ...valid, quality: { minChars: 2500, minSources: 2, selfTalk: true } };
     expect(tsNormalizeStepLocal(raw)).toEqual(raw);
     expect(executor.normalizeStepLocal(raw, 6)).toEqual(raw);
     for (const quality of [{ minChars: 0 }, { minWords: 1.5 }, { minSources: '2' }, []]) {
@@ -764,6 +898,18 @@ describe('assembleArticle', () => {
       expect(lintOf(out)[0]).toContain('本文が短い');
       expect(lintOf(out)).toContain('世界初');
       expect(out).toContain(body);
+    });
+
+    it.each(['検索結果からは取得できなかった', '調査メモにはない', 'The search results did not say', 'Our Research Notes show'])('flags self-talk in %s, and rewrites nothing', (line) => {
+      const body = `# 記事\n\n${line}`;
+      const out = withQuality({ selfTalk: true }, body);
+      expect(lintOf(out)[0]).toContain('作業の話が本文に残っている');
+      expect(out).toContain(body);
+    });
+
+    it('leaves a body with none of those words, and does nothing without the setting', () => {
+      expect(lintOf(withQuality({ selfTalk: true }, '# 記事\n\n公開されていない数値です。'))).toEqual([]);
+      expect(lintOf(withQuality({ minChars: 1 }, '# 記事\n\n検索結果'))).toEqual([]);
     });
 
     it('REGRESSION: no flags without the setting', () => {

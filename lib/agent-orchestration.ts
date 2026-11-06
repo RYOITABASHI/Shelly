@@ -218,6 +218,7 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > LOCAL_STEP_MAX_QUALITY) return undefined;
       quality[key] = value;
     }
+    if (q.selfTalk === true) quality.selfTalk = true;
   }
   return {
     kind: 'assemble',

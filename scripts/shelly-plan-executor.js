@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=32
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=33
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -144,7 +144,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // leads with a last review that did not pass; assemble flags a short body, too
 // few sources and redirect-only source URLs. Other plans run exactly as before.
 // Bumped so a stale v31 copy, which drops `quality`, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 32;
+// v33 (2026-11-06, second on-device run): the longform retry waits 15 s; a review
+// of text written by the reviewer's own engine family moves to the other family
+// for that step; assemble can flag a draft that talks about its own research.
+// Other plans run exactly as before. Bumped so a stale v32 copy, which leaves a
+// fallback draft with no independent review, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 33;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -881,9 +886,12 @@ const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
 const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
 // A brief 503 must not move a step off its pinned engine. The retry waits this
 // long, once, and only while the run is far from the broker's 10-minute CAP-001
-// wall (a run that has used most of it would only trade the 503 for rc=42).
-const LONGFORM_RETRY_WAIT_MS = 4000;
+// wall (a run that has used most of it would only trade the 503 for rc=42). On
+// two device runs a Gemini overload outlasted 4 s, so the wait is 15 s.
+const LONGFORM_RETRY_WAIT_MS = 15000;
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
+// Flagged, never rewritten: a draft writing about its own sources of work.
+const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', 'search results', 'research notes'];
 // Google's grounding links. The broker's allowlist forbids following them, so
 // the real address is unknown here: the owner replaces the link by hand.
 const ARTICLE_REDIRECT_URL_RE = /^https?:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i;
@@ -2317,6 +2325,7 @@ function normalizeStepLocal(raw, index) {
       if (!Number.isInteger(q[key]) || q[key] < 1 || q[key] > LOCAL_STEP_MAX_QUALITY) return undefined;
       quality[key] = q[key];
     }
+    if (q.selfTalk === true) quality.selfTalk = true;
   }
   return Object.assign(
     { kind: 'assemble', parts, stream: raw.stream, footer: raw.footer },
@@ -2420,6 +2429,11 @@ function articleQualityFlags(quality, body, sources) {
   }
   if (quality.minSources && sources.length < quality.minSources) flags.push(`sources: ${quality.minSources - 1} or fewer`);
   if (sources.some((s) => ARTICLE_REDIRECT_URL_RE.test(String(s.url)))) flags.push('Sources に転送リンク（公開前に差し替え）');
+  if (quality.selfTalk) {
+    const lower = body.toLowerCase();
+    const hits = ARTICLE_SELF_TALK_TERMS.filter((term) => lower.includes(term));
+    if (hits.length) flags.push(`作業の話が本文に残っている: ${hits.join(', ')}`);
+  }
   return flags;
 }
 
@@ -2896,8 +2910,9 @@ function capLongformResearch(text) {
 
 // The engines of the other side of the review loop, taken off step i's ladder.
 // This cuts the obvious overlap but cannot guarantee separation: a ladder can
-// still land both sides in one family (Groq and Cerebras). assemble checks what
-// actually ran and pins the review to unresolved then.
+// still land both sides in one family (Groq and Cerebras). A review of such text
+// moves to the other family (longformIndependentReviewEngine), and assemble still
+// checks what actually ran and pins the review to unresolved if they match.
 function longformOtherRoleTools(list, i) {
   const isReview = (s) => !!s && !!s.handoff && s.handoff.kind === 'review';
   const reviewing = isReview(list[i]);
@@ -2906,6 +2921,19 @@ function longformOtherRoleTools(list, i) {
     if (s && s.tool && s.local === undefined && isReview(s) !== reviewing) out.push(s.tool.type);
   }
   return out;
+}
+
+// The engine a review step should use instead of its pin, or null. Only when the
+// version under review (the last step in `of`) came from the pin's own family:
+// a writer that fell back to Groq must not be checked by Cerebras, which serves
+// the same model. Never Perplexity: it is for academic research only.
+function longformIndependentReviewEngine(list, i, usedEngines, reviewerType) {
+  const h = handoffOf(list, i);
+  if (!h || h.kind !== 'review') return null;
+  const writerFamily = ENGINE_FAMILIES[usedEngines[h.of[h.of.length - 1]]];
+  if (!writerFamily || writerFamily !== ENGINE_FAMILIES[reviewerType]) return null;
+  if (writerFamily === 'open-weights') return 'gemini-api';
+  return writerFamily === 'gemini' ? 'cerebras' : null;
 }
 
 function draftMtimeMs(file) {
@@ -6586,6 +6614,14 @@ function longformRetryDue(plan, opts, candidateIndex, alreadyRetried, error) {
   return typeof startedAt === 'number' && Date.now() - startedAt < LONGFORM_RETRY_WINDOW_MS;
 }
 
+// Tests set this env var so the suite does not sit through the wait. It comes
+// from the process environment, not the plan or any model output, and can only
+// shorten the wait.
+function longformRetryWaitMs() {
+  const raw = Number(process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS);
+  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, LONGFORM_RETRY_WAIT_MS) : LONGFORM_RETRY_WAIT_MS;
+}
+
 async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
   const candidates = stepToolCandidates(plan);
   const longform = !!(plan.steps && plan.steps.longform === true);
@@ -6703,7 +6739,7 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
           stepIndex: opts && opts.stepIndex,
           toolType: attemptPlan.tool.type,
         });
-        await new Promise((resolve) => setTimeout(resolve, LONGFORM_RETRY_WAIT_MS));
+        await new Promise((resolve) => setTimeout(resolve, longformRetryWaitMs()));
         if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
         i -= 1; // the loop's increment brings this back to the pinned engine
       }
@@ -7428,6 +7464,13 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (found) return found;
     return type === 'local' ? { type: 'local', label: OVERRIDE_TOOL_LABELS.local } : null;
   }
+  // Article pipeline (v33): the plan's own tool of the other family, for a review
+  // of text from the pin's own family. null = keep the pin. An engine the plan
+  // does not hold is not used.
+  function independentReviewTool(i) {
+    const type = longformIndependentReviewEngine(plan.steps.list, i, usedEnginesByStep, effectiveStepTool(plan.steps.list[i]).type);
+    return type ? vettedToolObject(type) : null;
+  }
   const overrideNotes = new Set();
   function auditOverride(i, event, extra) {
     const key = `${event}:${i}:${JSON.stringify(extra || {})}`;
@@ -7688,9 +7731,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
     // provider override chosen in MONITOR still wins, as for any other step.
     const cliStep = !override && isCliStep(step) && !(!isFinal && step.apiCall);
-    const stepTool = override ? override.tool : effectiveStepTool(step);
+    const independentTool = longform && !override ? independentReviewTool(i) : null;
+    const stepTool = override ? override.tool : (independentTool || effectiveStepTool(step));
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
     if (longform) stepPlan.longformOtherTools = longformOtherRoleTools(plan.steps.list, i);
+    // Article pipeline (v33): no ladder behind the independent engine. Its rungs
+    // lead back to the writer's family; if it fails, the review loop stops and
+    // the draft stays unresolved.
+    if (independentTool) {
+      stepPlan.toolLadder = [];
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'longform_independent_review', agentId: plan.agent.id, stepIndex: i, toolType: independentTool.type });
+    }
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
     const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
@@ -9167,7 +9218,10 @@ module.exports = {
   ARTICLE_SAME_ENGINE_NOTE,
   ARTICLE_LAST_REVIEW_NOTE,
   LONGFORM_RETRY_WINDOW_MS,
+  LONGFORM_RETRY_WAIT_MS,
   longformRetryDue,
+  longformRetryWaitMs,
+  longformIndependentReviewEngine,
   composeStepPrompt,
   capLongformResearch,
   longformPlanRefusal,
