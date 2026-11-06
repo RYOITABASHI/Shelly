@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=27
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=28
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -114,7 +114,14 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // redacted, role/engine names hidden), read here with node fs after physical
 // path / symlink checks. Any other step's prompt is byte-identical. Bumped so
 // a stale v26 copy, which judges on the carried text alone, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 27;
+// v28 (2026-11-06, article pipeline Inc 1): plan.steps.longform carries bigger
+// results with their newlines, skips briefing post-processing, fails a step
+// whose model stopped on its output limit and keeps the local LLM off the
+// ladder; a `local` step (`assemble`) builds the draft without a model call;
+// a draft already inside the vault gets no Obsidian mirror copy. Other plans
+// run exactly as before. Bumped so a stale v27 copy, which would send the
+// assemble label to a model, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 28;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -833,6 +840,9 @@ const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
 const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
 const STEP_PROMPT_MAX_CHARS = 6000;
 const STEP_PROMPT_MAX_RESULT_CARRY_CHARS = 1500;
+const LONGFORM_PROMPT_MAX_CHARS = 24000;
+const LONGFORM_RESULT_CARRY_MAX_CHARS = 12000;
+const LONGFORM_TRUNCATED_MESSAGE = 'The model stopped at its output limit, so this step failed instead of carrying a cut-off text.';
 const STEP_PREVIEW_MAX_CHARS = 500;
 // Mirrors lib/agent-orchestration.ts's MAX_STEP_INSTRUCTION_CHARS (module-local
 // there too — not exported, so this is its own numerically-in-sync copy, same
@@ -2142,19 +2152,23 @@ function roleLabel(role) {
   return name ? ` (${name})` : '';
 }
 
-function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles, candidateFiles) {
-  const tail = `# This step\n${instruction.trim()}`.slice(0, STEP_PROMPT_MAX_CHARS);
+function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles, candidateFiles, longform) {
+  // Article pipeline (v28): plan.steps.longform gets the bigger budgets and
+  // each carried result keeps its newlines. Absent = byte-identical to before.
+  const promptBudget = longform ? LONGFORM_PROMPT_MAX_CHARS : STEP_PROMPT_MAX_CHARS;
+  const carryBudget = longform ? LONGFORM_RESULT_CARRY_MAX_CHARS : STEP_PROMPT_MAX_RESULT_CARRY_CHARS;
+  const tail = `# This step\n${instruction.trim()}`.slice(0, promptBudget);
   const candidateBlock = candidateFiles ? `${candidateFiles.slice(0, JUDGE_EVIDENCE_MAX_CHARS)}\n\n` : '';
   const evidenceBlock = evidence ? renderStepEvidence(evidence).slice(0, MAX_EVIDENCE_CHARS) : '';
   const roleMode = !!roles && (!!roles.role || (roles.priorRoles || []).some(Boolean));
   const roleBlock = roleMode && roles.role ? `${composeRoleInstructions(roles.role)}\n\n` : '';
   const dataNote = roleMode && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
-  const headBudget = Math.max(0, STEP_PROMPT_MAX_CHARS - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
+  const headBudget = Math.max(0, promptBudget - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carriedItems = priorResults
     .map(
       (r, i) =>
-        `## ${roles && roles.priorHeadings && roles.priorHeadings[i] !== undefined ? roles.priorHeadings[i] : `Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}`}\n${String(r).replace(/\s+/g, ' ').trim().slice(0, STEP_PROMPT_MAX_RESULT_CARRY_CHARS)}`,
+        `## ${roles && roles.priorHeadings && roles.priorHeadings[i] !== undefined ? roles.priorHeadings[i] : `Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}`}\n${(longform ? String(r) : String(r).replace(/\s+/g, ' ')).trim().slice(0, carryBudget)}`,
     )
     .join('\n\n');
   const carried = priorResults.length
@@ -2163,6 +2177,138 @@ function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles,
       : `# Results from previous steps\n${carriedItems}\n\n---\n\n`
     : '';
   return `${`${head}${carried}`.slice(0, headBudget)}${dataNote}${evidenceBlock}${candidateBlock}${roleBlock}${tail}`;
+}
+
+// ── Article pipeline: non-model local steps (v28) ───────────────────────────
+// normalizeStepLocal mirrors lib/agent-orchestration.ts's. The plan file is
+// untrusted, so the config is re-validated here, including "every `parts`
+// index is before the step itself". assembleArticle makes no model call and
+// reads nothing outside the chain's own results and sources.
+const LOCAL_STEP_MAX_PARTS = 4;
+const LOCAL_STEP_STREAM_RE = /^[a-z0-9-]{1,32}$/;
+const LOCAL_STEP_FOOTER_MAX_CHARS = 600;
+const LOCAL_STEP_MAX_TERMS = 64;
+const LOCAL_STEP_TERM_MAX_CHARS = 64;
+const LOCAL_STEP_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+const ARTICLE_TITLE_MAX_CHARS = 160;
+const ARTICLE_MATERIAL_MISSING_RE = /【本人の材料[:：]\s*未記入】/;
+
+function validLocalStepTerms(raw) {
+  if (!Array.isArray(raw) || raw.length > LOCAL_STEP_MAX_TERMS) return undefined;
+  const terms = [];
+  for (const term of raw) {
+    if (typeof term !== 'string' || !term.trim() || term.length > LOCAL_STEP_TERM_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(term)) return undefined;
+    terms.push(term);
+  }
+  return terms;
+}
+
+function normalizeStepLocal(raw, index) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  if (raw.kind !== 'assemble') return undefined;
+  if (!Array.isArray(raw.parts) || raw.parts.length === 0 || raw.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;
+  const parts = [];
+  for (const list of raw.parts) {
+    if (!Array.isArray(list) || list.length === 0 || list.length > HARD_MAX_STEPS) return undefined;
+    for (const k of list) {
+      if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+      if (typeof index === 'number' && k >= index) return undefined;
+    }
+    parts.push(list.slice());
+  }
+  if (typeof raw.stream !== 'string' || !LOCAL_STEP_STREAM_RE.test(raw.stream)) return undefined;
+  if (typeof raw.footer !== 'string' || !raw.footer.trim() || raw.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(raw.footer)) return undefined;
+  const lintTerms = raw.lintTerms === undefined ? undefined : validLocalStepTerms(raw.lintTerms);
+  if (raw.lintTerms !== undefined && !lintTerms) return undefined;
+  let nameLint;
+  if (raw.nameLint !== undefined) {
+    const n = raw.nameLint;
+    const forms = n && typeof n === 'object' ? validLocalStepTerms(n.forms) : undefined;
+    if (!n || !forms || typeof n.canonical !== 'string' || !n.canonical.trim() || n.canonical.length > LOCAL_STEP_TERM_MAX_CHARS) return undefined;
+    nameLint = { canonical: n.canonical, forms };
+  }
+  return Object.assign(
+    { kind: 'assemble', parts, stream: raw.stream, footer: raw.footer },
+    lintTerms ? { lintTerms } : {},
+    nameLint ? { nameLint } : {},
+  );
+}
+
+// `haystack` is NFKC + lower case. An ASCII term matches on word edges only,
+// so a name form like "ryo" never fires inside "cryogenic".
+function articleTermHit(haystack, term) {
+  const needle = nfkc(term).toLowerCase();
+  const ascii = /^[\u0000-\u007f]+$/.test(needle);
+  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+    if (!ascii) return true;
+    const before = at > 0 ? haystack[at - 1] : '';
+    const after = haystack[at + needle.length] || '';
+    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+  }
+  return false;
+}
+
+// Flags only: the text is never rewritten.
+function articleLint(local, body) {
+  const text = nfkc(body);
+  const lower = text.toLowerCase();
+  const hits = [];
+  const add = (term, haystack) => {
+    if (hits.indexOf(term) === -1 && articleTermHit(haystack, term)) hits.push(term);
+  };
+  for (const term of local.lintTerms || []) add(term, lower);
+  if (local.nameLint) {
+    const withoutCanonical = text.split(nfkc(local.nameLint.canonical)).join(' ').toLowerCase();
+    for (const form of local.nameLint.forms) add(form, withoutCanonical);
+  }
+  return hits;
+}
+
+/**
+ * Build the finished draft. `ctx`: { steps, results, skipped (index-aligned
+ * with the steps), sources (the chain's), today, fallbackTitle }. Throws a
+ * PlanFailure when a part has no result, so nothing half-built is dispatched.
+ *  - review: `pass` only when the last review that ran answered VERDICT: PASS;
+ *  - material: `missing` when the body still holds 【本人の材料: 未記入】;
+ *  - lint: the flagged terms (nothing is rewritten).
+ */
+function assembleArticle(local, ctx) {
+  const parts = [];
+  for (const list of local.parts) {
+    let text;
+    for (let n = list.length - 1; n >= 0 && text === undefined; n -= 1) {
+      const k = list[n];
+      if (!ctx.skipped[k] && typeof ctx.results[k] === 'string') text = ctx.results[k];
+    }
+    if (text === undefined) throw new PlanFailure(`assemble: no result for steps ${list.map((k) => k + 1).join(', ')}`, { handled: true });
+    parts.push(stripSourcesSection(stripReasoning(text)).trim());
+  }
+  const body = parts.filter(Boolean).join('\n\n');
+  if (!body) throw new PlanFailure('assemble: the article is empty', { handled: true });
+
+  let review = 'unresolved';
+  for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
+    const h = handoffOf(ctx.steps, j);
+    if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
+    if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
+    break;
+  }
+  const heading = /^ {0,3}#\s+(.+?)\s*$/m.exec(body);
+  const title = String(heading ? heading[1] : ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
+  const frontmatter = [
+    '---',
+    `title: ${JSON.stringify(title)}`,
+    `stream: ${JSON.stringify(local.stream)}`,
+    `date: ${ctx.today}`,
+    `review: ${review}`,
+    `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'ok'}`,
+    `lint: ${JSON.stringify(articleLint(local, body))}`,
+    '---',
+  ].join('\n');
+  const sources = ctx.sources.map((s) =>
+    `- [${s.id}] [${escapeLinkText(s.title) || hostOf(s.url)}](${escapeLinkUrl(s.url)})${s.date ? ` — ${escapeHtml(s.date)}` : ''}`);
+  const sourcesBlock = sources.length ? `\n\n## Sources\n\n${sources.join('\n')}` : '';
+  return `${frontmatter}\n\n${body}${sourcesBlock}\n\n---\n\n${local.footer.trim()}\n`;
 }
 
 // ── Agent roles Inc B: bounded hand-offs (v26) ──────────────────────────────
@@ -3667,6 +3813,25 @@ async function buildSocialPostRequest(paths, opts, plan, platform, host, text, s
   throw new PlanFailure(`Unsupported social platform: ${platform}`, { handled: true });
 }
 
+// Article pipeline (v28): true when the provider says it stopped on its output
+// limit. A longform step fails on this instead of carrying a cut-off text.
+function modelResponseTruncated(toolType, raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object') return false;
+  if (toolType === 'gemini-api') {
+    const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
+    return candidates.some((candidate) => String((candidate && candidate.finishReason) || '').toUpperCase() === 'MAX_TOKENS');
+  }
+  const choice = Array.isArray(parsed.choices) ? parsed.choices[0] : null;
+  const reason = String((choice && choice.finish_reason) || '').toLowerCase();
+  return reason === 'length' || reason === 'max_tokens';
+}
+
 function extractModelContent(toolType, raw) {
   let parsed;
   try {
@@ -4394,7 +4559,13 @@ function resolveObsidianMirror(plan, config, rel) {
   } catch (_) {
     return null;
   }
-  return path.join(vault, obsidianTargetFor(plan.output && plan.output.outputDir), rel);
+  // v28: a draft saved inside the vault is already where Obsidian sees it; a
+  // mirror would only add a duplicate under 90_Log/Agent_Output.
+  const outputDir = String((plan.output && plan.output.outputDir) || '');
+  const resolvedVault = path.resolve(vault);
+  const resolvedOutputDir = path.resolve(outputDir);
+  if (resolvedOutputDir === resolvedVault || resolvedOutputDir.startsWith(resolvedVault + path.sep)) return null;
+  return path.join(vault, obsidianTargetFor(outputDir), rel);
 }
 
 // Write the draft to its primary destination and (for content-studio) the Obsidian
@@ -5770,8 +5941,20 @@ function overrideToolKey(tool) {
 // equivalent wiring, so the exact on-device incident isDuplicateOfPriorStep
 // was built to catch (a notify step echoing the summarize step verbatim)
 // could still slip through for a run nobody was watching.
+// Article pipeline (v28): on a longform plan the local LLM is off the ladder
+// (its 1024/2048-token cap cannot finish an article), and a research step does
+// not climb at all: the rungs that remain have no web access, and a made-up
+// URL in their answer would be absorbed as a source.
+function stepToolCandidates(plan) {
+  const ladder = Array.isArray(plan.toolLadder) ? plan.toolLadder : [];
+  if (!(plan.steps && plan.steps.longform === true)) return [plan.tool].concat(ladder);
+  if (plan.sourcing && plan.sourcing.mode === 'research') return [plan.tool];
+  return [plan.tool].concat(ladder.filter((tool) => !tool || tool.type !== 'local'));
+}
+
 async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
-  const candidates = [plan.tool].concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
+  const candidates = stepToolCandidates(plan);
+  const longform = !!(plan.steps && plan.steps.longform === true);
   let lastError = new PlanFailure('no tool candidates to try', { handled: true });
   for (let i = 0; i < candidates.length; i += 1) {
     const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
@@ -5814,6 +5997,10 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
       } else {
         continuousAddUsage(attemptPlan.tool.type, response);
       }
+      if (longform && modelResponseTruncated(attemptPlan.tool.type, response)) {
+        lastError = new PlanFailure(LONGFORM_TRUNCATED_MESSAGE, { handled: true });
+        continue;
+      }
       let resultText = extractModelContent(attemptPlan.tool.type, response);
       // Continuous mode: split off the ---ITERATION--- control block BEFORE
       // the char-limit clamp (which would otherwise count / cut into it).
@@ -5834,7 +6021,11 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
         // isLowQualityCompletion(webhookResultFull/apiResultFull)):
         // fullResultText redacts but preserves newlines and does not
         // truncate, so the structural checks see the real shape.
-        if (isLowQualityCompletion(preview) || isLowQualityCompletion(fullResultText(resultText))) {
+        // Article pipeline (v28): a longform step is judged on its opening
+        // only. An article about AI can quote "as an AI" or 生成できません
+        // deep in the text, or show a fenced shell example; none of that makes
+        // it a refusal, and the full-text check would fail the whole run.
+        if (isLowQualityCompletion(preview) || (!longform && isLowQualityCompletion(fullResultText(resultText)))) {
           lastError = new PlanFailure(
             'completion looks like a prompt echo or AI refusal, not real content',
             { handled: true },
@@ -6485,12 +6676,19 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // un-vetoed web cue (isResearchStep). Recency words alone never qualify.
   // A CLI step's answer carries no structured citations, so it is never a
   // research step.
+  // Article pipeline (v28): plan.steps.longform. A hand-off or local step is
+  // never research, whatever its text says; a reviewer told to check claims
+  // must not turn into another web search. The chain still gets the research
+  // directive, sources and the NO_SOURCES stop, but no briefing post-processing
+  // (it would drop a review's `VERDICT:` line and strip the article), no item
+  // count taken from the prose, and no fallback briefing.
+  const longform = plan.steps.longform === true;
   const researchFlags = plan.steps.list.map((step, i) =>
-    i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && isResearchStep(step.instruction, effectiveStepTool(step).type));
+    i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && step.local === undefined && !(longform && step.handoff !== undefined) && isResearchStep(step.instruction, effectiveStepTool(step).type));
   const sourcingActive = researchFlags.some(Boolean);
   const sourcingToday = localIsoDate(new Date());
   const sourcingRecency = detectRecency(chainRequestText);
-  const sourcingCount = requestedItemCount(chainRequestText);
+  const sourcingCount = longform ? undefined : requestedItemCount(chainRequestText);
   const evidence = createChainEvidence();
   let researchStepsDone = 0;
   function stepIsResearch(i) {
@@ -6570,7 +6768,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   /** The override for step i as {tool, paidPin}, or null (none / refused). */
   function resolveStepOverride(i, rawTool) {
     const step = plan.steps.list[i];
-    if (!rawTool || !step || step.apiCall) return null;
+    if (!rawTool || !step || step.apiCall || step.local !== undefined) return null;
     if (rawTool.type === 'auto') return { tool: plan.tool, paidPin: false };
     if (STEP_TOOL_DISPATCHABLE_TYPES.indexOf(rawTool.type) === -1) {
       auditOverride(i, 'provider_override_deferred', { toolType: rawTool.type, reason: 'not dispatchable by the PlanSpec executor; applies from the next run' });
@@ -6676,6 +6874,22 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     return collectJudgeCandidates(plan, i);
   }
 
+  // Article pipeline (v28): a local step makes no model call. Only a longform
+  // plan runs one, and only with a config that passes validation; anything
+  // else fails the step rather than reaching a model.
+  function runLocalStep(i) {
+    const local = longform ? normalizeStepLocal(plan.steps.list[i].local, i) : undefined;
+    if (!local) throw new PlanFailure('This local step is invalid, so it was not run.', { handled: true });
+    return assembleArticle(local, {
+      steps: plan.steps.list,
+      results: resultsByStep,
+      skipped: skippedByStep,
+      sources: evidence.sources,
+      today: sourcingToday,
+      fallbackTitle: plan.agent.name,
+    });
+  }
+
   async function executeStep(i, contextResults, override, branchCtl, carriedIndexes) {
     const step = plan.steps.list[i];
     const isFinal = i === plan.steps.list.length - 1;
@@ -6729,8 +6943,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // Agent roles (v25): undefined for a role-less chain (prompt unchanged).
     // The isolated branch labels only the results it actually carries.
     const stepPrompt = isolation && typeof isolation.base === 'string'
-      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0))
-      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i));
+      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform)
+      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
@@ -6826,7 +7040,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         ? undefined
         : (contextResults.length ? contextResults[contextResults.length - 1] : undefined);
       let attempt;
-      if (cliStep && (synthesis || (sourcingActive && researchStepsDone > 0))) {
+      if (step.local !== undefined) {
+        attempt = { resultText: runLocalStep(i), usedTool: stepTool, response: '' };
+      } else if (cliStep && (synthesis || (sourcingActive && researchStepsDone > 0))) {
         // v21 review H1 (defense in depth; lib/agent-attended-route.ts already
         // keeps such a chain on the serial chain, which runs this step
         // text-only on local): a step after web research of a sourced chain
@@ -6880,8 +7096,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // outright (every ladder candidate exhausted / refused / local LLM
       // down) still has real, sourced research to restate — emit the
       // deterministic template built from it instead of failing the chain.
-      // A TOOL_DENY policy refusal is never papered over.
-      if (synthesis && error.exitCode !== EXIT.TOOL_DENY) {
+      // A TOOL_DENY policy refusal is never papered over. Nor is a longform
+      // step: a briefing is no substitute for an article.
+      if (synthesis && !longform && error.exitCode !== EXIT.TOOL_DENY) {
         resultText = buildFallbackBriefing(evidence, { maxItems: sourcingCount, title: `# Briefing — ${sourcingToday}` });
         appendJsonl(paths.planAuditFile, {
           ts: new Date().toISOString(),
@@ -6912,7 +7129,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // result (only possible without sources) fails closed: nothing is
     // dispatched. An intermediate step keeps chain-wide numbering and is
     // replaced by the template when unusable, so the next step gets facts.
-    if (synthesis) {
+    // A longform chain skips all of this (see `longform` above).
+    if (synthesis && !longform) {
       const charLimit = isFinal ? resolveCharLimit(stepPlan) : 0;
       if (isFinal && charLimit) {
         // Character-limited channel (social post, …): a markdown body +
@@ -7012,8 +7230,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // 500-char notification preview, which cut a 3-item research list
     // mid-item. A research step's carry is replaced by absorbOutcome() with
     // its citation-remapped, Sources-stripped text. Non-sourced chains keep
-    // carrying action.preview exactly as before.
-    const carry = sourcingActive ? fullResultText(resultText) : action.preview;
+    // carrying action.preview exactly as before; a longform chain always
+    // carries the full text.
+    const carry = sourcingActive || longform ? fullResultText(resultText) : action.preview;
     return {
       record: { index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
       ...(action.status === 'success' ? { result: carry } : { failed: true }),
@@ -7031,6 +7250,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     progressState(progress, i, 'RUNNING');
     if (step.apiCall && i !== plan.steps.list.length - 1) {
       progressStepEvent(progress, i, 'tool', { tool: 'api-call', provider: { kind: 'API', name: String(step.apiCall.host || '').slice(0, 80) } });
+    }
+    if (step.local !== undefined) {
+      progressStepEvent(progress, i, 'tool', { tool: 'assemble', provider: { kind: 'LOCAL', name: 'assemble' } });
     }
     // Provider overrides (v16): a step that has not started yet takes the
     // override's provider; while it runs, a restart request aborts just this
@@ -8031,6 +8253,7 @@ module.exports = {
   // Draft destination + run-log write — exported for host unit tests only
   // (__tests__/plan-executor-saved-path.test.ts).
   resolveDraftDestination,
+  resolveObsidianMirror,
   localDateTimeStamps,
   writeRunLog,
   sanitizeClosePawGoal,
@@ -8134,6 +8357,14 @@ module.exports = {
   reduceStatus,
   combineFinalPreview,
   runOrchestrationChain,
+  // Article pipeline (v28) — exported for host unit tests only.
+  LONGFORM_PROMPT_MAX_CHARS,
+  LONGFORM_RESULT_CARRY_MAX_CHARS,
+  LONGFORM_TRUNCATED_MESSAGE,
+  normalizeStepLocal,
+  assembleArticle,
+  modelResponseTruncated,
+  stepToolCandidates,
   // Fan-out subtasks (2026-08-13) — exported for host unit tests only, same
   // convention as the exports above. MAX_PARALLEL_BRANCHES is asserted equal
   // to lib/agent-orchestration.ts's export; planParallelGroups is asserted to

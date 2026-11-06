@@ -1267,6 +1267,9 @@ async function applyMemoryAndSkills(
       // Skill injection is best-effort; never block a run on a read failure.
     }
   }
+  // Article pipeline: memory is off. Recall would otherwise bake the owner's
+  // notes into the prompt every cloud step of the chain receives.
+  if (agent.orchestration?.longform === true) return prompt === agent.prompt ? agent : { ...agent, prompt };
   // Phase 1 memory recall. Reads the agent's own notes PLUS the user-scope
   // `_global` namespace (lib/agent-memory.ts's GLOBAL_MEMORY_SCOPE), merged
   // into one pool so ranking can pick the most relevant regardless of scope.
@@ -1664,6 +1667,12 @@ async function runAgentNowInner(
     const hasApiCallStep = normalizeSteps(orchestrationAgent.orchestration).some((s) => !!s.apiCall);
     if (hasApiCallStep || orchestrationAgent.action?.type === 'api-call') {
       throw new Error(t('agents.api_call_attended_unsupported'));
+    }
+    // Article pipeline: same reason. The serial chain has no `local` step, and
+    // its per-step .sh cannot carry longform text (shelly-plan-executor.js
+    // runOrchestrationChain is the only runner). Test with a near-future cron.
+    if (orchestrationAgent.orchestration?.longform === true || normalizeSteps(orchestrationAgent.orchestration).some((s) => !!s.local)) {
+      throw new Error(t('agents.longform_attended_unsupported'));
     }
   }
   const orchestrated = isOrchestrated(orchestrationAgent?.orchestration);

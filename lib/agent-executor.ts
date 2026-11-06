@@ -769,7 +769,11 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // v77 (2026-11-01, MONITOR CLI tokens): every gated driver call (Codex too)
 // passes --usage-file, and any script that calls the driver records the
 // usage sidecar in the run log, so a Codex step no longer shows "0 tok".
-const AGENT_SCRIPT_VERSION = 77;
+// v78 (2026-11-06, article pipeline Inc 1): save_draft_result skips the
+// Obsidian mirror when OUTPUT_DIR is already inside the vault (it would only
+// duplicate the draft under 90_Log/Agent_Output). Parity with the PlanSpec
+// executor's resolveObsidianMirror. Kept in lockstep with AgentRuntime.kt.
+const AGENT_SCRIPT_VERSION = 78;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3871,7 +3875,7 @@ save_draft_result() {
   cap_fs_write_file "$SAVED_FILE" "$redacted_result"
   SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")
 
-  if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
+  if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ] && ! case "$OUTPUT_DIR/" in "\${OBSIDIAN_VAULT_PATH%/}"/*) true ;; *) false ;; esac; then
     OBSIDIAN_TARGET="90_Log/Agent_Output"
     case "$OUTPUT_DIR" in
       *drafts/substack*) OBSIDIAN_TARGET="50_Drafts/Substack" ;;

@@ -419,6 +419,7 @@ const ja: Record<string, string> = {
   'agents.missed_schedule_body_repair_failed': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。自動での再設定にも失敗しました。エージェントを開いてスケジュールを確認してください。',
   // api-call (v1): 手動「今すぐ実行」のガード — この action type はスケジュール実行専用
   'agents.api_call_attended_unsupported': 'このエージェントはAPI呼び出しステップを含むため、現在はスケジュール実行のみサポートされています。今すぐ実行はできません。',
+  'agents.longform_attended_unsupported': 'この記事パイプラインはスケジュール実行のみ対応のため、今すぐ実行はできません。試すときは数分後の時刻にスケジュールしてください。',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',

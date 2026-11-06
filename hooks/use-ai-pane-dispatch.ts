@@ -4686,6 +4686,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               ? {
                   steps: confirmed.orchestrationSteps,
                   ...(typeof confirmed.charLimit === 'number' ? { charLimit: confirmed.charLimit } : {}),
+                  ...(confirmed.longform ? { longform: true } : {}),
                 }
               : undefined,
           notificationTrigger: confirmed.notificationTrigger,
@@ -4705,7 +4706,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           editingAgentId,
           createParams: {
             ...agentFields,
-            outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
+            outputPath: confirmed.presetOutput?.outputPath ?? `$HOME/.shelly/agents/${safeName}/output.md`,
+            ...(confirmed.presetOutput ? { outputTemplate: confirmed.presetOutput.outputTemplate } : {}),
           },
           updatePartial: agentFields,
           runCommand: runAgentShellCommand,

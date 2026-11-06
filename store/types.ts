@@ -1402,6 +1402,33 @@ export interface AgentOrchestrationStep {
      *  run time (real dir, not a symlink, inside the workspace). */
     candidateDirs?: string[];
   };
+  /** Article pipeline (2026-11-06, executor v28): a non-model step run by the
+   *  PlanSpec executor itself, only on an `orchestration.longform` chain. No
+   *  prompt is sent anywhere; `instruction` is a display label. Mutually
+   *  exclusive with `tool` / `apiCall` / `handoff`. Re-validated by
+   *  normalizeStepLocal (lib/agent-orchestration.ts). The attended serial chain
+   *  cannot run one, so Run now is refused (lib/agent-manager.ts). */
+  local?: AgentLocalStepConfig;
+}
+
+/**
+ * `assemble`: builds the finished draft from earlier step results, adding
+ * frontmatter, a programmatic Sources section and a fixed footer. Falls
+ * through to the agent's normal final action.
+ */
+export interface AgentLocalStepConfig {
+  kind: 'assemble';
+  /** Each list yields the last non-skipped result of its step indexes, joined
+   *  in order: `[[1,3,5]]` = the draft, or its latest revision. */
+  parts: number[][];
+  /** Frontmatter `stream` value. */
+  stream: string;
+  /** Fixed footer text (AI use, final checker). */
+  footer: string;
+  /** Terms flagged in frontmatter `lint`; the text itself is never rewritten. */
+  lintTerms?: string[];
+  /** Flags name forms other than `canonical` (also frontmatter `lint`). */
+  nameLint?: { canonical: string; forms: string[] };
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
@@ -1417,6 +1444,12 @@ export interface AgentOrchestrationConfig {
   /** G6: target character budget for the FINAL step (e.g. an X/Twitter digest).
    *  Enforced by the PlanSpec executor before result persistence/draft writes. */
   charLimit?: number;
+  /** Article pipeline (2026-11-06, executor v28): the chain produces a long
+   *  document, not a briefing. The PlanSpec executor carries bigger results
+   *  with their newlines, skips briefing post-processing, fails a step whose
+   *  model stopped on a token limit, and never falls back to the local LLM.
+   *  Attended Run now is refused. Absent = previous behavior. */
+  longform?: boolean;
 }
 
 // ─── Chat message (formerly store/chat-store.ts) ──────────────────────────────

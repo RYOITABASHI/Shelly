@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import type { AgentApiCallConfig, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { matchToolMention } from './agent-tool-mentions';
 import { sameProvider } from './agent-cli-workers';
 import { AUTH_REFS } from './capability-envelope';
@@ -52,6 +52,11 @@ export const MAX_PROMPT_CHARS = 6000;
 // characters than this number implies) but it does guarantee the budgets can
 // never silently drift back out of sync the way 500-vs-1500 did.
 export const MAX_RESULT_CARRY_CHARS = 1500;
+// Article pipeline (orchestration.longform): a draft and its review have to
+// reach the next step whole, with their paragraphs. Mirrored (parity-tested)
+// into scripts/shelly-plan-executor.js.
+export const MAX_LONGFORM_PROMPT_CHARS = 24000;
+export const MAX_LONGFORM_RESULT_CARRY_CHARS = 12000;
 const MAX_PREVIEW_CHARS = 500;
 // Fan-out subtasks (2026-08-13): hard cap on branches per parallel group.
 // Chosen well below HARD_MAX_STEPS and mindful of the same Android
@@ -128,6 +133,69 @@ export interface NormalizedStep {
    *  results the step carries and whether it is skipped after a PASS — never
    *  its tool, pin or privileges. */
   handoff?: StepHandoff;
+  /** Article pipeline: a non-model step run by the PlanSpec executor,
+   *  re-validated by normalizeStepLocal. Display `instruction` only. */
+  local?: AgentLocalStepConfig;
+}
+
+// ── Article pipeline: non-model local steps ──────────────────────────────────
+
+const LOCAL_STEP_MAX_PARTS = 4;
+const LOCAL_STEP_STREAM_RE = /^[a-z0-9-]{1,32}$/;
+const LOCAL_STEP_FOOTER_MAX_CHARS = 600;
+const LOCAL_STEP_MAX_TERMS = 64;
+const LOCAL_STEP_TERM_MAX_CHARS = 64;
+const LOCAL_STEP_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+
+function validLocalStepTerms(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length > LOCAL_STEP_MAX_TERMS) return undefined;
+  const terms: string[] = [];
+  for (const term of raw) {
+    if (typeof term !== 'string' || !term.trim() || term.length > LOCAL_STEP_TERM_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(term)) return undefined;
+    terms.push(term);
+  }
+  return terms;
+}
+
+/**
+ * Re-validate a step's local config (it lives in the agent JSON / plan file,
+ * which a run can rewrite). A fresh object from the known fields, or undefined
+ * when anything is off. The "before this step" bound on `parts` is checked by
+ * normalizeSteps (it knows the index). Mirrored in
+ * scripts/shelly-plan-executor.js (normalizeStepLocal).
+ */
+export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== 'assemble') return undefined;
+  if (!Array.isArray(r.parts) || r.parts.length === 0 || r.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;
+  const parts: number[][] = [];
+  for (const list of r.parts) {
+    if (!Array.isArray(list) || list.length === 0 || list.length > HARD_MAX_STEPS) return undefined;
+    for (const k of list) {
+      if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+    }
+    parts.push([...list]);
+  }
+  if (typeof r.stream !== 'string' || !LOCAL_STEP_STREAM_RE.test(r.stream)) return undefined;
+  if (typeof r.footer !== 'string' || !r.footer.trim() || r.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(r.footer)) return undefined;
+  const lintTerms = r.lintTerms === undefined ? undefined : validLocalStepTerms(r.lintTerms);
+  if (r.lintTerms !== undefined && !lintTerms) return undefined;
+  let nameLint: AgentLocalStepConfig['nameLint'];
+  if (r.nameLint !== undefined) {
+    const n = r.nameLint as Record<string, unknown> | null;
+    const forms = n && typeof n === 'object' ? validLocalStepTerms(n.forms) : undefined;
+    if (!n || !forms || typeof n.canonical !== 'string' || !n.canonical.trim() || n.canonical.length > LOCAL_STEP_TERM_MAX_CHARS) return undefined;
+    nameLint = { canonical: n.canonical, forms };
+  }
+  return {
+    kind: 'assemble',
+    parts,
+    stream: r.stream,
+    footer: r.footer,
+    ...(lintTerms ? { lintTerms } : {}),
+    ...(nameLint ? { nameLint } : {}),
+  };
 }
 
 // ── Agent roles Inc B: bounded hand-offs ─────────────────────────────────────
@@ -367,6 +435,11 @@ export function normalizeStep(step: string | AgentOrchestrationStep): Normalized
   const role = step.role !== undefined ? normalizeStepRole(step.role) : undefined;
   const roleField = role ? { role } : {};
   if (step.apiCall) return { instruction, apiCall: step.apiCall, ...groupField, ...roleField };
+  // Article pipeline: a well-formed local config rides along alone (no tool,
+  // no group, no role, no hand-off). A malformed one is dropped, like a
+  // malformed hand-off; the executor refuses a local step it cannot validate.
+  const local = step.local !== undefined ? normalizeStepLocal(step.local) : undefined;
+  if (local) return { instruction, local };
   // Agent roles Inc B: a well-formed hand-off marker rides along (never on an
   // api-call step); a malformed one is dropped (plain step).
   const handoff = step.handoff !== undefined ? normalizeStepHandoff(step.handoff) : undefined;
@@ -406,6 +479,13 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
   // otherwise the marker is dropped (the step runs as a plain step).
   const shifted = kept.length !== Math.min(all.length, HARD_MAX_STEPS) || all.slice(0, kept.length).some((s) => s.instruction.length === 0);
   return kept.map((s, i) => {
+    // Article pipeline: same rule for a local step's `parts` indexes.
+    if (s.local) {
+      if (!shifted && s.local.parts.every((list) => list.every((k) => k < i))) return s;
+      const { local: _dropLocal, ...restLocal } = s;
+      void _dropLocal;
+      return restLocal;
+    }
     if (!s.handoff) return s;
     if (!shifted && s.handoff.of.every((k) => k < i)) return s;
     const { handoff: _drop, ...rest } = s;
@@ -595,8 +675,13 @@ export function buildStepPrompt(
    *  placed before the role block + tail; never truncates the rest. Absent
    *  / '' = byte-identical to before. */
   candidateFiles?: string,
+  /** Article pipeline (orchestration.longform): the bigger budgets, and each
+   *  carried result keeps its newlines. Absent = byte-identical to before. */
+  longform?: boolean,
 ): string {
-  const tail = `# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
+  const promptBudget = longform ? MAX_LONGFORM_PROMPT_CHARS : MAX_PROMPT_CHARS;
+  const carryBudget = longform ? MAX_LONGFORM_RESULT_CARRY_CHARS : MAX_RESULT_CARRY_CHARS;
+  const tail = `# This step\n${instruction.trim()}`.slice(0, promptBudget);
   const candidateBlock = candidateFiles ? `${candidateFiles.slice(0, JUDGE_EVIDENCE_MAX_CHARS)}\n\n` : '';
   // Sourced briefings (2026-10-09, lib/agent-sources.ts): the research
   // directive / numbered Sources + sourcing contract is reserved BEFORE the
@@ -611,12 +696,12 @@ export function buildStepPrompt(
   const roleMode = !!roles && (!!roles.role || (roles.priorRoles ?? []).some(Boolean));
   const roleBlock = roleMode && roles?.role ? `${composeRoleInstructions(roles.role)}\n\n` : '';
   const dataNote = roleMode && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
-  const headBudget = Math.max(0, MAX_PROMPT_CHARS - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
+  const headBudget = Math.max(0, promptBudget - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carriedItems = priorResults
     .map(
       (r, i) =>
-        `## ${roles?.priorHeadings?.[i] ?? `Step ${i + 1}${roleMode ? roleLabel(roles?.priorRoles?.[i]) : ''}`}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`,
+        `## ${roles?.priorHeadings?.[i] ?? `Step ${i + 1}${roleMode ? roleLabel(roles?.priorRoles?.[i]) : ''}`}\n${(longform ? r : r.replace(/\s+/g, ' ')).trim().slice(0, carryBudget)}`,
     )
     .join('\n\n');
   const carried = priorResults.length

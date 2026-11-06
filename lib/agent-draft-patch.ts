@@ -83,6 +83,7 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
     memory: agent.memory,
     orchestrationSteps: agent.orchestration?.steps,
     charLimit: agent.orchestration?.charLimit,
+    ...(agent.orchestration?.longform ? { longform: true } : {}),
     notificationTrigger: agent.notificationTrigger ?? undefined,
     // 2026-10-30: a registered agent with no schedule and no trigger is a
     // manual-only agent — keep it one when edited (not a run-now one-shot).
@@ -661,7 +662,7 @@ export function tryPatchStepTools(
     const changedFields: string[] = [];
     const next = steps.map((step, i) => {
       if (!indices.includes(i)) return step;
-      if (typeof step !== 'string' && step.apiCall) return step;
+      if (typeof step !== 'string' && (step.apiCall || step.local)) return step;
       // 「全部Codexで」 never pins a send / post / save / notify step.
       if (req.ref.kind === 'all' && tool.type !== 'auto' && ACTION_LIKE_STEP_RE.test(stepInstruction(step))) return step;
       const current = typeof step === 'string' ? undefined : step.tool;

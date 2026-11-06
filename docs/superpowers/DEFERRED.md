@@ -73,6 +73,9 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### Web 調査の後のロール間ハンドオフで `VERDICT: PASS` が捨てられ、レビューが早く終わらない — 未対応 (P2)
+`enforceSourcedIntermediate`（`scripts/shelly-plan-executor.js`、`lib/agent-manager.ts`）は引用のない行を落とすので、調査の後ろにある review ステップの 1 行目 `VERDICT:` が消える。`parseReviewVerdict` が null を返し、`shouldSkipHandoffStep` は修正ステップを飛ばさない。記事パイプライン（`orchestration.longform`）はこの処理を通らないので影響なし。ロールのループは残る。直すなら、handoff ステップの結果を `enforceSourcedIntermediate` の対象から外す。
+
 ### Codex ワーカーの ChatGPT アプリ（MCP）ツール呼び出しがゲートを通るか未確認 — ブランチ `fix/codex-worker-mcp-gate` で無効化を実装・実機未検証 (P1)
 - **2026-11-04 実装（未 push・実機未検証）**: エージェントの Codex ワーカーでは MCP / アプリを一切読み込ませない（fail-closed、`scripts/shelly-agent-driver.js` ＋ asset ミラー）。対話の `codex` は不変。
   - 起動引数（`codexMcpDisableArgs`）: `-c features.{apps,plugins,enable_mcp_apps,skill_mcp_dependency_install,tool_suggest,browser_use,browser_use_external,computer_use,in_app_browser}=false`、`-c apps._default.enabled=false`、設定済み MCP サーバーごとに `-c mcp_servers.<name>.enabled=false`。PC の codex-cli 0.144.4 で確認: `-c mcp_servers={}` は設定がマージされるため**消えない**（`codex mcp list` に残る）、名前ごとの `enabled=false` は効く、`features.plugins=false` でプラグイン同梱サーバー（codex_app / cua_repl）が消える、`--disable <未知の機能>` はエラーだが `-c features.<未知>=false` は無視される（バージョン差に強い -c を採用）。キー名は公式 config reference（learn.chatgpt.com/docs/config-file/config-reference、`mcp_servers.<id>.enabled`・`apps._default.enabled`・`features.apps`）。MCP 全体を一括で切るキーは無い。

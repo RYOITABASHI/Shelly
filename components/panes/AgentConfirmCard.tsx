@@ -76,6 +76,10 @@ export interface ConfirmedAgentDraft {
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
+  /** Article pipeline: see ParsedAgentDraft.longform / presetOutput. Set only
+   *  by draftToConfirmedAgentDraft (chat-native confirm); this card never does. */
+  longform?: boolean;
+  presetOutput?: { outputPath: string; outputTemplate: string };
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
   notificationTrigger?: { packageNames: string[]; authorizedSenders?: string[] } | null;
   /** Deferred-start anchor ("来週あたりから…") — no bespoke editor UI on this

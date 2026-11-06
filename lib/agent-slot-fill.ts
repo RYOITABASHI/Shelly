@@ -184,7 +184,7 @@ export function nextMissingSlot(
   // 2026-10-30: an explicit save directive (「メモとして保存して」 →
   // draft.saveActionLabel) already says what to do with the result; the
   // summary shows the default destination, so no question is needed.
-  if (draft.action.type === 'draft' && !draft.saveActionLabel && !ctx.agentVaultPath && !ctx.agentTopicFolder) {
+  if (draft.action.type === 'draft' && !draft.saveActionLabel && !draft.presetOutput && !ctx.agentVaultPath && !ctx.agentTopicFolder) {
     return {
       field: 'outputPath',
       question: strings['slot_fill.question_output_path'],
