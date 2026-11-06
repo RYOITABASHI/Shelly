@@ -205,6 +205,8 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  */
 export function isAutoRegisterEligibleDraft(draft: ParsedAgentDraft): boolean {
   if (draft.roleRouting) return false;
+  // Article pipeline: the digest has no pinned step, and still takes the typed OK.
+  if (draft.longform) return false;
   if ((draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool)) return false;
   const toolType = (draft.tool as { type?: string } | undefined)?.type;
   if (toolType === 'cli' || toolType === 'ab-article-eval') return false;

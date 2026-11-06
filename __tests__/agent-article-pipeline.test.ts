@@ -56,8 +56,7 @@ describe('buildArticlePipeline', () => {
     expect(steps.map((s) => s.handoff?.kind)).toEqual([undefined, undefined, 'review', 'revise', 'review', 'revise', undefined]);
     expect(steps.map((s) => s.handoff?.of)).toEqual([undefined, undefined, [0, 1], [1, 2], [0, 3], [3, 4], undefined]);
     expect(steps.map((s) => s.handoff?.round)).toEqual([undefined, undefined, 1, 1, 2, 2, undefined]);
-    expect(steps[6].local?.kind).toBe('assemble');
-    expect(steps[6].local?.parts).toEqual([[1, 3, 5]]);
+    expect(steps[6].local).toMatchObject({ kind: 'assemble', parts: [[1, 3, 5]] });
   });
 
   it('runs daily, attended-free, without memory, into the vault', () => {
@@ -101,7 +100,7 @@ describe('buildArticlePipeline', () => {
     expect(normalized[2].instruction.endsWith(REVIEW_OUTPUT_CONTRACT)).toBe(true);
     expect(normalized[4].instruction.endsWith(REVIEW_OUTPUT_CONTRACT)).toBe(true);
     expect(normalized[2].handoff).toEqual({ kind: 'review', of: [0, 1], round: 1 });
-    expect(normalized[6].local?.stream).toBe('ai-steam');
+    expect(normalized[6].local).toMatchObject({ stream: 'ai-steam' });
     expect(normalized[6].tool).toBeUndefined();
   });
 

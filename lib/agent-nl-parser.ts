@@ -19,7 +19,7 @@
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
-import { buildArticlePipeline, buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
+import { buildArticleDigestPipeline, buildArticlePipeline, buildSteamPipeline, type ArticleStream, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import { detectRunWithoutApprovalLevel, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
 import { deriveWorkspaceRootFromText } from './agent-workspace-from-request';
@@ -2420,6 +2420,20 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   return s || text.trim();
 }
 
+/** Which daily article stream an utterance names, or the digest. English comes
+ *  from the words 英語 / English, or from a medium that is only used in English. */
+function detectArticleStream(text: string): ArticleStream | 'digest' | null {
+  if (!/記事|下書き|\barticles?\b|\bdrafts?\b/i.test(text)) return null;
+  if (/ダイジェスト|\bdigest\b/i.test(text)) return 'digest';
+  if (/steam/i.test(text)) return 'ai-steam';
+  const english = /英語|\benglish\b/i.test(text);
+  if (/substack/i.test(text)) return 'vintage-en';
+  if (/古着|ビンテージ|ヴィンテージ|\bvintage\b|はてな|\bhatena\b/i.test(text)) return english ? 'vintage-en' : 'vintage-ja';
+  if (/dev\.to/i.test(text)) return 'dev-en';
+  if (/開発記|開発ログ|開発の記事|\bdevlog\b|\bzenn\b/i.test(text)) return english ? 'dev-en' : 'dev-ja';
+  return null;
+}
+
 /**
  * G6: an explicit "パイプライン" / "pipeline" request builds the ready-made STEAM
  * collection pipeline (search → primary source → summarize → char-limited
@@ -2439,9 +2453,11 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
   ) {
     return null;
   }
-  // "AI×STEAMの記事パイプライン": the daily article draft, not the collection
-  // preset below. Only the AI×STEAM stream exists so far (Increment 1).
-  if (/記事|\barticles?\b/i.test(text) && /steam/i.test(text)) return buildArticlePipeline('ai-steam');
+  // "AI×STEAMの記事パイプライン": a daily article stream or the digest, not the
+  // collection preset below.
+  const articleStream = detectArticleStream(text);
+  if (articleStream === 'digest') return buildArticleDigestPipeline();
+  if (articleStream) return buildArticlePipeline(articleStream);
   const m = text.match(
     /(.+?)(?:の|を|に関する)?\s*(?:最新の?)?\s*(?:ニュース|論文|情報|動向)?\s*(?:を)?\s*(?:パイプライン|pipeline)/i,
   );

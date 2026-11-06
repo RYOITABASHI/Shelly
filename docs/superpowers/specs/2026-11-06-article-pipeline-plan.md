@@ -21,6 +21,8 @@ Chain: `[research, write, review1, revise1, review2, revise2, assemble]`; dev an
 - `MAX_TOKENS` / `length` finish reasons fail the step, and local is dropped from candidates. Local caps at 1024/2048 tokens; cloud engines send no cap (plan-v2 line 58 was wrong).
 - Non-model `local` steps: `assemble` (joins the last non-skipped result per part, adds frontmatter, Sources, fixed footer), `list-drafts`, `queue-pop`.
 
+The digest is `[list-drafts, assemble]` with `assemble.plain` (footer only, no frontmatter, because the notification carries the first 500 characters). Folders: `Steam`, `Dev`, `DevEn`, `Vintage`, `VintageEn`, `Digest`; `Substack` and `X` under 50_Drafts already belong to the content-studio mirror. Crons 6:00 to 7:20, digest 8:00 (the last stream's cron plus its 30-minute budget, with a margin). An empty queue ends the run skipped with no notification. A failed tick notifies once, and the run stays a success.
+
 The review loop is preset-emitted `handoff` steps. The role router is not used. Reviews use `of:[0,1]` / `of:[0,3]`, revises `of:[1,2]` / `of:[3,4]`, with `REVIEW_OUTPUT_CONTRACT` appended.
 
 Owner material: the writer emits `【本人の材料: 未記入】` where it is missing, `assemble` sets `material: missing`, the digest shows it. No stream is publishable without the owner, because 本人の見解 and 最終確認者 are human. Vintage drafts carry no listing links or images; Mercari checks stay attended.

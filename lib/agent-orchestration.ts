@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentApiCallConfig, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import type { AgentApiCallConfig, AgentAssembleStepConfig, AgentDigestStream, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { matchToolMention } from './agent-tool-mentions';
 import { sameProvider } from './agent-cli-workers';
 import { AUTH_REFS } from './capability-envelope';
@@ -146,6 +146,9 @@ const LOCAL_STEP_FOOTER_MAX_CHARS = 600;
 const LOCAL_STEP_MAX_TERMS = 64;
 const LOCAL_STEP_TERM_MAX_CHARS = 64;
 const LOCAL_STEP_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+const LOCAL_STEP_MAX_STREAMS = 16;
+const LOCAL_STEP_FOLDER_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const LOCAL_STEP_LABEL_MAX_CHARS = 64;
 
 function validLocalStepTerms(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw) || raw.length > LOCAL_STEP_MAX_TERMS) return undefined;
@@ -155,6 +158,19 @@ function validLocalStepTerms(raw: unknown): string[] | undefined {
     terms.push(term);
   }
   return terms;
+}
+
+function normalizeListDraftsLocal(r: Record<string, unknown>): AgentLocalStepConfig | undefined {
+  if (!Array.isArray(r.streams) || r.streams.length === 0 || r.streams.length > LOCAL_STEP_MAX_STREAMS) return undefined;
+  const streams: AgentDigestStream[] = [];
+  for (const raw of r.streams) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const s = raw as Record<string, unknown>;
+    if (typeof s.folder !== 'string' || !LOCAL_STEP_FOLDER_RE.test(s.folder)) return undefined;
+    if (typeof s.label !== 'string' || !s.label.trim() || s.label.length > LOCAL_STEP_LABEL_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(s.label) || s.label.includes('\n')) return undefined;
+    streams.push({ folder: s.folder, label: s.label, ...(s.intent === true ? { intent: true } : {}) });
+  }
+  return { kind: 'list-drafts', streams };
 }
 
 /**
@@ -167,6 +183,8 @@ function validLocalStepTerms(raw: unknown): string[] | undefined {
 export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
+  if (r.kind === 'queue-pop') return { kind: 'queue-pop' };
+  if (r.kind === 'list-drafts') return normalizeListDraftsLocal(r);
   if (r.kind !== 'assemble') return undefined;
   if (!Array.isArray(r.parts) || r.parts.length === 0 || r.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;
   const parts: number[][] = [];
@@ -181,7 +199,7 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
   if (typeof r.footer !== 'string' || !r.footer.trim() || r.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(r.footer)) return undefined;
   const lintTerms = r.lintTerms === undefined ? undefined : validLocalStepTerms(r.lintTerms);
   if (r.lintTerms !== undefined && !lintTerms) return undefined;
-  let nameLint: AgentLocalStepConfig['nameLint'];
+  let nameLint: AgentAssembleStepConfig['nameLint'];
   if (r.nameLint !== undefined) {
     const n = r.nameLint as Record<string, unknown> | null;
     const forms = n && typeof n === 'object' ? validLocalStepTerms(n.forms) : undefined;
@@ -195,6 +213,8 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
     footer: r.footer,
     ...(lintTerms ? { lintTerms } : {}),
     ...(nameLint ? { nameLint } : {}),
+    ...(r.plain === true ? { plain: true } : {}),
+    ...(r.lintSources === true ? { lintSources: true } : {}),
   };
 }
 
@@ -481,7 +501,8 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
   return kept.map((s, i) => {
     // Article pipeline: same rule for a local step's `parts` indexes.
     if (s.local) {
-      if (!shifted && s.local.parts.every((list) => list.every((k) => k < i))) return s;
+      const parts = s.local.kind === 'assemble' ? s.local.parts : [];
+      if (!shifted && parts.every((list) => list.every((k) => k < i))) return s;
       const { local: _dropLocal, ...restLocal } = s;
       void _dropLocal;
       return restLocal;

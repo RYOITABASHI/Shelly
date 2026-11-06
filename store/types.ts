@@ -1411,12 +1411,14 @@ export interface AgentOrchestrationStep {
   local?: AgentLocalStepConfig;
 }
 
+export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig;
+
 /**
  * `assemble`: builds the finished draft from earlier step results, adding
  * frontmatter, a programmatic Sources section and a fixed footer. Falls
  * through to the agent's normal final action.
  */
-export interface AgentLocalStepConfig {
+export interface AgentAssembleStepConfig {
   kind: 'assemble';
   /** Each list yields the last non-skipped result of its step indexes, joined
    *  in order: `[[1,3,5]]` = the draft, or its latest revision. */
@@ -1429,6 +1431,40 @@ export interface AgentLocalStepConfig {
   lintTerms?: string[];
   /** Flags name forms other than `canonical` (also frontmatter `lint`). */
   nameLint?: { canonical: string; forms: string[] };
+  /** Keep the parts as they are, adding only the footer (the digest). */
+  plain?: boolean;
+  /** Lint the chain's source titles and URLs too (vintage: no listing links). */
+  lintSources?: boolean;
+}
+
+/** One stream the digest expects a draft from. */
+export interface AgentDigestStream {
+  /** Folder next to the digest's own output folder (under 50_Drafts). */
+  folder: string;
+  /** Shown in the digest, also when the stream has no draft today. */
+  label: string;
+  /** One X intent link for the stream's draft. Set here only, never by a draft. */
+  intent?: boolean;
+}
+
+/**
+ * `list-drafts` (executor v29): reads today's `<date>-*.md` drafts from the
+ * folders beside the digest's output folder, inside the vault, and renders the
+ * digest. No model call.
+ */
+export interface AgentListDraftsStepConfig {
+  kind: 'list-drafts';
+  streams: AgentDigestStream[];
+}
+
+/**
+ * `queue-pop` (executor v29): takes the first open `- [ ]` block of
+ * `<outputDir>/_queue.md` as the run's topic and ticks it once the draft saved.
+ * An empty or missing queue ends the run skipped. No path in the config: the
+ * file name is fixed and the folder is the agent's output folder.
+ */
+export interface AgentQueuePopStepConfig {
+  kind: 'queue-pop';
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
