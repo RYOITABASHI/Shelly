@@ -542,7 +542,9 @@ object AgentRuntime {
     // and a stream's saved draft no longer writes a success notification. JS-only.
     // v30 (article pipeline review): a longform plan must be one draft action on
     // a non-autonomous agent, and a stream with today's draft is skipped. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 30
+    // v31 (article pipeline re-review): a failed review loop keeps the draft as
+    // unresolved, and the digest reads saved_at and configured folders. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 31
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

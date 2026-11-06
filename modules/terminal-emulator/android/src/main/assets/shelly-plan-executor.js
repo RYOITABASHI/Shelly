@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=30
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=31
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -133,7 +133,13 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // pins `review: unresolved`; a missing material marker reads `unknown`. Other
 // plans run exactly as before. Bumped so a stale v29 copy, which would run a
 // patched longform action, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 30;
+// v31 (2026-11-06, article pipeline re-review): a failed or cut review loop
+// keeps the last good draft as `review: unresolved` instead of failing the run;
+// a writer and reviewer of one engine family pin unresolved; the digest reads
+// saved_at and the configured folders only; a longform plan with an api-call or
+// CLI step is refused. Other plans run exactly as before. Bumped so a stale v30
+// copy, which throws away a finished draft, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 31;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -861,6 +867,16 @@ const LONGFORM_RESEARCH_MAX_CHARS = 7000;
 const LONGFORM_TRUNCATED_MESSAGE = 'The model stopped before finishing (output limit or a safety stop), so this step failed instead of carrying a cut-off text.';
 const LONGFORM_DRAFT_ONLY_MESSAGE = 'An article pipeline only saves one draft. This agent has another action or is autonomous, so it was not run.';
 const LONGFORM_DRAFT_EXISTS_MESSAGE = 'Today\'s draft already exists, so this run was skipped.';
+const LONGFORM_REVISE_CUT_MESSAGE = 'Skipped: the draft does not fit this step\'s prompt, so a rewrite would lose its end.';
+const LONGFORM_HANDOFF_STOPPED_MESSAGE = 'Skipped: the review loop stopped, so the last good draft is kept.';
+// review_note values: the owner reads these in the digest.
+const ARTICLE_REVIEW_FAILED_NOTE = '査読が動かなかった';
+const ARTICLE_PROMPT_CUT_NOTE = '査読か修正で本文が切れた';
+const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
+// Cerebras and Groq serve the same open models by default, so a reviewer on one
+// is not independent of a writer on the other. Only these cloud engines are
+// compared; the local LLM is never on a longform ladder.
+const ENGINE_FAMILIES = { 'gemini-api': 'gemini', perplexity: 'perplexity', cerebras: 'open-weights', groq: 'open-weights' };
 const STEP_PREVIEW_MAX_CHARS = 500;
 // Mirrors lib/agent-orchestration.ts's MAX_STEP_INSTRUCTION_CHARS (module-local
 // there too — not exported, so this is its own numerically-in-sync copy, same
@@ -2351,14 +2367,37 @@ function stripArticleSources(text) {
  *  - material: `missing` when the body still holds 【本人の材料: 未記入】,
  *    `unknown` when it does not: an unattended chain has no owner material, so
  *    a gone marker means it was dropped. Only the owner writes `ok`, by hand;
- *  - ctx.promptCut (a review or revise step saw a cut text) pins review to
- *    `unresolved`, whatever the verdict was;
+ *  - ctx.reviewNotes (the review did not run, or saw a cut text) pin review to
+ *    `unresolved` whatever the verdict was, and go into `review_note`; so does
+ *    a final writer and last reviewer of one family (ctx.usedEngines);
+ *  - saved_at: when the draft was built (ctx.savedAt), which the digest reads
+ *    because an owner's edit moves the file's mtime;
  *  - lint: the flagged terms (nothing is rewritten); `lintSources` also checks
  *    the chain's source titles and URLs.
  * `plain` keeps the parts as they are, with the footer and nothing else: the
  * digest's text is built by list-drafts and starts with what the notification
  * must show.
  */
+function reviewSharesWriterFamily(local, ctx) {
+  const engines = ctx.usedEngines || [];
+  const familyOf = (k) => ENGINE_FAMILIES[engines[k]];
+  let reviewer;
+  for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
+    const h = handoffOf(ctx.steps, j);
+    if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
+    reviewer = familyOf(j);
+    break;
+  }
+  if (!reviewer) return false;
+  return local.parts.some((list) => {
+    for (let n = list.length - 1; n >= 0; n -= 1) {
+      const k = list[n];
+      if (!ctx.skipped[k] && typeof ctx.results[k] === 'string') return familyOf(k) === reviewer;
+    }
+    return false;
+  });
+}
+
 function assembleArticle(local, ctx) {
   const parts = [];
   for (const list of local.parts) {
@@ -2381,7 +2420,9 @@ function assembleArticle(local, ctx) {
     if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
     break;
   }
-  if (ctx.promptCut) review = 'unresolved';
+  const reviewNotes = (ctx.reviewNotes || []).slice();
+  if (reviewSharesWriterFamily(local, ctx)) reviewNotes.push(ARTICLE_SAME_ENGINE_NOTE);
+  if (reviewNotes.length) review = 'unresolved';
   const heading = /^ {0,3}#\s+(.+?)\s*$/m.exec(body);
   const title = String(heading ? heading[1] : ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
   const lintText = local.lintSources ? [body].concat(ctx.sources.map((s) => `${s.title || ''} ${s.url}`)).join('\n') : body;
@@ -2390,8 +2431,9 @@ function assembleArticle(local, ctx) {
     `title: ${JSON.stringify(title)}`,
     `stream: ${JSON.stringify(local.stream)}`,
     `date: ${ctx.today}`,
+    `saved_at: ${ctx.savedAt || new Date().toISOString()}`,
     `review: ${review}`,
-    ...(ctx.promptCut ? ['review_note: "the review or the revision saw a cut text"'] : []),
+    ...(reviewNotes.length ? [`review_note: ${JSON.stringify(reviewNotes.join('、'))}`] : []),
     `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'unknown'}`,
     `lint: ${JSON.stringify(articleLint(local, lintText))}`,
     '---',
@@ -2422,6 +2464,7 @@ const DIGEST_HEAD_BYTES = 8 * 1024;
 const DIGEST_SUMMARY_TITLE_MAX_CHARS = 60;
 const DIGEST_LINT_MAX_TERMS = 8;
 const DIGEST_LINT_TERM_MAX_CHARS = 64;
+const DIGEST_REVIEW_NOTE_MAX_CHARS = 80;
 const DIGEST_FILE_RE = /^[A-Za-z0-9._-]{1,120}\.md$/;
 // X's 280 units, less 24 for the article URL the owner pastes after publishing.
 const X_INTENT_TEXT_BUDGET = 256;
@@ -2571,12 +2614,12 @@ function parseJsonValue(text) {
  * overrule it.
  */
 function parseDraftFrontmatter(head) {
-  const out = { title: '', review: '', material: '', lint: [] };
+  const out = { title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0 };
   const block = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(head == null ? '' : head));
   if (!block) return out;
   const seen = new Set();
   for (const line of block[1].split(/\r?\n/)) {
-    const m = /^(title|review|material|lint):[ \t]*(.*)$/.exec(line);
+    const m = /^(title|review|review_note|material|lint|saved_at):[ \t]*(.*)$/.exec(line);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);
     const value = m[2].trim();
@@ -2585,6 +2628,12 @@ function parseDraftFrontmatter(head) {
       out.title = typeof parsed === 'string' ? parsed : '';
     } else if (m[1] === 'review') {
       out.review = value === 'pass' || value === 'unresolved' ? value : '';
+    } else if (m[1] === 'review_note') {
+      const parsed = parseJsonValue(value);
+      out.reviewNote = typeof parsed === 'string' ? sanitizeDigestText(parsed, DIGEST_REVIEW_NOTE_MAX_CHARS) : '';
+    } else if (m[1] === 'saved_at') {
+      const ms = Date.parse(value);
+      out.savedAtMs = Number.isFinite(ms) ? ms : 0;
     } else if (m[1] === 'material') {
       out.material = value === 'ok' || value === 'missing' || value === 'unknown' ? value : '';
     } else {
@@ -2609,9 +2658,10 @@ function readDraftItem(realVault, dir, folder, name, f) {
       path: path.relative(realVault, path.join(dir, base)).split(path.sep).join('/'),
       title: sanitizeDigestText(fm.title, ARTICLE_TITLE_MAX_CHARS) || base,
       review: fm.review,
+      reviewNote: fm.reviewNote,
       material: fm.material,
       lint: fm.lint,
-      mtimeMs: st.mtimeMs,
+      savedAtMs: fm.savedAtMs,
     };
   } catch (_) {
     return null;
@@ -2622,12 +2672,14 @@ function readDraftItem(realVault, dir, folder, name, f) {
  * Today's drafts under `draftsDir`, inside the vault. ctx: { vault, draftsDir,
  * skipFolder, today, yesterday, lateAfterMs, fsImpl }. Physical paths only,
  * symlinked folders and files skipped, folder and file counts and read size
- * capped. Configured streams come first, so the caps cannot push them out. A
- * folder that does not exist yet means no drafts; a vault that cannot be read
- * fails the step, so that a storage problem is not reported as every stream
- * having no draft. With `yesterday`, that day's drafts newer than lateAfterMs
- * (yesterday's digest) are listed too, marked `late`: they were saved after the
- * digest ran. A late draft does not count as today's for `missing`.
+ * capped. Only the folders in `local.streams` are read: Substack and X under
+ * 50_Drafts belong to the content-studio mirror. A folder that does not exist
+ * yet means no drafts; a vault that cannot be read fails the step, so that a
+ * storage problem is not reported as every stream having no draft. With
+ * `yesterday`, that day's drafts whose saved_at is after lateAfterMs (yesterday's
+ * digest) are listed too, marked `late`. saved_at, not the mtime, because an
+ * owner's edit moves the mtime; a draft without it is not late. A late draft
+ * does not count as today's for `missing`.
  */
 function scanDraftFolders(local, ctx) {
   const f = ctx.fsImpl || fs;
@@ -2646,10 +2698,9 @@ function scanDraftFolders(local, ctx) {
   }
   if (!pathInsideRoot(realDrafts, realVault)) throw fail('the drafts folder is outside the vault');
   const order = local.streams.map((s) => s.folder);
-  const rank = (name) => (order.indexOf(name) === -1 ? order.length : order.indexOf(name));
   const folders = names
-    .filter((n) => LOCAL_STEP_FOLDER_RE.test(n) && n !== ctx.skipFolder)
-    .sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+    .filter((n) => order.indexOf(n) !== -1 && n !== ctx.skipFolder)
+    .sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const items = [];
   let truncated = folders.length > DIGEST_MAX_FOLDERS;
   for (const folder of folders.slice(0, DIGEST_MAX_FOLDERS)) {
@@ -2677,7 +2728,7 @@ function scanDraftFolders(local, ctx) {
       const item = readDraftItem(realVault, dir, folder, name, f);
       if (!item) continue;
       if (late) {
-        if (item.mtimeMs <= (ctx.lateAfterMs || 0)) continue;
+        if (!item.savedAtMs || item.savedAtMs <= (ctx.lateAfterMs || 0)) continue;
         item.late = true;
       }
       items.push(item);
@@ -2689,7 +2740,7 @@ function scanDraftFolders(local, ctx) {
 
 function digestFlags(item) {
   const flags = [];
-  if (item.review !== 'pass') flags.push('査読未解決');
+  if (item.review !== 'pass') flags.push(`査読未解決${item.reviewNote ? `（${item.reviewNote}）` : ''}`);
   if (item.material === 'missing') flags.push('本人の材料なし');
   else if (item.material !== 'ok') flags.push('本人の材料を確認');
   if (item.lint.length) flags.push(`lint: ${item.lint.join(', ')}`);
@@ -2724,7 +2775,9 @@ function renderDraftDigest(local, scan, today) {
   ];
   for (const item of ordered) {
     const short = Array.from(item.title).slice(0, DIGEST_SUMMARY_TITLE_MAX_CHARS).join('');
-    const mark = unresolved(item) ? '【査読未解決】' : digestFlags(item).length ? '【要確認】' : '';
+    const mark = unresolved(item)
+      ? `【査読未解決${item.reviewNote ? `: ${item.reviewNote}` : ''}】`
+      : digestFlags(item).length ? '【要確認】' : '';
     lines.push(`- ${labelOf(item.folder)}: ${short}${item.late ? '【前日分】' : ''}${mark}`);
   }
   if (missing.length) lines.push(`未作成: ${missing.join('、')}`);
@@ -2766,15 +2819,17 @@ function longformPlanRefusal(plan) {
   if (!plan.action || plan.action.type !== 'draft') return LONGFORM_DRAFT_ONLY_MESSAGE;
   if (Array.isArray(plan.actions) && plan.actions.length >= 2) return LONGFORM_DRAFT_ONLY_MESSAGE;
   if (plan.agent && plan.agent.autonomous === true) return LONGFORM_DRAFT_ONLY_MESSAGE;
+  const list = plan.steps && Array.isArray(plan.steps.list) ? plan.steps.list : [];
+  if (list.some((s) => !!s && (!!s.apiCall || isCliStep(s)))) return LONGFORM_DRAFT_ONLY_MESSAGE;
   return '';
 }
 
 // The draft file name holds only the date, so a second run the same day would
-// overwrite the first draft and leave its queue item ticked.
+// overwrite the first draft and leave its queue item ticked. An empty file is a
+// crashed write, not a draft: it must not block the retry.
 function draftAlreadySaved(paths, plan, config) {
   try {
-    fs.lstatSync(resolveDraftDestination(paths, plan, config).dest);
-    return true;
+    return fs.lstatSync(resolveDraftDestination(paths, plan, config).dest).size > 0;
   } catch (_) {
     return false;
   }
@@ -2789,9 +2844,10 @@ function capLongformResearch(text) {
   return lineEnd >= LONGFORM_RESEARCH_MAX_CHARS * 0.8 ? head.slice(0, lineEnd) : head;
 }
 
-// The engines of the other side of the review loop. A rung of step i's ladder
-// on one of these would have the reviewer revise its own findings or review
-// text it wrote.
+// The engines of the other side of the review loop, taken off step i's ladder.
+// This cuts the obvious overlap but cannot guarantee separation: a ladder can
+// still land both sides in one family (Groq and Cerebras). assemble checks what
+// actually ran and pins the review to unresolved then.
 function longformOtherRoleTools(list, i) {
   const isReview = (s) => !!s && !!s.handoff && s.handoff.kind === 'review';
   const reviewing = isReview(list[i]);
@@ -6458,10 +6514,10 @@ function overrideToolKey(tool) {
 // Article pipeline (v28): on a longform plan the local LLM is off the ladder
 // (its 1024/2048-token cap cannot finish an article), and a research step does
 // not climb at all: the rungs that remain have no web access, and a made-up
-// URL in their answer would be absorbed as a source. A fallback also keeps the
-// writer and the reviewer apart (v30): the other side's engines (the step's
-// plan.longformOtherTools) are off the ladder, so a step with no rung left fails
-// rather than having one engine check its own text.
+// URL in their answer would be absorbed as a source. The other side's pinned
+// engines (the step's plan.longformOtherTools) are off the ladder too, so a
+// fallback does not simply swap writer and reviewer; see longformOtherRoleTools
+// for what this does not guarantee.
 function stepToolCandidates(plan) {
   const ladder = Array.isArray(plan.toolLadder) ? plan.toolLadder : [];
   if (!(plan.steps && plan.steps.longform === true)) return [plan.tool].concat(ladder);
@@ -7276,6 +7332,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   let chainStopMessage = '';
   // v30: the review and revise steps whose prompt had to cut a carried text.
   const promptCutSteps = new Set();
+  // v31: why the review cannot stand (assemble's review_note), the review loop
+  // having stopped early, and the engine that actually answered each step.
+  const reviewNotes = new Set();
+  let handoffLoopStopped = false;
+  const usedEnginesByStep = [];
 
   // Provider overrides (v16) — see readProviderOverrides' comment above.
   const overrideRunId = activeProgress ? activeProgress.runId : undefined;
@@ -7451,7 +7512,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         sources: evidence.sources,
         today: sourcingToday,
         fallbackTitle: plan.agent.name,
-        promptCut: promptCutSteps.size > 0,
+        reviewNotes: Array.from(reviewNotes),
+        usedEngines: usedEnginesByStep,
       }),
     };
   }
@@ -7535,7 +7597,16 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // a verdict on the article. assemble pins the review to unresolved.
     if (longform && composedPrompt.truncated && step.handoff !== undefined && !promptCutSteps.has(i)) {
       promptCutSteps.add(i);
+      reviewNotes.add(ARTICLE_PROMPT_CUT_NOTE);
       appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'longform_prompt_cut', agentId: plan.agent.id, stepIndex: i });
+    }
+    // v31: a rewrite of a cut draft would lose the article's end, and every
+    // later version would inherit that. The full version stands instead.
+    if (longform && composedPrompt.truncated && step.handoff !== undefined && step.handoff.kind === 'revise') {
+      return {
+        record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: 0, outputPreview: LONGFORM_REVISE_CUT_MESSAGE },
+        handoffStopped: true,
+      };
     }
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
@@ -7671,6 +7742,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // carried / post-processed / delivered (the final step's block is kept
       // as this iteration's checkpoint input).
       resultText = attempt.resultText;
+      if (longform && step.local === undefined && attempt.usedTool) usedEnginesByStep[i] = attempt.usedTool.type;
       if (isFinal && activeContinuous) activeContinuous.control = attempt.control || null;
       if (research) researchCapture = { text: resultText, parsed: parseResearchSources(attempt.response) };
       // 3rd-pass Codex review finding (see run()'s own comment above its
@@ -7692,6 +7764,27 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // non-PlanFailure exception (a real bug) be silently absorbed here —
       // rethrow it to run()'s own outer catch.
       if (!(error instanceof PlanFailure)) throw error;
+      // Article pipeline (v31): a finished draft outlives its review. A review
+      // or revise step that fails (no key for the reviewer's engine, an outage)
+      // ends the loop as skipped, so neither the run log nor native counts a
+      // failure, and the last good version is saved as unresolved. A failed
+      // research or write step has no draft to keep and still fails below.
+      if (longform && step.handoff !== undefined) {
+        reviewNotes.add(ARTICLE_REVIEW_FAILED_NOTE);
+        const reason = redact(error.message);
+        appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event: 'handoff_failed',
+          agentId: plan.agent.id,
+          stepIndex: i,
+          reason: reason.slice(0, 300),
+        });
+        return {
+          record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: previewText(`${LONGFORM_HANDOFF_STOPPED_MESSAGE} ${reason}`) },
+          handoffStopped: true,
+        };
+      }
       // Sourced briefings: a summarize/write step whose model call failed
       // outright (every ladder candidate exhausted / refused / local LLM
       // down) still has real, sourced research to restate — emit the
@@ -7979,17 +8072,21 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // Agent roles Inc B (v26): the latest review answered VERDICT: PASS — the
     // remaining revise / round-2 review steps settle SKIPPED (not an error;
     // reduceStatus folds success + skipped to success) and the chain goes on.
-    if (shouldSkipHandoffStep(plan.steps.list, i, resultsByStep, skippedByStep)) {
+    // v31: a stopped loop skips every hand-off left, including a round-2 review
+    // whose revise never ran and so has nothing to read.
+    const loopStoppedHere = handoffLoopStopped && plan.steps.list[i].handoff !== undefined;
+    if (loopStoppedHere || shouldSkipHandoffStep(plan.steps.list, i, resultsByStep, skippedByStep)) {
+      const skipMessage = loopStoppedHere ? LONGFORM_HANDOFF_STOPPED_MESSAGE : HANDOFF_PASS_SKIP_MESSAGE;
       skippedByStep[i] = true;
-      records.push({ index: i, instruction: plan.steps.list[i].instruction, status: 'skipped', durationMs: 0, outputPreview: HANDOFF_PASS_SKIP_MESSAGE });
-      progressState(activeProgress, i, 'SKIPPED', HANDOFF_PASS_SKIP_MESSAGE);
+      records.push({ index: i, instruction: plan.steps.list[i].instruction, status: 'skipped', durationMs: 0, outputPreview: skipMessage });
+      progressState(activeProgress, i, 'SKIPPED', skipMessage);
       appendJsonl(paths.planAuditFile, {
         ts: new Date().toISOString(),
         kind: 'plan.executor',
         event: 'handoff_skipped',
         agentId: plan.agent.id,
         stepIndex: i,
-        reason: 'review passed',
+        reason: loopStoppedHere ? 'review loop stopped' : 'review passed',
       });
       i += 1;
       continue;
@@ -8003,6 +8100,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (outcome.stopChain) {
       chainStopMessage = outcome.stopChain;
       break;
+    }
+    if (outcome.handoffStopped) {
+      handoffLoopStopped = true;
+      skippedByStep[i] = true;
     }
     if (outcome.result !== undefined) {
       priorResults.push(outcome.result);
@@ -8985,6 +9086,10 @@ module.exports = {
   LONGFORM_RESEARCH_MAX_CHARS,
   LONGFORM_DRAFT_ONLY_MESSAGE,
   LONGFORM_DRAFT_EXISTS_MESSAGE,
+  LONGFORM_HANDOFF_STOPPED_MESSAGE,
+  ARTICLE_REVIEW_FAILED_NOTE,
+  ARTICLE_PROMPT_CUT_NOTE,
+  ARTICLE_SAME_ENGINE_NOTE,
   composeStepPrompt,
   capLongformResearch,
   longformPlanRefusal,

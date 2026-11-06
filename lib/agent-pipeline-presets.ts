@@ -107,8 +107,10 @@ const ARTICLE_DIGEST_FOLDER = 'Digest';
  *  scripts/shelly-plan-executor.js. */
 export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】';
 
-// Pinned free-tier engines. The writer and the reviser share an engine so the
-// reviewer is never the one who wrote the text. Research is Gemini grounded
+// Pinned free-tier engines. The writer and the reviser share an engine, and the
+// reviewer's pin is a different one. A ladder fallback can still bring them
+// together, so the executor checks what ran and leaves that draft unresolved.
+// Research is Gemini grounded
 // (no Perplexity: the owner wants no new costs).
 const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
 const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };

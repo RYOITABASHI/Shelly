@@ -144,6 +144,12 @@ function devChain() {
   });
 }
 
+/** A device with only a Gemini key: the reviewer stays pinned to Cerebras, for
+ *  which no secret exists, and everything else reaches the fixture. */
+function devChainWithCerebrasReviewer() {
+  return devChain().map((step) => (step.handoff?.kind === 'review' ? { ...step, tool: { type: 'cerebras' }, toolPinned: true } : step));
+}
+
 function digestChain() {
   return normalizeSteps(buildArticleDigestPipeline().orchestration);
 }
@@ -274,6 +280,46 @@ describe('the executor with a queue or a digest', () => {
     expect(readResult(home2)).toContain('開発記（Zenn）: 良い記事');
   }, 30000);
 
+  it('with no key for the reviewer, the draft is saved as unresolved, the run counts as no failure, and the digest says so', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    const dir = queueIn(vault, '- [ ] Knox の話\n');
+    replies = [research, '# 記事\n\n本文 [1]。'];
+    expect(await runExecutor(writePlan(home, port, vault, dir, devChainWithCerebrasReviewer()), home)).toBe(0);
+
+    expect(prompts).toHaveLength(2);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
+    const draft = fs.readFileSync(path.join(dir, `${localToday()}-x.md`), 'utf8');
+    expect(draft).toContain('review: unresolved');
+    expect(draft).toContain(`review_note: "${executor.ARTICLE_REVIEW_FAILED_NOTE}"`);
+    expect(draft).toContain('本文 [1]。');
+    // The draft saved, so its topic is used up, and a stream's success stays quiet.
+    expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe('- [x] Knox の話\n');
+    expect(fs.existsSync(notificationFile(home))).toBe(false);
+
+    const home2 = makeHome();
+    await runExecutor(writePlan(home2, port, vault, path.join(vault, '50_Drafts', 'Digest'), digestChain()), home2);
+    const digest = readResult(home2);
+    expect(digest).toContain('1 本（査読未解決 1、要確認 0）');
+    expect(digest).toContain(`記事【査読未解決: ${executor.ARTICLE_REVIEW_FAILED_NOTE}】`);
+  }, 40000);
+
+  it('a zero-byte leftover does not block the retry', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    const dir = queueIn(vault, '- [ ] Knox の話\n');
+    const dest = path.join(dir, `${localToday()}-x.md`);
+    fs.writeFileSync(dest, '');
+    replies = [research, '# 記事\n\n本文 [1]。', 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
+
+    expect(prompts).toHaveLength(3);
+    expect(readRunLog(home).status).toBe('success');
+    expect(fs.readFileSync(dest, 'utf8')).toContain('title: "記事"');
+  }, 20000);
+
   it('the digest may run twice the same day and rebuilds its file', async () => {
     const home = makeHome();
     const vault = makeVault();
@@ -288,7 +334,7 @@ describe('the executor with a queue or a digest', () => {
   it('a draft saved after yesterday\'s digest is listed today, marked, and does not count as today\'s', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, GOOD);
+    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, [...GOOD, `saved_at: ${new Date().toISOString()}`]);
     const dir = path.join(vault, '50_Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     const result = readResult(home);
@@ -296,13 +342,13 @@ describe('the executor with a queue or a digest', () => {
     expect(result).toContain('良い記事【前日分】');
   }, 20000);
 
-  it('a draft yesterday\'s digest already had is not listed again', async () => {
+  it('a draft yesterday\'s digest already had stays out, even after the owner edits it', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, GOOD);
+    const old = new Date(Date.now() - 3 * 3600_000).toISOString();
+    // Written after the digest below, so its mtime is the newer one, as an edit leaves it.
     writeDraft(vault, 'Digest', `${localYesterday()}-x.md`, GOOD);
-    const old = new Date(Date.now() - 3 * 3600_000);
-    fs.utimesSync(path.join(vault, '50_Drafts', 'Steam', `${localYesterday()}-ai-steam.md`), old, old);
+    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, [...GOOD, `saved_at: ${old}`]);
     const dir = path.join(vault, '50_Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readResult(home)).not.toContain('良い記事');
@@ -639,8 +685,17 @@ describe('completeQueuePop', () => {
 describe('parseDraftFrontmatter', () => {
   it('reads what assemble writes', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "題"\nstream: "x"\nreview: pass\nmaterial: missing\nlint: ["世界初"]\n---\n\n本文');
-    expect(fm).toEqual({ title: '題', review: 'pass', material: 'missing', lint: ['世界初'] });
+    expect(fm).toEqual({ title: '題', review: 'pass', reviewNote: '', material: 'missing', lint: ['世界初'], savedAtMs: 0 });
     expect(executor.parseDraftFrontmatter('---\nmaterial: unknown\n---\n').material).toBe('unknown');
+  });
+
+  it('reads the review note and the save time, as data', () => {
+    const fm = executor.parseDraftFrontmatter('---\nreview_note: "x]]|y"\nsaved_at: 2026-11-06T06:00:00.000Z\n---\n');
+    expect(fm.reviewNote).toBe('x y');
+    expect(fm.savedAtMs).toBe(Date.parse('2026-11-06T06:00:00.000Z'));
+    const bad = executor.parseDraftFrontmatter('---\nreview_note: plain\nsaved_at: yesterday\n---\n');
+    expect(bad.reviewNote).toBe('');
+    expect(bad.savedAtMs).toBe(0);
   });
 
   it('a title edited by hand, without quotes, still reads', () => {
@@ -649,7 +704,7 @@ describe('parseDraftFrontmatter', () => {
 
   it('values it does not know come back empty, so the digest flags them', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "unterminated\nreview: PASS!\nmaterial: fine\nlint: nope\n---\n');
-    expect(fm).toEqual({ title: '', review: '', material: '', lint: [] });
+    expect(fm).toEqual({ title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0 });
   });
 
   it('a body that repeats the keys cannot overrule the frontmatter', () => {
@@ -723,11 +778,13 @@ describe('scanDraftFolders', () => {
     expect(scan(vault).items).toEqual([]);
   });
 
-  it('lists a folder outside the config, after the configured ones', () => {
+  it('reads only the configured folders, in their order', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Aaa', '2026-11-06-x.md', GOOD);
+    writeDraft(vault, 'Substack', '2026-11-06-x.md', GOOD);
+    writeDraft(vault, 'X', '2026-11-06-x.md', GOOD);
     writeDraft(vault, 'Vintage', '2026-11-06-y.md', GOOD);
-    expect(scan(vault).items.map((i: { folder: string }) => i.folder)).toEqual(['Vintage', 'Aaa']);
+    writeDraft(vault, 'Steam', '2026-11-06-z.md', GOOD);
+    expect(scan(vault).items.map((i: { folder: string }) => i.folder)).toEqual(['Steam', 'Vintage']);
   });
 
   it('caps the files per folder and says so', () => {
@@ -754,18 +811,25 @@ describe('scanDraftFolders', () => {
     expect(Math.max(...reads)).toBeLessThanOrEqual(executor.DIGEST_HEAD_BYTES);
   });
 
-  it('yesterday\'s drafts come in only when newer than yesterday\'s digest, and never fill today\'s slot', () => {
+  it('yesterday\'s drafts come in only when saved after yesterday\'s digest, and never fill today\'s slot', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', GOOD);
-    const file = path.join(vault, '50_Drafts', 'Steam', '2026-11-05-ai-steam.md');
-    const mtime = fs.statSync(file).mtimeMs;
+    const savedAt = '2026-11-05T09:00:00.000Z';
+    const ms = Date.parse(savedAt);
+    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', [...GOOD, `saved_at: ${savedAt}`]);
     const late = (lateAfterMs: number) =>
       executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs });
-    const listed = late(mtime - 1000);
+    const listed = late(ms - 1000);
     expect(listed.items).toHaveLength(1);
     expect(listed.items[0].late).toBe(true);
     expect(listed.missing).toContain('AI×STEAM');
-    expect(late(mtime + 1000).items).toEqual([]);
+    expect(late(ms + 1000).items).toEqual([]);
+  });
+
+  it('a draft without saved_at is never late, whatever its mtime', () => {
+    const vault = makeVault();
+    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', GOOD);
+    const result = executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs: 0 });
+    expect(result.items).toEqual([]);
   });
 
   it('a drafts folder outside the vault is refused', () => {
@@ -833,6 +897,16 @@ describe('renderDraftDigest', () => {
     const text = render([item(), item({ folder: 'Dev', path: '50_Drafts/Dev/x', title: '別', review: 'unresolved' })]);
     expect(text.indexOf('開発記: 別【査読未解決】')).toBeLessThan(text.indexOf('AI×STEAM: 良い記事'));
     expect(text.indexOf('[[50_Drafts/Dev/x|別]]')).toBeLessThan(text.indexOf('|良い記事]]'));
+  });
+
+  it('says why a review is unresolved, in the summary and the list', () => {
+    const text = render([item({ review: 'unresolved', reviewNote: '査読か修正で本文が切れた' })]);
+    expect(text).toContain('良い記事【査読未解決: 査読か修正で本文が切れた】');
+    expect(text).toContain('【要確認: 査読未解決（査読か修正で本文が切れた）】');
+  });
+
+  it('a note on a draft the owner has since passed is not shown', () => {
+    expect(render([item({ review: 'pass', reviewNote: '古い理由' })])).not.toContain('古い理由');
   });
 
   it('a draft with no material marker needs a look, a review that passed or not', () => {

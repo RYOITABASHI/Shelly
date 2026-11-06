@@ -280,6 +280,16 @@ describe('editing a longform draft', () => {
     expect(patched?.patchedDraft.action ?? { type: 'draft' }).toEqual({ type: 'draft' });
   });
 
+  it.each(['全部Codexで', '2番目をCodexで', 'use codex for all steps', '全部Claude Codeで'])('%s cannot pin a CLI', (reply) => {
+    expect(applyDraftPatch(parseAgentNL(UTTERANCE), reply)).toBeNull();
+    const steps = parseAgentNL(UTTERANCE).orchestrationSteps as AgentOrchestrationStep[];
+    expect(steps.some((s) => s.tool?.type === 'cli')).toBe(false);
+  });
+
+  it('a change of cloud engine still applies', () => {
+    expect(applyDraftPatch(parseAgentNL(UTTERANCE), '2番目をGroqで')).not.toBeNull();
+  });
+
   it('cannot turn it autonomous', () => {
     const patched = applyDraftPatch(parseAgentNL(UTTERANCE), '承認なしで実行して');
     expect(patched?.patchedDraft.autonomous ?? false).toBe(false);

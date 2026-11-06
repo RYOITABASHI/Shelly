@@ -656,6 +656,8 @@ export function tryPatchStepTools(
 ): StepToolPatch | { notice: StepProviderNotice } | null {
   const req = parseStepProviderRequest(text);
   if (!req) return null;
+  // An article pipeline has no CLI step (the executor refuses one too).
+  if (draft.longform && req.provider.type === 'cli') return { changedFields: [] };
   const steps = draft.orchestrationSteps ?? [];
   if (steps.length >= 2) {
     const resolved = resolveStepRef(steps, req.ref);

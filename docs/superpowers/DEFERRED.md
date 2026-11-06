@@ -75,9 +75,10 @@
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
-設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v30。下はテストでは確かめられず、実機でしか分からないこと。
+設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v31。下はテストでは確かめられず、実機でしか分からないこと。
 - **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
-- **遅れた下書き**: ダイジェストは前日の下書きのうち、前日のダイジェストより新しいものを【前日分】として載せる（mtime の比較、新しい状態ファイルなし）。Obsidian の同期や `/sdcard` の FUSE で mtime が変わる場合は、前日分が重複して出る。
+- **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
+- **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても 5 本とも下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
 - **実際の出力**: 記事の長さと finish reason（Gemini `MAX_TOKENS`、Cerebras `length`）。途中で切れるなら Inc 6（章分割プリセット）に進む。
 - **無料枠**: 5 本×毎日で Gemini / Cerebras の上限に当たらないか。CAP-001 の 10 分の壁に 8 ステップのチェーンが当たらないか（broker の予算は run ごとにリセットだが、1 run が 10 分を超える可能性がある）。
 - **`/sdcard` の直接読み取り**: `queue-pop` と `list-drafts` は broker を通さず executor の node から読む。`/sdcard/Documents/ObsidianVault` を読めること、realpath（`/storage/emulated/0/…`）が vault の内側と判定されることを確認。読めない場合はダイジェストがエラーになる設計（全ストリーム「未作成」とは出さない）。
@@ -90,6 +91,12 @@
 
 ### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
 `REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。
+
+### 記事パイプラインの vault パスがプリセットに直書き — 未対応 (P2)
+`lib/agent-pipeline-presets.ts` の `ARTICLE_VAULT_DRAFTS` は `/sdcard/Documents/ObsidianVault/50_Drafts` 固定で、`OBSIDIAN_VAULT_PATH` を別の場所にしている端末では broker が保存を拒否し、キューとダイジェストは設定側の vault を見るので食い違う。直すなら、エージェント作成時に設定の vault から出力先を組み立てる。
+
+### `sanitizeDigestText` がゼロ幅文字を残す — 未対応 (P3)
+U+200B〜U+200D と U+2060 は消さないので、タイトルに入っていても見えないまま wikilink の別名や intent リンクの文面に残る。絵文字の結合に使う U+200D を壊さずに扱う必要がある。正規表現にこの範囲の文字を足す修正は、エスケープの扱いに注意してスクリプトで行う。
 
 ### ダイジェストのタイトルに `<` `>` が残る — 未対応 (P3)
 `sanitizeDigestText` は改行・`]]`・`|` などを消すが `<` `>` は残す。Obsidian のノートでは HTML として解釈されうる。本人が読むノートで、タイトルはモデルの出力。実害が出たら文字を落とす。

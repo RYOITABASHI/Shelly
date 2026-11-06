@@ -42,7 +42,7 @@ const RESEARCH = '1. 論文A（査読前）: 数値は42%でした。 https://ex
 const SOURCE_URL = 'https://example.org/paper-a';
 const MARKER = '【本人の材料: 未記入】';
 
-type Reply = string | { content: string; finish_reason?: string; citations?: string[] };
+type Reply = string | { content: string; finish_reason?: string; citations?: string[]; status?: number };
 
 function articleChain() {
   return normalizeSteps(buildArticlePipeline('ai-steam').orchestration).map((step) => {
@@ -134,8 +134,9 @@ describe('shelly-plan-executor.js longform chain', () => {
       req.on('end', () => {
         prompts.push(JSON.parse(body).messages[0].content);
         const reply = replies[prompts.length - 1] ?? `RESULT#${prompts.length}`;
-        const r = typeof reply === 'string' ? { content: reply } : reply;
+        const r: Exclude<Reply, string> = typeof reply === 'string' ? { content: reply } : reply;
         res.setHeader('Content-Type', 'application/json');
+        if (r.status) res.statusCode = r.status;
         res.end(JSON.stringify({
           choices: [{ message: { content: r.content }, finish_reason: r.finish_reason ?? 'stop' }],
           ...(r.citations ? { citations: r.citations } : {}),
@@ -259,13 +260,74 @@ describe('shelly-plan-executor.js longform chain', () => {
     expect(readResult(home)).toContain('review: unresolved');
   }, 20000);
 
-  it('a cut revise step also leaves the review unresolved, whatever the next review says', async () => {
+  it('a revise step that would see a cut draft is skipped, so the full draft is kept', async () => {
     const home = makeHome();
-    const article = `# 長い記事\n\n${'あ'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 500)}`;
-    replies = [research, article, 'VERDICT: REVISE\n1. 直す', '# 短い記事\n\n短い。', 'VERDICT: PASS'];
+    const article = `# 長い記事\n\n${'あ'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 500)}最後の段落`;
+    replies = [research, article, 'VERDICT: REVISE\n1. 直す', '# 短い記事\n\n短い。'];
     await runExecutor(writePlan(home, port, articleChain()), home);
-    expect(prompts).toHaveLength(5);
+
+    expect(prompts).toHaveLength(3);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'success']);
+    const result = readResult(home);
+    expect(result).toContain('最後の段落');
+    expect(result).not.toContain('短い記事');
+    expect(result).toContain('review: unresolved');
+    expect(result).toContain(executor.ARTICLE_PROMPT_CUT_NOTE);
+  }, 20000);
+
+  const failed: Reply = { content: 'upstream down', status: 500 };
+
+  it('a failed review keeps the draft: skipped, not an error, and unresolved', async () => {
+    const home = makeHome();
+    const article = '# 記事\n\n本文です [1]。';
+    replies = [research, article, failed];
+    expect(await runExecutor(writePlan(home, port, articleChain()), home)).toBe(0);
+
+    expect(prompts).toHaveLength(3);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
+    const result = readResult(home);
+    expect(result).toContain(article);
+    expect(result).toContain('review: unresolved');
+    expect(result).toContain(`review_note: "${executor.ARTICLE_REVIEW_FAILED_NOTE}"`);
+  }, 20000);
+
+  it('a failed revise keeps the draft before it, and the second review does not run', async () => {
+    const home = makeHome();
+    const article = '# 初稿\n\n本文です [1]。';
+    replies = [research, article, 'VERDICT: REVISE\n1. 直す', failed, 'never reached'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts).toHaveLength(4);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'success']);
+    expect(readResult(home)).toContain(article);
     expect(readResult(home)).toContain('review: unresolved');
+  }, 20000);
+
+  it('a failed second review keeps the revised draft', async () => {
+    const home = makeHome();
+    replies = [research, '# 初稿\n\n一。', 'VERDICT: REVISE\n1. 直す', '# 改稿\n\n二。', failed];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts).toHaveLength(5);
+    const result = readResult(home);
+    expect(result).toContain('# 改稿');
+    expect(result).not.toContain('# 初稿');
+    expect(result).toContain('review: unresolved');
+  }, 20000);
+
+  it('REGRESSION: a failed write step still fails the run', async () => {
+    const home = makeHome();
+    replies = [research, failed];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+    expect(prompts).toHaveLength(2);
+    expect(readRunLog(home).status).not.toBe('success');
+    expect(readResult(home)).not.toContain('title:');
   }, 20000);
 
   it('research over the limit is cut once, and the writer and the reviewer get the same notes', async () => {
@@ -295,6 +357,8 @@ describe('shelly-plan-executor.js longform chain', () => {
     ['a social-post action', (plan) => { plan.action = { type: 'social-post', socialPost: { connectorId: 'x' } }; }],
     ['two actions', (plan) => { plan.actions = [{ type: 'draft' }, { type: 'webhook', webhookUrl: 'http://127.0.0.1:1/x' }]; }],
     ['an autonomous agent', (plan) => { plan.agent.autonomous = true; }],
+    ['an api-call step', (plan) => { plan.steps.list[0].apiCall = { host: 'api.groq.com', method: 'GET', path: '/x' }; }],
+    ['a CLI step', (plan) => { plan.steps.list[1].tool = { type: 'cli', cli: 'codex' }; }],
   ])('%s on a longform plan is refused before any model call', async (_name, change) => {
     const home = makeHome();
     replies = [research];
@@ -590,10 +654,47 @@ describe('assembleArticle', () => {
     expect(assemble(['r', '# 記事\n\n私が測りました。', 'VERDICT: PASS'])).not.toContain('material: ok');
   });
 
-  it('a cut prompt pins the review to unresolved over a PASS', () => {
-    const cut = executor.assembleArticle(local, { steps, results: ['r', '# 記事', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', promptCut: true });
+  const assembleWith = (over: object, results: string[] = ['r', '# 記事', 'VERDICT: PASS'], skipped: boolean[] = []) =>
+    executor.assembleArticle(local, { steps, results, skipped, sources: [], today: '2026-11-06', fallbackTitle: 'F', ...over });
+
+  it('a review note pins the review to unresolved over a PASS, and says why', () => {
+    const cut = assembleWith({ reviewNotes: ['切れた', '動かなかった'] });
     expect(cut.split('\n')).toContain('review: unresolved');
+    expect(cut.split('\n')).toContain('review_note: "切れた、動かなかった"');
     expect(assemble(['r', '# 記事', 'VERDICT: PASS'])).not.toContain('review_note');
+  });
+
+  it('writes when it was saved', () => {
+    expect(assembleWith({ savedAt: '2026-11-06T06:01:02.000Z' }).split('\n')).toContain('saved_at: 2026-11-06T06:01:02.000Z');
+    expect(/^saved_at: \S+$/m.test(assemble(['r', '# 記事']))).toBe(true);
+  });
+
+  it.each<[string, Array<string | undefined>]>([
+    ['Gemini writer, Cerebras reviewer', [undefined, 'gemini-api', 'cerebras']],
+    ['Groq writer, Gemini reviewer', [undefined, 'groq', 'gemini-api']],
+    ['the local LLM, which no longform ladder reaches', [undefined, 'local', 'local']],
+  ])('%s stands', (_name, usedEngines) => {
+    expect(assembleWith({ usedEngines }).split('\n')).toContain('review: pass');
+  });
+
+  it.each<[string, Array<string | undefined>]>([
+    ['Groq writer, Cerebras reviewer', [undefined, 'groq', 'cerebras']],
+    ['Cerebras writer, Groq reviewer', [undefined, 'cerebras', 'groq']],
+    ['one engine on both sides', [undefined, 'gemini-api', 'gemini-api']],
+  ])('%s pins unresolved and still saves', (_name, usedEngines) => {
+    const out = assembleWith({ usedEngines });
+    expect(out.split('\n')).toContain('review: unresolved');
+    expect(out).toContain(executor.ARTICLE_SAME_ENGINE_NOTE);
+    expect(out).toContain('# 記事');
+  });
+
+  it('compares the writer of the final version with the last reviewer that ran', () => {
+    const results = ['r', '# 一', 'VERDICT: REVISE', '# 二', 'VERDICT: PASS'];
+    const skipped = [false, false, false, false, false, true];
+    const usedEngines = [undefined, 'gemini-api', 'gemini-api', 'groq', 'cerebras'];
+    expect(assembleWith({ usedEngines }, results, skipped).split('\n')).toContain('review: unresolved');
+    const fine = [undefined, 'groq', 'groq', 'gemini-api', 'cerebras'];
+    expect(assembleWith({ usedEngines: fine }, results, skipped).split('\n')).toContain('review: pass');
   });
 
   it('strips only a real Sources heading, its entries and blank lines', () => {
