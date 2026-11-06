@@ -15,22 +15,28 @@ import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec'
 // `list-drafts`, `queue-pop` and the quiet stream notification, against the
 // real executor and broker offline, plus the helpers.
 //
-// Most runs end in `notify`, not `draft`: the broker's fs.write is a known
-// Windows-host failure. The saved-draft paths are covered at the function level
-// and by the POSIX-only runs at the end, which CI executes.
+// The runs end in `draft`, the only action a longform plan may have. The
+// broker's fs.write is a known Windows-host failure, so on Windows they use
+// __tests__/fixtures/fs-write-broker.js for that one operation. CI runs the real
+// broker. A test that needs the write to fail uses the fixture on every host.
 
 const root = path.resolve(__dirname, '..');
 const scriptCopy = path.join(root, 'scripts', 'shelly-plan-executor.js');
-const broker = path.join(root, 'scripts', 'shelly-capability-broker.js');
+const fixtureBroker = path.join(root, '__tests__', 'fixtures', 'fs-write-broker.js');
+const broker = process.platform === 'win32' ? fixtureBroker : path.join(root, 'scripts', 'shelly-capability-broker.js');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const executor = require(scriptCopy);
 
 const AGENT_ID = 'agent-digest-queue';
 const SOURCE_URL = 'https://example.org/doc';
-const itPosix = process.platform === 'win32' ? it.skip : it;
 
 function localToday(): string {
   return executor.localDateTimeStamps(new Date()).date;
+}
+
+function localYesterday(): string {
+  const now = new Date();
+  return executor.localDateTimeStamps(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)).date;
 }
 
 function tmpDir(prefix: string): string {
@@ -58,7 +64,7 @@ function writeDraft(vault: string, folder: string, name: string, frontmatter: st
 
 const GOOD = ['title: "良い記事"', 'stream: "ai-steam"', 'date: 2026-11-06', 'review: pass', 'material: ok', 'lint: []'];
 
-function writePlan(home: string, port: number, vault: string, outputDir: string, list: unknown[], actionType = 'notify'): string {
+function writePlan(home: string, port: number, vault: string, outputDir: string, list: unknown[]): string {
   const plan = {
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
@@ -66,7 +72,7 @@ function writePlan(home: string, port: number, vault: string, outputDir: string,
     agent: { id: AGENT_ID, name: 'Fallback', autonomous: false, autonomyLevel: 'L2' },
     prompt: 'Base task',
     tool: { type: 'local', label: 'Local LLM', model: 'fixture' },
-    action: { type: actionType },
+    action: { type: 'draft' },
     paths: { home },
     output: { outputDir, outputNameTemplate: '{date}-x.md', slug: 'x', useGlobalOutput: false, suggestedRoots: [] },
     limits: { timeoutSeconds: 30, maxConcurrent: 2 },
@@ -83,10 +89,10 @@ function writePlan(home: string, port: number, vault: string, outputDir: string,
   return planFile;
 }
 
-function runExecutor(planFile: string, home: string): Promise<number | null> {
+function runExecutor(planFile: string, home: string, brokerPath = broker, env: Record<string, string> = {}): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker], {
-      env: { ...process.env, HOME: home },
+    const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', brokerPath], {
+      env: { ...process.env, HOME: home, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.on('close', (status) => resolve(status));
@@ -230,15 +236,76 @@ describe('the executor with a queue or a digest', () => {
     expect(readResult(home)).toContain('title: "記事"');
   }, 20000);
 
-  it('the queue stays unticked when no draft was saved', async () => {
+  it('the queue stays unticked when the draft could not be saved, and the error notifies', async () => {
     const home = makeHome();
     const vault = makeVault();
     const text = '- [ ] Knox の話\n';
     const dir = queueIn(vault, text);
     replies = [research, '# 記事\n\n本文 [1]。', 'VERDICT: PASS'];
-    await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
+    await runExecutor(writePlan(home, port, vault, dir, devChain()), home, fixtureBroker, { SHELLY_TEST_FAIL_FS_WRITE: '1' });
+    expect(readRunLog(home).status).toBe('error');
     expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe(text);
     expect(auditEvents(home)).not.toContain('queue_ticked');
+    expect(JSON.parse(fs.readFileSync(notificationFile(home), 'utf8')).status).toBe('error');
+  }, 20000);
+
+  it('a stream with today\'s draft is skipped before queue-pop and any model call, quietly', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    const text = '- [x] 朝の話\n- [ ] 次の話\n';
+    const dir = queueIn(vault, text);
+    const saved = `${localToday()}-x.md`;
+    writeDraft(vault, 'Dev', saved, GOOD);
+    const before = fs.readFileSync(path.join(dir, saved), 'utf8');
+    expect(await runExecutor(writePlan(home, port, vault, dir, devChain()), home)).toBe(0);
+
+    expect(prompts).toHaveLength(0);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toBe(executor.LONGFORM_DRAFT_EXISTS_MESSAGE);
+    expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe(text);
+    expect(fs.readFileSync(path.join(dir, saved), 'utf8')).toBe(before);
+    expect(fs.existsSync(notificationFile(home))).toBe(false);
+    expect(auditEvents(home)).toContain('draft_exists');
+
+    // The draft it kept still counts for the digest.
+    const home2 = makeHome();
+    await runExecutor(writePlan(home2, port, vault, path.join(vault, '50_Drafts', 'Digest'), digestChain()), home2);
+    expect(readResult(home2)).toContain('開発記（Zenn）: 良い記事');
+  }, 30000);
+
+  it('the digest may run twice the same day and rebuilds its file', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    writeDraft(vault, 'Steam', `${localToday()}-ai-steam.md`, GOOD);
+    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'Digest', `${localToday()}-x.md`, GOOD);
+    await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
+    expect(readRunLog(home).status).toBe('success');
+    expect(fs.readFileSync(path.join(dir, `${localToday()}-x.md`), 'utf8').startsWith('記事下書き')).toBe(true);
+  }, 20000);
+
+  it('a draft saved after yesterday\'s digest is listed today, marked, and does not count as today\'s', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, GOOD);
+    const dir = path.join(vault, '50_Drafts', 'Digest');
+    await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
+    const result = readResult(home);
+    expect(result).toContain('0 本（査読未解決 0、要確認 0）、未作成 5 本、前日分 1 本');
+    expect(result).toContain('良い記事【前日分】');
+  }, 20000);
+
+  it('a draft yesterday\'s digest already had is not listed again', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, GOOD);
+    writeDraft(vault, 'Digest', `${localYesterday()}-x.md`, GOOD);
+    const old = new Date(Date.now() - 3 * 3600_000);
+    fs.utimesSync(path.join(vault, '50_Drafts', 'Steam', `${localYesterday()}-ai-steam.md`), old, old);
+    const dir = path.join(vault, '50_Drafts', 'Digest');
+    await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
+    expect(readResult(home)).not.toContain('良い記事');
   }, 20000);
 
   it('a failed chain leaves the item open for the next run', async () => {
@@ -247,7 +314,7 @@ describe('the executor with a queue or a digest', () => {
     const text = '- [ ] Knox の話\n';
     const dir = queueIn(vault, text);
     replies = ['出典のないメモ'];
-    await runExecutor(writePlan(home, port, vault, dir, devChain(), 'draft'), home);
+    await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
     expect(readRunLog(home).status).toBe('error');
     expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe(text);
   }, 20000);
@@ -338,13 +405,14 @@ describe('the executor with a queue or a digest', () => {
     expect(prompts).toHaveLength(0);
     expect(readRunLog(home).status).toBe('success');
     const result = readResult(home);
-    expect(result.startsWith(`記事下書き ${today}: 2 本（要確認 1）、未作成 3 本`)).toBe(true);
+    expect(result.startsWith(`記事下書き ${today}: 2 本（査読未解決 1、要確認 0）、未作成 3 本`)).toBe(true);
     expect(result).toContain('[[50_Drafts/Steam/');
     expect(result).not.toMatch(/^---\ntitle/);
     const note = JSON.parse(fs.readFileSync(notificationFile(home), 'utf8'));
     expect(note.status).toBe('success');
     expect(note.preview).toContain('良い記事');
-    expect(note.preview).toContain('開発の話【要確認】');
+    expect(note.preview).toContain('開発の話【査読未解決】');
+    expect(note.preview.indexOf('開発の話')).toBeLessThan(note.preview.indexOf('良い記事'));
   }, 20000);
 
   it('a title that reads like a refusal does not cost the whole digest', async () => {
@@ -363,7 +431,7 @@ describe('the executor with a queue or a digest', () => {
     const dir = path.join(vault, '50_Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readRunLog(home).status).toBe('success');
-    expect(readResult(home)).toContain('0 本（要確認 0）、未作成 5 本');
+    expect(readResult(home)).toContain('0 本（査読未解決 0、要確認 0）、未作成 5 本');
   }, 20000);
 
   it('REGRESSION: a chain without longform still refuses a local step', async () => {
@@ -378,12 +446,12 @@ describe('the executor with a queue or a digest', () => {
     expect(readRunLog(home).steps[0].status).toBe('error');
   }, 20000);
 
-  itPosix('POSIX: a saved draft ticks only its own item and stays quiet', async () => {
+  it('a saved draft ticks only its own item and stays quiet', async () => {
     const home = makeHome();
     const vault = makeVault();
     const dir = queueIn(vault, '- [ ] Knox の話\n  要点: shebang\n- [ ] 次の話\n');
     replies = [research, '# 記事\n\n本文 [1]。', 'VERDICT: PASS'];
-    await runExecutor(writePlan(home, port, vault, dir, devChain(), 'draft'), home);
+    await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
 
     expect(readRunLog(home).status).toBe('success');
     expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe('- [x] Knox の話\n  要点: shebang\n- [ ] 次の話\n');
@@ -392,13 +460,13 @@ describe('the executor with a queue or a digest', () => {
     expect(auditEvents(home)).toContain('queue_ticked');
   }, 20000);
 
-  itPosix('POSIX: the digest saves into its own folder and does notify', async () => {
+  it('the digest saves into its own folder and does notify', async () => {
     const home = makeHome();
     const vault = makeVault();
     writeDraft(vault, 'Steam', `${localToday()}-ai-steam.md`, GOOD);
     const dir = path.join(vault, '50_Drafts', 'Digest');
     fs.mkdirSync(dir);
-    await runExecutor(writePlan(home, port, vault, dir, digestChain(), 'draft'), home);
+    await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
 
     expect(readRunLog(home).status).toBe('success');
     expect(fs.readFileSync(path.join(dir, `${localToday()}-x.md`), 'utf8')).toContain('良い記事');
@@ -572,6 +640,7 @@ describe('parseDraftFrontmatter', () => {
   it('reads what assemble writes', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "題"\nstream: "x"\nreview: pass\nmaterial: missing\nlint: ["世界初"]\n---\n\n本文');
     expect(fm).toEqual({ title: '題', review: 'pass', material: 'missing', lint: ['世界初'] });
+    expect(executor.parseDraftFrontmatter('---\nmaterial: unknown\n---\n').material).toBe('unknown');
   });
 
   it('a title edited by hand, without quotes, still reads', () => {
@@ -685,6 +754,20 @@ describe('scanDraftFolders', () => {
     expect(Math.max(...reads)).toBeLessThanOrEqual(executor.DIGEST_HEAD_BYTES);
   });
 
+  it('yesterday\'s drafts come in only when newer than yesterday\'s digest, and never fill today\'s slot', () => {
+    const vault = makeVault();
+    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', GOOD);
+    const file = path.join(vault, '50_Drafts', 'Steam', '2026-11-05-ai-steam.md');
+    const mtime = fs.statSync(file).mtimeMs;
+    const late = (lateAfterMs: number) =>
+      executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs });
+    const listed = late(mtime - 1000);
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0].late).toBe(true);
+    expect(listed.missing).toContain('AI×STEAM');
+    expect(late(mtime + 1000).items).toEqual([]);
+  });
+
   it('a drafts folder outside the vault is refused', () => {
     const vault = makeVault();
     const other = makeVault();
@@ -739,11 +822,33 @@ describe('renderDraftDigest', () => {
       item({ folder: 'Vintage', title: 'い'.repeat(160), material: 'missing' }),
     ];
     const preview = render(items, ['開発EN', '古着EN']).replace(/\s+/g, ' ').slice(0, 500);
-    expect(preview.startsWith('記事下書き 2026-11-06: 3 本（要確認 2）、未作成 2 本')).toBe(true);
+    expect(preview.startsWith('記事下書き 2026-11-06: 3 本（査読未解決 1、要確認 1）、未作成 2 本')).toBe(true);
     expect(preview).toContain('AI×STEAM: 良い記事');
-    expect(preview).toContain(`開発記: ${'あ'.repeat(60)}【要確認】`);
-    expect(preview).toContain('古着: い');
+    expect(preview).toContain(`開発記: ${'あ'.repeat(60)}【査読未解決】`);
+    expect(preview).toContain(`古着: ${'い'.repeat(60)}【要確認】`);
     expect(preview).toContain('未作成: 開発EN、古着EN');
+  });
+
+  it('leads with unresolved reviews, in the summary and the list', () => {
+    const text = render([item(), item({ folder: 'Dev', path: '50_Drafts/Dev/x', title: '別', review: 'unresolved' })]);
+    expect(text.indexOf('開発記: 別【査読未解決】')).toBeLessThan(text.indexOf('AI×STEAM: 良い記事'));
+    expect(text.indexOf('[[50_Drafts/Dev/x|別]]')).toBeLessThan(text.indexOf('|良い記事]]'));
+  });
+
+  it('a draft with no material marker needs a look, a review that passed or not', () => {
+    const text = render([item({ material: 'unknown' })]);
+    expect(text).toContain('AI×STEAM: 良い記事【要確認】');
+    expect(text).toContain('【要確認: 本人の材料を確認】');
+    expect(text).toContain('（査読未解決 0、要確認 1）');
+  });
+
+  it('a late draft is marked, and today\'s draft of the stream takes the intent link', () => {
+    const text = render([item({ path: 'a', title: '今日' }), item({ path: 'b', title: '昨日', late: true })]);
+    expect(text).toContain('1 本（査読未解決 0、要確認 0）、未作成 0 本、前日分 1 本');
+    expect(text).toContain('[[b|昨日]]【前日分】');
+    const links = text.match(/https:\/\/x\.com\/intent\/post\?text=\S+/g);
+    expect(links).toHaveLength(1);
+    expect(decodeURIComponent(links[0].split('text=')[1])).toBe('今日');
   });
 
   it('links each draft, and marks what needs a look with the reason', () => {

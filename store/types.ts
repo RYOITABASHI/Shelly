@@ -1411,7 +1411,16 @@ export interface AgentOrchestrationStep {
   local?: AgentLocalStepConfig;
 }
 
-export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig;
+export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentInvalidLocalStepConfig;
+
+/**
+ * A longform step whose local config failed validation. It stays a local step
+ * so the executor refuses it: dropping `local` would turn the step into a model
+ * step and send its display label to a cloud engine.
+ */
+export interface AgentInvalidLocalStepConfig {
+  kind: 'invalid';
+}
 
 /**
  * `assemble`: builds the finished draft from earlier step results, adding

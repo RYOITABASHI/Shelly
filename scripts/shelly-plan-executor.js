@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=29
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=30
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -118,8 +118,8 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // results with their newlines, skips briefing post-processing, fails a step
 // whose model stopped on its output limit and keeps the local LLM off the
 // ladder; a `local` step (`assemble`) builds the draft without a model call;
-// a draft already inside the vault gets no Obsidian mirror copy. Other plans
-// run exactly as before. Bumped so a stale v27 copy, which would send the
+// a longform draft already inside the vault gets no Obsidian mirror copy. Other
+// plans run exactly as before. Bumped so a stale v27 copy, which would send the
 // assemble label to a model, is refreshed.
 // v29 (2026-11-06, article pipeline Inc 2-3): two more non-model local steps.
 // `list-drafts` reads today's drafts from the vault into the digest, `queue-pop`
@@ -127,7 +127,13 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // draft saved; an empty queue ends the run skipped. A stream's successful draft
 // no longer notifies (the digest does). Other plans run exactly as before.
 // Bumped so a stale v28 copy, which refuses these steps, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 29;
+// v30 (2026-11-06, article pipeline review): a longform plan is refused before
+// any model call unless it is one draft action on a non-autonomous agent; a
+// stream whose draft for today exists is skipped; a cut review or revise prompt
+// pins `review: unresolved`; a missing material marker reads `unknown`. Other
+// plans run exactly as before. Bumped so a stale v29 copy, which would run a
+// patched longform action, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 30;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -847,8 +853,14 @@ const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
 const STEP_PROMPT_MAX_CHARS = 6000;
 const STEP_PROMPT_MAX_RESULT_CARRY_CHARS = 1500;
 const LONGFORM_PROMPT_MAX_CHARS = 24000;
-const LONGFORM_RESULT_CARRY_MAX_CHARS = 12000;
-const LONGFORM_TRUNCATED_MESSAGE = 'The model stopped at its output limit, so this step failed instead of carrying a cut-off text.';
+const LONGFORM_RESULT_CARRY_MAX_CHARS = 16000;
+// Research notes are cut here, once, so writer and reviewer see the same notes
+// and the notes leave room for the draft in a review prompt. The instruction
+// asks for 6000; this is the hard limit.
+const LONGFORM_RESEARCH_MAX_CHARS = 7000;
+const LONGFORM_TRUNCATED_MESSAGE = 'The model stopped before finishing (output limit or a safety stop), so this step failed instead of carrying a cut-off text.';
+const LONGFORM_DRAFT_ONLY_MESSAGE = 'An article pipeline only saves one draft. This agent has another action or is autonomous, so it was not run.';
+const LONGFORM_DRAFT_EXISTS_MESSAGE = 'Today\'s draft already exists, so this run was skipped.';
 const STEP_PREVIEW_MAX_CHARS = 500;
 // Mirrors lib/agent-orchestration.ts's MAX_STEP_INSTRUCTION_CHARS (module-local
 // there too — not exported, so this is its own numerically-in-sync copy, same
@@ -2159,6 +2171,13 @@ function roleLabel(role) {
 }
 
 function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles, candidateFiles, longform) {
+  return composeStepPrompt(basePrompt, instruction, priorResults, evidence, roles, candidateFiles, longform).prompt;
+}
+
+// { prompt, truncated }: `truncated` is true when a carried result or the
+// head + carried prefix was cut to fit (v30, a review that saw part of a draft
+// must not count as a pass).
+function composeStepPrompt(basePrompt, instruction, priorResults, evidence, roles, candidateFiles, longform) {
   // Article pipeline (v28): plan.steps.longform gets the bigger budgets and
   // each carried result keeps its newlines. Absent = byte-identical to before.
   const promptBudget = longform ? LONGFORM_PROMPT_MAX_CHARS : STEP_PROMPT_MAX_CHARS;
@@ -2168,13 +2187,16 @@ function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles,
   const evidenceBlock = evidence ? renderStepEvidence(evidence).slice(0, MAX_EVIDENCE_CHARS) : '';
   const roleMode = !!roles && (!!roles.role || (roles.priorRoles || []).some(Boolean));
   const roleBlock = roleMode && roles.role ? `${composeRoleInstructions(roles.role)}\n\n` : '';
-  const dataNote = roleMode && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
+  // Article pipeline (v30): web research and a draft are data for a longform
+  // step too, roles or not.
+  const dataNote = (roleMode || longform) && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
   const headBudget = Math.max(0, promptBudget - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
+  const carriedTexts = priorResults.map((r) => (longform ? String(r) : String(r).replace(/\s+/g, ' ')).trim());
   const carriedItems = priorResults
     .map(
       (r, i) =>
-        `## ${roles && roles.priorHeadings && roles.priorHeadings[i] !== undefined ? roles.priorHeadings[i] : `Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}`}\n${(longform ? String(r) : String(r).replace(/\s+/g, ' ')).trim().slice(0, carryBudget)}`,
+        `## ${roles && roles.priorHeadings && roles.priorHeadings[i] !== undefined ? roles.priorHeadings[i] : `Step ${i + 1}${roleMode ? roleLabel(roles.priorRoles ? roles.priorRoles[i] : undefined) : ''}`}\n${carriedTexts[i].slice(0, carryBudget)}`,
     )
     .join('\n\n');
   const carried = priorResults.length
@@ -2182,7 +2204,11 @@ function buildStepPrompt(basePrompt, instruction, priorResults, evidence, roles,
       ? `# Results from previous steps\n${carriedItems}\n\n`
       : `# Results from previous steps\n${carriedItems}\n\n---\n\n`
     : '';
-  return `${`${head}${carried}`.slice(0, headBudget)}${dataNote}${evidenceBlock}${candidateBlock}${roleBlock}${tail}`;
+  const prefix = `${head}${carried}`;
+  return {
+    prompt: `${prefix.slice(0, headBudget)}${dataNote}${evidenceBlock}${candidateBlock}${roleBlock}${tail}`,
+    truncated: prefix.length > headBudget || carriedTexts.some((t) => t.length > carryBudget),
+  };
 }
 
 // ── Article pipeline: non-model local steps (v28) ───────────────────────────
@@ -2292,12 +2318,41 @@ function articleLint(local, body) {
   return hits;
 }
 
+// A model-written Sources block is replaced by the chain's own, but only a real
+// heading starts one, and only its blank lines and entries go. Body text after
+// the entries stays, and a plain line reading "参考" is not a heading. Separate
+// from stripSourcesSection, which the sourced-briefing path shares with
+// lib/agent-sources.ts.
+const ARTICLE_SOURCES_HEADING_RE = /^ {0,3}#{1,6}[ \t]+(?:\*\*)?(?:sources?|references?|citations?|参考(?:文献|資料|リンク)?|出典|引用元)(?:\*\*)?[ \t]*[:：]?[ \t]*$/i;
+const ARTICLE_SOURCE_ENTRY_RE = /^\s*(?:[-*+]\s|\d{1,3}[.)]\s|\[\d{1,3}\]|https?:\/\/)/;
+
+function stripArticleSources(text) {
+  const out = [];
+  let skipping = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (ARTICLE_SOURCES_HEADING_RE.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (!line.trim() || ARTICLE_SOURCE_ENTRY_RE.test(line)) continue;
+      skipping = false;
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/\s+$/, '');
+}
+
 /**
  * Build the finished draft. `ctx`: { steps, results, skipped (index-aligned
  * with the steps), sources (the chain's), today, fallbackTitle }. Throws a
  * PlanFailure when a part has no result, so nothing half-built is dispatched.
  *  - review: `pass` only when the last review that ran answered VERDICT: PASS;
- *  - material: `missing` when the body still holds 【本人の材料: 未記入】;
+ *  - material: `missing` when the body still holds 【本人の材料: 未記入】,
+ *    `unknown` when it does not: an unattended chain has no owner material, so
+ *    a gone marker means it was dropped. Only the owner writes `ok`, by hand;
+ *  - ctx.promptCut (a review or revise step saw a cut text) pins review to
+ *    `unresolved`, whatever the verdict was;
  *  - lint: the flagged terms (nothing is rewritten); `lintSources` also checks
  *    the chain's source titles and URLs.
  * `plain` keeps the parts as they are, with the footer and nothing else: the
@@ -2313,7 +2368,7 @@ function assembleArticle(local, ctx) {
       if (!ctx.skipped[k] && typeof ctx.results[k] === 'string') text = ctx.results[k];
     }
     if (text === undefined) throw new PlanFailure(`assemble: no result for steps ${list.map((k) => k + 1).join(', ')}`, { handled: true });
-    parts.push(local.plain ? text.trim() : stripSourcesSection(stripReasoning(text)).trim());
+    parts.push(local.plain ? text.trim() : stripArticleSources(stripReasoning(text)).trim());
   }
   const body = parts.filter(Boolean).join('\n\n');
   if (!body) throw new PlanFailure('assemble: the article is empty', { handled: true });
@@ -2326,6 +2381,7 @@ function assembleArticle(local, ctx) {
     if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
     break;
   }
+  if (ctx.promptCut) review = 'unresolved';
   const heading = /^ {0,3}#\s+(.+?)\s*$/m.exec(body);
   const title = String(heading ? heading[1] : ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
   const lintText = local.lintSources ? [body].concat(ctx.sources.map((s) => `${s.title || ''} ${s.url}`)).join('\n') : body;
@@ -2335,7 +2391,8 @@ function assembleArticle(local, ctx) {
     `stream: ${JSON.stringify(local.stream)}`,
     `date: ${ctx.today}`,
     `review: ${review}`,
-    `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'ok'}`,
+    ...(ctx.promptCut ? ['review_note: "the review or the revision saw a cut text"'] : []),
+    `material: ${ARTICLE_MATERIAL_MISSING_RE.test(body) ? 'missing' : 'unknown'}`,
     `lint: ${JSON.stringify(articleLint(local, lintText))}`,
     '---',
   ].join('\n');
@@ -2529,7 +2586,7 @@ function parseDraftFrontmatter(head) {
     } else if (m[1] === 'review') {
       out.review = value === 'pass' || value === 'unresolved' ? value : '';
     } else if (m[1] === 'material') {
-      out.material = value === 'ok' || value === 'missing' ? value : '';
+      out.material = value === 'ok' || value === 'missing' || value === 'unknown' ? value : '';
     } else {
       const parsed = parseJsonValue(value);
       out.lint = Array.isArray(parsed)
@@ -2554,6 +2611,7 @@ function readDraftItem(realVault, dir, folder, name, f) {
       review: fm.review,
       material: fm.material,
       lint: fm.lint,
+      mtimeMs: st.mtimeMs,
     };
   } catch (_) {
     return null;
@@ -2562,11 +2620,14 @@ function readDraftItem(realVault, dir, folder, name, f) {
 
 /**
  * Today's drafts under `draftsDir`, inside the vault. ctx: { vault, draftsDir,
- * skipFolder, today, fsImpl }. Physical paths only, symlinked folders and files
- * skipped, folder and file counts and read size capped. Configured streams come
- * first, so the caps cannot push them out. A folder that does not exist yet
- * means no drafts; a vault that cannot be read fails the step, so that a storage
- * problem is not reported as every stream having no draft.
+ * skipFolder, today, yesterday, lateAfterMs, fsImpl }. Physical paths only,
+ * symlinked folders and files skipped, folder and file counts and read size
+ * capped. Configured streams come first, so the caps cannot push them out. A
+ * folder that does not exist yet means no drafts; a vault that cannot be read
+ * fails the step, so that a storage problem is not reported as every stream
+ * having no draft. With `yesterday`, that day's drafts newer than lateAfterMs
+ * (yesterday's digest) are listed too, marked `late`: they were saved after the
+ * digest ran. A late draft does not count as today's for `missing`.
  */
 function scanDraftFolders(local, ctx) {
   const f = ctx.fsImpl || fs;
@@ -2593,32 +2654,44 @@ function scanDraftFolders(local, ctx) {
   let truncated = folders.length > DIGEST_MAX_FOLDERS;
   for (const folder of folders.slice(0, DIGEST_MAX_FOLDERS)) {
     const dir = path.join(realDrafts, folder);
-    let files;
+    let inFolder;
     try {
       const st = f.lstatSync(dir);
       if (st.isSymbolicLink() || !st.isDirectory() || f.realpathSync(dir) !== dir) continue;
-      files = f.readdirSync(dir).filter((n) => n.startsWith(`${ctx.today}-`) && DIGEST_FILE_RE.test(n)).sort();
+      inFolder = f.readdirSync(dir);
     } catch (_) {
       continue;
     }
+    const dated = (day) => inFolder.filter((n) => n.startsWith(`${day}-`) && DIGEST_FILE_RE.test(n)).sort();
+    const files = dated(ctx.today);
     if (files.length > DIGEST_MAX_FILES_PER_FOLDER) truncated = true;
-    for (const name of files.slice(0, DIGEST_MAX_FILES_PER_FOLDER)) {
+    const wanted = files.slice(0, DIGEST_MAX_FILES_PER_FOLDER).map((name) => ({ name, late: false }));
+    if (ctx.yesterday) {
+      for (const name of dated(ctx.yesterday).slice(0, DIGEST_MAX_FILES_PER_FOLDER)) wanted.push({ name, late: true });
+    }
+    for (const { name, late } of wanted) {
       if (items.length >= DIGEST_MAX_FILES) {
         truncated = true;
         break;
       }
       const item = readDraftItem(realVault, dir, folder, name, f);
-      if (item) items.push(item);
+      if (!item) continue;
+      if (late) {
+        if (item.mtimeMs <= (ctx.lateAfterMs || 0)) continue;
+        item.late = true;
+      }
+      items.push(item);
     }
   }
-  const found = new Set(items.map((item) => item.folder));
+  const found = new Set(items.filter((item) => !item.late).map((item) => item.folder));
   return { items, missing: local.streams.filter((s) => !found.has(s.folder)).map((s) => s.label), truncated };
 }
 
 function digestFlags(item) {
   const flags = [];
   if (item.review !== 'pass') flags.push('査読未解決');
-  if (item.material !== 'ok') flags.push('本人の材料なし');
+  if (item.material === 'missing') flags.push('本人の材料なし');
+  else if (item.material !== 'ok') flags.push('本人の材料を確認');
   if (item.lint.length) flags.push(`lint: ${item.lint.join(', ')}`);
   return flags;
 }
@@ -2629,33 +2702,43 @@ function xIntentLink(title) {
 
 /**
  * The digest text. Counts and titles come first because the draft notification
- * carries only the first 500 characters. An intent link is decided by the
- * stream's folder in the plan, never by anything in the draft, and each stream
- * gets at most one. Labels here are Japanese: the owner reads this note, and
- * this file has no i18n.
+ * carries only the first 500 characters. Unresolved reviews lead and get their
+ * own mark, since nearly every draft carries 【要確認】 for the owner's material.
+ * An intent link is decided by the stream's folder in the plan, never by
+ * anything in the draft, and each stream gets at most one, today's draft first.
+ * Labels here are Japanese: the owner reads this note, and this file has no i18n.
  */
 function renderDraftDigest(local, scan, today) {
   const labelOf = (folder) => {
     const stream = local.streams.find((s) => s.folder === folder);
     return sanitizeDigestText(stream ? stream.label : folder, LOCAL_STEP_LABEL_MAX_CHARS);
   };
-  const flagged = scan.items.filter((item) => digestFlags(item).length > 0).length;
+  const unresolved = (item) => item.review !== 'pass';
+  const ordered = scan.items.filter(unresolved).concat(scan.items.filter((item) => !unresolved(item)));
+  const lateCount = scan.items.filter((item) => item.late).length;
+  const unresolvedCount = scan.items.filter(unresolved).length;
+  const checkCount = scan.items.filter((item) => !unresolved(item) && digestFlags(item).length > 0).length;
   const missing = scan.missing.map((label) => sanitizeDigestText(label, LOCAL_STEP_LABEL_MAX_CHARS));
-  const lines = [`記事下書き ${today}: ${scan.items.length} 本（要確認 ${flagged}）、未作成 ${missing.length} 本`];
-  for (const item of scan.items) {
+  const lines = [
+    `記事下書き ${today}: ${scan.items.length - lateCount} 本（査読未解決 ${unresolvedCount}、要確認 ${checkCount}）、未作成 ${missing.length} 本${lateCount ? `、前日分 ${lateCount} 本` : ''}`,
+  ];
+  for (const item of ordered) {
     const short = Array.from(item.title).slice(0, DIGEST_SUMMARY_TITLE_MAX_CHARS).join('');
-    lines.push(`- ${labelOf(item.folder)}: ${short}${digestFlags(item).length ? '【要確認】' : ''}`);
+    const mark = unresolved(item) ? '【査読未解決】' : digestFlags(item).length ? '【要確認】' : '';
+    lines.push(`- ${labelOf(item.folder)}: ${short}${item.late ? '【前日分】' : ''}${mark}`);
   }
   if (missing.length) lines.push(`未作成: ${missing.join('、')}`);
   if (scan.items.length) {
     lines.push('', '## 下書き', '');
-    const linked = new Set();
-    for (const item of scan.items) {
-      const flags = digestFlags(item);
-      lines.push(`- [[${item.path}|${item.title}]]${flags.length ? `【要確認: ${flags.join('、')}】` : ''}`);
+    const linkTarget = new Map();
+    for (const item of scan.items.filter((i) => !i.late).concat(scan.items.filter((i) => i.late))) {
       const stream = local.streams.find((s) => s.folder === item.folder);
-      if (stream && stream.intent === true && !linked.has(item.folder)) {
-        linked.add(item.folder);
+      if (stream && stream.intent === true && !linkTarget.has(item.folder)) linkTarget.set(item.folder, item);
+    }
+    for (const item of ordered) {
+      const flags = digestFlags(item);
+      lines.push(`- [[${item.path}|${item.title}]]${item.late ? '【前日分】' : ''}${flags.length ? `【要確認: ${flags.join('、')}】` : ''}`);
+      if (linkTarget.get(item.folder) === item) {
         lines.push(`  - X に投稿（公開後に記事の URL を足す）: ${xIntentLink(item.title)}`);
       }
     }
@@ -2674,6 +2757,57 @@ function isDigestPlan(plan) {
 // Errors and skips use their own writeNotification calls and are not affected.
 function quietDraftNotification(plan, actionType) {
   return actionType === 'draft' && !!plan.steps && plan.steps.longform === true && !isDigestPlan(plan);
+}
+
+// "Never publishes" is enforced here, not only by the preset: a confirm reply
+// or a later edit could otherwise change the action and leave longform on.
+// '' when the plan may run.
+function longformPlanRefusal(plan) {
+  if (!plan.action || plan.action.type !== 'draft') return LONGFORM_DRAFT_ONLY_MESSAGE;
+  if (Array.isArray(plan.actions) && plan.actions.length >= 2) return LONGFORM_DRAFT_ONLY_MESSAGE;
+  if (plan.agent && plan.agent.autonomous === true) return LONGFORM_DRAFT_ONLY_MESSAGE;
+  return '';
+}
+
+// The draft file name holds only the date, so a second run the same day would
+// overwrite the first draft and leave its queue item ticked.
+function draftAlreadySaved(paths, plan, config) {
+  try {
+    fs.lstatSync(resolveDraftDestination(paths, plan, config).dest);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// One cut, at a line end when that keeps most of the notes.
+function capLongformResearch(text) {
+  const s = String(text == null ? '' : text);
+  if (s.length <= LONGFORM_RESEARCH_MAX_CHARS) return s;
+  const head = s.slice(0, LONGFORM_RESEARCH_MAX_CHARS);
+  const lineEnd = head.lastIndexOf('\n');
+  return lineEnd >= LONGFORM_RESEARCH_MAX_CHARS * 0.8 ? head.slice(0, lineEnd) : head;
+}
+
+// The engines of the other side of the review loop. A rung of step i's ladder
+// on one of these would have the reviewer revise its own findings or review
+// text it wrote.
+function longformOtherRoleTools(list, i) {
+  const isReview = (s) => !!s && !!s.handoff && s.handoff.kind === 'review';
+  const reviewing = isReview(list[i]);
+  const out = [];
+  for (const s of list) {
+    if (s && s.tool && s.local === undefined && isReview(s) !== reviewing) out.push(s.tool.type);
+  }
+  return out;
+}
+
+function draftMtimeMs(file) {
+  try {
+    return fs.lstatSync(file).mtimeMs;
+  } catch (_) {
+    return 0;
+  }
 }
 
 // ── Agent roles Inc B: bounded hand-offs (v26) ──────────────────────────────
@@ -4184,8 +4318,9 @@ async function buildSocialPostRequest(paths, opts, plan, platform, host, text, s
   throw new PlanFailure(`Unsupported social platform: ${platform}`, { handled: true });
 }
 
-// Article pipeline (v28): true when the provider says it stopped on its output
-// limit. A longform step fails on this instead of carrying a cut-off text.
+// Article pipeline (v28): true when the provider says it did not finish the
+// text. A longform step fails on this instead of carrying a cut-off text. For
+// Gemini that is any finishReason other than STOP (MAX_TOKENS, SAFETY, ...).
 function modelResponseTruncated(toolType, raw) {
   let parsed;
   try {
@@ -4196,11 +4331,14 @@ function modelResponseTruncated(toolType, raw) {
   if (!parsed || typeof parsed !== 'object') return false;
   if (toolType === 'gemini-api') {
     const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-    return candidates.some((candidate) => String((candidate && candidate.finishReason) || '').toUpperCase() === 'MAX_TOKENS');
+    return candidates.some((candidate) => {
+      const reason = String((candidate && candidate.finishReason) || '').toUpperCase();
+      return reason !== '' && reason !== 'STOP';
+    });
   }
   const choice = Array.isArray(parsed.choices) ? parsed.choices[0] : null;
   const reason = String((choice && choice.finish_reason) || '').toLowerCase();
-  return reason === 'length' || reason === 'max_tokens';
+  return reason === 'length' || reason === 'max_tokens' || reason === 'content_filter';
 }
 
 function extractModelContent(toolType, raw) {
@@ -4930,12 +5068,15 @@ function resolveObsidianMirror(plan, config, rel) {
   } catch (_) {
     return null;
   }
-  // v28: a draft saved inside the vault is already where Obsidian sees it; a
-  // mirror would only add a duplicate under 90_Log/Agent_Output.
+  // v28: a longform draft saved inside the vault is already where Obsidian sees
+  // it. Longform only: another agent's copy under 90_Log/Agent_Output is a
+  // context source for the .sh path.
   const outputDir = String((plan.output && plan.output.outputDir) || '');
-  const resolvedVault = path.resolve(vault);
-  const resolvedOutputDir = path.resolve(outputDir);
-  if (resolvedOutputDir === resolvedVault || resolvedOutputDir.startsWith(resolvedVault + path.sep)) return null;
+  if (plan.steps && plan.steps.longform === true) {
+    const resolvedVault = path.resolve(vault);
+    const resolvedOutputDir = path.resolve(outputDir);
+    if (resolvedOutputDir === resolvedVault || resolvedOutputDir.startsWith(resolvedVault + path.sep)) return null;
+  }
   return path.join(vault, obsidianTargetFor(outputDir), rel);
 }
 
@@ -6317,12 +6458,16 @@ function overrideToolKey(tool) {
 // Article pipeline (v28): on a longform plan the local LLM is off the ladder
 // (its 1024/2048-token cap cannot finish an article), and a research step does
 // not climb at all: the rungs that remain have no web access, and a made-up
-// URL in their answer would be absorbed as a source.
+// URL in their answer would be absorbed as a source. A fallback also keeps the
+// writer and the reviewer apart (v30): the other side's engines (the step's
+// plan.longformOtherTools) are off the ladder, so a step with no rung left fails
+// rather than having one engine check its own text.
 function stepToolCandidates(plan) {
   const ladder = Array.isArray(plan.toolLadder) ? plan.toolLadder : [];
   if (!(plan.steps && plan.steps.longform === true)) return [plan.tool].concat(ladder);
   if (plan.sourcing && plan.sourcing.mode === 'research') return [plan.tool];
-  return [plan.tool].concat(ladder.filter((tool) => !tool || tool.type !== 'local'));
+  const other = Array.isArray(plan.longformOtherTools) ? plan.longformOtherTools : [];
+  return [plan.tool].concat(ladder.filter((tool) => !tool || (tool.type !== 'local' && other.indexOf(tool.type) === -1)));
 }
 
 async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
@@ -6969,6 +7114,21 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // branch still sees only the pre-group snapshot (contextResults below).
   const parallelPlan = planParallelGroups(plan.steps.list);
   runCliUsage = null;
+  // Article pipeline (v30): both checks come before queue-pop and any model
+  // call. The digest may run again the same day: its file is rebuilt from what
+  // is on disk, and it must still run when the streams were skipped.
+  if (plan.steps.longform === true) {
+    const refusal = longformPlanRefusal(plan);
+    if (refusal) {
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'longform_refused', agentId: plan.agent.id, actionType: plan.action.type });
+      writeNotification(paths, plan, 'error', refusal);
+      return { status: 'error', preview: refusal, errorMessage: refusal, steps: [] };
+    }
+    if (!isDigestPlan(plan) && draftAlreadySaved(paths, plan, config)) {
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'draft_exists', agentId: plan.agent.id });
+      return { status: 'skipped', preview: LONGFORM_DRAFT_EXISTS_MESSAGE, errorMessage: LONGFORM_DRAFT_EXISTS_MESSAGE, steps: [] };
+    }
+  }
   // v19: a CLI step on a run that cannot start it skips the WHOLE run before
   // any step runs (no paid call is made for a chain that cannot finish), as
   // 'skipped' rather than 'error' — see CliStepNeedsAttended.
@@ -7070,6 +7230,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   function absorbOutcome(outcome) {
     if (outcome.research && !outcome.failed) {
       outcome.result = absorbResearchStep(evidence, fullResultText(outcome.research.text), outcome.research.parsed);
+      if (longform) outcome.result = capLongformResearch(outcome.result);
       researchStepsDone += 1;
       appendJsonl(paths.planAuditFile, {
         ts: new Date().toISOString(),
@@ -7113,6 +7274,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // draft saved; and the message of a chain that stopped on an empty queue.
   let queuePopped = null;
   let chainStopMessage = '';
+  // v30: the review and revise steps whose prompt had to cut a carried text.
+  const promptCutSteps = new Set();
 
   // Provider overrides (v16) — see readProviderOverrides' comment above.
   const overrideRunId = activeProgress ? activeProgress.runId : undefined;
@@ -7268,11 +7431,15 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
     if (local.kind === 'list-drafts') {
       const digestDir = path.resolve(outputDir);
+      const now = new Date();
+      const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
       const scan = scanDraftFolders(local, {
         vault: obsidianVaultRoot(config),
         draftsDir: path.dirname(digestDir),
         skipFolder: path.basename(digestDir),
         today: sourcingToday,
+        yesterday: localIsoDate(yesterday),
+        lateAfterMs: draftMtimeMs(resolveDraftDestination(paths, plan, config, yesterday).dest),
       });
       return { text: renderDraftDigest(local, scan, sourcingToday) };
     }
@@ -7284,6 +7451,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         sources: evidence.sources,
         today: sourcingToday,
         fallbackTitle: plan.agent.name,
+        promptCut: promptCutSteps.size > 0,
       }),
     };
   }
@@ -7359,9 +7527,16 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
     // Agent roles (v25): undefined for a role-less chain (prompt unchanged).
     // The isolated branch labels only the results it actually carries.
-    const stepPrompt = isolation && typeof isolation.base === 'string'
-      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform)
-      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform);
+    const composedPrompt = isolation && typeof isolation.base === 'string'
+      ? composeStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform)
+      : composeStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform);
+    const stepPrompt = composedPrompt.prompt;
+    // Article pipeline (v30): a verdict on, or a rewrite of, a cut text is not
+    // a verdict on the article. assemble pins the review to unresolved.
+    if (longform && composedPrompt.truncated && step.handoff !== undefined && !promptCutSteps.has(i)) {
+      promptCutSteps.add(i);
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'longform_prompt_cut', agentId: plan.agent.id, stepIndex: i });
+    }
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
@@ -7369,6 +7544,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const cliStep = !override && isCliStep(step) && !(!isFinal && step.apiCall);
     const stepTool = override ? override.tool : effectiveStepTool(step);
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
+    if (longform) stepPlan.longformOtherTools = longformOtherRoleTools(plan.steps.list, i);
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
     const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
@@ -8806,6 +8982,14 @@ module.exports = {
   normalizeStepLocal,
   assembleArticle,
   // Article pipeline (v29) — exported for host unit tests only.
+  LONGFORM_RESEARCH_MAX_CHARS,
+  LONGFORM_DRAFT_ONLY_MESSAGE,
+  LONGFORM_DRAFT_EXISTS_MESSAGE,
+  composeStepPrompt,
+  capLongformResearch,
+  longformPlanRefusal,
+  longformOtherRoleTools,
+  stripArticleSources,
   QUEUE_EMPTY_MESSAGE,
   QUEUE_TICK_FAILED_MESSAGE,
   QUEUE_MAX_BYTES,

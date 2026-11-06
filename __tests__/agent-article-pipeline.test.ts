@@ -12,7 +12,7 @@ import { draftToConfirmedAgentDraft, isAutoRegisterEligibleDraft, shouldUseChatC
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { nextMissingSlot } from '@/lib/agent-slot-fill';
 import { resolveConfirmedToolAndRunOn } from '@/lib/agent-tool-router';
-import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
+import { agentToParsedAgentDraft, applyDraftPatch } from '@/lib/agent-draft-patch';
 import type { Agent, AgentOrchestrationStep } from '@/store/types';
 
 // Article pipeline Inc 1: the AI×STEAM preset, the NL trigger, the plain-text
@@ -274,9 +274,19 @@ describe('the plan', () => {
   });
 });
 
-describe('the .sh Obsidian mirror guard', () => {
-  it('skips the mirror for an output folder inside the vault', () => {
-    const src = fs.readFileSync(path.join(root, 'lib', 'agent-executor.ts'), 'utf8');
-    expect(src).toContain('! case "$OUTPUT_DIR/" in "\\${OBSIDIAN_VAULT_PATH%/}"/*) true ;; *) false ;; esac; then');
+describe('editing a longform draft', () => {
+  it.each(['通知して', 'https://example.com/hook にPOSTして', 'bashで実行して'])('%s cannot change its action', (reply) => {
+    const patched = applyDraftPatch(parseAgentNL(UTTERANCE), reply);
+    expect(patched?.patchedDraft.action ?? { type: 'draft' }).toEqual({ type: 'draft' });
+  });
+
+  it('cannot turn it autonomous', () => {
+    const patched = applyDraftPatch(parseAgentNL(UTTERANCE), '承認なしで実行して');
+    expect(patched?.patchedDraft.autonomous ?? false).toBe(false);
+  });
+
+  it('REGRESSION: an ordinary draft can still change its action', () => {
+    const draft = parseAgentNL('毎朝ニュースをまとめて保存して');
+    expect(applyDraftPatch(draft, '通知して')?.patchedDraft.action.type).toBe('notify');
   });
 });

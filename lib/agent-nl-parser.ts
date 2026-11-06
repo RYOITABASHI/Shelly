@@ -2424,6 +2424,8 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
  *  from the words 英語 / English, or from a medium that is only used in English. */
 function detectArticleStream(text: string): ArticleStream | 'digest' | null {
   if (!/記事|下書き|\barticles?\b|\bdrafts?\b/i.test(text)) return null;
+  // "STEAMの記事を集めるパイプライン" asks for the collection preset.
+  if (/集め|収集|\bcollect|\bgather/i.test(text)) return null;
   if (/ダイジェスト|\bdigest\b/i.test(text)) return 'digest';
   if (/steam/i.test(text)) return 'ai-steam';
   const english = /英語|\benglish\b/i.test(text);

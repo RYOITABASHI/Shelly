@@ -375,6 +375,9 @@ const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
  * are trusted unconditionally.
  */
 function tryPatchAction(draft: ParsedAgentDraft, text: string): ParsedAgentDraft['action'] | null {
+  // An article pipeline only ever saves a draft (the executor refuses anything
+  // else too).
+  if (draft.longform) return null;
   const detected = detectAction(text);
   const isExplicitHit = detected.type !== 'draft' || EXPLICIT_DRAFT_KEYWORD_RE.test(text);
   if (!isExplicitHit) return null;
@@ -397,6 +400,7 @@ function tryPatchAction(draft: ParsedAgentDraft, text: string): ParsedAgentDraft
  */
 function tryPatchAutonomous(draft: ParsedAgentDraft, text: string): boolean | null {
   if (draft.autonomous === true) return null; // already on — nothing to change
+  if (draft.longform) return null; // an article pipeline stays non-autonomous
   return detectAutonomousIntent(text) === true ? true : null;
 }
 

@@ -56,7 +56,7 @@ export const MAX_RESULT_CARRY_CHARS = 1500;
 // reach the next step whole, with their paragraphs. Mirrored (parity-tested)
 // into scripts/shelly-plan-executor.js.
 export const MAX_LONGFORM_PROMPT_CHARS = 24000;
-export const MAX_LONGFORM_RESULT_CARRY_CHARS = 12000;
+export const MAX_LONGFORM_RESULT_CARRY_CHARS = 16000;
 const MAX_PREVIEW_CHARS = 500;
 // Fan-out subtasks (2026-08-13): hard cap on branches per parallel group.
 // Chosen well below HARD_MAX_STEPS and mindful of the same Android
@@ -492,7 +492,15 @@ export function resolveApiCallTemplate(template: string | undefined, lastResult:
 /** Return the ordered, bounded, non-empty steps for an agent (normalized). */
 export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): NormalizedStep[] {
   if (!cfg?.steps) return [];
-  const all = cfg.steps.map(normalizeStep);
+  // Article pipeline: on a longform chain a local step that fails validation
+  // stays local, so the executor refuses it. Dropping `local` would make it a
+  // model step and send its display label to a cloud engine.
+  const longform = cfg.longform === true;
+  const invalidLocal = (s: NormalizedStep): NormalizedStep => ({ instruction: s.instruction, local: { kind: 'invalid' } });
+  const all = cfg.steps.map((raw) => {
+    const s = normalizeStep(raw);
+    return longform && typeof raw !== 'string' && raw.local !== undefined && !s.local ? invalidLocal(s) : s;
+  });
   const kept = all.filter((s) => s.instruction.length > 0).slice(0, HARD_MAX_STEPS);
   // Agent roles Inc B: a hand-off's `of` indexes are only meaningful when no
   // step was dropped before it and each points before the step itself;
@@ -503,6 +511,7 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
     if (s.local) {
       const parts = s.local.kind === 'assemble' ? s.local.parts : [];
       if (!shifted && parts.every((list) => list.every((k) => k < i))) return s;
+      if (longform) return invalidLocal(s);
       const { local: _dropLocal, ...restLocal } = s;
       void _dropLocal;
       return restLocal;
@@ -716,7 +725,9 @@ export function buildStepPrompt(
   // headed with the producing role's name. No role anywhere = byte-identical.
   const roleMode = !!roles && (!!roles.role || (roles.priorRoles ?? []).some(Boolean));
   const roleBlock = roleMode && roles?.role ? `${composeRoleInstructions(roles.role)}\n\n` : '';
-  const dataNote = roleMode && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
+  // Article pipeline: web research and a draft are data for a longform step
+  // too, roles or not.
+  const dataNote = (roleMode || longform) && priorResults.length ? `${ROLE_RESULTS_DATA_NOTE}\n\n---\n\n` : '';
   const headBudget = Math.max(0, promptBudget - tail.length - evidenceBlock.length - roleBlock.length - dataNote.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carriedItems = priorResults

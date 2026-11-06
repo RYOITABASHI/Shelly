@@ -316,6 +316,13 @@ describe('NL triggers', () => {
     expect(parseAgentNL('開発記のパイプラインのエラーを直して').orchestrationSteps).toBeUndefined();
   });
 
+  it('REGRESSION: asking to collect articles is the collection preset, not a stream', () => {
+    const d = parseAgentNL('STEAMの記事を集めるパイプライン');
+    expect(d.longform).toBeUndefined();
+    expect(d.autonomous).toBe(true);
+    expect(d.orchestrationSteps).toHaveLength(4);
+  });
+
   it('asked to post, a stream stays a draft and says so', () => {
     const d = parseAgentNL('古着の記事パイプラインを作ってXに投稿して');
     expect(d.action).toEqual({ type: 'draft' });

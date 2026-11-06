@@ -472,9 +472,7 @@ object AgentRuntime {
     // that deletes the request no longer empties the hash. JS-only.
     // v77 (2026-11-01, MONITOR CLI tokens): Codex driver calls also pass
     // --usage-file and the run log records it. JS-only.
-    // v78 (2026-11-06, article pipeline Inc 1): no Obsidian mirror copy when the
-    // output directory is already inside the vault. JS-only.
-    private const val CURRENT_SCRIPT_VERSION = 78
+    private const val CURRENT_SCRIPT_VERSION = 77
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -542,7 +540,9 @@ object AgentRuntime {
     // `assemble` step; no Obsidian mirror for a draft already in the vault. JS-only.
     // v29 (article pipeline Inc 2-3): `list-drafts` and `queue-pop` local steps,
     // and a stream's saved draft no longer writes a success notification. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 29
+    // v30 (article pipeline review): a longform plan must be one draft action on
+    // a non-autonomous agent, and a stream with today's draft is skipped. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 30
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

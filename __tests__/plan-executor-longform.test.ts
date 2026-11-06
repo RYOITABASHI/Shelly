@@ -12,6 +12,7 @@ import {
   MAX_LONGFORM_PROMPT_CHARS,
   MAX_LONGFORM_RESULT_CARRY_CHARS,
   normalizeStepLocal as tsNormalizeStepLocal,
+  ROLE_RESULTS_DATA_NOTE,
   normalizeSteps,
 } from '@/lib/agent-orchestration';
 import { buildArticlePipeline } from '@/lib/agent-pipeline-presets';
@@ -23,14 +24,16 @@ import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec'
 //
 // The end-to-end runs use the real preset chain with its engine pins removed,
 // so every step reaches the loopback fixture (the broker refuses any other
-// test host). They end in `notify`, not `draft`: the broker's fs.write path is
-// a known Windows-host failure (see __tests__/plan-executor-saved-path.test.ts),
-// so the assembled text is read from the result file `draft` would save, and
-// the vault destination is covered at the function level below.
+// test host). They end in `draft`, the only action a longform plan may have.
+// The broker's fs.write is a known Windows-host failure (see
+// __tests__/plan-executor-saved-path.test.ts), so on Windows the runs use
+// __tests__/fixtures/fs-write-broker.js, which stands in for that one operation.
 
 const root = path.resolve(__dirname, '..');
 const scriptCopy = path.join(root, 'scripts', 'shelly-plan-executor.js');
-const broker = path.join(root, 'scripts', 'shelly-capability-broker.js');
+const broker = process.platform === 'win32'
+  ? path.join(root, '__tests__', 'fixtures', 'fs-write-broker.js')
+  : path.join(root, 'scripts', 'shelly-capability-broker.js');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const executor = require(scriptCopy);
 
@@ -65,7 +68,7 @@ function writePlan(home: string, port: number, list: unknown[], longform = true)
     agent: { id: AGENT_ID, name: 'Fallback title', autonomous: false, autonomyLevel: 'L2' },
     prompt: 'Base task',
     tool: { type: 'local', label: 'Local LLM', model: 'fixture' },
-    action: { type: 'notify' },
+    action: { type: longform ? 'draft' : 'notify' },
     paths: { home },
     output: {
       outputDir: path.join(home, 'agent-output'),
@@ -85,6 +88,13 @@ function writePlan(home: string, port: number, list: unknown[], longform = true)
     path.join(home, '.shelly/agents/.env'),
     `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
   );
+  return planFile;
+}
+
+function patchPlan(planFile: string, change: (plan: any) => void): string {
+  const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+  change(plan);
+  fs.writeFileSync(planFile, JSON.stringify(plan));
   return planFile;
 }
 
@@ -220,7 +230,96 @@ describe('shelly-plan-executor.js longform chain', () => {
     const result = readResult(home);
     expect(result).toContain('review: unresolved');
     expect(result).toContain('# 三稿');
-    expect(result).toContain('material: ok');
+    expect(result).toContain('material: unknown');
+  }, 20000);
+
+  it('a draft cut by the carry budget is unresolved, even on a PASS', async () => {
+    const home = makeHome();
+    const article = `# 長い記事\n\n${'あ'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 500)}最後の段落`;
+    replies = [research, article, 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts[2]).not.toContain('最後の段落');
+    expect(readRunLog(home).status).toBe('success');
+    const result = readResult(home);
+    expect(result).toContain('review: unresolved');
+    expect(result).toContain('review_note:');
+    expect(result).not.toContain('review: pass');
+  }, 20000);
+
+  it('a draft cut by the prompt budget is unresolved too, though each text fits its carry', async () => {
+    const home = makeHome();
+    const longNotes = { content: `${RESEARCH}\n${'い'.repeat(7500)}`, citations: [SOURCE_URL] };
+    const article = `# 長い記事\n\n${'あ'.repeat(15900)}最後の段落`;
+    expect(article.length).toBeLessThan(MAX_LONGFORM_RESULT_CARRY_CHARS);
+    replies = [longNotes, article, 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts[2]).not.toContain('最後の段落');
+    expect(readResult(home)).toContain('review: unresolved');
+  }, 20000);
+
+  it('a cut revise step also leaves the review unresolved, whatever the next review says', async () => {
+    const home = makeHome();
+    const article = `# 長い記事\n\n${'あ'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 500)}`;
+    replies = [research, article, 'VERDICT: REVISE\n1. 直す', '# 短い記事\n\n短い。', 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+    expect(prompts).toHaveLength(5);
+    expect(readResult(home)).toContain('review: unresolved');
+  }, 20000);
+
+  it('research over the limit is cut once, and the writer and the reviewer get the same notes', async () => {
+    const home = makeHome();
+    const longNotes = { content: `${RESEARCH}\n${'メモの行です。\n'.repeat(3000)}末尾のメモ`, citations: [SOURCE_URL] };
+    replies = [longNotes, '# 記事\n\n本文です [1]。', 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+
+    expect(prompts[1]).toContain('42%');
+    expect(prompts[1]).not.toContain('末尾のメモ');
+    expect(prompts[2]).not.toContain('末尾のメモ');
+    // The notes are capped, so they cost the review nothing: the verdict stands.
+    expect(readResult(home)).toContain('review: pass');
+  }, 20000);
+
+  it('the reviewer is told the carried text is data', async () => {
+    const home = makeHome();
+    replies = [research, '# 記事\n\n本文。', 'VERDICT: PASS'];
+    await runExecutor(writePlan(home, port, articleChain()), home);
+    expect(prompts[2]).toContain(ROLE_RESULTS_DATA_NOTE);
+    expect(prompts[2].indexOf(ROLE_RESULTS_DATA_NOTE)).toBeGreaterThan(prompts[2].indexOf('# 記事'));
+  }, 20000);
+
+  it.each<[string, (plan: any) => void]>([
+    ['a webhook action', (plan) => { plan.action = { type: 'webhook', webhookUrl: 'http://127.0.0.1:1/x' }; }],
+    ['a notify action', (plan) => { plan.action = { type: 'notify' }; }],
+    ['a social-post action', (plan) => { plan.action = { type: 'social-post', socialPost: { connectorId: 'x' } }; }],
+    ['two actions', (plan) => { plan.actions = [{ type: 'draft' }, { type: 'webhook', webhookUrl: 'http://127.0.0.1:1/x' }]; }],
+    ['an autonomous agent', (plan) => { plan.agent.autonomous = true; }],
+  ])('%s on a longform plan is refused before any model call', async (_name, change) => {
+    const home = makeHome();
+    replies = [research];
+    const planFile = patchPlan(writePlan(home, port, articleChain()), change);
+    expect(await runExecutor(planFile, home)).toBe(0);
+
+    expect(prompts).toHaveLength(0);
+    const log = readRunLog(home);
+    expect(log.status).toBe('error');
+    expect(log.outputPreview).toBe(executor.LONGFORM_DRAFT_ONLY_MESSAGE);
+    const note = path.join(home, `.shelly/agents/logs/${AGENT_ID}/native-result-notification.json`);
+    expect(JSON.parse(fs.readFileSync(note, 'utf8')).status).toBe('error');
+  }, 20000);
+
+  it('a step marked invalid fails without its label reaching a model', async () => {
+    const home = makeHome();
+    replies = ['本文です。'];
+    const list = normalizeSteps({
+      longform: true,
+      steps: [{ instruction: 'write it' }, { instruction: 'SECRET LABEL', local: { kind: 'shell' } as never }],
+    });
+    await runExecutor(writePlan(home, port, list), home);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).not.toContain('SECRET LABEL');
+    expect(readRunLog(home).steps[1].status).toBe('error');
   }, 20000);
 
   it('a 5,000-character article reaches the draft and the next step intact', async () => {
@@ -306,7 +405,8 @@ describe('longform constants and buildStepPrompt parity', () => {
     expect(executor.LONGFORM_PROMPT_MAX_CHARS).toBe(MAX_LONGFORM_PROMPT_CHARS);
     expect(executor.LONGFORM_RESULT_CARRY_MAX_CHARS).toBe(MAX_LONGFORM_RESULT_CARRY_CHARS);
     expect(MAX_LONGFORM_PROMPT_CHARS).toBe(24000);
-    expect(MAX_LONGFORM_RESULT_CARRY_CHARS).toBe(12000);
+    expect(MAX_LONGFORM_RESULT_CARRY_CHARS).toBe(16000);
+    expect(executor.LONGFORM_RESEARCH_MAX_CHARS).toBeLessThan(MAX_LONGFORM_PROMPT_CHARS - MAX_LONGFORM_RESULT_CARRY_CHARS);
   });
 
   it('builds the same longform prompt in TS and JS, newlines kept', () => {
@@ -324,13 +424,42 @@ describe('longform constants and buildStepPrompt parity', () => {
       .toBe(tsBuildStepPrompt('Base', '書く', results, evidence, undefined, undefined, true));
   });
 
-  it('caps each result at 12,000 characters and the prompt at 24,000, keeping the instruction', () => {
+  it('adds the data note to a longform prompt in both, and to no other prompt', () => {
+    const results = ['調査メモ'];
+    const longformPrompt = tsBuildStepPrompt('Base', '査読', results, undefined, undefined, undefined, true);
+    expect(longformPrompt).toContain(ROLE_RESULTS_DATA_NOTE);
+    expect(executor.buildStepPrompt('Base', '査読', results, undefined, undefined, undefined, true)).toBe(longformPrompt);
+    expect(tsBuildStepPrompt('Base', '査読', results)).not.toContain(ROLE_RESULTS_DATA_NOTE);
+    expect(tsBuildStepPrompt('Base', '最初の手順', [], undefined, undefined, undefined, true)).not.toContain(ROLE_RESULTS_DATA_NOTE);
+  });
+
+  it('composeStepPrompt reports a cut carry and a cut prefix, and nothing else', () => {
+    const compose = (results: string[], base = 'Base') => executor.composeStepPrompt(base, '査読', results, undefined, undefined, undefined, true);
+    const fits = compose(['a'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS)]);
+    expect(fits.truncated).toBe(false);
+    expect(compose(['a'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 1)]).truncated).toBe(true);
+    expect(compose(['a'.repeat(12000), 'b'.repeat(12000)]).truncated).toBe(true);
+    expect(compose(['short'], 'x'.repeat(MAX_LONGFORM_PROMPT_CHARS)).truncated).toBe(true);
+    expect(fits.prompt).toBe(executor.buildStepPrompt('Base', '査読', ['a'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS)], undefined, undefined, undefined, true));
+  });
+
+  it('capLongformResearch leaves short notes and cuts long ones at a line end', () => {
+    const limit = executor.LONGFORM_RESEARCH_MAX_CHARS;
+    expect(executor.capLongformResearch('短い')).toBe('短い');
+    const lines = `${'行\n'.repeat(limit)}`;
+    const capped = executor.capLongformResearch(lines);
+    expect(capped.length).toBeLessThanOrEqual(limit);
+    expect(capped.endsWith('行')).toBe(true);
+    expect(executor.capLongformResearch('a'.repeat(limit * 2))).toHaveLength(limit);
+  });
+
+  it('caps each result at the carry budget and the prompt at 24,000, keeping the instruction', () => {
     const results = ['a'.repeat(20000), 'b'.repeat(20000), 'c'.repeat(20000)];
     const ts = tsBuildStepPrompt('x'.repeat(100), '最後の指示', results, undefined, undefined, undefined, true);
     expect(executor.buildStepPrompt('x'.repeat(100), '最後の指示', results, undefined, undefined, undefined, true)).toBe(ts);
     expect(ts.length).toBeLessThanOrEqual(24000);
-    expect(ts).toContain('a'.repeat(12000));
-    expect(ts).not.toContain('a'.repeat(12001));
+    expect(ts).toContain('a'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS));
+    expect(ts).not.toContain('a'.repeat(MAX_LONGFORM_RESULT_CARRY_CHARS + 1));
     expect(ts.endsWith('# This step\n最後の指示')).toBe(true);
   });
 
@@ -375,6 +504,22 @@ describe('normalizeStepLocal parity', () => {
     expect(executor.normalizeStepLocal(valid, 5)).toBeUndefined();
     const steps = [{ instruction: 'a' }, { instruction: 'assemble', local: valid }];
     expect(normalizeSteps({ steps })[1].local).toBeUndefined();
+  });
+
+  it('on a longform chain an invalid local stays local, so the executor refuses it', () => {
+    const bad = { instruction: 'label', local: { kind: 'shell' } as never, tool: { type: 'gemini-api' } as never };
+    const [invalid] = normalizeSteps({ longform: true, steps: [bad, { instruction: 'next' }] });
+    expect(invalid).toEqual({ instruction: 'label', local: { kind: 'invalid' } });
+    expect(executor.normalizeStepLocal(invalid.local, 1)).toBeUndefined();
+    expect(tsNormalizeStepLocal(invalid.local)).toBeUndefined();
+
+    const late = normalizeSteps({ longform: true, steps: [{ instruction: 'a' }, { instruction: 'assemble', local: valid }] });
+    expect(late[1].local).toEqual({ kind: 'invalid' });
+  });
+
+  it('REGRESSION: without longform an invalid local is still dropped', () => {
+    const bad = { instruction: 'label', local: { kind: 'shell' } as never };
+    expect(normalizeSteps({ steps: [bad, { instruction: 'next' }] })[0].local).toBeUndefined();
   });
 });
 
@@ -440,7 +585,24 @@ describe('assembleArticle', () => {
   it('material follows the marker, half-width or full-width colon', () => {
     expect(assemble(['r', `# 記事\n\n${MARKER}`, 'VERDICT: PASS'])).toContain('material: missing');
     expect(assemble(['r', '# 記事\n\n【本人の材料： 未記入】', 'VERDICT: PASS'])).toContain('material: missing');
-    expect(assemble(['r', '# 記事\n\n私が測りました。', 'VERDICT: PASS'])).toContain('material: ok');
+    // No marker means it was dropped: an unattended chain has no owner material.
+    expect(assemble(['r', '# 記事\n\n私が測りました。', 'VERDICT: PASS'])).toContain('material: unknown');
+    expect(assemble(['r', '# 記事\n\n私が測りました。', 'VERDICT: PASS'])).not.toContain('material: ok');
+  });
+
+  it('a cut prompt pins the review to unresolved over a PASS', () => {
+    const cut = executor.assembleArticle(local, { steps, results: ['r', '# 記事', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', promptCut: true });
+    expect(cut.split('\n')).toContain('review: unresolved');
+    expect(assemble(['r', '# 記事', 'VERDICT: PASS'])).not.toContain('review_note');
+  });
+
+  it('strips only a real Sources heading, its entries and blank lines', () => {
+    const body = '# 記事\n\n参考\n\nこの段落は残る。\n\nSources\n\nこれも残る。';
+    expect(executor.stripArticleSources(body)).toBe(body);
+    expect(executor.stripArticleSources('本文。\n\n## 参考文献\n\n- [1] 資料 https://x.example\n2. 別の資料\nhttps://y.example\n\nこの段落は残る。\n\n## 次の節\n\n続き'))
+      .toBe('本文。\n\nこの段落は残る。\n\n## 次の節\n\n続き');
+    expect(executor.stripArticleSources('本文。\n\n## Sources を読む\n\n続き')).toBe('本文。\n\n## Sources を読む\n\n続き');
+    expect(assemble(['r', '# 記事\n\n## Sources\n\n結論はこの段落に書いた。', 'VERDICT: PASS'])).toContain('結論はこの段落に書いた。');
   });
 
   it('lint flags terms and never rewrites them', () => {
@@ -490,6 +652,18 @@ describe('truncation and candidates', () => {
     expect(executor.modelResponseTruncated('groq', 'not json')).toBe(false);
   });
 
+  it.each(['SAFETY', 'RECITATION', 'BLOCKLIST', 'OTHER', 'max_tokens'])('Gemini %s counts as not finished', (finishReason) => {
+    expect(executor.modelResponseTruncated('gemini-api', JSON.stringify({ candidates: [{ finishReason }] }))).toBe(true);
+  });
+
+  it('a Gemini answer with no finishReason is not called cut', () => {
+    expect(executor.modelResponseTruncated('gemini-api', JSON.stringify({ candidates: [{}] }))).toBe(false);
+  });
+
+  it('content_filter counts as not finished on the OpenAI shape', () => {
+    expect(executor.modelResponseTruncated('cerebras', JSON.stringify({ choices: [{ finish_reason: 'content_filter' }] }))).toBe(true);
+  });
+
   const gemini = { type: 'gemini-api' };
   const local = { type: 'local' };
   const cerebras = { type: 'cerebras' };
@@ -505,6 +679,25 @@ describe('truncation and candidates', () => {
 
   it('a longform research step does not climb to a backend with no web access', () => {
     expect(executor.stepToolCandidates({ tool: gemini, toolLadder: ladder, steps: { longform: true }, sourcing: { mode: 'research' } })).toEqual([gemini]);
+  });
+
+  it('keeps the other role\'s engines off a longform ladder', () => {
+    const groq = { type: 'groq' };
+    const review = { tool: cerebras, toolLadder: [gemini, groq], steps: { longform: true }, longformOtherTools: ['gemini-api'] };
+    expect(executor.stepToolCandidates(review)).toEqual([cerebras, groq]);
+    const write = { tool: gemini, toolLadder: [cerebras], steps: { longform: true }, longformOtherTools: ['cerebras'] };
+    expect(executor.stepToolCandidates(write)).toEqual([gemini]);
+  });
+
+  it('REGRESSION: the exclusion does nothing on an ordinary plan', () => {
+    expect(executor.stepToolCandidates({ tool: gemini, toolLadder: ladder, longformOtherTools: ['cerebras'] })).toEqual([gemini, local, cerebras]);
+  });
+
+  it('names each side\'s engines from the real chain', () => {
+    const steps = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    expect([...new Set(executor.longformOtherRoleTools(steps, 1))]).toEqual(['cerebras']);
+    expect([...new Set(executor.longformOtherRoleTools(steps, 2))]).toEqual(['gemini-api']);
+    expect([...new Set(executor.longformOtherRoleTools(steps, 3))]).toEqual(['cerebras']);
   });
 });
 
@@ -522,10 +715,22 @@ describe('the draft lands in the vault with no mirror copy', () => {
     expect(dest).toBe(path.join('/sdcard/Documents/ObsidianVault/50_Drafts/Steam/', '2026-11-06-ai-steam.md'));
   });
 
-  it('no 90_Log copy when the output folder is inside the vault', () => {
+  it('no 90_Log copy when a longform output folder is inside the vault', () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-vault-'));
+    const plan = { steps: { longform: true }, output: { outputDir: path.join(vault, '50_Drafts', 'Steam') } };
+    expect(executor.resolveObsidianMirror(plan, { OBSIDIAN_VAULT_PATH: vault }, 'a.md')).toBeNull();
+  });
+
+  it('REGRESSION: another agent saving inside the vault keeps its 90_Log copy, the .sh context source', () => {
     const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-vault-'));
     const plan = { output: { outputDir: path.join(vault, '50_Drafts', 'Steam') } };
-    expect(executor.resolveObsidianMirror(plan, { OBSIDIAN_VAULT_PATH: vault }, 'a.md')).toBeNull();
+    expect(executor.resolveObsidianMirror(plan, { OBSIDIAN_VAULT_PATH: vault }, 'a.md')).toBe(path.join(vault, '90_Log/Agent_Output', 'a.md'));
+  });
+
+  it('REGRESSION: the .sh save path keeps its mirror and its script version', () => {
+    const src = fs.readFileSync(path.join(root, 'lib', 'agent-executor.ts'), 'utf8');
+    expect(src).not.toContain('OBSIDIAN_VAULT_PATH%/}');
+    expect(src).toContain('const AGENT_SCRIPT_VERSION = 77;');
   });
 
   it('a sibling folder that only shares the prefix is not inside the vault', () => {
