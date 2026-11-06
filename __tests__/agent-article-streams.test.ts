@@ -350,9 +350,14 @@ describe('the confirmation', () => {
   });
 });
 
-describe('the Dev JA queue seed', () => {
-  const seed = fs.readFileSync(path.join(root, 'docs/promo/articles/devlog/queue-seed.md'), 'utf8');
-  const toc = fs.readFileSync(path.join(root, 'docs/promo/articles/devlog/toc.md'), 'utf8');
+// docs/promo is the owner's working folder and is not checked in, so CI has no copy.
+const seedPath = path.join(root, 'docs/promo/articles/devlog/queue-seed.md');
+const planV2Path = path.join(root, 'docs/promo/research/plan-v2.md');
+
+(fs.existsSync(seedPath) ? describe : describe.skip)('the Dev JA queue seed', () => {
+  const seed = fs.existsSync(seedPath) ? fs.readFileSync(seedPath, 'utf8') : '';
+  const tocPath = path.join(root, 'docs/promo/articles/devlog/toc.md');
+  const toc = fs.existsSync(tocPath) ? fs.readFileSync(tocPath, 'utf8') : '';
   const open = seed.split('\n').filter((l) => /^- \[ \] /.test(l));
 
   it('has the first 10 topics, open, in order', () => {
@@ -396,8 +401,8 @@ describe('the Dev JA queue seed', () => {
 });
 
 describe('the docs', () => {
-  it('plan-v2 no longer says the API output is capped at 2048 tokens', () => {
-    const plan = fs.readFileSync(path.join(root, 'docs/promo/research/plan-v2.md'), 'utf8');
+  (fs.existsSync(planV2Path) ? it : it.skip)('plan-v2 no longer says the API output is capped at 2048 tokens', () => {
+    const plan = fs.readFileSync(planV2Path, 'utf8');
     expect(plan).not.toContain('API 出力 2048 トークン上限');
     expect(plan).toContain('ローカル LLM だけ');
   });
