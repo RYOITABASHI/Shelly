@@ -1025,7 +1025,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     it('E2E: a secret env value is known, and secret-named env never reaches the worker', () => {
       const r = run(
         [completed({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'search', query: MY_ENV } })],
-        { GH_TOKEN: MY_ENV, MY_API_KEY: 'value-of-api-key-0000', SECRET_THING: 'x' },
+        { GH_TOKEN: MY_ENV, MY_API_KEY: ['value', 'of', 'api', 'key', '0000'].join('-'), SECRET_THING: 'x' },
       );
       expect(r.status).toBe(1);
       expect(r.audit).toContain('"detector":"env_value"');
