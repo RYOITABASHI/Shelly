@@ -263,7 +263,11 @@ object ClosePawHandoff {
         OVERLAY_MISSING(13, "overlay-missing", "ClosePaw needs the \"Display over other apps\" permission - grant it in ClosePaw, then retry"),
         NO_CREDENTIALS(14, "no-credentials", "ClosePaw has no AI credentials - sign in or add an API key in ClosePaw, then retry"),
         BUSY(15, "busy", "ClosePaw is busy with another task - wait for it to finish, then retry"),
-        VD_UNAVAILABLE(16, "vd-unavailable", "ClosePaw's virtual display is unavailable - start Shizuku, then retry");
+        VD_UNAVAILABLE(16, "vd-unavailable", "ClosePaw's virtual display is unavailable - start Shizuku, then retry"),
+        // Draft routine only (ClosePawDrafts). A refusal, so even a stray code
+        // on the goal path never falls back to the activity launch.
+        DEVICE_LOCKED(17, "device-locked", "The phone was locked - Shelly tries again at the next unlock"),
+        CHROME_IN_USE(18, "chrome-in-use", "Chrome is on screen and ClosePaw needs it - Shelly tries again at the next unlock");
 
         companion object {
             fun fromCode(code: Int): Refusal? = values().firstOrNull { it.resultCode == code }
@@ -308,6 +312,74 @@ object ClosePawHandoff {
             // ClosePaw has not been launched since install / force-stop.
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
+
+    // ── Draft routine of the Shelly-trusted variant ───────────────────────
+    // A fixed, LLM-free routine with no goal text: the article is a one-shot
+    // content:// file. Only ClosePawDrafts calls this, after the owner approved
+    // that exact file. There is deliberately no activity fallback on this path.
+    const val VARIANT_SAVE_DRAFT_ACTION = "ai.closepaw.action.SHELLY_SAVE_DRAFT"
+    const val VARIANT_SAVE_DRAFT_RECEIVER = "ai.closepaw.app.ShellySaveDraftReceiver"
+    const val EXTRA_PLATFORM = "platform"
+    const val EXTRA_SUBSTACK_SUBDOMAIN = "substack_subdomain"
+    /** The receiver reads up to 16 MiB before it answers, so 5s is too short. */
+    const val SAVE_DRAFT_BROADCAST_TIMEOUT_MS = 15_000L
+
+    /** [resultData] is ClosePaw's reason, from a fixed set; it is only logged. */
+    data class SaveDraftAnswer(val code: Int, val resultData: String?, val resultCallback: Boolean)
+
+    internal fun buildSaveDraftBroadcast(
+        context: Context,
+        file: android.net.Uri,
+        platform: String,
+        substackSubdomain: String?,
+        reqId: String,
+        resultNonce: String,
+    ): Intent =
+        Intent(VARIANT_SAVE_DRAFT_ACTION).apply {
+            component = ComponentName(PACKAGE, VARIANT_SAVE_DRAFT_RECEIVER)
+            data = file
+            putExtra(EXTRA_PLATFORM, platform)
+            // note must not carry it: ClosePaw refuses the pair.
+            if (substackSubdomain != null) putExtra(EXTRA_SUBSTACK_SUBDOMAIN, substackSubdomain)
+            putExtra(EXTRA_CALLER_TOKEN, callerToken(context.applicationContext))
+            putExtra(EXTRA_SHELLY_REQ_ID, reqId)
+            putExtra(EXTRA_SHELLY_RESULT_NONCE, resultNonce)
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        }
+
+    /** Null: no answer in time, so the run may have started. Throws if the send failed. */
+    internal fun sendSaveDraftBroadcast(context: Context, intent: Intent): SaveDraftAnswer? {
+        val latch = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
+        var answer: SaveDraftAnswer? = null
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                val cb = try {
+                    getResultExtras(false)?.getInt(RESULT_EXTRA_RESULT_CALLBACK, 0) == 1
+                } catch (e: Exception) {
+                    false
+                }
+                if (timedOut.get()) {
+                    Log.w(TAG, "late ClosePaw draft result rc=$resultCode (after timeout)")
+                    return
+                }
+                answer = SaveDraftAnswer(resultCode, resultData, cb)
+                latch.countDown()
+            }
+        }
+        val scheduler = Handler(resultThread.looper)
+        if (Build.VERSION.SDK_INT >= 34) {
+            val opts = BroadcastOptions.makeBasic().apply { setShareIdentityEnabled(true) }.toBundle()
+            context.sendOrderedBroadcast(intent, null, opts, receiver, scheduler, RC_NO_RESPONSE, null, null)
+        } else {
+            context.sendOrderedBroadcast(intent, null, receiver, scheduler, RC_NO_RESPONSE, null, null)
+        }
+        if (!latch.await(SAVE_DRAFT_BROADCAST_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            timedOut.set(true)
+            return null
+        }
+        return answer
+    }
 
     private val resultThread: HandlerThread by lazy {
         HandlerThread("ShellyClosePawResult").apply { start() }

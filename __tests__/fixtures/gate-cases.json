@@ -303,6 +303,33 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "draft-destinations.json redirect write -> deny (policy-write)",
+    "command": "echo '{}' > ~/.shelly/agents/draft-destinations.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "draft-destinations.json basename redirect after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && echo {} > draft-destinations.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "draft-destinations.json basename rm after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && rm draft-destinations.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
     "name": "rg --pre runs a program -> escalate at L2 (indirect-exec)",
     "command": "rg --pre ./x foo",
     "policy": {

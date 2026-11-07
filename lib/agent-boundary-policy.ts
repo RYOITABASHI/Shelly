@@ -1116,6 +1116,10 @@ const REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
 // ~/.shelly/agents/article-pipelines.json, which only the user writes.
 const ARTICLE_PIPELINES_BASENAME_RE = /(?:^|[\s/'"=])article-pipelines\.json\b/;
 const REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?article-pipelines\.json\b/;
+// Draft destinations (ClosePawDrafts.kt): same basename form for
+// ~/.shelly/agents/draft-destinations.json, which only the user writes.
+const DRAFT_DESTINATIONS_BASENAME_RE = /(?:^|[\s/'"=])draft-destinations\.json\b/;
+const REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?draft-destinations\.json\b/;
 // ~/.shelly/agents/after-draft-hook.js is code that runs with no one watching
 // (shelly-plan-executor.js runAfterDraftHook), so this one is refused wider than
 // the data files above: any command naming it, unless it is a plain read. No
@@ -1146,6 +1150,8 @@ export function touchesProtectedPolicyFiles(command: string): boolean {
   if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const articleBasename = ARTICLE_PIPELINES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (articleBasename && (REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  const destinationsBasename = DRAFT_DESTINATIONS_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (destinationsBasename && (REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (AFTER_DRAFT_HOOK_RE.test(c) && !AFTER_DRAFT_HOOK_PLAIN_READ_RE.test(c)) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;

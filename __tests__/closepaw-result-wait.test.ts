@@ -384,7 +384,7 @@ describe('native result callback invariants', () => {
     expect(resultsKt).toContain('if (!constantTimeEquals(e.nonce, nonce)) return false');
     expect(resultsKt).toMatch(/expected\.remove\(reqId\)\s+return true/);
     expect(resultsKt).toContain('if (!consumeIfExpected(reqId, nonce, status))');
-    expect(resultsKt).toContain('val CALLBACK_STATUSES = setOf(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_TIMEOUT)');
+    expect(resultsKt).toContain('val CALLBACK_STATUSES = setOf(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_TIMEOUT, STATUS_UNCERTAIN)');
   });
 
   it('the summary is sanitized data (control chars stripped, capped) and the state file is private', () => {

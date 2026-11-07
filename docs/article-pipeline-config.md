@@ -61,6 +61,34 @@ The agent only ever saves a draft. It never publishes and is never autonomous, a
 - **When a step fails**, nothing falls back to another engine. A failed write fails the run. A failed review or revision keeps the last good version and marks the draft unresolved.
 - **Time**: one run has 30 minutes, the CLI steps included. When less than 2 minutes remain, or a call runs into the last minute, the review loop stops and the last good version is saved as unresolved. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
 
+## Saving a draft through ClosePaw
+
+`shelly save-draft` queues one article for the Shelly-trusted ClosePaw build, which saves it in the note or Substack web editor with a fixed routine. There is no LLM in that routine, and it cannot publish. It is not tied to pipelines, so any script can use it.
+
+```bash
+shelly save-draft --platform note --title-file title.txt --markdown-file post.md --image header.png
+```
+
+From a script without the `shelly` command, such as the hook below: `node ~/.shelly-save-draft.js <same options>`.
+
+- **What happens**: at the next unlock Shelly shows the waiting drafts in one notification, up to five at a time, with destination, title and a content hash. Tap Approve (device unlock), or reply `approve <hash>` in Shelly's chat. ClosePaw then saves them one by one on its virtual display.
+- **Every batch needs that approval.** Nothing is approved in advance, and the terminal cannot approve. An approval covers those exact files: a draft changed afterwards is not sent. Ignored for 10 minutes, it is asked again at a later unlock. A draft expires after 24 hours.
+- **If it does not start**: the phone locked, Chrome on screen, ClosePaw busy or Shizuku stopped keep the draft waiting. Shelly tries again at the next unlock, for up to 6 hours after the approval.
+- **`uncertain`**: ClosePaw stopped after writing or timed out, so the draft may or may not exist. Shelly does not send it again. Check your drafts.
+- **Follow one**: `shelly closepaw status <requestId>`.
+- **Markdown**: headings (levels past 4 become 4), paragraphs, lists (flattened to one level), quotes, code, rules, bold, italic and links. HTML in the Markdown is shown as text.
+- **Links**: ordinary `https` addresses only, with no user info, port or IP address. Links to note.com and substack.com must be plain article links (`/<user>/n/<key>`, `/p/<slug>`) with no query or fragment. Any other link keeps its text only, and the command says how many it changed.
+- **Images**: on note, pass files with `--image`. An image written in the Markdown keeps only its alt text, because note images never come from the HTML. On Substack, an image in the Markdown is kept when its exact host is in `image_hosts` below; a line holding only an image becomes a figure, and its title the caption. Otherwise it keeps its alt text.
+- **Limits**: title 300 characters, HTML 1 MiB, 4 image files of 6 MiB each (JPEG, PNG, WebP or GIF, note only), 16 MiB in all, 16 drafts waiting.
+
+Substack needs a list of allowed subdomains in `~/.shelly/agents/draft-destinations.json`. The queue can only pick an entry, with `--substack`, when there are several. `image_hosts` is optional, up to 8 exact hosts and never a note or Substack host. It lives here because the editor fetches an image with your cookies as soon as it parses the HTML.
+
+```json
+{ "version": 1, "substack_subdomains": ["your-subdomain"], "image_hosts": ["images.example.com"] }
+```
+
+The gate refuses agent workers any write to this file. That is a match on the command text, not a lock, so the destination in the approval notification is what you should check.
+
 ## After-draft hook
 
 If `~/.shelly/agents/after-draft-hook.js` exists, Shelly runs it with `node` once after a pipeline run has saved its draft, ticked its queue item and been recorded. Without the file, nothing happens.

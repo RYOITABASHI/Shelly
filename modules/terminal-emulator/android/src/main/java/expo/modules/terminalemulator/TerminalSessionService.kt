@@ -6,8 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.FileObserver
@@ -92,6 +94,9 @@ class TerminalSessionService : Service() {
         private val activeAgentRuns = AtomicInteger(0)
     }
 
+    /** ACTION_USER_PRESENT reaches runtime receivers only, so this service holds it. */
+    private var userPresentReceiver: BroadcastReceiver? = null
+
     /** startForeground() succeeded and stopForeground() has not been called since. */
     @Volatile var isForegroundNow = false
         private set
@@ -132,6 +137,28 @@ class TerminalSessionService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "device-api request watcher failed to start", e)
         }
+        try {
+            registerUserPresentReceiver()
+            // An unlock this service did not see (it started later) still counts.
+            if (ClosePawDecisionReceiver.isUnlocked(applicationContext)) ClosePawDrafts.onUnlock(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "user-present receiver failed to start", e)
+        }
+    }
+
+    private fun registerUserPresentReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_USER_PRESENT) ClosePawDrafts.onUnlock(context.applicationContext)
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receiver, filter)
+        }
+        userPresentReceiver = receiver
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -360,6 +387,8 @@ class TerminalSessionService : Service() {
     override fun onDestroy() {
         isForegroundNow = false
         if (instance === this) instance = null
+        userPresentReceiver?.let { runCatching { unregisterReceiver(it) } }
+        userPresentReceiver = null
         CodexRemoteHost.wake()
         Log.i(TAG, "Service destroyed sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         super.onDestroy()
@@ -630,7 +659,12 @@ class TerminalSessionService : Service() {
 
     private fun hasProtectedWork(): Boolean =
         sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0 ||
+            // Queued drafts wait for an unlock only this service can observe.
+            runCatching { ClosePawDrafts.hasWork(applicationContext) }.getOrDefault(false) ||
             runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+
+    /** ClosePawDrafts: the queue emptied, so re-check whether to stay. */
+    fun onDraftQueueDrained() = onCodexRemoteChanged()
 
     /** CodexRemoteHost: the host started/stopped or is no longer wanted. */
     fun onCodexRemoteChanged() {
