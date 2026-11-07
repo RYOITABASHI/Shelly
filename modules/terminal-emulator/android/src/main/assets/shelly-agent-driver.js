@@ -830,7 +830,7 @@ function codexWireLineForLog(line, secrets) {
       const detector = codexLeakDetect(value, secrets);
       if (detector) return JSON.stringify({ withheld: detector });
     } else if (value && typeof value === 'object') {
-      pending.push(...Object.values(value));
+      for (const child of Object.values(value)) pending.push(child);
     }
   }
   return line;
