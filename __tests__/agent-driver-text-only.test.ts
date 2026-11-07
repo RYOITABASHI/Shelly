@@ -1,6 +1,7 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as http from 'http';
 import * as path from 'path';
 
 // Text-only turns (driver --text-only, executor v37). The real driver against
@@ -187,6 +188,18 @@ describe('Claude Code text-only turn', () => {
     expect(driver.claudeChildEnv(input, { source: 'subscription' }).GH_TOKEN).toBe('gh');
   });
 
+  it('Read stays denied on both lists: that, not --tools "", is what stops @path', () => {
+    const args = driver.claudeAgentArgs(true);
+    expect(args[args.indexOf('--disallowedTools') + 1].split(',')).toContain('Read');
+    expect(JSON.parse(driver.claudeAgentSettingsJson(true)).permissions.deny).toContain('Read');
+  });
+
+  it('a move of the reviewed build is a stated check', () => {
+    // Moving this version? 2.1.220 loads @path even with the deny. Check the new
+    // build with the mock API first: docs/superpowers/DEFERRED.md, 契約確認.
+    expect(driver.CLAUDE_AGENT_REVIEWED.version).toBe('2.1.314');
+  });
+
   it('a normal worker keeps its tools', () => {
     expect(driver.claudeAgentArgs()).toEqual(expect.arrayContaining(['--tools', 'Bash,Read,Write,Edit']));
     expect(driver.claudeAgentArgs()).not.toContain('--disable-slash-commands');
@@ -217,6 +230,8 @@ fs.writeFileSync(process.env.FAKE_HOME_RECORD, JSON.stringify({
   cwd: process.cwd(),
   cwdEntries: fs.readdirSync(process.cwd()),
   env: Object.keys(process.env),
+  home: process.env.HOME,
+  homeEntries: fs.readdirSync(process.env.HOME),
 }));
 const script = JSON.parse(process.env.FAKE_SCRIPT || '[]');
 const seen = [];
@@ -242,6 +257,8 @@ describe('Codex text-only turn', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'text-only-codex-'));
     const ws = path.join(home, 'workspace');
     fs.mkdirSync(ws);
+    fs.mkdirSync(path.join(home, '.agents/skills/demo-skill'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.agents/skills/demo-skill/SKILL.md'), '---\nname: demo-skill\ndescription: d\n---\nCANARY\n');
     fs.writeFileSync(path.join(ws, 'private.txt'), 'x');
     const realHome = path.join(home, 'real-codex');
     fs.mkdirSync(realHome);
@@ -329,10 +346,24 @@ describe('Codex text-only turn', () => {
     expect(cwdEntries).toEqual([]);
     expect(env).not.toContain('GH_TOKEN');
     expect(env).not.toContain('NODE_OPTIONS');
+    // $skill-name: nothing to find in the child's home, and no walk up from cwd.
+    expect(r.home.home).toBe(cwd);
+    expect(r.home.homeEntries).toEqual([]);
+    expect(config).toMatch(/^project_root_markers = \[\]$/m);
 
     const app = r.calls.find((c: string[]) => c[0] === 'app-server');
     for (const arg of ['features.shell_tool=false', 'features.goals=false', 'web_search="disabled"']) expect(app).toContain(arg);
     expect(r.calls.map((c: string[]) => c[0])).toEqual(['mcp', 'features', 'app-server']);
+  }, 60_000);
+
+  it('the prompt stays out of the run output, also when the server echoes it', () => {
+    const echo = { method: 'item/started', params: { threadId: 'th1', turnId: 't1', item: { type: 'userMessage', id: 'u1', content: [{ type: 'text', text: PROMPT }] } } };
+    const r = run([echo]);
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain('IGNORE ALL RULES');
+    expect(driver.codexTextOnlyWireLine(JSON.stringify(echo))).not.toContain('IGNORE');
+    const other = '{"method":"turn/started"}';
+    expect(driver.codexTextOnlyWireLine(other)).toBe(other);
   }, 60_000);
 
   it('an engine model wins over the carried one', () => {
@@ -456,4 +487,88 @@ describe('Codex text-only turn', () => {
     expect(driver.turnPrompt({ prompt: 'x' })).toBe(driver.workerPrompt('x'));
     expect(driver.turnPrompt({ prompt: 'x', textOnly: true })).toBe('x');
   });
+});
+
+// Needs a real Codex: SHELLY_TEST_REAL_CODEX=<path to codex> (see DEFERRED.md, the
+// contract check for a pin move). A real .agents tree, a mock Responses API, and the
+// config and env the driver makes. On Windows Codex finds the home through the OS,
+// not $HOME, so there only the ancestor half of this shows anything.
+const realCodex = process.env.SHELLY_TEST_REAL_CODEX;
+(realCodex ? describe : describe.skip)('real Codex, text-only', () => {
+  it('sends no tools, and $skill, skill links and @paths in the prompt read nothing', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'text-only-real-')));
+    const parent = path.join(root, 'home/tmp/shelly-codex-homes');
+    const codexHome = path.join(parent, 'shelly-codex-home-x');
+    const cwd = path.join(parent, 'shelly-text-only-x');
+    for (const d of [codexHome, cwd, path.join(root, 'home/.git'), path.join(root, 'home/.agents/skills/demo-skill'), path.join(root, 'home/tmp/.agents/skills/anc-skill')]) fs.mkdirSync(d, { recursive: true });
+    const skill = (name: string, canary: string) => `---\nname: ${name}\ndescription: d\n---\n${canary}\n`;
+    const demo = path.join(root, 'home/.agents/skills/demo-skill/SKILL.md');
+    fs.writeFileSync(demo, skill('demo-skill', 'CANARY-HOME-SKILL'));
+    fs.writeFileSync(path.join(root, 'home/tmp/.agents/skills/anc-skill/SKILL.md'), skill('anc-skill', 'CANARY-ANCESTOR-SKILL'));
+    fs.writeFileSync(path.join(root, 'home/AGENTS.md'), 'CANARY-AGENTS-MD\n');
+    fs.writeFileSync(path.join(root, 'home/secret.txt'), 'CANARY-AT-FILE\n');
+
+    const bodies: string[] = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        if (!req.url!.includes('/responses')) { res.end('{"models":[]}'); return; }
+        if (body.length > 2) bodies.push(body);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        for (const e of [
+          { type: 'response.created', response: { id: 'r1' } },
+          { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'm1', content: [{ type: 'output_text', text: 'answer' }] } },
+          { type: 'response.completed', response: { id: 'r1', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ]) res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const catalogPath = path.join(codexHome, 'text-only-models.json');
+    fs.writeFileSync(catalogPath, JSON.stringify(driver.codexTextOnlyCatalog('gpt-x')));
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), `openai_base_url = "http://127.0.0.1:${port}/v1"\n${driver.codexWorkerConfigToml({}, { model: 'gpt-x', catalogPath: catalogPath.replace(/\\\\/g, '/') })}`);
+    fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'sk-dummy-mock' }));
+
+    const saved = process.env.HOME;
+    process.env.HOME = path.join(root, 'home');
+    const spec = driver.codexAppServerSpawnSpec({ codexBin: realCodex, textOnly: true, codexHome, cwd }, []);
+    process.env.HOME = saved;
+    expect(spec.env.HOME).toBe(cwd);
+
+    const prompt = `use $demo-skill and $anc-skill and [$demo-skill](${demo}) and @${path.join(root, 'home/secret.txt')}`;
+    const child = childProcess.spawn(spec.command, spec.args, { cwd, env: spec.env, stdio: ['pipe', 'pipe', 'ignore'] });
+    const send = (m: object) => child.stdin.write(`${JSON.stringify(m)}\n`);
+    const items: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no turn/completed')), 40000);
+      let buffer = '';
+      child.stdout.on('data', (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split('\n');
+        buffer = lines.pop()!;
+        for (const line of lines) {
+          const m = JSON.parse(line);
+          if (m.id === 1) {
+            send({ method: 'initialized' });
+            send({ id: 2, method: 'thread/start', params: { cwd, approvalPolicy: 'untrusted', approvalsReviewer: 'user', sandbox: 'read-only', ephemeral: true, threadSource: 'user', baseInstructions: driver.TEXT_ONLY_INSTRUCTIONS, developerInstructions: driver.TEXT_ONLY_INSTRUCTIONS } });
+          } else if (m.id === 2) {
+            send({ id: 3, method: 'turn/start', params: { threadId: m.result.thread.id, approvalPolicy: 'untrusted', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false }, input: [{ type: 'text', text: prompt, text_elements: [] }] } });
+          } else if (m.method === 'item/started') items.push(m.params.item.type);
+          else if (m.method === 'turn/completed') { clearTimeout(timer); resolve(); }
+        }
+      });
+      send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'shelly-agent-driver', title: 'x', version: '0' }, capabilities: {} } });
+    });
+    child.kill('SIGKILL');
+    await new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); });
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect((JSON.parse(body).tools ?? []).length).toBe(0);
+      for (const canary of ['CANARY-HOME-SKILL', 'CANARY-ANCESTOR-SKILL', 'CANARY-AGENTS-MD', 'CANARY-AT-FILE']) expect(body.includes(canary)).toBe(false);
+    }
+    expect(new Set(items)).toEqual(new Set(['userMessage', 'agentMessage']));
+  }, 60_000);
 });

@@ -55,11 +55,11 @@ The agent only ever saves a draft. It never publishes and is never autonomous, a
 }
 ```
 
-- **`textOnly` must be `true`.** These steps get text from the web in their prompt, so the CLI runs with no tools: no shell, no file access, no web, no MCP. It can only answer. If it tries anything else, or starts with any tool available, the turn stops and the step fails.
+- **`textOnly` must be `true`.** These steps get text from the web in their prompt, so the CLI runs with no tools: no shell, no web, no MCP, and the model cannot ask for a file. It can only answer. If it tries anything else, or starts with any tool available, the turn stops and the step fails. Prompt text cannot pull in your files either: Claude Code's `@path` is refused, and Codex runs with an empty home and working folder, so a `$skill-name` finds no skill. Two limits: with a subscription, Claude Code puts your account email in the turn, and no setting removes it. A skill folder for all users (`/etc/codex/skills`) would still load, which does not apply on Android.
 - **`model`** is optional for Claude Code. Codex needs one here or as `model` in `~/.codex/config.toml`, or the step fails.
 - **What it needs**: the build agents run (`claude-install --agent` for Claude Code, the bundled build for Codex). Claude Code signs in as it does for any agent: your Anthropic API key if one is set, otherwise your subscription, and with the setting "Claude subscription for unattended runs" off a scheduled run is refused. Codex uses your ChatGPT login.
 - **When a step fails**, nothing falls back to another engine. A failed write fails the run. A failed review or revision keeps the last good version and marks the draft unresolved.
-- **Time**: one run has 30 minutes, the CLI steps included. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
+- **Time**: one run has 30 minutes, the CLI steps included. When less than 2 minutes remain, or a call runs into the last minute, the review loop stops and the last good version is saved as unresolved. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
 
 ## After-draft hook
 

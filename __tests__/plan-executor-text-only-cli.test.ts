@@ -42,6 +42,8 @@ const n = fs.readdirSync(dir).filter((f) => f.startsWith('call-')).length;
 const prompt = fs.readFileSync(get('--prompt-file'), 'utf8');
 fs.writeFileSync(path.join(dir, 'call-' + String(n).padStart(2, '0') + '.json'), JSON.stringify({ argv, prompt, cwd: process.cwd() }));
 const a = answers[n];
+const delay = Number(process.env.FAKE_DRIVER_DELAY_MS || 0);
+if (delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
 if (a === undefined || a === null) { process.stdout.write('CLAUDE_ERROR refused by the fake\\n'); process.exit(1); }
 fs.writeFileSync(get('--answer-file'), a);
 process.exit(0);
@@ -228,8 +230,42 @@ describe('engine lock across runs', () => {
     expect(file.endsWith('.pid')).toBe(false);
     fs.writeFileSync(file, JSON.stringify({ pid: 999999, start: 'x' }));
     expect(executor.takeTextOnlyEngineLock(p, 'claude')).toBe(true);
+    // Too new to judge: a run may be between the create and the write.
     fs.writeFileSync(file, 'not json');
+    expect(executor.takeTextOnlyEngineLock(p, 'claude')).toBe(false);
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(file, old, old);
     expect(executor.takeTextOnlyEngineLock(p, 'claude')).toBe(true);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).pid).toBe(process.pid);
+    expect(fs.readdirSync(p.locksDir)).toEqual([path.basename(file)]);
+  });
+
+  it('where hard links are refused it still takes one holder only', () => {
+    const p = paths();
+    const noLink = { ...fs, linkSync: () => { throw Object.assign(new Error('nope'), { code: 'EACCES' }); } };
+    expect(executor.takeTextOnlyEngineLock(p, 'claude', noLink)).toBe(true);
+    expect(executor.takeTextOnlyEngineLock(p, 'claude', noLink)).toBe(false);
+    expect(fs.readdirSync(p.locksDir)).toEqual([path.basename(executor.textOnlyEngineLockFile(p, 'claude'))]);
+  });
+
+  it('a takeover that moved a live lock aside puts it back and loses', () => {
+    const p = paths();
+    fs.mkdirSync(p.locksDir, { recursive: true });
+    const file = executor.textOnlyEngineLockFile(p, 'claude');
+    const live = JSON.stringify({ pid: process.ppid, start: '' });
+    fs.writeFileSync(file, live);
+    // What this run read a moment before another run took the lock over.
+    let first = true;
+    const racing = {
+      ...fs,
+      readFileSync: (f: string, o: BufferEncoding) => {
+        if (first && f === file) { first = false; return JSON.stringify({ pid: 999999, start: 'x' }); }
+        return fs.readFileSync(f, o);
+      },
+    };
+    expect(executor.takeTextOnlyEngineLock(p, 'claude', racing)).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe(live);
+    expect(fs.readdirSync(p.locksDir)).toEqual([path.basename(file)]);
   });
 
   it('does not release another holder', () => {
@@ -246,15 +282,18 @@ describe('text-only steps in a run', () => {
   let server: http.Server;
   let port = 0;
   let prompts: string[];
+  let hangAfter: number;
 
   beforeEach((done) => {
     prompts = [];
+    hangAfter = Infinity;
     server = http.createServer((req, res) => {
       let body = '';
       req.setEncoding('utf8');
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         prompts.push(JSON.parse(body).messages[0].content);
+        if (prompts.length > hangAfter) return;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ choices: [{ message: { content: RESEARCH }, finish_reason: 'stop' }], citations: [SOURCE_URL] }));
       });
@@ -266,8 +305,39 @@ describe('text-only steps in a run', () => {
   });
 
   afterEach((done) => {
+    server.closeAllConnections();
     server.close(done);
   });
+
+  const LOCAL_REVIEW = { type: 'local', label: 'Local LLM', model: 'fixture' };
+
+  it('an HTTP review that runs into the end of the run is cut, and the draft is still saved', async () => {
+    const home = makeHome();
+    hangAfter = 1;
+    const { driver, recordDir } = makeDriver([ARTICLE]);
+    const started = Date.now();
+    await runExecutor(writePlan(home, port, basePlan(home, chain(CLAUDE, LOCAL_REVIEW))), home, driver, recordDir, {
+      env: { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: '10000', SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS: '1000' },
+    });
+    expect(Date.now() - started).toBeLessThan(10000);
+    expect(prompts.length).toBeGreaterThan(1);
+    expect(readRunLog(home).status).toBe('success');
+    const result = readResult(home);
+    expect(result).toContain('review: unresolved');
+    expect(result).toContain('A second paragraph.');
+  }, 30000);
+
+  it('with too little time left the review never starts, and the draft is saved', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([ARTICLE]);
+    await runExecutor(writePlan(home, port, basePlan(home, chain(CLAUDE, LOCAL_REVIEW))), home, driver, recordDir, {
+      env: { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: '12000', SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS: '1500', FAKE_DRIVER_DELAY_MS: '9700' },
+    });
+    expect(prompts).toHaveLength(1);
+    expect(readAudit(home).some((e) => e.event === 'handoff_out_of_time')).toBe(true);
+    expect(readRunLog(home).status).toBe('success');
+    expect(readResult(home)).toContain('review: unresolved');
+  }, 30000);
 
   it('runs unattended on web text: the driver gets --text-only, and the answers are read like HTTP answers', async () => {
     const home = makeHome();

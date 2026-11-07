@@ -905,6 +905,7 @@ const ARTICLE_ECHO_MIN_CHARS = 12;
 // two device runs a Gemini overload outlasted 4 s, so the wait is 15 s.
 const LONGFORM_RETRY_WAIT_MS = 15000;
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
+const LONGFORM_OUT_OF_TIME_MESSAGE = 'Not enough run time left before the 30-minute run limit.';
 // Flagged, never rewritten: a draft writing about its own sources of work.
 const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', '出典不明', '出典なし', '要出典', 'search results', 'research notes', 'source unknown', 'source not found', 'citation needed'];
 // A bracketed note a reviser left in the prose. Bare 未確認 stays legal: a dev
@@ -3265,14 +3266,25 @@ function textOnlyEngineLockFile(paths, engine) {
   return path.join(paths.locksDir, `text-only-${engine}.slot`);
 }
 
-function textOnlyEngineLockHolderAlive(file) {
+// A file with no valid record is dead only once it is old: on the fallback below a
+// reader can land between the create and the write.
+const TEXT_ONLY_ENGINE_LOCK_UNREADABLE_GRACE_MS = 10 * 1000;
+
+function textOnlyEngineLockHolderAlive(file, fsImpl = fs) {
+  const unreadableIsYoung = () => {
+    try {
+      return Date.now() - fsImpl.lstatSync(file).mtimeMs < TEXT_ONLY_ENGINE_LOCK_UNREADABLE_GRACE_MS;
+    } catch (_) {
+      return false;
+    }
+  };
   let holder;
   try {
-    holder = JSON.parse(readFile(file));
+    holder = JSON.parse(fsImpl.readFileSync(file, 'utf8'));
   } catch (_) {
-    return false;
+    return unreadableIsYoung();
   }
-  if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 1) return false;
+  if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 1) return unreadableIsYoung();
   try {
     process.kill(holder.pid, 0);
   } catch (_) {
@@ -3282,19 +3294,62 @@ function textOnlyEngineLockHolderAlive(file) {
   return !start || !holder.start || start === holder.start;
 }
 
-function takeTextOnlyEngineLock(paths, engine) {
+// Publish a complete record in one step: write a temp file and link it to the
+// name, which fails if the name exists. Android refuses hard links to app files on
+// many builds, so EPERM / EACCES falls back to an exclusive create.
+function publishTextOnlyEngineLock(file, record, fsImpl) {
+  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  fsImpl.writeFileSync(temp, record, { flag: 'wx', mode: 0o600 });
+  try {
+    fsImpl.linkSync(temp, file);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'EEXIST') return false;
+    if (!error || (error.code !== 'EPERM' && error.code !== 'EACCES' && error.code !== 'ENOTSUP' && error.code !== 'ENOSYS')) throw error;
+  } finally {
+    try {
+      fsImpl.unlinkSync(temp);
+    } catch (_) {}
+  }
+  try {
+    fsImpl.writeFileSync(file, record, { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (error && error.code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
+// Unlinking a dead holder's file could remove the lock another run has just taken.
+// Rename moves it aside for one run only, and that run looks at what it got: if
+// that is a live holder it lost a race, and the file goes back. The window that
+// remains is a third run taking the name before it goes back.
+function removeDeadTextOnlyEngineLock(file, fsImpl) {
+  const aside = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.stale`;
+  try {
+    fsImpl.renameSync(file, aside);
+  } catch (_) {
+    return; // Another run moved it, or its holder released it.
+  }
+  if (textOnlyEngineLockHolderAlive(aside, fsImpl)) {
+    try {
+      fsImpl.renameSync(aside, file);
+      return;
+    } catch (_) {}
+  }
+  try {
+    fsImpl.unlinkSync(aside);
+  } catch (_) {}
+}
+
+function takeTextOnlyEngineLock(paths, engine, fsImpl = fs) {
   const file = textOnlyEngineLockFile(paths, engine);
   ensureDir(paths.locksDir);
   const record = JSON.stringify({ pid: process.pid, start: procStartTime(process.pid) || '' });
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      fs.writeFileSync(file, record, { flag: 'wx', mode: 0o600 });
-      return true;
-    } catch (error) {
-      if (!error || error.code !== 'EEXIST') throw error;
-    }
-    if (textOnlyEngineLockHolderAlive(file)) return false;
-    unlinkQuiet(file);
+    if (publishTextOnlyEngineLock(file, record, fsImpl)) return true;
+    if (textOnlyEngineLockHolderAlive(file, fsImpl)) return false;
+    removeDeadTextOnlyEngineLock(file, fsImpl);
   }
   return false;
 }
@@ -4521,6 +4576,14 @@ async function brokerHttp(paths, opts, plan, request) {
 }
 
 async function brokerHttpBodyFile(paths, opts, plan, request) {
+  // A long-form run keeps time to assemble what it has before native's kill. The
+  // broker's own timeout is 10 minutes, and each ladder rung gets a new one.
+  if (opts && Number.isFinite(opts.longformDeadlineMs)) {
+    const leftSeconds = Math.floor((opts.longformDeadlineMs - Date.now()) / 1000);
+    if (leftSeconds < 1) throw new PlanFailure(LONGFORM_OUT_OF_TIME_MESSAGE, { handled: true });
+    const asked = Number(request.timeoutSeconds || (plan.limits && plan.limits.timeoutSeconds) || 600);
+    request = Object.assign({}, request, { timeoutSeconds: Math.min(asked, leftSeconds) });
+  }
   const stepSuffix = brokerStepSuffix(opts);
   const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
   const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.err`);
@@ -7994,6 +8057,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // (it would drop a review's `VERDICT:` line and strip the article), no item
   // count taken from the prose, and no fallback briefing.
   const longform = plan.steps.longform === true;
+  const longformDeadlineMs = cliRunLimits().deadlineMs;
   const researchFlags = plan.steps.list.map((step, i) =>
     i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && step.local === undefined && !(longform && step.handoff !== undefined) && isResearchStep(step.instruction, effectiveStepTool(step).type));
   const sourcingActive = researchFlags.some(Boolean);
@@ -8383,6 +8447,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         handoffStopped: true,
       };
     }
+    // v37: the review loop gives way to the draft. Native kills the run at 30 minutes
+    // and assemble is what saves it, so a hand-off step with too little time left
+    // ends the loop like a failed one: the last good version, marked unresolved.
+    if (longform && step.handoff !== undefined && longformDeadlineMs - Date.now() < cliRunLimits().minRunMs) {
+      reviewNotes.add(ARTICLE_REVIEW_FAILED_NOTE);
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'handoff_out_of_time', agentId: plan.agent.id, stepIndex: i });
+      return {
+        record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: 0, outputPreview: previewText(`${LONGFORM_HANDOFF_STOPPED_MESSAGE} ${LONGFORM_OUT_OF_TIME_MESSAGE}`) },
+        handoffStopped: true,
+      };
+    }
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
@@ -8402,7 +8477,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
     const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
-    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin, chainStartedAt: startedAt }, branchCtl ? { branchCtl } : {});
+    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin, chainStartedAt: startedAt }, branchCtl ? { branchCtl } : {}, longform ? { longformDeadlineMs } : {});
     if (branchCtl) branchCtl.currentKey = overrideToolKey(stepTool);
     const stepStart = Date.now();
 
