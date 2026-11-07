@@ -528,7 +528,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
   <img src="docs/images/codex-terminal.png" alt="Android上のShellyのターミナルペインでネイティブに動くOpenAI Codex CLIが、hello.jsを作成してNode.jsで実行している" width="700">
 </p>
 
-- **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には `.ci-versions/` の固定された Android ネイティブの統合 `codex_tui` バイナリが同梱され、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
+- **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には Termux 公式パッケージの Android ネイティブ版 `codex` が `codex_tui` として同梱され（`.ci-versions/` に固定、CI が Termux の署名付き apt index で検証）、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
 - **管理された昇格** — 新しいランタイム候補は、ダウンロード・SHA-256 検証・展開・実行可能性チェック・`codex_tui --version` / `codex_tui exec --help` のスモークチェックをすべて通ってから初めて昇格します。
 - **修復 / リセットのパス** — アプリデータ側のランタイムが壊れている、あるいは不要な場合は、Updates UI から最新のランタイムリリースで修復するか、APK 同梱の Codex ランタイムにリセットできます。
 - **リモート操作（Experimental）** — `shelly codex pair` は Codex 公式の `codex remote-control` をターミナルのタブでホストし、ChatGPT アプリの Codex に入力する短時間有効のペアリングコードを表示します。`shelly codex code` で新しいコードを表示します。ChatGPT のサインインが必要です（API キーは非対応）。ペアリングとアプリからのコマンド実行は実機で検証済みです。
@@ -739,7 +739,7 @@ AI がターミナルを読む。ターミナルが AI を実行する。ユー�
 あり、アプリ内アップデータがそれを直接読むので、このページと乖離することはありません:
 
 - **Android APK** — [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json): `versionCode`、`versionName`、`gitSha`、`apkAssetName`、`apkSizeBytes`、`sha256`。
-- **Codex ランタイム** — [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json): `codexVersion`、アセット名、`sha256`。
+- **Codex ランタイム** — [`codex-runtime-latest/codex-runtime-termux.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime-termux.json): `codexVersion`、アセット名、`sha256`。
 
 | 対象 | 実態 | なぜそのコストになるか |
 |---|---|---|

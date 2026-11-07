@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-07: CC（feat/codex-termux-official、未push）が Codex の取得元を Termux 公式パッケージへ切り替えた（CLI 常時最新計画の Inc 3 の取得元部分）。CI の検証、Bump ジョブからの APK なし配信、ワーカーの `agent-current` 分離。実機未検証。
 - 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。Codex の Web 検索は承認なしで通し監査行を残すことをオーナーが決定。T1 の結果を受けて exec-wrapper v227 と BASHRC_VERSION 287 で公式 Termux 版の remote control に対応（実機未検証）。
 - 2026-11-06: CC（feat/article-pipeline、未push）が記事の毎日下書き Inc 2〜5 を実装（ダイジェスト、キュー、残り 4 ストリーム、ドキュメント）。レビュー指摘を修正して executor v30（査読の偽合格、material の fail-open、投稿経路の executor 強制ほか）。Inc 1 の `.sh` ミラー変更は既存エージェントに影響するので撤回し、スクリプト版は 77 に戻した。実機未検証。確認項目は下記「記事の毎日下書き」エントリ。
 - 2026-11-02: CC（feat/agent-roles-wp3、未push）がエージェントロール Inc A の WP3（`lib/agent-role-router.ts` の決定的ルーティング、確認文の `[ロール · エンジン]` 表示・ワークスペース・最小レベル行・「ロールなしで」での取り消し、確定時のロール最小レベル書き込み）を実装。暗黙ルーティングはロール名／チーム語のときだけ（「実装＋ホームパス」トリガーは見送り）。残課題は下記「エージェントロール Inc A」エントリ。実機未検証。
@@ -77,7 +78,14 @@
 
 ### 3 つの CLI を常に最新に保つ（2026-11-07 オーナー要望）(P0)
 
-同梱している Codex の取得元 `DioNanos/codex-termux` は `0.163.0-termux.3` が最終版で終了した（Codex が Termux の公式パッケージになったため）。今のままだと Codex の更新が止まる。Codex、Claude Code、Antigravity を APK の更新なしで最新に保つ。計画は `docs/superpowers/specs/2026-11-07-cli-always-latest-plan.md`。Claude Code は手動配置のままなので `claude-install` も同時に作る。
+旧取得元 `DioNanos/codex-termux` は `0.163.0-termux.3` が最終版で終了した。Codex、Claude Code、Antigravity を APK の更新なしで最新に保つ。計画は `docs/superpowers/specs/2026-11-07-cli-always-latest-plan.md`。Claude Code は手動配置のままなので `claude-install` も同時に作る。
+
+**Codex の取得元の切替 — 実装済み、CI・実機とも未検証（2026-11-07、`feat/codex-termux-official`）**: 設計は CLAUDE.md の「Codex CLI は Termux 公式パッケージ」の行。ローカルで実際の InRelease から .deb まで検証した。ワークフローは GitHub でしか確かめられない。
+- **マージ後すぐ見ること**: Bump ジョブを手動実行し、`codex-runtime-termux.json` の公開と凍結検知の緑を確認。APK ビルドが `libcodex_tui.so` を作ること。
+- **実機（切替 APK の更新後）**: (1) `node --version` と `git --version`: `libc++_shared.so` が fork の同梱版からリポジトリの `libcxx_shared.so` に変わる（Codex 自身は要らない）。(2) 同梱版の `--version`、TLS、ログイン。(3) Builds 画面の更新で `current` が移ること、失敗時に動かないこと。(4) `!` コマンド、Code Mode、エージェント実行（T1 に含まれなかった項目）。(5) `shelly codex pair`（下の別項目）。
+- **ワーカーの版**: 更新後もエージェントは APK 同梱版で動く。`agent-current` を作るものは無い。Inc 4（CI 契約テスト）と Inc 5 で作る。それまで **同梱版の pin も Bump で動き、次の APK には契約テストなしで入る**。driver の未知 item 停止と MCP preflight は効くが、`CODEX_WORKER_DISABLED_FEATURES` は拒否リストなので、新しい既定有効の機能はすり抜けうる（計画 §6.2）。
+- **残り**: 古い `versions/` の削除（1 版 344MB、削除処理なし）、`previous` と自動ロールバック、失敗版の保留（Inc 5）。Ed25519 署名（§6.7、オーナーの Secret 登録が必要）。`codex-runtime.json` を読む切替前の APK への案内は無い（APK 更新で解消）。`codex-runtime-latest` の古いアセットの掃除。
+- **署名鍵の交代**: Termux が `termux-autobuilds` の鍵を替えると Bump は赤くなる（意図どおり）。新しい鍵を確かめて `scripts/termux-autobuilds.gpg` と `TERMUX_SIGNING_FINGERPRINTS` を更新する。
 
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
 - 2026-11-07: vintage の `queue-refill`（executor v35、`feat/article-topic-refill`）はオフラインのテストのみ。実機で要確認: Gemini grounded の答えが `- [ ]` 形式に沿うか、grounded の 1 回が CAP-001 の 10 分の壁に収まるか、`/sdcard` の `_queue.md` が無い状態から実 broker で作れるか。

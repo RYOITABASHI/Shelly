@@ -136,16 +136,15 @@ object LibExtractor {
         // packaged into the APK unconditionally by AGP regardless of whether
         // this map references it) were also deleted — recoverable from git
         // history if a future ET_EXEC binary ever needs proot routing again.
-        // Unified Codex native binary (ET_DYN, built from codex-termux for
-        // Android/bionic). `codex exec ...` is routed by passing the `exec`
-        // subcommand to this same binary; newer codex-termux packages no longer
-        // ship a separate codex-exec binary.
+        // Unified Codex native binary (ET_DYN, Android/bionic, from Termux's
+        // official `codex` package). `codex exec ...` is routed by passing the
+        // `exec` subcommand to this same binary. It needs libssl.so.3 and
+        // libcrypto.so.3 from this list; it brings no libc++ of its own.
         "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
-        "lib/arm64-v8a/libcodex_cxx_shared.so" to "libc++_shared.so",
         // Issue #149: Codex looks up its Code Mode host as a sibling of its
         // own executable (dirname(current_exe)/codex-code-mode-host). This is
-        // codex-termux's bionic PIE build, so the exec wrapper's linker64
-        // routing handles it like codex_tui. Optional: older payloads lack it.
+        // the same package's bionic PIE build, so the exec wrapper's linker64
+        // routing handles it like codex_tui.
         "lib/arm64-v8a/libcodex_code_mode_host.so" to "codex-code-mode-host",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)

@@ -50,6 +50,7 @@ function runVersion(file, libDir, options = {}) {
     LD_LIBRARY_PATH: [runtimeLib, libDir || LIB].filter(Boolean).join(':'),
     SHELLY_LIB_DIR: libDir || LIB,
   };
+  if (options.codexHome) env.CODEX_HOME = options.codexHome;
   if (options.wrap && libDir) {
     env.LD_PRELOAD = path.join(libDir, 'libexec_wrapper.so');
     env.SHELLY_CODEX_EXEC_PATH = file;
@@ -104,7 +105,7 @@ function probeCodex() {
   ];
   const tried = [];
   for (const file of candidates) {
-    const result = runVersion(file, LIB);
+    const result = runVersion(file, LIB, { wrap: true });
     tried.push(result);
     if (result.ok) return { ok: true, source: active.source, selected: result, tried };
   }
@@ -243,23 +244,24 @@ function installFromEnvSync() {
   fs.rmSync(archive, { force: true });
   fs.mkdirSync(staging, { recursive: true, mode: 0o700 });
 
+  const probeHome = path.join(tmpDir, `codex-probe-home-${installId}`);
+  const cleanup = () => {
+    for (const leftover of [archive, staging, probeHome]) {
+      try { fs.rmSync(leftover, { recursive: true, force: true }); } catch (_) {}
+    }
+  };
+
   return download(manifest.tarballUrl, archive).then(() => {
     const actual = sha256File(archive);
     if (actual !== manifest.sha256) {
       throw new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actual}`);
     }
     runTarExtract(archive, staging);
-    for (const name of ['codex_tui']) {
+    for (const name of ['codex_tui', 'codex-code-mode-host']) {
       const file = path.join(staging, name);
       if (!exists(file)) throw new Error(`${name} missing from Codex runtime`);
       fs.chmodSync(file, 0o700);
     }
-    const cxx = path.join(staging, 'libc++_shared.so');
-    if (exists(cxx)) fs.chmodSync(cxx, 0o600);
-    // Issue #149: optional sibling that Codex spawns for Code Mode. Older
-    // runtime tarballs predate it; Codex then reports Code Mode unavailable.
-    const codeModeHost = path.join(staging, 'codex-code-mode-host');
-    if (exists(codeModeHost)) fs.chmodSync(codeModeHost, 0o700);
 
     const tui = runVersion(path.join(staging, 'codex_tui'), LIB, { wrap: true });
     if (!tui.ok) {
@@ -272,6 +274,18 @@ function installFromEnvSync() {
     });
     if (!tuiExecHelp.ok) {
       throw new Error(`Codex runtime exec smoke failed: tui_exec_help=${tuiExecHelp.output || tuiExecHelp.code}`);
+    }
+    fs.mkdirSync(probeHome, { recursive: true, mode: 0o700 });
+    for (const probeArgs of [['app-server', '--help'], ['mcp', 'list', '--json']]) {
+      const probe = runVersion(path.join(staging, 'codex_tui'), LIB, {
+        wrap: true,
+        args: probeArgs,
+        requireVersion: false,
+        codexHome: probeHome,
+      });
+      if (!probe.ok) {
+        throw new Error(`Codex runtime smoke failed: ${probeArgs.join(' ')}=${probe.output || probe.code}`);
+      }
     }
     const tuiVersion = tui.version;
     if (tuiVersion !== manifest.version) {
@@ -303,9 +317,8 @@ function installFromEnvSync() {
       }
     } catch (_) {}
     fs.renameSync(nextLink, currentLink);
-    fs.rmSync(archive, { force: true });
     console.log(`[shelly] Codex runtime ${manifest.version} installed. Open a new terminal tab to use it.`);
-  });
+  }).finally(cleanup);
 }
 
 function resetRuntimeSync() {

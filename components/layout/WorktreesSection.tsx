@@ -40,7 +40,7 @@ function resumeCommandFor(wt: Worktree): string | null {
   if (agent === 'none') return null;
   if (!wt.agentStarted) return agent;
   // Codex: `codex --continue` resumes the most recent session in the
-  // current directory on supported codex-termux builds.
+  // current directory on supported Codex builds.
   return `${agent} --continue`;
 }
 
