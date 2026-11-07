@@ -25,6 +25,8 @@ const QUEUED: ArticleStream[] = ['dev-ja', 'dev-en', 'vintage-ja', 'vintage-en']
 const VINTAGE: ArticleStream[] = ['vintage-ja', 'vintage-en'];
 const ENGLISH: ArticleStream[] = ['dev-en', 'vintage-en'];
 
+// Steps before research: queue-pop, and queue-refill before that on vintage.
+const leadOf = (stream: ArticleStream) => (QUEUED.includes(stream) ? 1 : 0) + (VINTAGE.includes(stream) ? 1 : 0);
 const stepsOf = (stream: ArticleStream) => buildArticlePipeline(stream).orchestration.steps as AgentOrchestrationStep[];
 const assembleOf = (stream: ArticleStream): any => stepsOf(stream)[stepsOf(stream).length - 1].local;
 const minutes = (cron: string) => {
@@ -55,11 +57,12 @@ function agentFrom(preset: PipelinePreset): Agent {
 describe.each(ALL)('stream %s', (stream) => {
   const preset = buildArticlePipeline(stream);
   const steps = stepsOf(stream);
-  const offset = QUEUED.includes(stream) ? 1 : 0;
+  const offset = leadOf(stream);
 
   it('has the review loop, shifted past queue-pop on a queued stream', () => {
     expect(steps).toHaveLength(7 + offset);
-    if (offset) expect(steps[0].local).toEqual({ kind: 'queue-pop' });
+    if (offset) expect(steps[offset - 1].local).toEqual({ kind: 'queue-pop' });
+    if (offset === 2) expect(steps[0].local).toEqual({ kind: 'queue-refill' });
     const at = (k: number) => k + offset;
     expect(steps.map((s) => s.handoff?.of).slice(offset)).toEqual([undefined, undefined, [at(0), at(1)], [at(1), at(2)], [at(0), at(3)], [at(3), at(4)], undefined]);
     expect(assembleOf(stream).parts).toEqual([[at(1), at(3), at(5)]]);
@@ -91,7 +94,8 @@ describe.each(ALL)('stream %s', (stream) => {
     expect(normalized[2 + offset].instruction.endsWith(REVIEW_OUTPUT_CONTRACT)).toBe(true);
     expect(normalized[2 + offset].handoff).toEqual(steps[2 + offset].handoff);
     expect(normalized[normalized.length - 1].local).toEqual(assembleOf(stream));
-    if (offset) expect(normalized[0].local).toEqual({ kind: 'queue-pop' });
+    if (offset) expect(normalized[offset - 1].local).toEqual({ kind: 'queue-pop' });
+    if (offset === 2) expect(normalized[0].local).toEqual({ kind: 'queue-refill' });
   });
 
   it('has no publish path and no shell', () => {
@@ -154,7 +158,7 @@ describe.each(ALL)('stream %s', (stream) => {
 
 describe('research depth and draft flags', () => {
   it.each(ALL)('%s asks for one topic, 3 sources and 4000-6000 characters of concrete notes', (stream) => {
-    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const offset = leadOf(stream);
     const research = stepsOf(stream)[offset].instruction;
     expect(research.length).toBeLessThanOrEqual(500);
     if (ENGLISH.includes(stream)) {
@@ -171,7 +175,7 @@ describe('research depth and draft flags', () => {
   });
 
   it.each(ALL)('%s tells the writer and the reviser not to talk about their own work', (stream) => {
-    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const offset = leadOf(stream);
     const steps = stepsOf(stream);
     for (const i of [1 + offset, 3 + offset, 5 + offset]) {
       expect(steps[i].instruction.length).toBeLessThanOrEqual(500);
@@ -181,7 +185,7 @@ describe('research depth and draft flags', () => {
   });
 
   it.each(ALL)('%s has the reviewer check each citation number, and keeps the review contract whole', (stream) => {
-    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const offset = leadOf(stream);
     const raw = stepsOf(stream)[2 + offset].instruction;
     expect(raw.length).toBeLessThanOrEqual(500);
     expect(raw).toMatch(ENGLISH.includes(stream) ? /any \[n\] not pointing to the source/ : /各 \[n\] がその主張を実際に載せている資料/);
@@ -191,7 +195,7 @@ describe('research depth and draft flags', () => {
   });
 
   it.each(ALL)('%s prefers article pages over journal index pages in its research', (stream) => {
-    const offset = QUEUED.includes(stream) ? 1 : 0;
+    const offset = leadOf(stream);
     expect(stepsOf(stream)[offset].instruction).toMatch(ENGLISH.includes(stream) ? /article pages over journal index pages/ : /雑誌の目次ページより/);
   });
 
@@ -246,9 +250,10 @@ describe('the stream set', () => {
   it('English streams use English instructions and an AI-use footer', () => {
     ENGLISH.forEach((stream) => {
       const steps = stepsOf(stream);
-      expect(steps[1].instruction).toMatch(/^Search the web/);
-      expect(steps[3].instruction).toContain('Output contract');
-      expect(steps[4].instruction).toMatch(/^Apply every finding/);
+      const first = leadOf(stream);
+      expect(steps[first].instruction).toMatch(/^Search the web/);
+      expect(steps[first + 2].instruction).toContain('Output contract');
+      expect(steps[first + 3].instruction).toMatch(/^Apply every finding/);
       expect(assembleOf(stream).footer).toContain('AI disclosure');
       expect(buildArticlePipeline(stream).prompt).toContain('not a translation');
     });
@@ -269,6 +274,17 @@ describe('the stream set', () => {
 });
 
 describe('vintage', () => {
+  it.each(VINTAGE)('%s finds its own topics, under the stream\'s rules, in the queue format', (stream) => {
+    const topic = stepsOf(stream)[0];
+    expect(topic.local).toEqual({ kind: 'queue-refill' });
+    expect(topic.instruction.length).toBeLessThanOrEqual(500);
+    expect(topic.instruction).toContain('- [ ] ');
+    expect(topic.instruction).toMatch(/本物か偽物かを書かない|authentic or fake/);
+    expect(topic.instruction).toMatch(/出品へのリンク、URL、画像は書かない|No listing links, no URLs, no images/);
+    // Its text is its prompt: a fix to the limit would otherwise cut the format.
+    expect(normalizeSteps(buildArticlePipeline(stream).orchestration)[0].instruction).toBe(topic.instruction);
+  });
+
   it.each(VINTAGE)('%s carries the disclaimer, lints images and listings, and marks no X intent', (stream) => {
     const local = assembleOf(stream);
     expect(local.footer).toMatch(/鑑定ではありません|not an appraisal/);

@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=34
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=35
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -153,7 +153,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // skips a version that is empty once cleaned, restores a lost title line, and
 // flags cited index pages and bracketed notes. Bumped so a stale v33 copy is
 // refreshed.
-const EXECUTOR_SCRIPT_VERSION = 34;
+// v35 (2026-11-07, topic refill): a `queue-refill` local step tops up a low
+// `_queue.md` with web-grounded topics before `queue-pop`. Its answer is parsed
+// into appended queue items and never carried, and it cannot fail the run. Other
+// plans run exactly as before. Bumped so a stale v34 copy, which refuses the step,
+// is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 35;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2339,6 +2344,7 @@ function normalizeListDraftsLocal(raw) {
 function normalizeStepLocal(raw, index) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   if (raw.kind === 'queue-pop') return { kind: 'queue-pop' };
+  if (raw.kind === 'queue-refill') return { kind: 'queue-refill' };
   if (raw.kind === 'list-drafts') return normalizeListDraftsLocal(raw);
   if (raw.kind !== 'assemble') return undefined;
   if (!Array.isArray(raw.parts) || raw.parts.length === 0 || raw.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;
@@ -2756,6 +2762,209 @@ async function completeQueuePop(paths, opts, plan, config, roots, popped, write)
     } catch (_) {}
   }
   return true;
+}
+
+// ── Article pipeline: topic refill (v35) ────────────────────────────────────
+// `queue-refill` runs before `queue-pop` on a stream whose topics are found, not
+// hand-written. It is a model call, unlike the other local steps, but its answer
+// is parsed into queue items and goes no further: it adds no carried result and
+// no source, so only the block queue-pop takes reaches the chain. The answer is
+// untrusted. It can only add `- [ ]` blocks to the end of `_queue.md`, and that
+// file stays data: it cannot change a step, an engine, the action or the path.
+const QUEUE_REFILL_MIN_OPEN = 3;
+const QUEUE_REFILL_MAX_ITEMS = 5;
+const QUEUE_REFILL_MAX_BODY_LINES = 4;
+const QUEUE_REFILL_LINE_MAX_CHARS = 200;
+const QUEUE_REFILL_PROMPT_QUEUE_TITLES = 100;
+const QUEUE_REFILL_PROMPT_DRAFT_TITLES = 30;
+const QUEUE_REFILL_PROMPT_TITLE_MAX_CHARS = 100;
+// ARTICLE_RESEARCH_ENGINE in lib/agent-pipeline-presets.ts. Fixed here, not read
+// from the step: a local step carries no tool, so nothing can repin this one.
+const QUEUE_REFILL_TOOL_TYPE = 'gemini-api';
+const QUEUE_REFILL_NOT_NEEDED_MESSAGE = 'The queue has enough open topics, so none were looked up.';
+const QUEUE_REFILL_FAILED_MESSAGE = 'No new topics were added to the queue.';
+// A queue item has no use for these, and a listing link or image is against the
+// stream's rules whatever the model was told.
+const QUEUE_REFILL_DROP_LINE_RE = /https?:\/\/|www\.|!\[|<img/i;
+// Written out rather than with a Unicode property escape: such a regex literal
+// stops this whole script from loading on a node built without ICU.
+const QUEUE_TITLE_NOISE_RE = /[\s!-/:-@[-`{-~、。・「」『』【】〈〉《》…―—–〜]+/g;
+
+// Every item of a queue, open or done, in the forms a person may write them, and
+// the number of items queue-pop could take.
+function queueItemTitles(text) {
+  const titles = [];
+  let open = 0;
+  for (const raw of String(text == null ? '' : text).replace(/^﻿/, '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (/^- \[ \]\s+\S/.test(line)) open += 1;
+    const m = /^\s*[-*+]\s*\[[ xX]\]\s+(\S.*)$/.exec(line);
+    if (m) titles.push(m[1]);
+  }
+  return { open, titles };
+}
+
+function queueTitleKey(title) {
+  return String(title == null ? '' : title).normalize('NFKC').toLowerCase().replace(QUEUE_TITLE_NOISE_RE, '');
+}
+
+// One line of model output as plain text, or '' when it has to go.
+function cleanQueueRefillLine(raw, maxChars) {
+  const text = String(raw == null ? '' : raw);
+  if (QUEUE_REFILL_DROP_LINE_RE.test(text)) return '';
+  const plain = sanitizeDigestText(text.replace(/\[[ xX]\]/g, ' '), QUEUE_MAX_BYTES).replace(/^[\s\-*+>#]+/, '');
+  return Array.from(plain).slice(0, maxChars).join('').trim();
+}
+
+/**
+ * The items in a model's answer. Only `- [ ] <title>` lines and the indented
+ * lines right under one count; every other line is dropped and ends the item.
+ */
+function parseQueueRefill(text) {
+  const items = [];
+  let current = null;
+  for (const raw of String(text == null ? '' : text).split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    const m = /^- \[ \][ \t]+(\S.*)$/.exec(line);
+    if (m) {
+      if (items.length >= QUEUE_REFILL_MAX_ITEMS) break;
+      const title = cleanQueueRefillLine(m[1], QUEUE_REFILL_LINE_MAX_CHARS - '- [ ] '.length);
+      current = queueTitleKey(title) ? { title, body: [] } : null;
+      if (current) items.push(current);
+    } else if (current && /^[ \t]+\S/.test(line)) {
+      const body = cleanQueueRefillLine(line, QUEUE_REFILL_LINE_MAX_CHARS - 2);
+      if (body && current.body.length < QUEUE_REFILL_MAX_BODY_LINES) current.body.push(body);
+    } else {
+      current = null;
+    }
+  }
+  return items;
+}
+
+function renderQueueRefillItems(items) {
+  return items.map((item) => [`- [ ] ${item.title}`].concat(item.body.map((l) => `  ${l}`)).join('\n')).join('\n') + '\n';
+}
+
+// What the model must not repeat, as data for its prompt ('' when nothing yet).
+function renderQueueRefillData(queueTitles, draftTitles) {
+  const list = (titles) => titles
+    .map((t) => cleanQueueRefillLine(t, QUEUE_REFILL_PROMPT_TITLE_MAX_CHARS))
+    .filter(Boolean)
+    .map((t) => `- ${t}`);
+  const queue = list(queueTitles.slice(-QUEUE_REFILL_PROMPT_QUEUE_TITLES));
+  const drafts = list(draftTitles);
+  const blocks = [];
+  if (queue.length) blocks.push(['Topics already in the queue:'].concat(queue).join('\n'));
+  if (drafts.length) blocks.push(['Recent drafts:'].concat(drafts).join('\n'));
+  return blocks.join('\n\n');
+}
+
+// The newest `<date>-*.md` titles of a stream folder. A file that cannot be read
+// only means one title less for the model to avoid.
+function recentDraftTitles(dir, fsImpl) {
+  const f = fsImpl || fs;
+  let names;
+  try {
+    names = f.readdirSync(dir);
+  } catch (_) {
+    return [];
+  }
+  const recent = names
+    .filter((name) => DIGEST_FILE_RE.test(name) && /^\d{4}-\d{2}-\d{2}-/.test(name))
+    .sort()
+    .reverse()
+    .slice(0, QUEUE_REFILL_PROMPT_DRAFT_TITLES);
+  const titles = [];
+  for (const name of recent) {
+    try {
+      const file = path.join(dir, name);
+      if (!f.lstatSync(file).isFile()) continue;
+      const head = readBytesBounded(file, DIGEST_HEAD_BYTES, f).toString('utf8');
+      const title = sanitizeDigestText(parseDraftFrontmatter(head).title, ARTICLE_TITLE_MAX_CHARS);
+      if (title) titles.push(title);
+    } catch (_) {}
+  }
+  return titles;
+}
+
+// The physical path of a queue that does not exist yet, under the deepest folder
+// that does, or null without a vault. The same jail as readQueueFile: a folder
+// still to be created must land inside the vault, and a broken symlink on the way
+// is refused, because the write would follow it.
+function missingQueueTarget(vault, outputDir, f) {
+  const fail = (why) => new PlanFailure(`queue-pop: ${why}`, { handled: true });
+  let realVault;
+  try {
+    realVault = f.realpathSync(vault);
+  } catch (e) {
+    if (isMissingPathError(e)) return null;
+    throw fail(`cannot read the vault (${(e && e.code) || 'error'})`);
+  }
+  const missing = [];
+  let dir = path.resolve(outputDir);
+  for (;;) {
+    let real = null;
+    try {
+      real = f.realpathSync(dir);
+    } catch (e) {
+      if (!isMissingPathError(e)) throw fail(`cannot read the output folder (${(e && e.code) || 'error'})`);
+    }
+    if (real !== null) {
+      if (!pathInsideRoot(real, realVault)) throw fail('the output folder is outside the vault');
+      return path.join(real, ...missing, QUEUE_FILE_NAME);
+    }
+    let linked = false;
+    try {
+      linked = f.lstatSync(dir).isSymbolicLink();
+    } catch (_) {}
+    if (linked) throw fail('the output folder is a broken link');
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    missing.unshift(path.basename(dir));
+    dir = parent;
+  }
+}
+
+// readQueueFile, plus an empty queue at its future path when there is no file.
+function readQueueForRefill(vault, outputDir, fsImpl) {
+  const f = fsImpl || fs;
+  const read = readQueueFile(vault, outputDir, f);
+  if (read) return read;
+  const file = missingQueueTarget(vault, outputDir, f);
+  return file ? { file, text: '' } : null;
+}
+
+/**
+ * Add the new items to the end of the queue. The model call took a while and the
+ * owner may have edited the queue in Obsidian, so the file is read again under
+ * the same jail and titles are checked against what is there now. Existing text
+ * is kept byte for byte. Returns the number of items added. `write` is
+ * brokerFsWrite, as for completeQueuePop.
+ */
+async function appendQueueRefill(paths, opts, plan, config, roots, items, draftTitles, write) {
+  const read = readQueueForRefill(obsidianVaultRoot(config), String((plan.output && plan.output.outputDir) || ''));
+  if (!read) return 0;
+  const known = new Set(queueItemTitles(read.text).titles.concat(draftTitles).map(queueTitleKey));
+  const fresh = [];
+  for (const item of items) {
+    const key = queueTitleKey(item.title);
+    if (known.has(key)) continue;
+    known.add(key);
+    fresh.push(item);
+  }
+  if (!fresh.length) return 0;
+  const next = `${read.text}${read.text && !read.text.endsWith('\n') ? '\n' : ''}${renderQueueRefillItems(fresh)}`;
+  if (Buffer.byteLength(next, 'utf8') > QUEUE_MAX_BYTES) throw new PlanFailure('queue-refill: the queue would pass its size cap', { handled: true });
+  const tmp = path.join(paths.tmpDir, `plan-queue-refill-${process.pid}.md`);
+  writeAtomic(tmp, next);
+  try {
+    await (write || brokerFsWrite)(paths, opts, roots, read.file, tmp);
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch (_) {}
+  }
+  return fresh.length;
 }
 
 // Plain one-line text, safe in `[[path|title]]` and in a notification.
@@ -7699,14 +7908,58 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     return collectJudgeCandidates(plan, i);
   }
 
+  // Article pipeline (v35): tops the queue up when it runs low. It never fails
+  // the run: whatever goes wrong, queue-pop decides what happens next, taking an
+  // open item or stopping on an empty queue. A queue the jail refuses gets no
+  // model call and no write here, and queue-pop then fails on it as it always has.
+  // research mode gives Gemini its grounded search and, on a longform plan, a
+  // ladder of the pinned engine alone. No evidence, no carried result.
+  async function runQueueRefill(i, stepOpts) {
+    const step = plan.steps.list[i];
+    const audit = (event, extra) => appendJsonl(paths.planAuditFile, Object.assign({ ts: new Date().toISOString(), kind: 'plan.executor', event, agentId: plan.agent.id, stepIndex: i }, extra));
+    try {
+      const read = readQueueForRefill(obsidianVaultRoot(config), String((plan.output && plan.output.outputDir) || ''));
+      if (!read) throw new PlanFailure('the vault does not exist', { handled: true });
+      const queue = queueItemTitles(read.text);
+      if (queue.open >= QUEUE_REFILL_MIN_OPEN) return { status: 'skipped', preview: QUEUE_REFILL_NOT_NEEDED_MESSAGE };
+      const tool = vettedToolObject(QUEUE_REFILL_TOOL_TYPE);
+      if (!tool) throw new PlanFailure('this plan has no research engine for topics', { handled: true });
+      const drafts = recentDraftTitles(path.dirname(read.file));
+      const data = renderQueueRefillData(queue.titles, drafts);
+      const prompt = composeStepPrompt(plan.prompt, step.instruction, data ? [data] : [], undefined, data ? { priorHeadings: ['Topics not to repeat'] } : undefined, undefined, true).prompt;
+      const refillPlan = Object.assign({}, plan, {
+        prompt,
+        tool,
+        action: { type: '__suppressed__' },
+        toolLadder: [],
+        sourcing: { mode: 'research', requestText: step.instruction },
+      });
+      // No quality gate: the parser below is stricter, and it decides what stays.
+      const attempt = await requestModelContentWithLadder(paths, stepOpts, refillPlan, config, false);
+      if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
+      const items = parseQueueRefill(attempt.resultText);
+      const added = await appendQueueRefill(paths, stepOpts, plan, config, roots, items, drafts);
+      if (!added) throw new PlanFailure('the answer held no new topic', { handled: true });
+      audit('queue_refilled', { added, dropped: items.length - added });
+      return { status: 'success', preview: `${added} new topics added to the queue.` };
+    } catch (error) {
+      if (error instanceof RunHalted) throw error;
+      const reason = redact(error && error.message ? error.message : String(error)).slice(0, 300);
+      audit('queue_refill_failed', { reason });
+      return { status: 'skipped', preview: previewText(`${QUEUE_REFILL_FAILED_MESSAGE} ${reason}`) };
+    }
+  }
+
   // Article pipeline (v28): a local step makes no model call. Only a longform
   // plan runs one, and only with a config that passes validation; anything
   // else fails the step rather than reaching a model. Returns { text }, or
-  // { stopChain } when an empty queue ends the run.
-  function runLocalStep(i) {
+  // { stopChain } when an empty queue ends the run, or { refill } from a
+  // queue-refill step, which leaves no result to carry.
+  async function runLocalStep(i, stepOpts) {
     const local = longform ? normalizeStepLocal(plan.steps.list[i].local, i) : undefined;
     if (!local) throw new PlanFailure('This local step is invalid, so it was not run.', { handled: true });
     const outputDir = String((plan.output && plan.output.outputDir) || '');
+    if (local.kind === 'queue-refill') return { refill: await runQueueRefill(i, stepOpts) };
     if (local.kind === 'queue-pop') {
       const read = readQueueFile(obsidianVaultRoot(config), outputDir);
       const block = read ? firstQueueBlock(read.text) : null;
@@ -7938,7 +8191,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         : (contextResults.length ? contextResults[contextResults.length - 1] : undefined);
       let attempt;
       if (step.local !== undefined) {
-        const localResult = runLocalStep(i);
+        const localResult = await runLocalStep(i, stepOpts);
+        if (localResult.refill) {
+          return {
+            record: { index: i, instruction: step.instruction, status: localResult.refill.status, durationMs: Date.now() - stepStart, outputPreview: localResult.refill.preview },
+          };
+        }
         if (localResult.stopChain) {
           return {
             record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: localResult.stopChain },
@@ -9350,6 +9608,20 @@ module.exports = {
   firstQueueBlock,
   flipQueueText,
   completeQueuePop,
+  QUEUE_REFILL_MIN_OPEN,
+  QUEUE_REFILL_MAX_ITEMS,
+  QUEUE_REFILL_MAX_BODY_LINES,
+  QUEUE_REFILL_LINE_MAX_CHARS,
+  QUEUE_REFILL_TOOL_TYPE,
+  QUEUE_REFILL_NOT_NEEDED_MESSAGE,
+  QUEUE_REFILL_FAILED_MESSAGE,
+  queueItemTitles,
+  queueTitleKey,
+  parseQueueRefill,
+  renderQueueRefillData,
+  recentDraftTitles,
+  readQueueForRefill,
+  appendQueueRefill,
   sanitizeDigestText,
   parseDraftFrontmatter,
   scanDraftFolders,

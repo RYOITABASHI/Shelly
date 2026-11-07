@@ -75,9 +75,10 @@
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
+- 2026-11-07: vintage の `queue-refill`（executor v35、`feat/article-topic-refill`）はオフラインのテストのみ。実機で要確認: Gemini grounded の答えが `- [ ]` 形式に沿うか、grounded の 1 回が CAP-001 の 10 分の壁に収まるか、`/sdcard` の `_queue.md` が無い状態から実 broker で作れるか。
 
 **2026-11-07 オーナー要望（未実装）: コピペでの投稿はしない。** 各媒体の下書き箱に入った状態にして、オーナーは公開を押すだけにする。経路の案: dev.to = Forem API（`published:false` を固定）、はてな = AtomPub（`app:draft=yes` を固定、省略すると公開になる）、note / Substack = ClosePaw で公式アプリの下書き保存（どちらの規約にも下書き保存の補助を直接禁じる文言は見つからなかったが、Substack の publisher terms は未読）、Zenn = 公開に push が要るなら ClosePaw か PR マージで代替（要検証）。ソフトウェアに公開の経路は持たせない。画像の生成と挿入も希望あり（古着は著作物の絵柄を生成しない方針と要調整）。既存の Obsidian 下書きは正本として残す。
-設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v34。下はテストでは確かめられず、実機でしか分からないこと。
+設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v35。下はテストでは確かめられず、実機でしか分からないこと。
 - **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
 - **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
 - **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても ai-steam 以外の 4 本は下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
@@ -89,7 +90,7 @@
 - **Obsidian と X**: `[[path|title]]` の wikilink が開くこと、intent リンクで X アプリが文面入りで開くこと。
 - **確認の流れ**: 5 本とダイジェストの NL 登録が平文の確認で通ること。ダイジェストの確認文にはツールとして Gemini が出るが、ダイジェストはモデルを呼ばない（表示だけの問題。`tool` は必須項目で、local にするとネイティブがローカル LLM を起動するため避けた）。
 - **通知**: ストリームの成功では通知が出ず、ダイジェストだけが出ること。失敗は通知されること。キューが空の日は通知なしでダイジェストに「未作成」と出ること。
-- **種まき（手作業）**: `docs/promo/articles/devlog/queue-seed.md` を `50_Drafts/Dev/_queue.md` と `50_Drafts/DevEn/_queue.md` に置く。古着の 2 ストリームのキューはまだ無いので、置くまでは毎日「未作成」になる。
+- **種まき（手作業）**: `docs/promo/articles/devlog/queue-seed.md` を `50_Drafts/Dev/_queue.md` と `50_Drafts/DevEn/_queue.md` に置く。古着の 2 ストリームは `queue-refill` がキューを作るので種まきは要らない（v35）。
 
 ### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
 `REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。

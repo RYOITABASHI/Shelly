@@ -9,7 +9,8 @@
 // a test can stand in for the cloud engines the loopback fixture cannot serve.
 // Each call takes the next reply for its URL: { body } answers, { exit } fails
 // with that broker exit code (23 is the transient one), and running out of
-// replies fails too. Every call is appended to "<file>.calls".
+// replies fails too. Every call is appended to "<file>.calls", and its request
+// body to "<file>.bodies", one JSON string per line.
 'use strict';
 
 const { spawnSync } = require('child_process');
@@ -39,6 +40,7 @@ if (arg('op') === 'http.request' && process.env.SHELLY_TEST_FAKE_HTTP) {
   const script = JSON.parse(fs.readFileSync(file, 'utf8'));
   const key = Object.keys(script).find((fragment) => arg('url').includes(fragment));
   fs.appendFileSync(`${file}.calls`, `${key || arg('url')}\n`);
+  fs.appendFileSync(`${file}.bodies`, `${JSON.stringify(arg('body-file') ? fs.readFileSync(arg('body-file'), 'utf8') : '')}\n`);
   const reply = key ? script[key].shift() : undefined;
   fs.writeFileSync(file, JSON.stringify(script));
   if (!reply || reply.exit) {

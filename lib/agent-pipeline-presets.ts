@@ -112,7 +112,8 @@ export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】
 // together: the executor then moves that review to the other family, and leaves
 // the draft unresolved if the two still match.
 // Research is Gemini grounded, except the academic stream: owner decision
-// 2026-11-06, Perplexity only for papers.
+// 2026-11-06, Perplexity only for papers. The topic step uses this same engine,
+// fixed as QUEUE_REFILL_TOOL_TYPE in scripts/shelly-plan-executor.js.
 const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
 const ARTICLE_ACADEMIC_RESEARCH_ENGINE: ToolChoice = { type: 'perplexity' };
 const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };
@@ -167,8 +168,14 @@ interface ArticleStreamConfig {
   /** Language of the instructions and of the draft. */
   lang: 'ja' | 'en';
   /** The chain starts with `queue-pop`: the topic comes from
-   *  50_Drafts/<folder>/_queue.md, which the owner fills by hand. */
+   *  50_Drafts/<folder>/_queue.md, filled by hand unless `topicInstruction` is
+   *  set. */
   queue: boolean;
+  /** A `queue-refill` step goes before `queue-pop`, and this is its model prompt:
+   *  the stream finds its own topics. Unset on the dev streams, whose topics
+   *  come from git history, which a model cannot see. Keep it free of freshness
+   *  words: every instruction feeds the chain's recency detection. */
+  topicInstruction?: string;
   /** One X intent link in the digest. Off for a stream with no X account. */
   intent: boolean;
   footer: string;
@@ -283,6 +290,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     lintSources: true,
     quality: { minChars: 2500, minSources: 2 },
     reviewExtra: '真贋の断定、出品へのリンク、画像の指定、作品の絵柄の詳しい描写も指摘する。',
+    topicInstruction:
+      '連載の次のテーマを探す。Webで検索し、この連載でまだ書いていないテーマを最大5件挙げる。作品の公開年や原作の背景、服の作りの見方など、別々の資料が3件以上見つかるものを選ぶ。特定の品が本物か偽物かを書かない。出品へのリンク、URL、画像は書かない。渡した一覧と同じテーマは出さない。出力は次の形式だけ。各項目の1行目は「- [ ] テーマ名」、続けて2字下げで「要点: 」で始まる行を1〜4行。ほかの文は書かない。',
     prompt: [
       'ビンテージ古着の読み物シリーズ。媒体ははてなブログ、読者は映画Tやアニメ、古着が好きな人。日本語で書く。',
       '共通ルール:',
@@ -311,6 +320,8 @@ const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
     lintSources: true,
     quality: { minWords: 600, minSources: 2 },
     reviewExtra: 'Flag real-or-fake claims, listing links, images and detailed print descriptions.',
+    topicInstruction:
+      'Find the next topics for this letter. Search the web and list up to 5 topics this letter has not covered. Pick ones with at least 3 separate sources on the film, the era or how the garment is made. Never say an item is authentic or fake. No listing links, no URLs, no images. Do not repeat any topic in the lists you were given. Output only this format: each item starts with "- [ ] topic", then 1 to 4 lines indented by two spaces, each starting "Points: ". Write nothing else.',
     prompt: [
       'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
       'Rules for every step:',
@@ -346,17 +357,19 @@ const articleReviseInstruction = (cfg: ArticleStreamConfig): string =>
 /**
  * One stream's daily draft agent:
  * [research, write, review1, revise1, review2, revise2, assemble], with
- * `queue-pop` first on a queued stream, run by the PlanSpec executor on the
- * cron (longform chain; Run now is refused). The chain ends in the draft
- * action: it saves to the vault and publishes nothing. autonomous:false keeps
- * the pinned HTTP engines and the local steps (an autonomous plan strips
- * Groq/Cerebras pins). The queue text only reaches the models as a carried
- * result: steps, engines, action and output path are all fixed here.
+ * `queue-pop` first on a queued stream, and `queue-refill` before that on a
+ * stream that finds its own topics, run by the PlanSpec executor on the cron
+ * (longform chain; Run now is refused). The chain ends in the draft action: it
+ * saves to the vault and publishes nothing. autonomous:false keeps the pinned
+ * HTTP engines and the local steps (an autonomous plan strips Groq/Cerebras
+ * pins). The queue text only reaches the models as a carried result: steps,
+ * engines, action and output path are all fixed here.
  */
 export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
   const cfg = ARTICLE_STREAMS[stream];
   // `of` and `parts` count from the research step.
-  const at = (k: number) => k + (cfg.queue ? 1 : 0);
+  const refill = cfg.queue && !!cfg.topicInstruction;
+  const at = (k: number) => k + (cfg.queue ? 1 : 0) + (refill ? 1 : 0);
   const review = articleReviewInstruction(cfg);
   const revise = articleReviseInstruction(cfg);
   const assemble: AgentLocalStepConfig = {
@@ -370,6 +383,7 @@ export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
     quality: { ...cfg.quality, selfTalk: true },
   };
   const steps: AgentOrchestrationStep[] = [
+    ...(refill ? [{ instruction: cfg.topicInstruction as string, local: { kind: 'queue-refill' } as AgentLocalStepConfig }] : []),
     ...(cfg.queue
       ? [{ instruction: cfg.lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
       : []),

@@ -185,6 +185,7 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
   if (r.kind === 'queue-pop') return { kind: 'queue-pop' };
+  if (r.kind === 'queue-refill') return { kind: 'queue-refill' };
   if (r.kind === 'list-drafts') return normalizeListDraftsLocal(r);
   if (r.kind !== 'assemble') return undefined;
   if (!Array.isArray(r.parts) || r.parts.length === 0 || r.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;

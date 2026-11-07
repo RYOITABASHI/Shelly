@@ -1,5 +1,7 @@
 # Daily article drafts — plan (2026-11-06)
 
+Status (2026-11-07): Inc 1 to 5 are on main; ai-steam has finished twice on the device, the other streams have not run there. Topic refill (executor v35, see below) is implemented on `feat/article-topic-refill`, tested offline only.
+
 Owner goal: one draft per day per stream, saved to the Obsidian vault, one digest a day, the owner presses publish by hand. Nothing here publishes anything. Business plan: `docs/promo/research/plan-v2.md`.
 
 Decisions taken without asking (cheap to change, recorded here):
@@ -12,7 +14,7 @@ Decisions taken without asking (cheap to change, recorded here):
 ## Design
 One agent per stream plus a digest agent, from `buildArticlePipeline(stream)` in `lib/agent-pipeline-presets.ts`. Daily cron staggered about 20 minutes. Draft action into `/sdcard/Documents/ObsidianVault/50_Drafts/<Stream>/`.
 
-Chain: `[research, write, review1, revise1, review2, revise2, assemble]`; dev and vintage add `queue-pop` first.
+Chain: `[research, write, review1, revise1, review2, revise2, assemble]`; dev and vintage add `queue-pop` first, and vintage adds `queue-refill` before that.
 
 `orchestration.longform` in the executor gives:
 - 16,000-character carry, 24,000-character prompt, newlines kept, in `buildStepPrompt` (TS and JS), with the data note on every carried result. Research is cut to 7,000 characters at run time. A review or revise prompt that had to cut a text pins `review: unresolved`, and a revise step is skipped rather than run on a cut draft, so the full version stands.
@@ -31,6 +33,16 @@ The review loop is preset-emitted `handoff` steps. The role router is not used. 
 
 Owner material: the writer emits `【本人の材料: 未記入】` where it is missing, `assemble` sets `material: missing`, or `material: unknown` when the marker is gone (an unattended chain has no owner material, so it was dropped), and the digest shows both. No stream is publishable without the owner, because 本人の見解 and 最終確認者 are human. Vintage drafts carry no listing links or images; Mercari checks stay attended.
 
+## Topic refill (v35)
+Finding topics is the AI's job, so `vintage-ja` and `vintage-en` no longer stop on an empty queue. Dev keeps its hand-built queue: its topics come from git history, which a model cannot see. `ai-steam` picks its topic in research.
+
+- `queue-refill` runs before `queue-pop`, after the same-day skip. With 3 or more open items it does nothing and calls no model.
+- Otherwise it makes one Gemini grounded call: the plan's base prompt (the stream's rules), the titles to avoid as data (every queue item, open or done, and up to 30 recent draft titles), and the step's instruction as the format. The engine is `QUEUE_REFILL_TOOL_TYPE` in the executor, because a local step carries no tool: it cannot be repinned, and Perplexity is never used. A plan without a Gemini engine skips the call.
+- The answer is untrusted. Only `- [ ] <title>` lines and the indented lines right under one are read: at most 5 items, 4 body lines, 200 characters a line. Control characters, checkbox forms and headings are stripped, and a line with a URL or an image is dropped. A normalized title that matches the queue or a recent draft is dropped.
+- The write re-reads the queue under the same jail as the tick, checks titles again, appends, and goes through `brokerFsWrite`. Existing text is kept byte for byte. The queue and its folder are created when missing, inside the vault.
+- The answer adds no carried result and no source. Only the block `queue-pop` takes reaches the chain, with `QUEUE_TOPIC_NOTE`.
+- A refill never fails the run. On any failure it records `skipped` and audits `queue_refill_failed`, and `queue-pop` decides: an open item goes on, none ends the run skipped with no draft. A queue the jail refuses gets no model call and no write, and `queue-pop` then fails on it as it always has.
+
 ## Increments
 1. AI×STEAM JA end to end (longform, assemble, truncation check, lint terms, preset, parser, hook, attended refusal, i18n, executor version bump, asset copy, parity).
 2. Digest: `list-drafts`, intent links (`planXWeightedLength` ≤ 256), quiet per-stream success notification.
@@ -43,4 +55,4 @@ Owner material: the writer emits `【本人の材料: 未記入】` where it is 
 Role-routed handoff after research has the same `enforceSourcedIntermediate` problem: a PASS verdict is dropped, so the loop never ends early. Longform avoids it; role loops keep it. Goes in DEFERRED.md.
 
 ## Only on-device testing can prove
-Real output length and finish reasons, free-tier limits, the CAP-001 10-minute wall, direct `/sdcard` reads from the executor's node, six alarms under Doze on Samsung, Obsidian wikilinks, the X app handling intent links, plain-text confirm flow.
+Real output length and finish reasons, free-tier limits, the CAP-001 10-minute wall (a refill adds one grounded call inside it), whether Gemini's grounded topics follow the queue format, direct `/sdcard` reads from the executor's node, six alarms under Doze on Samsung, Obsidian wikilinks, the X app handling intent links, plain-text confirm flow.

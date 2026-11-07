@@ -1404,14 +1404,15 @@ export interface AgentOrchestrationStep {
   };
   /** Article pipeline (2026-11-06, executor v28): a non-model step run by the
    *  PlanSpec executor itself, only on an `orchestration.longform` chain. No
-   *  prompt is sent anywhere; `instruction` is a display label. Mutually
+   *  prompt is sent anywhere; `instruction` is a display label. The exception
+   *  is `queue-refill`, whose instruction is its model prompt. Mutually
    *  exclusive with `tool` / `apiCall` / `handoff`. Re-validated by
    *  normalizeStepLocal (lib/agent-orchestration.ts). The attended serial chain
    *  cannot run one, so Run now is refused (lib/agent-manager.ts). */
   local?: AgentLocalStepConfig;
 }
 
-export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentInvalidLocalStepConfig;
+export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentQueueRefillStepConfig | AgentInvalidLocalStepConfig;
 
 /**
  * A longform step whose local config failed validation. It stays a local step
@@ -1479,6 +1480,16 @@ export interface AgentListDraftsStepConfig {
  */
 export interface AgentQueuePopStepConfig {
   kind: 'queue-pop';
+}
+
+/**
+ * `queue-refill` (executor v35): when `<outputDir>/_queue.md` has under 3 open
+ * items, asks the grounded research engine for new topics and appends them. The
+ * engine is fixed in the executor, so no tool and no path in the config. Its
+ * answer is parsed into queue items, never carried, and it cannot fail the run.
+ */
+export interface AgentQueueRefillStepConfig {
+  kind: 'queue-refill';
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
