@@ -13,9 +13,9 @@ All notable changes to Shelly are documented here. Format loosely follows
   Anthropic (signed manifest, SHA-256) and the glibc libraries from Termux
   (signed index). Shelly does not bundle or redistribute either.
 - **Claude Code and Antigravity stay current.** Versioned installs with
-  `current`, `previous` and a hold on failed versions, updated at app start on
-  Wi-Fi (default on) and from the Builds screen, which now shows all three CLIs.
-  Their built-in updaters are off.
+  `current`, `previous` and a hold on failed versions. The Builds screen now
+  shows all three CLIs, with update and go-back buttons, and an optional update
+  at app start on Wi-Fi (off by default). Their built-in updaters are off.
 
 ### Changed
 

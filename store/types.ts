@@ -485,7 +485,7 @@ export type AppSettings = {
    *  scripts/shelly-agent-driver.js claudeAuthPlan(). */
   claudeSubscriptionUnattended?: boolean;
   /** Update an installed Claude Code / Antigravity CLI at app start on unmetered
-   *  Wi-Fi. Default on. Agents stay on their reviewed build either way. */
+   *  Wi-Fi. Default off for now. Agents stay on their reviewed build either way. */
   cliAutoUpdateWifi?: boolean;
   /** On cloud quota exhaustion (HTTP 429) during an autonomous web task:
    *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and

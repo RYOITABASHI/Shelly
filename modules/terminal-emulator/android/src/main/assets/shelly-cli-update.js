@@ -56,9 +56,20 @@ const REVIEWED_CLAUDE = {
 
 const CLAUDE_BASE = 'https://downloads.claude.ai/claude-code-releases';
 const CLAUDE_PLATFORM = 'linux-arm64';
+// Every host this script talks to, for the first request and for any redirect.
+// None of them redirected on 2026-11-07. A checksum still decides what is
+// installed, but no page should be able to send the device elsewhere.
+const ALLOWED_HOSTS = new Set([
+  'downloads.claude.ai',
+  'storage.googleapis.com',
+  'packages-cf.termux.dev',
+  'packages.termux.dev',
+  'antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+]);
 const CLAUDE_CHANNELS = ['latest', 'stable'];
 const AGY_MANIFEST_URL = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/android_arm64.json';
-const AGY_URL_PREFIX = 'https://storage.googleapis.com/antigravity-public/';
+const AGY_URL_ORIGIN = 'https://storage.googleapis.com';
+const AGY_URL_PATH = '/antigravity-public/';
 const TERMUX_GLIBC_MIRRORS = [
   'https://packages-cf.termux.dev/apt/termux-glibc',
   'https://packages.termux.dev/apt/termux-glibc',
@@ -100,8 +111,11 @@ const AGY_SPACE = 400 * MB;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const PROBE_HOLD_AFTER = 2;
-const PROBE_TIMEOUT_MS = 60 * 1000;
+// Generous: this also runs at app start, while the phone is busy. Running out of
+// time says nothing about the version; see probeClaude.
+const PROBE_TIMEOUT_MS = 120 * 1000;
 const NETWORK_IDLE_MS = 60 * 1000;
+const LOCK_FRESH_MS = 60 * 1000;
 const ANDROID_LINKER = '/system/bin/linker64';
 
 // fingerprint 31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE, the key Anthropic
@@ -152,6 +166,7 @@ class ProbeError extends Error {
   }
 }
 class UsageError extends Error {}
+class LockBusy extends Error {}
 
 function sha(algorithm, data) {
   return crypto.createHash(algorithm).update(data).digest('hex');
@@ -906,6 +921,31 @@ function readClaudeManifest(manifestBytes, sigBytes, version, { keyBytes, finger
   return { sha256: entry.checksum, size: entry.size };
 }
 
+// Judged on the parsed URL, and the text must already be in that form: `%2e%2e`
+// passes any test on the raw string and only becomes `..` at the server.
+function checkAgyUrl(url) {
+  let parsed = null;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    // Reported below.
+  }
+  if (
+    typeof url !== 'string'
+    || url.includes('%')
+    || !parsed
+    || parsed.href !== url
+    || parsed.origin !== AGY_URL_ORIGIN
+    || !parsed.pathname.startsWith(AGY_URL_PATH)
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || parsed.search !== ''
+    || parsed.hash !== ''
+  ) {
+    throw new TrustError(`unexpected Antigravity download URL: ${String(url).slice(0, 200)}`);
+  }
+}
+
 function readAgyManifest(text) {
   let manifest;
   try {
@@ -915,9 +955,7 @@ function readAgyManifest(text) {
   }
   const { version, url, sha512 } = manifest;
   parseVersionText(version);
-  if (typeof url !== 'string' || !url.startsWith(AGY_URL_PREFIX) || url.includes('..')) {
-    throw new TrustError(`unexpected Antigravity download URL: ${String(url).slice(0, 200)}`);
-  }
+  checkAgyUrl(url);
   if (!/^[a-f0-9]{128}$/.test(String(sha512))) throw new TrustError('Antigravity manifest has no valid sha512');
   return { version, url, sha512 };
 }
@@ -1013,9 +1051,33 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
+// state.json is only ever ours, but it is a file a person or a crash can change,
+// and every decision reads it. Anything unexpected is dropped, not trusted: at
+// worst a held version gets one more try and then a probe.
 function readState(paths) {
-  const state = readJson(paths.state);
-  return state && typeof state === 'object' ? state : {};
+  const raw = readJson(paths.state);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const state = {};
+  if (CLAUDE_CHANNELS.includes(raw.channel)) state.channel = raw.channel;
+  if (typeof raw.lastLatest === 'string' && VERSION.test(raw.lastLatest)) state.lastLatest = raw.lastLatest;
+  if (Number.isFinite(raw.lastCheckAt)) state.lastCheckAt = raw.lastCheckAt;
+  if (raw.failed && typeof raw.failed === 'object' && !Array.isArray(raw.failed)) {
+    const failed = {};
+    for (const [version, failure] of Object.entries(raw.failed)) {
+      if (VERSION.test(version) && failure && typeof failure === 'object' && !Array.isArray(failure)) {
+        failed[version] = {
+          stage: String(failure.stage),
+          reason: String(failure.reason).slice(0, 300),
+          count: Number.isInteger(failure.count) ? failure.count : 1,
+          at: Number.isFinite(failure.at) ? failure.at : 0,
+          hold: failure.hold === true,
+          retryAt: Number.isFinite(failure.retryAt) ? failure.retryAt : null,
+        };
+      }
+    }
+    state.failed = failed;
+  }
+  return state;
 }
 
 function exists(file) {
@@ -1072,6 +1134,36 @@ function promote(paths, versionDir) {
   if (old && old !== versionDir) pointAt(paths.previous, old);
   pointAt(paths.current, versionDir);
   atomicLink(paths.entry, path.join('current', paths.spec.file));
+  syncDir(paths.root);
+}
+
+// A promoted version must be on disk before a link names it: after a power cut a
+// link to a half-written binary would look installed. Windows, where only the
+// tests run, cannot open a directory.
+function syncDir(dir) {
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function syncFile(file) {
+  const fd = fs.openSync(file, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function syncTree(dir) {
+  for (const name of fs.readdirSync(dir)) syncFile(path.join(dir, name));
+  syncDir(dir);
 }
 
 function writeVersionMeta(dir, meta, now) {
@@ -1089,24 +1181,91 @@ function pidAlive(pid) {
   }
 }
 
+function processStart(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'latin1');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// The start time tells a live holder from another process that got its pid.
+function lockOwner() {
+  return `${process.pid} ${processStart(process.pid)}`;
+}
+
+function lockLooksLive(paths, text) {
+  const [pidText, start] = text.trim().split(' ');
+  const pid = Number(pidText);
+  // Created but not written yet: the holder is between two system calls.
+  if (!Number.isInteger(pid) || pid <= 0) {
+    try {
+      return Date.now() - fs.statSync(paths.lock).mtimeMs < LOCK_FRESH_MS;
+    } catch (_) {
+      return false;
+    }
+  }
+  if (!pidAlive(pid)) return false;
+  return !start || processStart(pid) === start;
+}
+
 function lockCli(paths) {
+  const busy = () => new LockBusy(`${paths.spec.label}: another install is already running`);
   const take = () => {
     const fd = fs.openSync(paths.lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-    fs.writeSync(fd, String(process.pid));
+    fs.writeSync(fd, lockOwner());
     fs.closeSync(fd);
+    return () => fs.rmSync(paths.lock, { force: true });
   };
   try {
-    take();
+    return take();
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
-    const holder = Number(fs.readFileSync(paths.lock, 'utf8').trim());
-    if (Number.isInteger(holder) && holder > 0 && holder !== process.pid && pidAlive(holder)) {
-      throw new Error(`${paths.spec.label}: another install is already running (pid ${holder})`);
-    }
-    fs.rmSync(paths.lock, { force: true });
-    take();
   }
-  return () => fs.rmSync(paths.lock, { force: true });
+  const seen = readText(paths.lock);
+  if (seen === null) throw busy();
+  if (lockLooksLive(paths, seen)) throw busy();
+  // Two processes can both find the same stale lock. Removing it by name could
+  // delete the lock the other one has just taken, so move it aside and look at
+  // what was actually moved. Only one of them gets the stale file.
+  const aside = `${paths.lock}.stale.${process.pid}`;
+  try {
+    fs.renameSync(paths.lock, aside);
+  } catch (_) {
+    throw busy();
+  }
+  if (readText(aside) !== seen) {
+    fs.renameSync(aside, paths.lock);
+    throw busy();
+  }
+  fs.rmSync(aside, { force: true });
+  try {
+    return take();
+  } catch (error) {
+    if (error.code === 'EEXIST') throw busy();
+    throw error;
+  }
+}
+
+/** A change to state.json, or false when an install holds it: that run writes last. */
+function updateState(ctx, paths, change) {
+  jail(ctx, paths);
+  let unlock;
+  try {
+    unlock = lockCli(paths);
+  } catch (error) {
+    if (error instanceof LockBusy) return false;
+    throw error;
+  }
+  try {
+    const state = readState(paths);
+    change(state);
+    writeJsonAtomic(paths.state, state);
+    return true;
+  } finally {
+    unlock();
+  }
 }
 
 function hashFile(algorithm, file) {
@@ -1138,10 +1297,26 @@ function writeExclusive(file, data) {
 
 // ─── Network ────────────────────────────────────────────────────────────────
 
-function request(url, redirects, onResponse, reject) {
+function checkFetchUrl(url) {
   const parsed = new URL(url);
-  if (parsed.protocol !== 'https:') {
-    reject(new TrustError(`refusing a non-https URL: ${parsed.origin}`));
+  if (
+    parsed.protocol !== 'https:'
+    || !ALLOWED_HOSTS.has(parsed.hostname)
+    || parsed.port !== ''
+    || parsed.username !== ''
+    || parsed.password !== ''
+  ) {
+    throw new TrustError(`refusing a URL outside the vendors' hosts: ${parsed.origin}`);
+  }
+  return parsed;
+}
+
+function request(url, redirects, onResponse, reject) {
+  let parsed;
+  try {
+    parsed = checkFetchUrl(url);
+  } catch (error) {
+    reject(error);
     return;
   }
   const headers = { 'User-Agent': 'Shelly', 'Accept-Encoding': 'identity' };
@@ -1191,8 +1366,10 @@ function downloadTo(url, file, maxBytes, algorithm) {
       const hash = crypto.createHash(algorithm);
       let size = 0;
       const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
-      const out = fs.createWriteStream(file, { fd: fs.openSync(file, flags, 0o600) });
+      const out = fs.createWriteStream(file, { fd: fs.openSync(file, flags, 0o600), flush: true });
+      let failed = false;
       const fail = (error) => {
+        failed = true;
         response.destroy();
         out.destroy();
         reject(error);
@@ -1204,7 +1381,10 @@ function downloadTo(url, file, maxBytes, algorithm) {
       });
       response.on('error', fail);
       out.on('error', fail);
-      out.on('finish', () => resolve({ size, hash: hash.digest('hex') }));
+      // close, not finish: that is when the bytes have reached the file.
+      out.on('close', () => {
+        if (!failed) resolve({ size, hash: hash.digest('hex') });
+      });
       response.pipe(out);
     }, reject);
   });
@@ -1280,35 +1460,32 @@ function extractDebLibraries(deb, wanted) {
   return selectTarFiles(readTar(tar), TERMUX_GLIBC_LIB_PREFIX, (base) => wanted.test(base));
 }
 
-function glibcReady(paths) {
+function glibcDirReady(dir) {
   return GLIBC_REQUIRED.every((name) => {
     try {
-      return fs.statSync(path.join(paths.lib, name)).isFile();
+      return fs.statSync(path.join(dir, name)).isFile();
     } catch (_) {
       return false;
     }
   });
 }
 
-async function fetchGlibcFiles(ctx) {
-  let index = null;
+async function fetchGlibcIndexes(ctx) {
   let lastError = null;
-  let mirror = null;
-  for (const candidate of TERMUX_GLIBC_MIRRORS) {
+  for (const mirror of TERMUX_GLIBC_MIRRORS) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      index = await fetchGlibcIndex(ctx, candidate);
-      mirror = candidate;
-      break;
+      return { index: await fetchGlibcIndex(ctx, mirror), mirror };
     } catch (error) {
       if (error instanceof TrustError) throw error;
       lastError = error;
     }
   }
-  if (!index) throw lastError || new Error('no Termux mirror answered');
-  const files = new Map();
-  const versions = {};
-  for (const { name, files: wanted } of TERMUX_GLIBC_PACKAGES_WANTED) {
+  throw lastError || new Error('no Termux mirror answered');
+}
+
+function glibcPackages(index) {
+  return TERMUX_GLIBC_PACKAGES_WANTED.map(({ name, files }) => {
     const stanza = index.get(name);
     if (!stanza) throw new TrustError(`${name} is not in the package index`);
     const size = Number(stanza.Size);
@@ -1317,13 +1494,19 @@ async function fetchGlibcFiles(ctx) {
       throw new TrustError(`${name} has a bad filename`);
     }
     if (!/^[a-f0-9]{64}$/.test(String(stanza.SHA256))) throw new TrustError(`${name} has no valid hash`);
+    return { name, wanted: files, stanza, size };
+  });
+}
+
+async function downloadGlibcFiles(ctx, mirror, packages) {
+  const files = new Map();
+  for (const { name, wanted, stanza, size } of packages) {
     // eslint-disable-next-line no-await-in-loop
     const deb = await ctx.fetchBytes(`${mirror}/${stanza.Filename}`, LIMITS.deb);
     if (deb.length !== size || sha('sha256', deb) !== stanza.SHA256) throw new TrustError(`${name} hash mismatch`);
     for (const [base, data] of extractDebLibraries(deb, wanted)) {
       if (!files.has(base)) files.set(base, data);
     }
-    versions[name] = stanza.Version;
   }
   let total = 0;
   for (const data of files.values()) total += data.length;
@@ -1332,38 +1515,57 @@ async function fetchGlibcFiles(ctx) {
     if (!files.has(name)) throw new TrustError(`${name} is missing from the Termux packages`);
   }
   elfInfo(files.get('ld-linux-aarch64.so.1').subarray(0, 64 * KB));
-  return { files, versions };
+  return files;
 }
 
-/** Fetched once and kept: claude asks glibc for very little, and a TUI maps it. */
-async function ensureGlibc(ctx, paths) {
-  if (glibcReady(paths)) return;
+/**
+ * The directory to probe with. Nothing that runs today changes here: a new set
+ * waits in glibc/<id>/ until commitGlibc, after a probe passed on it, and that
+ * id comes from the packages' hashes, so a retry after a failed probe does not
+ * download the same files again. Kept once in place: claude asks glibc for
+ * very little, and a running TUI maps it.
+ */
+async function prepareGlibc(ctx, paths) {
+  if (glibcDirReady(paths.lib)) return { dir: fs.realpathSync(paths.lib), id: null };
   ctx.log('[shelly] fetching the glibc libraries from Termux');
-  let fetched;
   try {
-    fetched = await fetchGlibcFiles(ctx);
+    const { index, mirror } = await fetchGlibcIndexes(ctx);
+    const packages = glibcPackages(index);
+    const versions = Object.fromEntries(packages.map(({ name, stanza }) => [name, stanza.Version]));
+    const digest = sha('sha256', packages.map(({ stanza }) => stanza.SHA256).join('\n')).slice(0, 8);
+    const id = `${String(versions.glibc).replace(/[^0-9A-Za-z.+-]/g, '_')}-${digest}`;
+    const final = path.join(paths.glibc, id);
+    if (glibcDirReady(final)) return { dir: fs.realpathSync(final), id };
+    const files = await downloadGlibcFiles(ctx, mirror, packages);
+    fs.mkdirSync(paths.glibc, { recursive: true, mode: 0o700 });
+    const staged = path.join(paths.glibc, `.stage-${id}`);
+    fs.rmSync(staged, { recursive: true, force: true });
+    fs.mkdirSync(staged, { mode: 0o700 });
+    try {
+      for (const [base, data] of files) writeExclusive(path.join(staged, base), data);
+      fs.writeFileSync(path.join(staged, 'SOURCE.json'), `${JSON.stringify({ source: 'termux-glibc', versions }, null, 2)}\n`, { mode: 0o600 });
+      syncTree(staged);
+      fs.rmSync(final, { recursive: true, force: true });
+      fs.renameSync(staged, final);
+      syncDir(paths.glibc);
+    } finally {
+      fs.rmSync(staged, { recursive: true, force: true });
+    }
+    return { dir: fs.realpathSync(final), id };
   } catch (error) {
     // Not Claude's bytes, so no reason to hold a Claude version. Nothing is
     // installed, and the next attempt asks Termux again.
     if (error instanceof TrustError) throw new Error(`glibc from Termux was rejected: ${error.message}`);
     throw error;
   }
-  const { files, versions } = fetched;
-  fs.mkdirSync(paths.glibc, { recursive: true, mode: 0o700 });
-  const id = `${String(versions.glibc).replace(/[^0-9A-Za-z.+-]/g, '_')}-${ctx.now()}`;
-  const staged = path.join(paths.glibc, `.stage-${id}`);
-  const final = path.join(paths.glibc, id);
-  fs.mkdirSync(staged, { mode: 0o700 });
-  try {
-    for (const [base, data] of files) writeExclusive(path.join(staged, base), data);
-    fs.writeFileSync(path.join(staged, 'SOURCE.json'), `${JSON.stringify({ source: 'termux-glibc', versions }, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(staged, final);
-  } finally {
-    fs.rmSync(staged, { recursive: true, force: true });
-  }
+}
+
+function commitGlibc(ctx, paths, glibc) {
+  if (!glibc.id) return;
   // A partial hand-staged lib/ is a real directory; move it aside, never delete it.
   if (exists(paths.lib) && !isLink(paths.lib)) fs.renameSync(paths.lib, `${paths.lib}.manual.${ctx.now()}`);
-  atomicLink(paths.lib, path.join('glibc', id));
+  atomicLink(paths.lib, path.join('glibc', glibc.id));
+  syncDir(paths.root);
 }
 
 // ─── Probes ─────────────────────────────────────────────────────────────────
@@ -1383,23 +1585,38 @@ function probeClaude(ctx, binary, libDir, probeHome) {
     DISABLE_UPDATES: '1',
     DISABLE_AUTOUPDATER: '1',
   };
+  // A timeout or a SIGKILL (the low-memory killer) is the phone's state, not the
+  // build's. It must not count towards holding a good version.
+  const transient = (result) => (result.error && result.error.code === 'ETIMEDOUT') || result.signal === 'SIGKILL';
   const run = (args) => {
     const result = childProcess.spawnSync(ANDROID_LINKER, [
       path.join(ctx.lib, 'shelly_glibc_exec'),
       path.join(libDir, 'ld-linux-aarch64.so.1'),
       '--library-path', libDir, binary, ...args,
     ], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env, maxBuffer: MB });
-    return { status: result.status, signal: result.signal, output: `${result.stdout || ''}${result.stderr || ''}`.trim() };
+    return {
+      status: result.status,
+      signal: result.signal,
+      transient: transient(result),
+      output: `${result.stdout || ''}${result.stderr || ''}`.trim(),
+    };
   };
+  const failure = (stage, step) => ({
+    ok: false,
+    stage,
+    transient: step.transient,
+    detail: step.output || `signal ${step.signal}`,
+  });
   const version = run(['--version']);
-  if (version.status !== 0) return { ok: false, stage: 'version', detail: version.output || `signal ${version.signal}` };
+  if (version.status !== 0) return failure('version', version);
   const help = run(['--help']);
-  if (help.status !== 0) return { ok: false, stage: 'help', detail: help.output || `signal ${help.signal}` };
+  if (help.status !== 0) return failure('help', help);
   const m = /\b(\d+\.\d+\.\d+)\b/.exec(version.output);
   return { ok: true, version: m ? m[1] : null };
 }
 
 function assertProbe(probe, version) {
+  if (!probe.ok && probe.transient) throw new Error('the check could not finish, so nothing changed; try again later');
   if (!probe.ok) throw new ProbeError(probe.stage || 'probe', String(probe.detail || 'probe failed').slice(0, 300));
   if (probe.version !== version) {
     throw new ProbeError('version', `binary reports ${probe.version}, expected ${version}`);
@@ -1408,11 +1625,40 @@ function assertProbe(probe, version) {
 
 // ─── Legacy layouts ─────────────────────────────────────────────────────────
 
+// A rename that was cut off before its record was written: the binary sits in
+// versions/ with nothing pointing at it, and cleanup would delete it.
+function recoverInterruptedAdoption(ctx, paths, cli) {
+  if (exists(paths.entry) || linkedVersion(paths, paths.current)) return;
+  for (const name of fs.readdirSync(paths.versions)) {
+    const dir = path.join(paths.versions, name);
+    const file = path.join(dir, paths.spec.file);
+    if (exists(file) && !exists(path.join(dir, '.healthy'))) {
+      const version = VERSION.test(name.split('-')[0]) ? name.split('-')[0] : '0.0.0';
+      writeVersionMeta(dir, { cli, version, sha256: hashFile('sha256', file), size: fs.statSync(file).size, source: 'manual' }, ctx.now());
+      syncTree(dir);
+      promote(paths, dir);
+      return;
+    }
+  }
+}
+
+// A build matching the reviewed hash needs no one to approve it again: that hash
+// is the approval. Hand-staged 2.1.314 keeps working for agents this way.
+function linkReviewedBuild(ctx, paths) {
+  const reviewed = ctx.reviewedClaude;
+  if (versionOf(linkedVersion(paths, paths.agent)) === reviewed.version) return;
+  const dir = findVersionDir(paths, reviewed.version, reviewed.sha256);
+  if (dir) pointAt(paths.agent, dir);
+}
+
 // Hand-staged Claude and the old agy-install left a plain file at the entry
 // path. Only a person's install command gets here. It is renamed, not hard
 // linked (SELinux denies apps hard links in app data); a running TUI holds the
-// inode, and the entry path is back a moment later as a link.
+// inode, and the entry path is back a moment later as a link. The record is
+// written after the rename and the link last, so being cut off anywhere leaves
+// the binary findable.
 function adoptLegacy(ctx, paths, cli) {
+  recoverInterruptedAdoption(ctx, paths, cli);
   let stat;
   try {
     stat = fs.lstatSync(paths.entry);
@@ -1422,9 +1668,11 @@ function adoptLegacy(ctx, paths, cli) {
   if (!stat.isFile()) return;
   const digest = hashFile('sha256', paths.entry);
   let version = null;
-  if (cli === 'agy') {
+  if (cli === 'claude' && digest === ctx.reviewedClaude.sha256) {
+    ({ version } = ctx.reviewedClaude);
+  } else if (cli === 'agy') {
     version = (readText(path.join(paths.root, 'VERSION')) || '').trim();
-  } else if (glibcReady(paths)) {
+  } else if (glibcDirReady(paths.lib)) {
     const probeHome = path.join(paths.stage, 'adopt-home');
     fs.rmSync(paths.stage, { recursive: true, force: true });
     fs.mkdirSync(probeHome, { recursive: true, mode: 0o700 });
@@ -1434,12 +1682,16 @@ function adoptLegacy(ctx, paths, cli) {
   }
   const known = VERSION.test(String(version));
   const dir = path.join(paths.versions, `${known ? version : 'manual'}-${digest.slice(0, 8)}`);
-  if (!exists(dir)) {
-    fs.mkdirSync(dir, { mode: 0o700 });
+  const file = path.join(dir, paths.spec.file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!exists(file)) fs.renameSync(paths.entry, file);
+  else if (hashFile('sha256', file) !== digest) throw new Error(`${dir} holds a different file; ${paths.entry} was left alone`);
+  if (!exists(path.join(dir, '.healthy'))) {
     writeVersionMeta(dir, { cli, version: known ? version : '0.0.0', sha256: digest, size: stat.size, source: 'manual' }, ctx.now());
-    fs.renameSync(paths.entry, path.join(dir, paths.spec.file));
   }
+  syncTree(dir);
   promote(paths, dir);
+  if (cli === 'claude') linkReviewedBuild(ctx, paths);
   ctx.log(`[shelly] adopted the existing ${paths.spec.label}${known ? ` ${version}` : ''}`);
 }
 
@@ -1472,12 +1724,19 @@ function installedVersion(paths) {
 
 async function stageClaude(ctx, paths, version, target, channel) {
   const reusable = findVersionDir(paths, version, target.sha256);
-  if (reusable) return reusable;
-  requireSpace(ctx, paths, target.size * 2 + SPACE_MARGIN);
-  await ensureGlibc(ctx, paths);
+  if (!reusable) requireSpace(ctx, paths, target.size * 2 + SPACE_MARGIN);
+  const glibc = await prepareGlibc(ctx, paths);
   const { stage } = paths;
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(path.join(stage, 'home'), { recursive: true, mode: 0o700 });
+  if (reusable) {
+    // No download, but a new glibc still has to prove itself on this build.
+    if (glibc.id) {
+      assertProbe(ctx.probeClaude(ctx, path.join(reusable, paths.spec.file), glibc.dir, path.join(stage, 'home')), version);
+    }
+    commitGlibc(ctx, paths, glibc);
+    return reusable;
+  }
   const dir = path.join(stage, 'version');
   fs.mkdirSync(dir, { mode: 0o700 });
   const binary = path.join(dir, paths.spec.file);
@@ -1487,11 +1746,14 @@ async function stageClaude(ctx, paths, version, target, channel) {
   if (got.size !== target.size || got.hash !== target.sha256) throw new TrustError('Claude Code checksum mismatch');
   fs.chmodSync(binary, 0o700);
   checkClaudeElf(binary);
-  assertProbe(ctx.probeClaude(ctx, binary, fs.realpathSync(paths.lib), path.join(stage, 'home')), version);
+  assertProbe(ctx.probeClaude(ctx, binary, glibc.dir, path.join(stage, 'home')), version);
   writeVersionMeta(dir, { cli: 'claude', version, sha256: target.sha256, size: target.size, channel, source: 'anthropic' }, ctx.now());
+  syncTree(dir);
   const final = path.join(paths.versions, `${version}-${target.sha256.slice(0, 8)}`);
   fs.rmSync(final, { recursive: true, force: true });
   fs.renameSync(dir, final);
+  syncDir(paths.versions);
+  commitGlibc(ctx, paths, glibc);
   return final;
 }
 
@@ -1551,9 +1813,11 @@ async function stageAgy(ctx, paths, manifest) {
   checkAgyElf(binary);
   const digest = sha('sha256', entry.data);
   writeVersionMeta(dir, { cli: 'agy', version: manifest.version, sha256: digest, sha512Archive: manifest.sha512, source: 'google', probe: 'checksum+elf' }, ctx.now());
+  syncTree(dir);
   const final = path.join(paths.versions, `${manifest.version}-${digest.slice(0, 8)}`);
   fs.rmSync(final, { recursive: true, force: true });
   fs.renameSync(dir, final);
+  syncDir(paths.versions);
   return final;
 }
 
@@ -1616,8 +1880,14 @@ function leasedDirs(paths) {
   return held;
 }
 
+function reviewedDirName(ctx) {
+  return `${ctx.reviewedClaude.version}-${ctx.reviewedClaude.sha256.slice(0, 8)}`;
+}
+
 function collectGarbage(ctx, paths) {
   const keep = new Set([paths.current, paths.previous, paths.agent].map((link) => linkedVersion(paths, link)).filter(Boolean));
+  // The reviewed build is what agents need, with or without a link to it yet.
+  if (paths.spec.file === 'claude') keep.add(path.join(paths.versions, reviewedDirName(ctx)));
   const leased = leasedDirs(paths);
   for (const name of fs.readdirSync(paths.versions)) {
     const dir = path.join(paths.versions, name);
@@ -1655,6 +1925,7 @@ async function install(ctx, cli, options = {}) {
     else result = await installAgy(ctx, paths, state, options, attempt);
     if (result.installed) {
       if (state.failed) delete state.failed[result.version];
+      if (cli === 'claude') linkReviewedBuild(ctx, paths);
       collectGarbage(ctx, paths);
     }
     return result;
@@ -1684,6 +1955,8 @@ function rollback(ctx, cli) {
     const state = readState(paths);
     const leaving = versionOf(current);
     if (leaving) recordFailure(state, leaving, 'rollback', 'rolled back by the user', ctx.now());
+    const back = versionOf(previous);
+    if (state.failed && back) delete state.failed[back];
     promote(paths, previous);
     writeJsonAtomic(paths.state, state);
     return { version: versionOf(previous) };
@@ -1740,10 +2013,10 @@ async function check(ctx) {
     try {
       // eslint-disable-next-line no-await-in-loop
       latest = await latestVersion(ctx, cli, state);
-      if (exists(paths.root)) {
-        state.lastLatest = latest;
-        writeJsonAtomic(paths.state, state);
-      }
+      // Under the lock, on a fresh read: the network took a while, and writing
+      // the copy from before it could erase a hold an install just recorded.
+      const seen = latest;
+      if (exists(paths.root)) updateState(ctx, paths, (fresh) => { fresh.lastLatest = seen; });
     } catch (error) {
       latestError = String(error.message || error).slice(0, 200);
     }
@@ -1753,8 +2026,9 @@ async function check(ctx) {
 }
 
 /**
- * The app-start pass. The caller has already seen an unmetered network. A CLI
- * nobody installed is never fetched, and a legacy layout waits for a person.
+ * The app-start pass, when the person has turned it on. The caller has already
+ * seen an unmetered network. A CLI nobody installed is never fetched, and a
+ * legacy layout waits for a person.
  */
 async function autoUpdate(ctx) {
   const results = {};
@@ -1765,9 +2039,9 @@ async function autoUpdate(ctx) {
       results[cli] = { skipped: 'not-managed' };
     } else if (state.lastCheckAt && ctx.now() - state.lastCheckAt < CHECK_INTERVAL_MS) {
       results[cli] = { skipped: 'checked-recently' };
+    } else if (!updateState(ctx, paths, (fresh) => { fresh.lastCheckAt = ctx.now(); })) {
+      results[cli] = { skipped: 'install-running' };
     } else {
-      state.lastCheckAt = ctx.now();
-      writeJsonAtomic(paths.state, state);
       try {
         // eslint-disable-next-line no-await-in-loop
         results[cli] = await install(ctx, cli, { auto: true });
@@ -1816,7 +2090,7 @@ function nextStepText(cli, result, ctx) {
   const reviewed = ctx.reviewedClaude;
   return [
     `[shelly] Claude Code ${result.version} is ready. Run: claude`,
-    '[shelly] It updates itself on Wi-Fi. The switch is in the Builds screen.',
+    '[shelly] Updates are a tap in the Builds screen, or turn on Update on Wi-Fi there.',
     `[shelly] Agents use only the reviewed ${reviewed.version}, a separate ${Math.ceil(reviewed.size / MB)} MB. To enable them: claude-install --agent`,
   ].join('\n');
 }
@@ -1895,6 +2169,7 @@ module.exports = {
   selectTarFiles,
   elfInfo,
   checkAgyElf,
+  checkFetchUrl,
   compareVersions,
   claudeChannelUrl,
   readClaudeManifest,

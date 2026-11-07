@@ -21,6 +21,7 @@ import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
@@ -29,12 +30,36 @@ import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
 import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.lang.ref.WeakReference
 import java.util.zip.ZipInputStream
+
+/**
+ * Where execCommand runs. The ~100 callers grew up with one command at a time, in
+ * call order, and some rely on it (fire-and-forget `.then` chains, read-after-
+ * write on the same file), so ordinary commands stay strictly one at a time.
+ * Semaphore waiters are FIFO, and the permit is taken on Expo's queue, so order
+ * holds. Only commands that declare a long timeout, the installers, leave that
+ * line: one would otherwise stop FileTree and every poller for 45 minutes. They
+ * touch their own directories, so overlapping the serial lane is safe.
+ *
+ * Process-wide, not per-module: a reload makes a new module while the old
+ * command may still be running.
+ */
+private object ExecLanes {
+    private const val LONG_TIMEOUT_MS = 300_000
+    private val serial = Semaphore(1)
+    private val long = Semaphore(2)
+
+    fun laneFor(timeoutMs: Int): Semaphore = if (timeoutMs >= LONG_TIMEOUT_MS) long else serial
+}
 
 class TerminalEmulatorModule : Module() {
 
@@ -2533,7 +2558,11 @@ class TerminalEmulatorModule : Module() {
 
         // ── Non-interactive command execution (replaces Termux bridge) ───────
 
-        AsyncFunction("execCommand") { command: String, timeoutMs: Int? ->
+        // A coroutine, because execSubprocess blocks until the command ends. As a
+        // plain AsyncFunction it held Expo's one queue for that long, and with
+        // it writeToSession, createSession and agent approvals. Everything up to
+        // the permit still runs on that queue, in call order. See ExecLanes.
+        AsyncFunction("execCommand") Coroutine { command: String, timeoutMs: Int? ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("No React context")
             val timeout = timeoutMs ?: 120_000
@@ -2585,14 +2614,22 @@ class TerminalEmulatorModule : Module() {
                 Log.i("TerminalEmulator", "execCommand: extractedNow=$extractedNow bash=$bashPath exists=$bashExists lib=$libPath home=$homePath")
             }
 
-            val result = ShellyJNI.execSubprocess(
-                "/system/bin/linker64",
-                bashPath,
-                libPath,
-                homePath,
-                wrappedCommand,
-                timeout
-            )
+            // The command enforces its own timeout in shelly-exec.c (SIGKILL to the
+            // process group). A JS reload cancels this coroutine, but withContext
+            // waits for the blocking call, so the permit stays held until the
+            // process is really gone, as it did on the queue.
+            val result = ExecLanes.laneFor(timeout).withPermit {
+                withContext(Dispatchers.IO) {
+                    ShellyJNI.execSubprocess(
+                        "/system/bin/linker64",
+                        bashPath,
+                        libPath,
+                        homePath,
+                        wrappedCommand,
+                        timeout
+                    )
+                }
+            }
 
             val exitCode = result[0].toInt()
             val stderr = result[2]

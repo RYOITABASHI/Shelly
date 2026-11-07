@@ -76,15 +76,21 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### `tar xf` と `git clone` で symlink を作ると境界チェックを迂回できる (P1、セキュリティ、未修正)
+
+2026-11-07 のレビューで指摘（`feat/claude-install` とは別件、ここでは直さない）。「すべて」レベルなどの境界チェックは**実行時点で存在する symlink** とコマンド中の語を見ているので、`tar xf` や `git clone` が展開時に作る symlink は判定をすり抜ける。例: アーカイブから `l -> $HOME` を作ったあとの `tee -- l/.bashrc` は、ワークスペース内のパスとして通る。`ln`・`cp -s`・`git apply`・`patch` は既に人に回しているが（CLAUDE.md「承認なしで実行」、`allLevelLinkProbe`）、リンクを作れるコマンドの一覧が足りていない。**修正の方向**: `tar`・`unzip`・`git clone`・`git checkout` 等を同じ扱いにするか、書き込み判定で全構成要素の realpath をワークスペースと比較する。
+
 ### 3 つの CLI を常に最新に保つ（2026-11-07 オーナー要望）(P0)
 
 旧取得元 `DioNanos/codex-termux` は `0.163.0-termux.3` が最終版で終了した。Codex、Claude Code、Antigravity を APK の更新なしで最新に保つ。計画は `docs/superpowers/specs/2026-11-07-cli-always-latest-plan.md`。Claude Code は手動配置のままなので `claude-install` も同時に作る。
 
 **`claude-install` と Antigravity の更新 — 実装済み、CI・実機とも未検証（2026-11-07、`feat/claude-install`）**: 設計は CLAUDE.md の AI CLIs 行。実体は `scripts/shelly-cli-update.js`。PC では実データで確認済み: Anthropic の 2.1.314 manifest の署名、termux-glibc の InRelease、Packages.gz、.deb、xz 展開（glibc と gcc-libs の 2 つで `xz -dc` と同じハッシュ）、公式 agy 1.5.2 のダウンロードと ELF 判定。**Claude 本体は PC では取得も実行もしていない**（偽物に差し替えて経路だけ通した）。
-- **実機で確認すること (P0)**: (1) 端末の node で `claude-install` が完走する（TLS、`fs.statfsSync`、`O_NOFOLLOW`、xz の所要時間と メモリ。gcc-libs は展開後 150MB を 1 本のバッファに持つ）。(2) `claude --version`、`claude` のサインイン、Bash ツール。2.1.319 で S3c/S3d の前提が保たれているか。(3) `ps` で走っている claude のパスが `versions/<版>-<id>/claude` になっていること。(4) `/proc/<pid>/maps` にそのパスが出ること（GC の判定が頼る。出なければリースのみが守りになる）。(5) `claude update` が `DISABLE_UPDATES=1` で拒否されること、`~/.local/share/claude/versions/` が増えないこと。(6) `claude-install --agent` のあとエージェントの実行が通ること、**無い状態では CLAUDE_ERROR で止まること**。(7) Wi-Fi で起動 60 秒後に自動更新が走り、モバイル回線では走らないこと。(8) 古い手動配置（`claude` が実ファイル）から移行できること、`claude-install --agent` が hash 一致なら再ダウンロードしないこと。
+- **実機で確認すること (P0)**: (1) 端末の node で `claude-install` が完走する（TLS、`fs.statfsSync`、`O_NOFOLLOW`、xz の所要時間と メモリ。gcc-libs は展開後 150MB を 1 本のバッファに持つ）。(2) `claude --version`、`claude` のサインイン、Bash ツール。2.1.319 で S3c/S3d の前提が保たれているか。(3) `ps` で走っている claude のパスが `versions/<版>-<id>/claude` になっていること。(4) `/proc/<pid>/maps` にそのパスが出ること（GC の判定が頼る。出なければリースのみが守りになる）。(5) `claude update` が `DISABLE_UPDATES=1` で拒否されること、`~/.local/share/claude/versions/` が増えないこと。(6) `claude-install --agent` のあとエージェントの実行が通ること、**無い状態では CLAUDE_ERROR で止まること**。(7) 「Wi-Fi で自動更新」をオンにして、Wi-Fi の起動 60 秒後に走り、モバイル回線では走らないこと。(8) 古い手動配置（`claude` が実ファイル）から移行できること、`claude-install --agent` が hash 一致なら再ダウンロードしないこと。
 - **決めたこと**: glibc は計画の推奨（CI パック）ではなく**端末が Termux から直接取得**（再配布が発生しない、依頼どおり）。xz は端末に頼らず JS で実装。Termux の索引に鮮度の制限は置かない（termux-glibc は 18 日動いていない。古い索引でも Termux が署名したパッケージしか出せず、プローブが続く）。**pin はなぜ 2.1.314 か**: S1〜S4 の driver の作業の基準で、`--tools` などの確認（PC は 2.1.220、実機の `can_use_tool` は S4 エントリ参照）に最も近い版。ただし S4 の実機検証が済んでいないので「レビュー済み」の意味はコードのレビューまで。agy の `--version` プローブは入れない（§5.4、自動起動になる）: 壊れた版は `agy` を実行して初めて分かるので、`shelly-update-clis agy rollback` を用意した。
 - **初回のエージェント**: Claude は同梱していないので承認済みの版が端末に無い状態から始まる。`claude-install` は最新だけを入れ、エージェントは手順を示して止まる（`claude-install --agent` か Builds の「エージェントで使う」）。理由: 340MB を断りなく 2 回落とさない。「最新をそのまま承認」は §6.2 を飛ばすので採らない。
 - **未実装**: 昇格後の起動監視と自動ロールバック（§6.4、失敗検出は導入時のプローブだけ）、オフライン・カナリア（§6.1、Claude は `--version` と `--help` のみ）、`--pin`、モバイル回線での通知、§6.2 の CI 契約テスト（pin は手で動かす）、WorkManager。Codex は従来の経路のまま自動更新もしない。agy の SHA-512 は CI の観測値と照合していない（§6.1 の表）。
+- **自動更新を既定 ON にする (P1、上の実機確認が通ったら)**: このリリースは `cliAutoUpdateWifi` 既定 OFF で、更新は Builds 画面のタップ（レビュー判断）。オーナー決定の本来の既定は Wi-Fi のみ ON。確認が済んだら `store/settings-store.ts` の既定を true に、`shouldRunManagedCliAutoUpdate` の `enabled === true` を見直し、README 2 言語、CLAUDE.md、i18n の文言を戻す。特に 2.1.319 以降で Bash ツールが動くこと（カナリアが無いので最新版の破損はプローブで分からない）を先に確かめる。
+- **手動配置の端末**: APK 更新後、`claude` は動くがエージェントは止まる。`claude-install` を 1 回実行すると取り込み、SHA-256 がレビュー済みと一致すれば `agent-current` も自動で作る。npm の `@anthropic-ai/claude-code-linux-arm64@2.1.314` が公式バケットと同じバイト列かは未確認（違えば `claude-install --agent` で約 300MB）。
 - **pin を動かす手順**: `REVIEWED_CLAUDE`（shelly-cli-update.js）と `CLAUDE_AGENT_REVIEWED`（driver）の version / sha256 / size を、署名付き manifest の値で同時に変える。古い APK の端末はそのまま旧 pin を使い続ける。新しい APK では旧 `agent-current` は拒否されるので `claude-install --agent` が要る。
 
 **Codex の取得元の切替 — 実装済み、CI・実機とも未検証（2026-11-07、`feat/codex-termux-official`）**: 設計は CLAUDE.md の「Codex CLI は Termux 公式パッケージ」の行。ローカルで実際の InRelease から .deb まで検証した。ワークフローは GitHub でしか確かめられない。

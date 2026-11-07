@@ -381,20 +381,20 @@ Run `claude-install` in a terminal, or tap **Install** under Claude Code in the 
 Shelly does not bundle or redistribute Claude Code. Your device downloads it directly, and nothing is modified:
 
 - **Claude Code** comes from Anthropic's release bucket. Its manifest must carry a signature from Anthropic's published release key, which is pinned in Shelly, and that manifest's SHA-256 and size must match the download.
-- **The glibc libraries** it needs (about 30 MB) come from Termux's `termux-glibc` packages, checked through the signed repository index, the same way `apt` would.
-- A new version is tried with `--version` and `--help` before it replaces anything. If that fails, the previous version stays, and the failed one is put on hold.
+- **The glibc libraries** it needs (about 30 MB) come from Termux's `termux-glibc` packages. A key pinned in Shelly must sign the repository index, and the package hashes must match it. Unlike `apt`, this does not check how old the index is.
+- A new version is tried with `--version` and `--help` before it replaces anything. If that fails, the previous version stays, and after a second failure the new one is put on hold. A failed signature or checksum holds it at once.
 
 Shelly starts Claude Code through its own userland loader (no root, no proot). Android is not on Anthropic's list of supported systems, so this path is not supported by Anthropic. Claude Code stays Anthropic's software under Anthropic's terms, and you sign in with your own account or key.
 
-**Updates.** After the first install, Shelly checks when the app starts, at most every 6 hours, and updates on Wi-Fi from the `latest` channel. Turn this off with **Update on Wi-Fi** in the Builds screen. Claude Code's built-in updater is switched off, so Shelly is the only thing changing the version. A running session is not touched; the new version starts with the next `claude`. Each version is about 350 MB, and the current and previous ones are both kept.
+**Updates.** The Builds screen shows the installed and latest versions, with **Update** and a button to go back to the previous version. Updates use the `latest` channel. **Update on Wi-Fi** is off by default; turned on, Shelly checks when the app starts, at most every 6 hours, on unmetered Wi-Fi. Claude Code's built-in updater is switched off, so Shelly is the only thing changing the version. A running session is not touched; the new version starts with the next `claude`. Each version is about 350 MB, and the current and previous ones are both kept.
 
 **Agents use a reviewed version, not the newest one.** Agent safety depends on details of how Claude Code behaves, and those were reviewed against one version (2.1.314). An update never changes what agents run. Until you run `claude-install --agent` or tap **Enable for agents**, a Claude Code agent step stops and tells you to do so. That downloads the reviewed version as well, about 300 MB.
 
-If you staged Claude Code by hand before, it keeps working, and the next `claude-install` takes it over.
+If you staged Claude Code by hand before, `claude` keeps working. Agents stop until you run `claude-install` once: it takes your copy over, and if that copy is exactly the reviewed build, agents work again with no download. Otherwise `claude-install --agent` downloads the reviewed build.
 
 ### Antigravity
 
-`agy-install` fetches Google's official Android build, checks the SHA-512 in Google's manifest, and keeps versions the same way. Updates run on Wi-Fi from the same switch, and Antigravity's built-in updater is off. Google publishes no signature for this file, so the check is only as strong as HTTPS and that manifest. Shelly does not run Antigravity to test an update: it checks the hash and that the file is an Android ARM64 executable. So a build that does not start shows up when you run `agy`, and `shelly-update-clis agy rollback` goes back.
+`agy-install` fetches Google's official Android build, checks the SHA-512 in Google's manifest, and keeps versions the same way. Updates work the same way, and Antigravity's built-in updater is off. Google publishes no signature for this file, so the check is only as strong as HTTPS and that manifest. Shelly does not run Antigravity to test an update: it checks the hash and that the file is an Android ARM64 executable. So a build that does not start shows up when you run `agy`, and `shelly-update-clis agy rollback` goes back.
 
 ---
 
@@ -585,7 +585,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | STOP-ALL stops runs already in progress (not only future alarms); RESUME restores | ✅ verified on device (Galaxy Z Fold6, N=1, build 2818): a running Codex step ended within 10 seconds |
 | Approve by typing — OK / NO (or `ok <hash>` when two are waiting) in the agent's chat or MONITOR; an attended CLI step waits up to 10 minutes | ✅ approving from the notification is verified on device |
 | Antigravity `agy-install` / `agy` | ✅ `agy --version` verified on device |
-| `claude-install`, and Claude Code / Antigravity updates on Wi-Fi | 🟡 new in this build; checks run against the real vendor files on a PC, not yet verified on device |
+| `claude-install`, and Claude Code / Antigravity updates from the Builds screen | 🟡 new in this build; checks run against the real vendor files on a PC, not yet verified on device |
 | Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required) | 🟡 Experimental — pairing, command execution and reconnecting after an in-app update with Keep ChatGPT connected verified on device |
 | MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |
 | ChatGPT → phone-app task — Codex runs `shelly closepaw --wait "<goal>"` → owner approves on the phone → the ClosePaw Shelly build works on a background virtual display → the result returns to ChatGPT | ✅ verified on device (Galaxy Z Fold6, N=1) — e.g. saving a Spotify playlist, saving places to a Google Maps list; long multi-step goals are still unreliable |

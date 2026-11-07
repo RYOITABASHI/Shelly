@@ -13,12 +13,14 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 }));
 
 import {
+  fetchManagedCliStatuses,
   isNewerVersion,
   managedCliAction,
   managedCliCommand,
   parseManagedCliStatuses,
   runManagedCliAutoUpdate,
   runManagedCliInstall,
+  runManagedCliRollback,
   shouldRunManagedCliAutoUpdate,
   type ManagedCliStatus,
 } from '@/lib/managed-cli-update';
@@ -65,8 +67,8 @@ describe('managedCliAction', () => {
 });
 
 describe('the app-start pass', () => {
-  it('needs the setting on and an unmetered network', () => {
-    expect(shouldRunManagedCliAutoUpdate(undefined, true)).toBe(true);
+  it('is off unless turned on, and needs an unmetered network', () => {
+    expect(shouldRunManagedCliAutoUpdate(undefined, true)).toBe(false);
     expect(shouldRunManagedCliAutoUpdate(true, true)).toBe(true);
     expect(shouldRunManagedCliAutoUpdate(false, true)).toBe(false);
     expect(shouldRunManagedCliAutoUpdate(true, false)).toBe(false);
@@ -78,17 +80,32 @@ describe('the app-start pass', () => {
     expect(execCommand).not.toHaveBeenCalled();
   });
 
-  it('runs nothing when switched off', async () => {
+  it('runs nothing when switched off, which is the default', async () => {
     isNetworkUnmetered.mockResolvedValue(true);
     await runManagedCliAutoUpdate(false);
+    await runManagedCliAutoUpdate(undefined);
     expect(execCommand).not.toHaveBeenCalled();
+    expect(isNetworkUnmetered).not.toHaveBeenCalled();
   });
 
   it('runs the auto pass on an unmetered network, and nothing else', async () => {
     isNetworkUnmetered.mockResolvedValue(true);
-    await runManagedCliAutoUpdate(undefined);
+    await runManagedCliAutoUpdate(true);
     expect(execCommand).toHaveBeenCalledTimes(1);
     expect(String(execCommand.mock.calls[0][0])).toMatch(/require\(p\);' auto$/);
+  });
+});
+
+describe('status', () => {
+  it('a killed check reaches the caller, so the local status can stand in', async () => {
+    execCommand.mockResolvedValue({ exitCode: 137, stdout: '', stderr: '' });
+    await expect(fetchManagedCliStatuses('check')).rejects.toThrow(/exited 137/);
+  });
+
+  it('rollback carries the script\'s message', async () => {
+    execCommand.mockResolvedValue({ exitCode: 1, stdout: '', stderr: '[shelly] there is no previous version' });
+    await expect(runManagedCliRollback('agy')).rejects.toThrow('no previous version');
+    expect(String(execCommand.mock.calls[0][0])).toMatch(/' agy rollback$/);
   });
 });
 

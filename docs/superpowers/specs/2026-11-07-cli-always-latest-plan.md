@@ -396,6 +396,8 @@ Antigravity はワーカーではないので `agent-current` を持たない。
 - glibc は §4.2 の推奨（CI パック）ではなく端末が Termux から直接取得。Shelly の再配布が発生せず、`.deb` も xz も端末の node だけで扱える。
 - `agent-current` は CI の判定ではなく、レビューした pin（driver と更新スクリプトの定数）で決める。Inc 4 が入るまでの形。`DISABLE_UPDATES=1` と `AGY_CLI_DISABLE_AUTO_UPDATE=true` は実装済み。
 - agy の起動プローブは採らない（§5.4 の判断点を「自動起動しない」側に倒した。オーナー判断 §9-6 で変えられる）。
+- `cliAutoUpdateWifi` はこのリリースでは既定 OFF（レビュー判断、更新はタップ。実機確認後に ON、DEFERRED.md）。§9-4 の推奨からの一時的な差。
+- レビュー済みの hash と一致するファイルを取り込んだ・取得したときは `agent-current` を自動で作る（手動配置の端末のエージェントを止めないため）。
 - 未実装: オフライン・カナリア、昇格後の監視と自動ロールバック、`--pin`、WorkManager。
 
 **順序の理由**: Inc 2 は Inc 3 より先。0.163 → 0.167 に上げる前にゲートを固めるため。Inc 3 が最も危険なので単独で出す。Inc 4 より前は自動更新しない。

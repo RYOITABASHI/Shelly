@@ -29,6 +29,7 @@ import {
   fetchManagedCliStatuses,
   managedCliAction,
   runManagedCliInstall,
+  runManagedCliRollback,
   type ManagedCli,
   type ManagedCliStatus,
   type ManagedCliStatuses,
@@ -1172,7 +1173,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [installingCodexRuntime, setInstallingCodexRuntime] = useState(false);
   const [managedClis, setManagedClis] = useState<ManagedCliStatuses | null>(null);
   const [managedCliBusy, setManagedCliBusy] = useState<ManagedCli | null>(null);
-  const cliAutoUpdateWifi = useSettingsStore((s) => s.settings.cliAutoUpdateWifi) !== false;
+  const cliAutoUpdateWifi = useSettingsStore((s) => s.settings.cliAutoUpdateWifi) === true;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [resettingCodexRuntime, setResettingCodexRuntime] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -1273,12 +1274,18 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   }, [onStatusChange]);
 
   const refreshManagedClis = useCallback(async () => {
+    // What is installed first, from local files, so the buttons do not wait on
+    // the network or vanish without it. Then the latest versions on top.
     try {
-      setManagedClis(await withTimeout(fetchManagedCliStatuses('check'), 25_000, 'CLI versions'));
+      setManagedClis(await withTimeout(fetchManagedCliStatuses('status'), 25_000, 'CLI status'));
     } catch (e: any) {
-      // No network must not hide the installed versions.
+      logError('BuildsModal', 'managed CLI status failed', e);
+    }
+    try {
+      const checked = await withTimeout(fetchManagedCliStatuses('check'), 25_000, 'CLI versions');
+      if (checked) setManagedClis(checked);
+    } catch (e: any) {
       logError('BuildsModal', 'managed CLI check failed', e);
-      setManagedClis(await fetchManagedCliStatuses('status').catch(() => null));
     }
   }, []);
 
@@ -1642,6 +1649,19 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     }
   }, [refreshManagedClis, t]);
 
+  const rollbackManagedCli = useCallback(async (cli: ManagedCli) => {
+    setManagedCliBusy(cli);
+    try {
+      const output = await runManagedCliRollback(cli);
+      Alert.alert(t('updates.cli_ready_title'), output);
+    } catch (e: any) {
+      Alert.alert(t('updates.cli_failed_title'), String(e?.message || e));
+    } finally {
+      setManagedCliBusy(null);
+      await refreshManagedClis();
+    }
+  }, [refreshManagedClis, t]);
+
   const confirmManagedCliInstall = useCallback((cli: ManagedCli) => {
     Alert.alert(
       t(cli === 'claude' ? 'updates.claude_install_title' : 'updates.agy_install_title'),
@@ -1728,6 +1748,21 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
               )}
               <Text style={[styles.actionText, !enabled && styles.actionTextDisabled]} numberOfLines={1}>{label}</Text>
             </Pressable>
+            {status.previous && (
+              <Pressable
+                style={[styles.actionBtn, styles.secondaryActionBtn, blocked && styles.actionBtnDisabled]}
+                onPress={() => void rollbackManagedCli(status.cli)}
+                disabled={blocked}
+              >
+                <MaterialIcons name="restore" size={13} color={blocked ? C.text3 : C.accent} />
+                <Text
+                  style={[styles.actionText, styles.secondaryActionText, blocked && styles.actionTextDisabled]}
+                  numberOfLines={1}
+                >
+                  {t('updates.cli_previous', { version: status.previous })}
+                </Text>
+              </Pressable>
+            )}
             {agent && status.installed && !agent.enabled && (
               <Pressable
                 style={[styles.actionBtn, styles.secondaryActionBtn, blocked && styles.actionBtnDisabled]}

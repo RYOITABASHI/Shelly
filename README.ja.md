@@ -377,20 +377,20 @@ Termux や proot、あるいは別の Android ターミナル環境で AI コー
 Shelly は Claude Code を同梱も再配布もしません。端末が直接ダウンロードし、何も改変しません。
 
 - **Claude Code** は Anthropic のリリース用バケットから取得します。マニフェストには、Anthropic が公開しているリリース鍵（Shelly に固定）の署名が必要で、そのマニフェストの SHA-256 とサイズがダウンロードと一致しなければなりません。
-- **glibc ライブラリ**（約 30 MB）は Termux の `termux-glibc` パッケージから取得し、`apt` と同じように署名付きのリポジトリ索引で確かめます。
-- 新しい版は、置き換える前に `--version` と `--help` で試します。失敗すれば前の版のまま残り、失敗した版は保留になります。
+- **glibc ライブラリ**（約 30 MB）は Termux の `termux-glibc` パッケージから取得します。Shelly に固定した鍵でリポジトリ索引の署名を確かめ、パッケージのハッシュを索引と照合します。`apt` と違い、索引の古さは確かめません。
+- 新しい版は、置き換える前に `--version` と `--help` で試します。失敗すれば前の版のまま残り、2 回失敗すると新しい版は保留になります。署名や checksum の失敗ではすぐ保留します。
 
 Shelly は自前のユーザーランドのローダで Claude Code を起動します（root も proot も不要）。Android は Anthropic の対応システムの一覧に無いので、この経路は Anthropic のサポート対象ではありません。Claude Code は Anthropic のソフトウェアで Anthropic の規約が適用され、サインインは自分のアカウントまたはキーで行います。
 
-**更新。** 初回の導入後は、アプリの起動時に（最短で 6 時間に 1 回）確認し、Wi-Fi なら `latest` チャンネルから更新します。Builds 画面の **Wi-Fi で自動更新** でオフにできます。Claude Code 内蔵のアップデータは止めているので、版を変えるのは Shelly だけです。実行中のセッションには影響せず、新しい版は次に `claude` を起動したときから使われます。1 版は約 350 MB で、現在と 1 つ前の版を残します。
+**更新。** Builds 画面に導入済みの版と最新版が出て、**更新** と 1 つ前の版に戻すボタンがあります。更新は `latest` チャンネルを使います。**Wi-Fi で自動更新** は既定でオフで、オンにするとアプリの起動時に（最短で 6 時間に 1 回）、従量制でない Wi-Fi のときに確認します。Claude Code 内蔵のアップデータは止めているので、版を変えるのは Shelly だけです。実行中のセッションには影響せず、新しい版は次に `claude` を起動したときから使われます。1 版は約 350 MB で、現在と 1 つ前の版を残します。
 
 **エージェントが使うのは最新版ではなく、レビュー済みの版です。** エージェントの安全性は Claude Code の細かな動作に依存していて、その確認は 1 つの版（2.1.314）に対して行っています。更新でエージェントの版が変わることはありません。`claude-install --agent` を実行するか **エージェントで使う** をタップするまで、Claude Code を使うエージェントのステップは止まり、その手順を案内します。このときレビュー済みの版も別に約 300 MB ダウンロードします。
 
-以前に手動で配置した Claude Code はそのまま動き、次の `claude-install` で管理下に入ります。
+以前に手動で配置した Claude Code は、`claude` ではそのまま動きます。エージェントは `claude-install` を一度実行するまで止まります。実行すると手元のファイルを管理下に入れ、それがレビュー済みの版と完全に同じなら、ダウンロードなしでエージェントも使えるようになります。違う場合は `claude-install --agent` でレビュー済みの版をダウンロードします。
 
 ### Antigravity
 
-`agy-install` は Google の公式 Android 版を取得し、Google のマニフェストにある SHA-512 を確かめて、同じ形で版を管理します。更新は同じスイッチで Wi-Fi のときに行い、Antigravity 内蔵のアップデータは止めています。このファイルに Google の署名は無いので、検証の強さは HTTPS とそのマニフェストの範囲です。Shelly は更新の確認のために Antigravity を起動しません。ハッシュと、Android ARM64 の実行ファイルであることだけを確かめます。そのため起動しない版は `agy` を実行したときに分かり、`shelly-update-clis agy rollback` で戻せます。
+`agy-install` は Google の公式 Android 版を取得し、Google のマニフェストにある SHA-512 を確かめて、同じ形で版を管理します。更新の仕組みは同じで、Antigravity 内蔵のアップデータは止めています。このファイルに Google の署名は無いので、検証の強さは HTTPS とそのマニフェストの範囲です。Shelly は更新の確認のために Antigravity を起動しません。ハッシュと、Android ARM64 の実行ファイルであることだけを確かめます。そのため起動しない版は `agy` を実行したときに分かり、`shelly-update-clis agy rollback` で戻せます。
 
 ---
 
@@ -578,7 +578,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | STOP-ALL が実行中の run も止める（今後のアラームだけでなく）、RESUME で復帰 | ✅ 実機検証済み（Galaxy Z Fold6、N=1、build 2818）: 実行中の Codex ステップが 10 秒以内に終了 |
 | 打って承認 — エージェントのチャットか MONITOR で OK / NO（2 件待ちなら `ok <hash>`）、有人の CLI ステップは最大 10 分待つ | ✅ 通知からの承認は実機検証済み |
 | Antigravity の `agy-install` / `agy` | ✅ `agy --version` は実機で確認済み |
-| `claude-install`、Claude Code / Antigravity の Wi-Fi での更新 | 🟡 このビルドで追加。検証は PC 上で公式の配布物に対して実施、実機は未確認 |
+| `claude-install`、Builds 画面からの Claude Code / Antigravity の更新 | 🟡 このビルドで追加。検証は PC 上で公式の配布物に対して実施、実機は未確認 |
 | Codex リモート操作のホスト — `shelly codex pair` が公式の `codex remote-control --no-daemon` を動かし、ChatGPT アプリの Codex からこの端末を操作できる（ChatGPT サインインが必要） | 🟡 Experimental — ペアリング、コマンド実行、「ChatGPT との接続を維持」でのアプリ内アップデート後の再接続は実機検証済み |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |
 | ChatGPT からのスマホアプリ操作 — Codex が `shelly closepaw --wait "<ゴール>"` を実行 → 持ち主がスマホで承認 → Shelly 用 ClosePaw ビルドがバックグラウンドの仮想ディスプレイで操作 → 結果が ChatGPT に返る | ✅ 実機検証済み（Galaxy Z Fold6、N=1）。例: Spotify のプレイリスト保存、Google マップのリストへの保存。長い多段のゴールはまだ不安定 |

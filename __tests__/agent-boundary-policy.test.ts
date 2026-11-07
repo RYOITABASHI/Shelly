@@ -485,6 +485,10 @@ describe('classifyProposedCommand', () => {
       expect(validateWorkspaceRoot('/sdcard', [home]).ok).toBe(false);
       expect(validateWorkspaceRoot('/storage/emulated/0', [home]).ok).toBe(false);
       expect(validateWorkspaceRoot(`${home}/.shelly/agents`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.shelly-runtime`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.shelly-runtime/claude-glibc/versions`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.shelly-ssl`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/shelly-notes`, [home]).ok).toBe(true);
       expect(validateWorkspaceRoot(`${home}/.codex`, [home]).ok).toBe(false);
       expect(validateWorkspaceRoot(`${home}/.ssh`, [home]).ok).toBe(false);
       expect(validateWorkspaceRoot(`${home}/projects/my-app`, [home]).ok).toBe(true);

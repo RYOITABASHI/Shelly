@@ -222,6 +222,26 @@ describe('the Antigravity manifest', () => {
     expect(() => update.readAgyManifest(JSON.stringify({ version: '1.5.2', url: 'http://storage.googleapis.com/antigravity-public/a', sha512 }))).toThrow(/URL/);
   });
 
+  it('judges the URL as the server would read it, not as text', () => {
+    const base = 'https://storage.googleapis.com/antigravity-public';
+    for (const bad of [
+      `${base}/%2e%2e/other-bucket/evil`,
+      `${base}/%2E%2E/%2e%2e/evil`,
+      `${base}/a%2fb`,
+      `${base}/.%2e/evil`,
+      'https://storage.googleapis.com.evil.example/antigravity-public/a',
+      'https://user@storage.googleapis.com/antigravity-public/a',
+      'https://storage.googleapis.com:8443/antigravity-public/a',
+      `${base}/a?x=1`,
+      `${base}/a#b`,
+      'https://storage.googleapis.com/antigravity-publicity/a',
+      'HTTPS://STORAGE.GOOGLEAPIS.COM/antigravity-public/a',
+    ]) {
+      expect(() => update.readAgyManifest(JSON.stringify({ version: '1.5.2', url: bad, sha512 }))).toThrow(/URL/);
+    }
+    expect(() => update.readAgyManifest(JSON.stringify({ version: '1.5.2', url: 7, sha512 }))).toThrow(/URL/);
+  });
+
   it('wants a whole SHA-512 and a plain version', () => {
     expect(() => update.readAgyManifest(JSON.stringify({ version: '1.5.2', url, sha512: 'abc' }))).toThrow(/sha512/);
     expect(() => update.readAgyManifest(JSON.stringify({ version: '../1', url, sha512 }))).toThrow(/version/);
@@ -254,6 +274,26 @@ function tar(...parts: Buffer[]): Buffer {
 }
 
 const LIB = 'data/data/com.termux/files/usr/glibc/lib/';
+
+describe('where the network may go', () => {
+  it('allows the vendors\' hosts over https, for requests and redirects alike', () => {
+    expect(update.checkFetchUrl('https://downloads.claude.ai/claude-code-releases/latest').hostname).toBe('downloads.claude.ai');
+    expect(update.checkFetchUrl('https://packages-cf.termux.dev/apt/x').hostname).toBe('packages-cf.termux.dev');
+  });
+
+  it('refuses everything else', () => {
+    for (const bad of [
+      'http://downloads.claude.ai/x',
+      'https://evil.example/x',
+      'https://downloads.claude.ai.evil.example/x',
+      'https://downloads.claude.ai:8443/x',
+      'https://u:p@downloads.claude.ai/x',
+      'https://127.0.0.1/x',
+    ]) {
+      expect(() => update.checkFetchUrl(bad)).toThrow(update.TrustError);
+    }
+  });
+});
 
 describe('tar', () => {
   it('stops at any path that climbs out, wanted or not', () => {
@@ -654,6 +694,141 @@ describe('claude install', () => {
     await expect(update.install(world.ctx, 'claude', { auto: true })).resolves.toMatchObject({ installed: false, reason: 'held' });
   });
 
+  it('a timeout under load does not count against the version', async () => {
+    await update.install(world.ctx, 'claude');
+    world.addClaude('2.1.321', claudeBody('321'));
+    world.setChannel('latest', '2.1.321');
+    world.setProbe(() => ({ ok: false, stage: 'version', transient: true, detail: 'signal SIGKILL' }));
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
+    expect(world.state().failed || {}).toEqual({});
+    expect(world.current()).toBe('2.1.320');
+    world.setProbe(() => ({ ok: true, version: '2.1.321' }));
+    await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+  });
+
+  it('going back clears the hold on where it lands, and can be undone', async () => {
+    await update.install(world.ctx, 'claude');
+    world.addClaude('2.1.321', claudeBody('321'));
+    world.setChannel('latest', '2.1.321');
+    world.probeVersion = '2.1.321';
+    await update.install(world.ctx, 'claude');
+    update.rollback(world.ctx, 'claude');
+    expect(update.cliStatus(world.ctx, 'claude').previous).toBe('2.1.321');
+    update.rollback(world.ctx, 'claude');
+    expect(world.current()).toBe('2.1.321');
+    expect(world.state().failed['2.1.321']).toBeUndefined();
+    expect(world.state().failed['2.1.320'].hold).toBe(true);
+  });
+
+  it('survives anything in state.json', async () => {
+    const paths = world.paths('claude');
+    for (const body of [
+      'not json',
+      '[]',
+      '{"channel":"nightly","failed":[1,2]}',
+      '{"failed":"x","lastCheckAt":"soon"}',
+      '{"failed":{"2.1.320":null,"../x":{"hold":true}}}',
+    ]) {
+      fs.writeFileSync(paths.state, body);
+      // eslint-disable-next-line no-await-in-loop
+      await expect(update.install(world.ctx, 'claude', { force: true })).resolves.toMatchObject({ version: '2.1.320' });
+      expect(update.cliStatus(world.ctx, 'claude').channel).toBe('latest');
+      expect(update.cliStatus(world.ctx, 'claude').held).toEqual([]);
+    }
+  });
+
+  describe('the lock', () => {
+    const lockWith = (text: string) => fs.writeFileSync(world.paths('claude').lock, text);
+
+    it('refuses while a live process holds it', async () => {
+      lockWith(`${process.pid} `);
+      await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/already running/);
+      expect(fs.existsSync(world.paths('claude').lock)).toBe(true);
+    });
+
+    it('takes over from a dead holder, leaving nothing behind', async () => {
+      lockWith('999999 123');
+      await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+      expect(fs.readdirSync(world.paths('claude').root).filter((name) => name.startsWith('.lock'))).toEqual([]);
+    });
+
+    it('an empty lock is a holder mid-write until it gets old', async () => {
+      lockWith('');
+      await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/already running/);
+      const old = new Date(Date.now() - 5 * 60 * 1000);
+      fs.utimesSync(world.paths('claude').lock, old, old);
+      await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+    });
+  });
+
+  it('a check that waited on the network does not erase a hold recorded meanwhile', async () => {
+    await update.install(world.ctx, 'claude');
+    const paths = world.paths('claude');
+    const ctx = world.ctx as { fetchBytes: (url: string, cap: number) => Promise<Buffer> };
+    const realFetch = ctx.fetchBytes;
+    ctx.fetchBytes = async (url, cap) => {
+      if (url.endsWith('/latest')) {
+        fs.writeFileSync(paths.state, JSON.stringify({ failed: { '2.1.321': { hold: true, stage: 'trust', count: 1 } } }));
+      }
+      return realFetch(url, cap);
+    };
+    world.routes.set(AGY_MANIFEST, Buffer.from('{}'));
+    const result = await update.check(world.ctx);
+    expect(result.claude.latest).toBe('2.1.320');
+    expect(world.state().failed['2.1.321'].hold).toBe(true);
+    expect(world.state().lastLatest).toBe('2.1.320');
+  });
+
+  it('a check leaves state alone while an install holds the lock', async () => {
+    await update.install(world.ctx, 'claude');
+    const before = fs.readFileSync(world.paths('claude').state, 'utf8');
+    fs.writeFileSync(world.paths('claude').lock, `${process.pid} `);
+    world.setChannel('latest', '2.1.999');
+    world.routes.set(AGY_MANIFEST, Buffer.from('{}'));
+    await expect(update.check(world.ctx)).resolves.toMatchObject({ claude: { latest: '2.1.999' } });
+    expect(fs.readFileSync(world.paths('claude').state, 'utf8')).toBe(before);
+  });
+
+  it('does not cut off the binary if an earlier adoption stopped half way', async () => {
+    const paths = world.paths('claude');
+    const body = claudeBody('manual');
+    const digest = crypto.createHash('sha256').update(body).digest('hex');
+    fs.mkdirSync(paths.versions, { recursive: true });
+    fs.writeFileSync(paths.entry, body);
+    // The directory exists, with no binary in it: the old order stopped here.
+    fs.mkdirSync(path.join(paths.versions, `2.1.314-${digest.slice(0, 8)}`));
+    world.setProbe(() => ({ ok: true, version: '2.1.314' }));
+    await update.install(world.ctx, 'claude').catch(() => {});
+    expect(fs.readFileSync(paths.entry).equals(body)).toBe(true);
+  });
+
+  it('finishes an adoption cut off after the rename', async () => {
+    const paths = world.paths('claude');
+    const body = claudeBody('manual');
+    const dir = path.join(paths.versions, '2.1.314-abcd1234');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'claude'), body);
+    world.setProbe(() => ({ ok: true, version: '2.1.320' }));
+    await update.install(world.ctx, 'claude');
+    expect(world.current()).toBe('2.1.320');
+    expect(update.cliStatus(world.ctx, 'claude').previous).toBe('2.1.314');
+    expect(fs.readFileSync(path.join(dir, 'claude')).equals(body)).toBe(true);
+  });
+
+  it('refuses to replace a hand-staged file with a different one of the same name', async () => {
+    const paths = world.paths('claude');
+    const body = claudeBody('manual');
+    const digest = crypto.createHash('sha256').update(body).digest('hex');
+    const dir = path.join(paths.versions, `2.1.314-${digest.slice(0, 8)}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'claude'), 'something else');
+    fs.writeFileSync(paths.entry, body);
+    world.setProbe(() => ({ ok: true, version: '2.1.314' }));
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/left alone/);
+    expect(fs.readFileSync(paths.entry).equals(body)).toBe(true);
+  });
+
   it('adopts a hand-staged binary without breaking its path', async () => {
     const paths = world.paths('claude');
     fs.writeFileSync(paths.entry, claudeBody('manual'));
@@ -726,6 +901,38 @@ describe('agents stay on the reviewed build', () => {
     expect(world.current()).toBe('2.1.314');
   });
 
+  it('a hand-staged copy of exactly the reviewed build keeps agents working, with no download', async () => {
+    const paths = world.paths('claude');
+    fs.writeFileSync(paths.entry, reviewedBody);
+    world.routes.delete(`${CLAUDE_BASE}/2.1.314/linux-arm64/claude`);
+    await update.install(world.ctx, 'claude').catch(() => {});
+    expect(update.cliStatus(world.ctx, 'claude').agent).toEqual({ reviewed: '2.1.314', version: '2.1.314', enabled: true });
+    expect(fs.readFileSync(paths.agent.concat('/claude')).equals(reviewedBody)).toBe(true);
+  });
+
+  it('a hand-staged copy of anything else does not become the agents\' version', async () => {
+    fs.writeFileSync(world.paths('claude').entry, claudeBody('patched 2.1.314'));
+    world.setProbe(() => ({ ok: true, version: '2.1.314' }));
+    await update.install(world.ctx, 'claude').catch(() => {});
+    expect(fs.existsSync(world.paths('claude').agent)).toBe(false);
+  });
+
+  it('cleanup keeps the reviewed build even with no link to it yet', async () => {
+    world.probeVersion = '2.1.314';
+    await update.install(world.ctx, 'claude', { agent: true });
+    const paths = world.paths('claude');
+    fs.rmSync(paths.agent, { force: true, recursive: true });
+    for (const version of ['2.1.320', '2.1.321', '2.1.322']) {
+      world.addClaude(version, claudeBody(version));
+      world.setChannel('latest', version);
+      world.probeVersion = version;
+      // eslint-disable-next-line no-await-in-loop
+      await update.install(world.ctx, 'claude');
+    }
+    expect(fs.readdirSync(paths.versions).some((name) => name.startsWith('2.1.314-'))).toBe(true);
+    expect(update.cliStatus(world.ctx, 'claude').agent.enabled).toBe(true);
+  });
+
   it('Antigravity can never be enabled for agents', async () => {
     await expect(update.install(world.ctx, 'agy', { agent: true })).rejects.toThrow(/never an agent worker/);
   });
@@ -778,6 +985,39 @@ describe('glibc from Termux', () => {
     world.setChannel('latest', '2.1.321');
     world.probeVersion = '2.1.321';
     await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+  });
+
+  it('a failed probe leaves a hand-staged lib/ running, and the retry does not fetch again', async () => {
+    const paths = world.paths('claude');
+    fs.mkdirSync(paths.lib, { recursive: true });
+    fs.writeFileSync(path.join(paths.lib, 'libc.so.6'), 'partial');
+    let probedWith = '';
+    (world.ctx as { probeClaude: unknown }).probeClaude = (_ctx: unknown, _binary: string, libDir: string) => {
+      probedWith = libDir;
+      return { ok: false, stage: 'version', detail: 'bad' };
+    };
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/bad/);
+    expect(probedWith.replace(/\\/g, '/')).toMatch(/\/glibc\/2\.44-[0-9a-f]{8}$/);
+    expect(fs.lstatSync(paths.lib).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(paths.lib, 'libc.so.6'), 'utf8')).toBe('partial');
+
+    world.routes.delete(`${MIRROR}/pool/stable/g/glibc/glibc_2.44_aarch64.deb`);
+    world.routes.delete(`${MIRROR}/pool/stable/g/gcc-libs-glibc/gcc-libs-glibc_2.44_aarch64.deb`);
+    world.now += 25 * 3600 * 1000;
+    (world.ctx as { probeClaude: unknown }).probeClaude = () => ({ ok: true, version: '2.1.320' });
+    await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+    expect(fs.lstatSync(paths.lib).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(paths.root).filter((name) => name.startsWith('lib.manual.'))).toHaveLength(1);
+  });
+
+  it('a new lib proves itself on an existing build before it is switched in', async () => {
+    await update.install(world.ctx, 'claude');
+    const paths = world.paths('claude');
+    fs.rmSync(paths.lib, { force: true, recursive: true });
+    fs.rmSync(paths.glibc, { force: true, recursive: true });
+    (world.ctx as { probeClaude: unknown }).probeClaude = () => ({ ok: false, stage: 'version', detail: 'bad' });
+    await expect(update.install(world.ctx, 'claude', { force: true })).rejects.toThrow(/bad/);
+    expect(fs.existsSync(paths.lib)).toBe(false);
   });
 
   it('a tampered InRelease stops it, without holding a Claude version', async () => {
@@ -895,6 +1135,13 @@ describe('the app-start pass', () => {
     world.setChannel('latest', '2.1.320');
   });
   afterEach(() => world.cleanup());
+
+  it('skips a CLI whose install is running', async () => {
+    await update.install(world.ctx, 'claude');
+    world.now += 7 * 3600 * 1000;
+    fs.writeFileSync(world.paths('claude').lock, `${process.pid} `);
+    await expect(update.autoUpdate(world.ctx)).resolves.toMatchObject({ claude: { skipped: 'install-running' } });
+  });
 
   it('never fetches a CLI nobody installed', async () => {
     const results = await update.autoUpdate(world.ctx);
@@ -1076,6 +1323,31 @@ describe('agy()', () => {
 
   it('resolves the real directory before starting', () => {
     expect(fn).toContain('builtin cd -P "$HOME/.shelly-runtime/agy/current"');
+  });
+});
+
+describe('execCommand and the Expo queue', () => {
+  const module = fs.readFileSync(
+    path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
+  const body = module.slice(module.indexOf('AsyncFunction("execCommand")'), module.indexOf('AsyncFunction("readDir")'));
+
+  it('is a coroutine, and the blocking call leaves the queue', () => {
+    expect(body).toMatch(/^AsyncFunction\("execCommand"\) Coroutine \{ command: String, timeoutMs: Int\? ->/);
+    expect(body).toMatch(/ExecLanes\.laneFor\(timeout\)\.withPermit \{\n\s+withContext\(Dispatchers\.IO\) \{\n\s+ShellyJNI\.execSubprocess\(/);
+  });
+
+  it('keeps ordinary commands one at a time, and only long ones apart', () => {
+    expect(module).toContain('private val serial = Semaphore(1)');
+    expect(module).toContain('private val long = Semaphore(2)');
+    expect(module).toContain('if (timeoutMs >= LONG_TIMEOUT_MS) long else serial');
+  });
+
+  it('the app\'s long commands declare a long timeout', () => {
+    const lib = fs.readFileSync(path.join(root, 'lib/managed-cli-update.ts'), 'utf8');
+    expect(lib).toContain('MANAGED_CLI_INSTALL_TIMEOUT_MS = 30 * 60 * 1000');
+    expect(lib).toContain('AUTO_UPDATE_TIMEOUT_MS = 45 * 60 * 1000');
   });
 });
 

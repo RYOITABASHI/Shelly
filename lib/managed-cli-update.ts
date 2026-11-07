@@ -3,9 +3,10 @@
  * CLI, which the device fetches from their vendors. All the checking lives in
  * that script, so `claude-install` and the Builds screen cannot disagree.
  *
- * This file only decides when to call it. The app-start pass runs on an
- * unmetered network, at most once per CHECK interval in the script, and the
- * script skips a CLI nobody installed: the first install is always a person's.
+ * This file only decides when to call it. The app-start pass is off unless the
+ * person turned it on. It then runs on an unmetered network, at most once per
+ * CHECK interval in the script, and the script skips a CLI nobody installed: the
+ * first install is always a person's.
  */
 import { execCommand } from '@/hooks/use-native-exec';
 import { logError, logInfo } from '@/lib/debug-logger';
@@ -84,7 +85,8 @@ export function managedCliAction(status: ManagedCliStatus): ManagedCliAction {
 /** Reads local state only: nothing is started, Antigravity included. */
 export async function fetchManagedCliStatuses(mode: 'status' | 'check' = 'check'): Promise<ManagedCliStatuses | null> {
   const result = await execCommand(managedCliCommand([mode]), STATUS_TIMEOUT_MS);
-  if (result.exitCode !== 0) return null;
+  // A killed `check` must reach the caller, which still has the local status.
+  if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `CLI ${mode} exited ${result.exitCode}`);
   return parseManagedCliStatuses(result.stdout);
 }
 
@@ -99,15 +101,23 @@ export async function runManagedCliInstall(cli: ManagedCli, options: { agent?: b
   return result.stdout.trim();
 }
 
+export async function runManagedCliRollback(cli: ManagedCli): Promise<string> {
+  const result = await execCommand(managedCliCommand([cli, 'rollback']), STATUS_TIMEOUT_MS);
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || `exit ${result.exitCode}`).trim());
+  }
+  return result.stdout.trim();
+}
+
 export function shouldRunManagedCliAutoUpdate(enabled: boolean | undefined, unmetered: boolean): boolean {
-  return enabled !== false && unmetered;
+  return enabled === true && unmetered;
 }
 
 export async function runManagedCliAutoUpdate(enabled: boolean | undefined): Promise<void> {
   // A build whose native side cannot answer counts as metered: stay off the network.
-  const unmetered = (await TerminalEmulator.isNetworkUnmetered?.()) === true;
+  const unmetered = enabled === true && (await TerminalEmulator.isNetworkUnmetered?.()) === true;
   if (!shouldRunManagedCliAutoUpdate(enabled, unmetered)) {
-    logInfo('ManagedCliUpdate', `app-start update skipped (enabled=${enabled !== false}, unmetered=${unmetered})`);
+    logInfo('ManagedCliUpdate', `app-start update skipped (enabled=${enabled === true}, unmetered=${unmetered})`);
     return;
   }
   const result = await execCommand(managedCliCommand(['auto']), AUTO_UPDATE_TIMEOUT_MS);
