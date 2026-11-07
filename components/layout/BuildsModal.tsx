@@ -23,6 +23,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { execCommand } from '@/hooks/use-native-exec';
 import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { codexRuntimeUpdateAvailable } from '@/lib/codex-runtime-update';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
 import {
@@ -54,7 +55,9 @@ const STABLE_UPDATE_TAG = 'android-latest';
 const DEV_UPDATE_TAG = 'android-dev';
 const UPDATE_MANIFEST_ASSET = 'latest.json';
 const CODEX_RUNTIME_TAG = 'codex-runtime-latest';
-const CODEX_RUNTIME_MANIFEST_ASSET = 'codex-runtime.json';
+// The Termux runtime channel. codex-runtime.json on the same release is the last
+// fork build, kept for APKs older than the source switch.
+const CODEX_RUNTIME_MANIFEST_ASSET = 'codex-runtime-termux.json';
 const APK_NAME_RE = /^[A-Za-z0-9._-]+\.apk$/;
 const TARBALL_NAME_RE = /^[A-Za-z0-9._-]+\.tar\.gz$/;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
@@ -123,6 +126,9 @@ type CodexVersionInfo = {
   source: 'runtime' | 'bundled' | 'runtime_broken' | 'unknown';
   runtimePresent: boolean;
   runtimeHealthy: boolean;
+  // codexTermuxVersion from the installed runtime's manifest; carries the
+  // packaging revision that `--version` cannot show.
+  termuxVersion?: string;
 };
 
 type DownloadApkStep = 'prepare' | 'download' | 'paused' | 'verify' | 'ready';
@@ -358,16 +364,17 @@ async function fetchInstalledCodexVersion(): Promise<CodexVersionInfo | null> {
     'runtime_healthy=0',
     'base="$lib"',
     'source=bundled',
-    'if [ "${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}" != "1" ] && [ -f "$runtime/.healthy" ] && [ -f "$runtime/manifest.json" ] && [ -x "$runtime/codex_tui" ]; then runtime_healthy=1; base="$runtime"; source=runtime; fi',
-    'if [ "$source" = runtime ]; then bin="$base/codex_tui"; out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" && { printf "%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$out"; exit 0; }; source=runtime_broken; base="$lib"; fi',
+    'termux=""',
+    'if [ "${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}" != "1" ] && [ -f "$runtime/.healthy" ] && [ -f "$runtime/manifest.json" ] && [ -x "$runtime/codex_tui" ]; then runtime_healthy=1; base="$runtime"; source=runtime; termux="$(/system/bin/toybox sed -n "s/.*\\"codexTermuxVersion\\": *\\"\\([^\\"]*\\)\\".*/\\1/p" "$runtime/manifest.json" | /system/bin/toybox head -n 1)"; fi',
+    'if [ "$source" = runtime ]; then bin="$base/codex_tui"; out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" && { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$termux" "$out"; exit 0; }; source=runtime_broken; termux=""; base="$lib"; fi',
     'if [ -x "$base/codex_tui" ]; then bin="$base/codex_tui"; else exit 127; fi',
-    'out="$(SHELLY_LIB_DIR="$lib" LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" || exit $?',
-    'printf "%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$out"',
+    'out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" || exit $?',
+    'printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$termux" "$out"',
   ].join('; ');
   const r = await execCommand(command, 15_000);
   if (r.exitCode !== 0) return null;
   const line = r.stdout.trim().split('\n').filter(Boolean).pop() || '';
-  const [rawSource, runtimePresentRaw, runtimeHealthyRaw, ...rest] = line.split('\t');
+  const [rawSource, runtimePresentRaw, runtimeHealthyRaw, termuxVersion, ...rest] = line.split('\t');
   const version = parseCodexVersion(rest.join('\t') || `${r.stdout}\n${r.stderr}`);
   if (!version) return null;
   const source = rawSource === 'runtime' || rawSource === 'bundled' || rawSource === 'runtime_broken'
@@ -378,6 +385,7 @@ async function fetchInstalledCodexVersion(): Promise<CodexVersionInfo | null> {
     source,
     runtimePresent: runtimePresentRaw === '1',
     runtimeHealthy: runtimeHealthyRaw === '1',
+    termuxVersion: termuxVersion || undefined,
   };
 }
 
@@ -576,9 +584,8 @@ async function fetchLatestCodexRuntime(): Promise<CodexRuntimeManifest | null> {
   const release: unknown = await releaseResponse.json();
   const assets = parseGitHubReleaseAssets(isRecord(release) ? release.assets : undefined);
   const manifestAsset = assets.find((asset) => asset.name === CODEX_RUNTIME_MANIFEST_ASSET);
-  if (!manifestAsset) {
-    throw new Error(`Release ${CODEX_RUNTIME_TAG} has no ${CODEX_RUNTIME_MANIFEST_ASSET} asset.`);
-  }
+  // Not published yet: the same as no release, not an error on the Builds screen.
+  if (!manifestAsset) return null;
 
   const manifestResponse = await fetchWithTimeout(manifestAsset.browser_download_url, {
     headers: {
@@ -1065,7 +1072,7 @@ async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string
     'install_id="${version}-${run_id}-$("$toybox" date +%s)"',
     'staging="$tmp_dir/codex-$install_id"',
     'archive="$tmp_dir/$install_id.tar.gz"',
-    'cleanup() { "$toybox" rm -f "$archive" 2>/dev/null || true; [ -n "${staging:-}" ] && [ -d "$staging" ] && "$toybox" rm -rf "$staging" 2>/dev/null || true; }',
+    'cleanup() { "$toybox" rm -f "$archive" 2>/dev/null || true; "$toybox" rm -rf "$tmp_dir/codex-probe-home-$install_id" 2>/dev/null || true; [ -n "${staging:-}" ] && [ -d "$staging" ] && "$toybox" rm -rf "$staging" 2>/dev/null || true; }',
     'trap cleanup EXIT',
     '"$toybox" rm -rf "$staging" "$archive"',
     '"$toybox" mkdir -p "$staging"',
@@ -1074,12 +1081,16 @@ async function installCodexRuntime(update: CodexRuntimeManifest): Promise<string
     'actual_sha="$("$toybox" sha256sum "$archive" | "$toybox" cut -d " " -f 1)"',
     '[ "$actual_sha" = "$expected_sha" ] || { echo "sha256 mismatch: expected $expected_sha, got $actual_sha" >&2; exit 1; }',
     '"$toybox" tar -xzf "$archive" -C "$staging"',
-    'for name in codex_tui; do test -f "$staging/$name" || { echo "$name missing from Codex runtime" >&2; exit 1; }; "$toybox" chmod 700 "$staging/$name"; done',
-    '[ ! -f "$staging/libc++_shared.so" ] || "$toybox" chmod 600 "$staging/libc++_shared.so"',
+    'for name in codex_tui codex-code-mode-host; do test -f "$staging/$name" || { echo "$name missing from Codex runtime" >&2; exit 1; }; "$toybox" chmod 700 "$staging/$name"; done',
     'extract_version() { printf "%s\\n" "$1" | "$toybox" sed -n "s/.*\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*[-+A-Za-z0-9.]*\\).*/\\1/p" | "$toybox" head -n 1; }',
-    'run_codex_probe() { bin="$1"; label="$2"; shift 2; out_file="$tmp_dir/$label.out"; SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$staging:$lib" /system/bin/linker64 "$bin" "$@" > "$out_file" 2>&1 & pid=$!; elapsed=0; while kill -0 "$pid" 2>/dev/null; do if [ "$elapsed" -ge 20 ]; then kill "$pid" 2>/dev/null || true; "$toybox" sleep 1; kill -9 "$pid" 2>/dev/null || true; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return 124; fi; "$toybox" sleep 1; elapsed=$((elapsed + 1)); done; wait "$pid"; code=$?; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return "$code"; }',
+    'probe_home="$tmp_dir/codex-probe-home-$install_id"',
+    '"$toybox" mkdir -p "$probe_home"',
+    'run_codex_probe() { bin="$1"; label="$2"; shift 2; out_file="$tmp_dir/$label.out"; CODEX_HOME="$probe_home" SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$staging:$lib" /system/bin/linker64 "$bin" "$@" > "$out_file" 2>&1 & pid=$!; elapsed=0; while kill -0 "$pid" 2>/dev/null; do if [ "$elapsed" -ge 20 ]; then kill "$pid" 2>/dev/null || true; "$toybox" sleep 1; kill -9 "$pid" 2>/dev/null || true; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return 124; fi; "$toybox" sleep 1; elapsed=$((elapsed + 1)); done; wait "$pid"; code=$?; "$toybox" cat "$out_file"; "$toybox" rm -f "$out_file"; return "$code"; }',
     'tui_output="$(run_codex_probe "$staging/codex_tui" codex_tui_version --version)" || { code=$?; echo "codex_tui --version failed: $tui_output" >&2; exit "$code"; }',
     'tui_exec_help="$(run_codex_probe "$staging/codex_tui" codex_tui_exec_help exec --help)" || { code=$?; echo "codex_tui exec --help failed: $tui_exec_help" >&2; exit "$code"; }',
+    'tui_app_server_help="$(run_codex_probe "$staging/codex_tui" codex_tui_app_server_help app-server --help)" || { code=$?; echo "codex_tui app-server --help failed: $tui_app_server_help" >&2; exit "$code"; }',
+    'tui_mcp_list="$(run_codex_probe "$staging/codex_tui" codex_tui_mcp_list mcp list --json)" || { code=$?; echo "codex_tui mcp list failed: $tui_mcp_list" >&2; exit "$code"; }',
+    '"$toybox" rm -rf "$probe_home"',
     'tui_version="$(extract_version "$tui_output")"',
     '[ "$tui_version" = "$version" ] || { echo "codex_tui version mismatch: expected $version, got ${tui_version:-none}; output=$tui_output" >&2; exit 1; }',
     `"$toybox" cat > "$staging/manifest.json" <<'SHELLY_CODEX_RUNTIME_MANIFEST'\n${manifest}\nSHELLY_CODEX_RUNTIME_MANIFEST`,
@@ -1675,9 +1686,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     })
     : t('updates.details_unavailable');
   const bundledCodexVersion = codexVersionFromUpdate(latestUpdate);
-  const availableCodexVersion = latestCodexRuntime?.version || bundledCodexVersion;
+  const availableCodexVersion = latestCodexRuntime?.codexTermuxVersion || latestCodexRuntime?.version || bundledCodexVersion;
   const codexRuntimeIsNewer = Boolean(
-    latestCodexRuntime && installedCodexInfo && compareSemver(latestCodexRuntime.version, installedCodexInfo.version) > 0,
+    latestCodexRuntime && installedCodexInfo && codexRuntimeUpdateAvailable(latestCodexRuntime, installedCodexInfo),
   );
   const codexRuntimeNeedsRepair = installedCodexInfo?.source === 'runtime_broken';
   const canInstallCodexRuntime = Boolean(

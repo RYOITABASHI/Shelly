@@ -382,6 +382,15 @@ Antigravity はワーカーではないので `agent-current` を持たない。
 | 6 | `claude-install`、glibc パック、署名検証、カナリア。既存の手動配置からの移行 | 要 | 中: S3c/S3d の前提 | 2.1.314 → 最新で Bash ツールとエージェントが通る |
 | 7 | `agy` を共通アップデータへ。自動チェックを既定 ON。Builds 画面の 3 CLI 表示。任意で WorkManager | 要 | 低〜中 | 3 CLI が前面起動だけで最新に追従 |
 
+**Inc 3 の実施状況（2026-11-07、`feat/codex-termux-official`、CI・実機未検証）**: 取得元の切替を実装した。計画との差は次のとおり。
+- `publish-cli-runtime.yml` は新設せず、Bump ジョブの 1 本にした。凍結検知を公開の後に同じジョブで走らせ、公開済みの版で判定するため。cron は 6 時間ごと。
+- pin は 2 つ。`.ci-versions/codex-termux-channel.json`（TUI 向け配信、Bump が検証後に更新）と `.ci-versions/codex-termux-deb.json` + `codex.txt`（APK 同梱、レビューした変更でのみ更新）。独立レビューの指摘で、同梱版が自動で動いてエージェントに届く経路を塞いだ。検証は `scripts/codex-termux-apt.js`。署名に使う鍵は `termux-keyring` のうち `termux-autobuilds` のみ固定（実際に termux-main を署名している鍵）。
+- Termux の pool から消えた版の APK ビルドのため、.deb を `codex-runtime-latest` に控える（同梱 pin の分は専用のステップで保持）。
+- Bump は候補の検証（ELF、OpenSSL のシンボル版、シークレットスキャン）をコミットより前に行う。APK ビルドの `fetch` は署名の失敗だけを致命的とする。
+- **追加**: 切替前の APK（ゲート修正の無い driver）に Termux 版が届かないよう、マニフェストを `codex-runtime-termux.json` に分けた。§7 の「Inc 2 は Inc 3 より先」を配信側で守るため。
+- **前倒し**: ワーカーを `agent-current` に向けた（Inc 5 の一部）。作成は Inc 4/5 なので、当面は同梱版で動く。プローブに `app-server --help`、`mcp list --json`、host の存在を追加（Builds 画面と `shelly-runtime-update.js` の両方）。
+- 未実施: Ed25519 署名、`check_for_update_on_startup` は既存の設定で足りるので変更なし。TLS のプローブは入れていない。
+
 **順序の理由**: Inc 2 は Inc 3 より先。0.163 → 0.167 に上げる前にゲートを固めるため。Inc 3 が最も危険なので単独で出す。Inc 4 より前は自動更新しない。
 
 **Inc 3 の変更点の詳細**

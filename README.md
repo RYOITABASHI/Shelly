@@ -216,8 +216,10 @@ No copy. No paste. No tab switching.
   app-private ELFs). The wrapper rewrites `/bin/X` and `/usr/bin/X` to
   `/system/bin/X` and routes app-bundled ELFs through `linker64`. Source
   is in `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`.
-- **Not Termux-compatible by design.** Shelly does not use Termux
-  packages, Termux paths, or Termux's prefix assumptions. If you already
+- **Not Termux-compatible by design.** Shelly does not use Termux paths
+  or Termux's prefix assumptions, and it does not need Termux installed.
+  CI takes some Android binaries from Termux's packages, Codex among them,
+  and bundles them with the app. If you already
   have Termux installed, Shelly still bundles its own copies of
   everything. No conflict, but also no sharing.
 
@@ -533,7 +535,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full feature-by-feature breakdo
   <img src="docs/images/codex-terminal.png" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, creating hello.js and running it with Node.js" width="700">
 </p>
 
-- **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
+- **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the Android-native `codex` from Termux's official package, pinned in `.ci-versions/` after CI checks Termux's signed apt index, as `codex_tui`. Runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
 - **Managed promotion** — a new runtime candidate is promoted only after download, SHA-256 verification, extraction, executable checks, and `codex_tui --version` / `codex_tui exec --help` smoke checks.
 - **Repair / reset path** — if the app-data runtime is broken or unwanted, the Updates UI can repair it from the latest runtime release or reset to the APK-bundled Codex runtime.
 - **Remote control (Experimental)** — `shelly codex pair` hosts Codex's official `codex remote-control` in a terminal tab and prints a short-lived pairing code to enter in the ChatGPT app's Codex; `shelly codex code` prints a new one. Requires a ChatGPT sign-in (API keys are not supported). Pairing and running commands from the app have been verified on device.
@@ -746,7 +748,7 @@ in the release manifests, which the in-app updater reads directly, so they never
 drift out of sync with this page:
 
 - **Android APK** — [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json): `versionCode`, `versionName`, `gitSha`, `apkAssetName`, `apkSizeBytes`, `sha256`.
-- **Codex runtime** — [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json): `codexVersion`, asset name, `sha256`.
+- **Codex runtime** — [`codex-runtime-latest/codex-runtime-termux.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime-termux.json): `codexVersion`, asset name, `sha256`.
 
 | What | Shape | Why it costs that |
 |---|---|---|
@@ -863,7 +865,7 @@ Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once, with no confirmation step before it runs. Use it deliberately.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.
 - **Terminal font mismatch** — if a saved legacy theme looks wrong after upgrading, switch Settings → Display → Theme to one of the five color presets (Case File, Blue, Red, Purple, Green).
-- **Codex CLI runs through Shelly-managed runtime routing** — Shelly prefers a healthy app-data runtime under `~/.shelly-runtime/codex/current`, then falls back to the APK-bundled runtime. If `codex --version` fails, run `shelly-doctor`, `shelly-update-clis codex --check-only`, or use **Settings → Updates → Repair Codex / Reset**.
+- **Codex CLI runs through Shelly-managed runtime routing** — Shelly prefers a healthy app-data runtime under `~/.shelly-runtime/codex/current`, then falls back to the APK-bundled runtime. Agent workers run the APK-bundled version, which moves only by a reviewed change, so a runtime update does not change them. If `codex --version` fails, run `shelly-doctor`, `shelly-update-clis codex --check-only`, or use **Settings → Updates → Repair Codex / Reset**.
 - **Codex login uses an in-app device-code OAuth flow** — run bare `codex` or `codex-login --open` from any terminal pane. Shelly validates `~/.codex/auth.json`; if it is missing or invalid, Shelly opens the OpenAI verification page in the in-app Browser Pane, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. No OpenAI API key is required; this rides your ChatGPT Plus/Pro/Business/Enterprise subscription. The flow has a 15-minute device-code timeout — re-run if it expires. Verify with `shelly-doctor` (it reports whether `~/.codex/auth.json` is present).
 - **`/sdcard` access requires MANAGE_EXTERNAL_STORAGE** — Android 11+ Scoped Storage blocks direct `open(2)` on `/sdcard` paths without this permission. Shelly asks for it on first launch; if you deny it, `source /sdcard/Download/foo.sh` will fail with `Permission denied`. Re-grant from system Settings → Apps → Shelly → Permissions → Files and media → Allow management of all files.
 - **Gemini is API-only** — Gemini is available as an API provider (AI Pane, `@gemini`, `@team`, background agents) with a configured key. There is no bundled Gemini CLI and no interactive `gemini` login flow in this release.

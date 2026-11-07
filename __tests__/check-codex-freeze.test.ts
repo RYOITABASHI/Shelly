@@ -1,7 +1,7 @@
 /**
- * The Bump Codex Runtime job watches the fork's tags, so a fork that stops
- * releasing stays green forever. scripts/check-codex-freeze.js fails the job
- * when upstream has been ahead of what we ship for more than the limit.
+ * The Bump Codex Runtime job watches Termux's index, so a package that stops
+ * following upstream stays green forever. scripts/check-codex-freeze.js fails the
+ * job when upstream has been ahead of what we ship for more than the limit.
  */
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
@@ -95,7 +95,7 @@ describe('Bump Codex Runtime workflow', () => {
   const stepAt = yml.indexOf('- name: Fail if Codex is frozen behind upstream');
 
   it('runs the check last, on the no-change path too, with the plan limit of 3 days', () => {
-    expect(stepAt).toBeGreaterThan(yml.indexOf('gh workflow run build-android.yml'));
+    expect(stepAt).toBeGreaterThan(yml.indexOf('- name: Publish the verified runtime'));
     const step = yml.slice(stepAt);
     expect(step).not.toMatch(/^\s+if:/m);
     expect(step).not.toContain('continue-on-error');
@@ -105,7 +105,14 @@ describe('Bump Codex Runtime workflow', () => {
     expect(step).toContain('set -euo pipefail');
   });
 
-  it('still takes Codex from the fork (no source switch in this change)', () => {
-    expect(yml).toContain('gh release list --repo DioNanos/codex-termux');
+  it('measures what devices can get from the channel, not the pin in the repo', () => {
+    const step = yml.slice(stepAt);
+    expect(step).toContain('--pattern "$RUNTIME_MANIFEST"');
+    expect(step).not.toContain('.ci-versions');
+    expect(step).not.toContain('--shipped "$(tr');
+  });
+
+  it('takes Codex from Termux', () => {
+    expect(yml).toContain('node scripts/codex-termux-apt.js bump');
   });
 });

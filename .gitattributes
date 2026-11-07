@@ -9,3 +9,7 @@ docs/skills-catalog/**/SKILL.md text eol=lf
 docs/skills-catalog/skills-catalog.json text eol=lf
 signing/*.bin binary
 signing/*.keystore binary
+# Compared byte for byte: a pinned keyring, and a signed file whose signature
+# breaks if a Windows checkout rewrites its line endings.
+scripts/termux-autobuilds.gpg binary
+__tests__/fixtures/termux-InRelease.txt -text

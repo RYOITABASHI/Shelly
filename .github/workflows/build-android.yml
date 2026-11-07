@@ -153,21 +153,10 @@ jobs:
         run: |
           set -euo pipefail
           test -s .ci-versions/codex.txt || { echo "FATAL: .ci-versions/codex.txt is missing" >&2; exit 1; }
-          test -s .ci-versions/codex-termux.txt || { echo "FATAL: .ci-versions/codex-termux.txt is missing" >&2; exit 1; }
-          test -s .ci-versions/codex-termux.integrity || { echo "FATAL: .ci-versions/codex-termux.integrity is missing" >&2; exit 1; }
-          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
-          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
-          # codex-termux tags either mirror upstream (v0.156.1) or carry a fork
-          # suffix (v0.162.1-termux.1); the binary and @openai/codex report the
-          # upstream version either way.
-          CODEX_TERMUX_UPSTREAM="${CODEX_TERMUX_VERSION#v}"
-          CODEX_TERMUX_UPSTREAM="${CODEX_TERMUX_UPSTREAM%%-termux.*}"
-          if [ "${CODEX_VERSION}" != "${CODEX_TERMUX_UPSTREAM}" ]; then
-            echo "FATAL: @openai/codex ${CODEX_VERSION} must match codex-termux ${CODEX_TERMUX_VERSION}" >&2
-            exit 1
-          fi
-          printf 'codex: %s\n' "${CODEX_VERSION}"
-          printf 'codex-termux: %s\n' "${CODEX_TERMUX_VERSION}"
+          test -s .ci-versions/codex-termux-deb.json || { echo "FATAL: .ci-versions/codex-termux-deb.json is missing" >&2; exit 1; }
+          node scripts/codex-termux-apt.js check-pin \
+            --pin .ci-versions/codex-termux-deb.json --codex-txt .ci-versions/codex.txt
+          printf 'codex: %s\n' "$(tr -d '[:space:]' < .ci-versions/codex.txt)"
 
       - name: Restore generated Android payload cache
         id: android-payload-cache
@@ -191,14 +180,13 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
-            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_code_mode_host.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_cmd.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_glibc_exec.so
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
-          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux.txt', '.ci-versions/codex-termux.integrity', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux-deb.json', 'scripts/codex-termux-apt.js', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
             android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
 
@@ -477,144 +465,26 @@ jobs:
             fi
           done
 
-      - name: Download codex-termux Android binary
+      - name: Bundle Codex from the Termux package
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
+        # scripts/codex-termux-apt.js checks the signed Termux index, the pinned
+        # hash, and that both binaries can load on Android. apt lists only the
+        # newest version, so this pin may be gone from the pool by now; the Bump
+        # job keeps its .deb on codex-runtime-latest, and the hash decides either
+        # way. Only a reviewed change moves this pin: agent workers run this build. Issue #149: Codex looks for its Code Mode host next to its
+        # own executable, so LibExtractor puts it beside codex_tui.
         run: |
           set -euo pipefail
           JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          # DioNanos/codex-termux has used two release asset layouts:
-          #   1. legacy: codex-termux-android-arm64-<tag>.tar.gz + .sha256
-          #   2. npm-pack: mmmbuto-codex-cli-termux-<version>.tgz
-          # Release builds are pinned by .ci-versions so a source commit maps to
-          # one Codex runtime. The separate bump workflow updates these pins.
-          CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
-          CODEX_TERMUX_INTEGRITY="$(tr -d '[:space:]' < .ci-versions/codex-termux.integrity)"
-          CODEX_TERMUX_FORMAT=""
-          assets="$(gh release view "$CODEX_TERMUX_VERSION" --repo DioNanos/codex-termux --json assets --jq '.assets[].name')"
-          CODEX_NPM_VERSION="${CODEX_TERMUX_VERSION#v}"
-          if printf '%s\n' "$assets" | grep -qE "^mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}\.tgz$" &&
-             printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha512-'; then
-            CODEX_TERMUX_FORMAT="npm-pack"
-          elif printf '%s\n' "$assets" | grep -qE "^codex-termux-android-arm64-${CODEX_TERMUX_VERSION}\.tar\.gz$" &&
-               printf '%s\n' "$CODEX_TERMUX_INTEGRITY" | grep -q '^sha256-'; then
-            CODEX_TERMUX_FORMAT="legacy"
-          else
-            echo "FATAL: pinned codex-termux ${CODEX_TERMUX_VERSION} has no asset matching pinned integrity format" >&2
-            exit 1
-          fi
-          echo "[codex] bundling codex-termux ${CODEX_TERMUX_VERSION} (${CODEX_TERMUX_FORMAT})"
-          cd /tmp
-          if [ "${CODEX_TERMUX_FORMAT}" = "legacy" ]; then
-            gh release download "${CODEX_TERMUX_VERSION}" \
-              --repo DioNanos/codex-termux \
-              --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" \
-              --pattern "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz.sha256" \
-              --dir /tmp \
-              --clobber
-            # DioNanos/codex-termux .sha256 files contain a bare hex digest
-            # (no filename suffix), so sha256sum -c rejects them with
-            # "no properly formatted checksum lines found". Read and compare manually.
-            EXPECTED_HASH="${CODEX_TERMUX_INTEGRITY#sha256-}"
-            ACTUAL_HASH="$(sha256sum "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" | awk '{print $1}')"
-            if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
-              echo "FATAL: sha256 mismatch for codex-termux tarball" >&2
-              echo "  expected: ${EXPECTED_HASH}" >&2
-              echo "  actual:   ${ACTUAL_HASH}" >&2
-              exit 1
-            fi
-            echo "[codex] sha256 OK: ${ACTUAL_HASH}"
-            mv "codex-termux-android-arm64-${CODEX_TERMUX_VERSION}.tar.gz" /tmp/codex-termux.tar.gz
-          else
-            gh release download "${CODEX_TERMUX_VERSION}" \
-              --repo DioNanos/codex-termux \
-              --pattern "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" \
-              --dir /tmp \
-              --clobber
-            mv "mmmbuto-codex-cli-termux-${CODEX_NPM_VERSION}.tgz" /tmp/codex-termux.tar.gz
-            EXPECTED_INTEGRITY="${CODEX_TERMUX_INTEGRITY}"
-            ACTUAL_INTEGRITY="$(node -e 'const fs=require("fs"),crypto=require("crypto"); process.stdout.write("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' /tmp/codex-termux.tar.gz)"
-            if [ "${EXPECTED_INTEGRITY}" != "${ACTUAL_INTEGRITY}" ]; then
-              echo "FATAL: npm integrity mismatch for codex-termux tarball" >&2
-              echo "  expected: ${EXPECTED_INTEGRITY}" >&2
-              echo "  actual:   ${ACTUAL_INTEGRITY}" >&2
-              exit 1
-            fi
-            echo "[codex] npm integrity OK: ${ACTUAL_INTEGRITY}"
-          fi
-          rm -rf /tmp/codex-termux-extract
-          mkdir -p /tmp/codex-termux-extract
-          tar xzf /tmp/codex-termux.tar.gz -C /tmp/codex-termux-extract
-          CODEX_TUI_BIN="$(find /tmp/codex-termux-extract -type f -name codex.bin | head -1)"
-          CODEX_LIBCXX="$(find /tmp/codex-termux-extract -type f -name 'libc++_shared.so' | head -1)"
-          CODEX_CODE_MODE_HOST="$(find /tmp/codex-termux-extract -type f -name codex-code-mode-host | head -1)"
-          # Verify the upstream tarball still ships the unified binary we depend on.
-          # If DioNanos/codex-termux ever renames or drops this file,
-          # the next green build would silently produce an APK with codex
-          # broken on-device. Fail loud here instead.
-          if [ ! -f "$CODEX_TUI_BIN" ]; then
-            echo "FATAL: expected codex.bin in codex-termux tarball; tarball contents:" >&2
-            find /tmp/codex-termux-extract -maxdepth 4 -type f | sort >&2
-            exit 1
-          fi
-          # Unified Codex binary. `codex exec ...` is dispatched by passing the
-          # `exec` subcommand to this same binary, matching upstream codex-exec.
-          cp "$CODEX_TUI_BIN" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
-          chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
-          if [ -n "$CODEX_LIBCXX" ] && [ -f "$CODEX_LIBCXX" ]; then
-            cp "$CODEX_LIBCXX" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
-            chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
-          fi
-          # Issue #149: Codex resolves its Code Mode host as
-          # dirname(current_exe)/codex-code-mode-host. codex-termux ships an
-          # Android/bionic PIE build of it; bundle it so LibExtractor places it
-          # next to codex_tui. Without it Codex silently falls back to the
-          # musl host from the npm dispatcher tree, which Android cannot exec.
-          rm -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
-          if [ -n "$CODEX_CODE_MODE_HOST" ] && [ -f "$CODEX_CODE_MODE_HOST" ]; then
-            cp "$CODEX_CODE_MODE_HOST" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
-            chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
-          else
-            echo "::warning::codex-termux tarball has no codex-code-mode-host; Codex Code Mode will be unavailable on-device"
-          fi
-          rm -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
-          ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
-          [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
-          [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
-
-      - name: Package Codex runtime update
-        run: |
-          set -euo pipefail
-          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          runtime_dir="${RUNNER_TEMP}/codex-runtime"
-          rm -rf "${runtime_dir}"
-          mkdir -p "${runtime_dir}"
-          cp "${JNILIBS}/libcodex_tui.so" "${runtime_dir}/codex_tui"
-          chmod 755 "${runtime_dir}/codex_tui"
-          if [ -f "${JNILIBS}/libcodex_cxx_shared.so" ]; then
-            cp "${JNILIBS}/libcodex_cxx_shared.so" "${runtime_dir}/libc++_shared.so"
-            chmod 755 "${runtime_dir}/libc++_shared.so"
-          fi
-          if [ -f "${JNILIBS}/libcodex_code_mode_host.so" ]; then
-            cp "${JNILIBS}/libcodex_code_mode_host.so" "${runtime_dir}/codex-code-mode-host"
-            chmod 755 "${runtime_dir}/codex-code-mode-host"
-          fi
-          node -e '
-            const fs = require("fs");
-            const crypto = require("crypto");
-            const out = {};
-            for (const name of fs.readdirSync(process.argv[1]).sort()) {
-              const p = `${process.argv[1]}/${name}`;
-              if (fs.statSync(p).isFile()) {
-                out[name] = crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
-              }
-            }
-            fs.writeFileSync(`${process.argv[1]}/files.sha256.json`, JSON.stringify(out, null, 2) + "\n");
-          ' "${runtime_dir}"
-          tar -C "${runtime_dir}" -czf "${RUNNER_TEMP}/codex-runtime.tar.gz" .
-          sha256sum "${RUNNER_TEMP}/codex-runtime.tar.gz"
-          ls -lh "${RUNNER_TEMP}/codex-runtime.tar.gz"
+          payload="${RUNNER_TEMP}/codex-payload"
+          node scripts/codex-termux-apt.js fetch \
+            --pin .ci-versions/codex-termux-deb.json \
+            --out-dir "${payload}" \
+            --archive-base "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/codex-runtime-latest"
+          install -m 755 "${payload}/codex_tui" "${JNILIBS}/libcodex_tui.so"
+          install -m 755 "${payload}/codex-code-mode-host" "${JNILIBS}/libcodex_code_mode_host.so"
+          rm -f "${JNILIBS}/libcodex_exec.so" "${JNILIBS}/libcodex_cxx_shared.so"
+          ls -lh "${JNILIBS}/libcodex_tui.so" "${JNILIBS}/libcodex_code_mode_host.so"
 
       - name: Bundle Codex JS dispatcher
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
@@ -1331,15 +1201,13 @@ jobs:
           unzip -p "${apk}" lib/arm64-v8a/libshelly_cmd.so > /tmp/libshelly_cmd.so
           check_marker /tmp/libshelly_cmd.so 'shelly-cmd:v1:native-path-shim'
 
-      - name: Release-safety secret scan (APK + Codex runtime payload)
+      - name: Release-safety secret scan (APK)
         # Fail before anything is uploaded/published if a recognizable secret,
         # private key, keystore, or signing password ended up in the artifacts.
         # Node built-ins only; needs no secrets; findings are redacted in logs.
         run: |
           set -euo pipefail
-          node scripts/release-safety-scan.js \
-            android/app/build/outputs/apk/release \
-            "${RUNNER_TEMP}/codex-runtime.tar.gz"
+          node scripts/release-safety-scan.js android/app/build/outputs/apk/release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -1354,8 +1222,6 @@ jobs:
           STABLE_UPDATE_TAG: android-latest
           DEV_UPDATE_TAG: android-dev
           UPDATE_MANIFEST_NAME: latest.json
-          CODEX_RUNTIME_TAG: codex-runtime-latest
-          CODEX_RUNTIME_MANIFEST_NAME: codex-runtime.json
         run: |
           set -euo pipefail
           if [ "${SHELLY_SIGNING_MODE}" = "release" ]; then
@@ -1366,36 +1232,23 @@ jobs:
             exit 1
           fi
           # Gate stable-vs-dev on the ref being built, not on how the run was
-          # triggered. Before this fix, every workflow_dispatch run — including
-          # ones explicitly dispatched with --ref main (the daily Bump Codex
-          # Runtime job does exactly this in bump-codex-runtime.yml's "Commit
-          # bump to main and trigger release build" step, since a push made
-          # with GITHUB_TOKEN cannot retrigger workflows and must fall back to
-          # `gh workflow run ... --ref main`) — was misclassified as a
-          # dev/pre-release build. That silently starved android-latest and
-          # codex-runtime-latest of every automated Codex version bump, while
-          # feature-branch workflow_dispatch test builds correctly stayed on
-          # the dev channel. Branching on the ref instead fixes both cases.
+          # triggered: a workflow_dispatch run with --ref main is a stable build,
+          # and feature-branch dispatches stay on the dev channel. The Codex
+          # runtime no longer ships from here; bump-codex-runtime.yml publishes it.
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             update_tag="${STABLE_UPDATE_TAG}"
             update_title="Shelly Android latest"
             release_note_heading="Rolling Android update build."
             android_release_extra_args=()
-            publish_codex_runtime=1
           else
             update_tag="${DEV_UPDATE_TAG}"
             update_title="Shelly Android dev"
             release_note_heading="Workflow dispatch Android dev build."
             android_release_extra_args=(--prerelease)
-            publish_codex_runtime=0
           fi
 
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
-          codex_runtime_tar="${RUNNER_TEMP}/codex-runtime.tar.gz"
-          if [ "${publish_codex_runtime}" = "1" ]; then
-            test -s "${codex_runtime_tar}" || { echo "FATAL: Codex runtime tarball not found" >&2; exit 1; }
-          fi
 
           config_json="$(npx expo config --json)"
           version_code="$(printf '%s' "${config_json}" | node -e '
@@ -1418,7 +1271,7 @@ jobs:
           ')"
           sha256="$(sha256sum "${apk}" | awk '{print $1}')"
           codex_version="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
-          codex_termux_version="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
+          codex_termux_version="$(node -p 'require("./.ci-versions/codex-termux-deb.json").version')"
           created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           short_sha="${GITHUB_SHA:0:12}"
           run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
@@ -1476,101 +1329,8 @@ jobs:
           - signing: ${SHELLY_SIGNING_MODE} (cert SHA-256 ${SIGNING_CERT_SHA256})
           EOF
 
-          if [ "${publish_codex_runtime}" = "1" ]; then
-            codex_runtime_asset_name="Shelly-codex-runtime-v${codex_termux_version#v}-${GITHUB_RUN_ID}-${run_attempt}-${short_sha}.tar.gz"
-            codex_runtime_asset="${RUNNER_TEMP}/${codex_runtime_asset_name}"
-            cp "${codex_runtime_tar}" "${codex_runtime_asset}"
-            codex_runtime_sha256="$(sha256sum "${codex_runtime_asset}" | awk '{print $1}')"
-            codex_runtime_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_RUNTIME_TAG}/${codex_runtime_asset_name}"
-
-          # The runtime manifest version must equal what `codex_tui --version`
-          # prints (the in-app installer refuses a mismatch). codex-termux
-          # binaries report the upstream version, without the fork's
-          # -termux.N tag suffix, which is exactly .ci-versions/codex.txt.
-          CODEX_RUNTIME_VERSION="${codex_version}" \
-          CODEX_VERSION="${codex_version}" \
-          CODEX_TERMUX_VERSION="${codex_termux_version}" \
-          CODEX_RUNTIME_SHA256="${codex_runtime_sha256}" \
-          CODEX_RUNTIME_URL="${codex_runtime_url}" \
-          CODEX_RUNTIME_ASSET_NAME="${codex_runtime_asset_name}" \
-          CREATED_AT="${created_at}" \
-          node <<'NODE' > "${CODEX_RUNTIME_MANIFEST_NAME}"
-          const manifest = {
-            schemaVersion: 1,
-            channel: "codex-runtime-latest",
-            version: process.env.CODEX_RUNTIME_VERSION,
-            codexVersion: process.env.CODEX_VERSION,
-            codexTermuxVersion: process.env.CODEX_TERMUX_VERSION,
-            gitSha: process.env.GITHUB_SHA,
-            runId: Number(process.env.GITHUB_RUN_ID),
-            runNumber: Number(process.env.GITHUB_RUN_NUMBER),
-            createdAt: process.env.CREATED_AT,
-            assetName: process.env.CODEX_RUNTIME_ASSET_NAME,
-            tarballUrl: process.env.CODEX_RUNTIME_URL,
-            sha256: process.env.CODEX_RUNTIME_SHA256,
-          };
-          process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
-          NODE
-
-          cat > /tmp/shelly-codex-runtime-release.md <<EOF
-          Rolling Codex runtime update.
-
-          - codex: ${codex_version}
-          - codex-termux: ${codex_termux_version}
-          - commit: ${GITHUB_SHA}
-          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - sha256: ${codex_runtime_sha256}
-          EOF
-
-            if gh release view "${CODEX_RUNTIME_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-              gh release edit "${CODEX_RUNTIME_TAG}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --target "${GITHUB_SHA}" \
-                --title "Shelly Codex runtime latest" \
-                --notes-file /tmp/shelly-codex-runtime-release.md
-            else
-              gh release create "${CODEX_RUNTIME_TAG}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --target "${GITHUB_SHA}" \
-                --title "Shelly Codex runtime latest" \
-                --notes-file /tmp/shelly-codex-runtime-release.md \
-                --latest=false
-            fi
-
-            gh release upload "${CODEX_RUNTIME_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              "${codex_runtime_asset}"
-
-            uploaded_runtime_asset="$(gh release view "${CODEX_RUNTIME_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --json assets \
-              --jq ".assets[] | select(.name == \"${codex_runtime_asset_name}\")")"
-            test -n "${uploaded_runtime_asset}" || { echo "FATAL: uploaded Codex runtime asset not visible in release" >&2; exit 1; }
-            uploaded_runtime_digest="$(printf '%s' "${uploaded_runtime_asset}" | node -e '
-              let input = "";
-              process.stdin.on("data", chunk => input += chunk);
-              process.stdin.on("end", () => {
-                const asset = JSON.parse(input);
-                process.stdout.write(String(asset.digest || ""));
-              });
-            ')"
-            if [ -n "${uploaded_runtime_digest}" ] && [ "${uploaded_runtime_digest}" != "sha256:${codex_runtime_sha256}" ]; then
-              echo "FATAL: Codex runtime digest mismatch: ${uploaded_runtime_digest}" >&2
-              exit 1
-            fi
-
-            gh release upload "${CODEX_RUNTIME_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              "${CODEX_RUNTIME_MANIFEST_NAME}" \
-              --clobber
-          fi
-
           # Final gate: everything about to be published to the update channels.
-          scan_targets=("${release_apk}" "${UPDATE_MANIFEST_NAME}")
-          if [ -f "${CODEX_RUNTIME_MANIFEST_NAME}" ]; then
-            scan_targets+=("${CODEX_RUNTIME_MANIFEST_NAME}")
-          fi
-          node scripts/release-safety-scan.js "${scan_targets[@]}"
+          node scripts/release-safety-scan.js "${release_apk}" "${UPDATE_MANIFEST_NAME}"
 
           if gh release view "${update_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${update_tag}" \
@@ -1643,7 +1403,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Mirrors the codex-runtime-latest gate above: a single always-on
+          # A single always-on
           # "latest" channel (no dev/stable split like android-latest has),
           # so only publish from an actual main build. workflow_dispatch
           # runs off a feature branch still execute this step (matching the

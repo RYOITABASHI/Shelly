@@ -215,8 +215,8 @@ CLI ベースの AI ツールを使っている開発者には見慣れたワー
   ラッパーが `/bin/X` と `/usr/bin/X` を `/system/bin/X` に書き換え、アプリ同梱の ELF は
   `linker64` 経由に流します。ソースは
   `modules/terminal-emulator/android/src/main/jni/exec-wrapper.c` にあります。
-- **設計として Termux 互換ではありません。** Shelly は Termux のパッケージも、Termux のパスも、
-  Termux の prefix 前提も使いません。すでに Termux を入れていても、Shelly は自前のコピーを
+- **設計として Termux 互換ではありません。** Shelly は Termux のパスも prefix 前提も使わず、Termux のインストールも要りません。
+  Codex など一部の Android バイナリは CI が Termux のパッケージから取得してアプリに同梱します。すでに Termux を入れていても、Shelly は自前のコピーを
   すべて同梱します。競合はしませんが、共有もしません。
 
 ---
@@ -528,7 +528,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
   <img src="docs/images/codex-terminal.png" alt="Android上のShellyのターミナルペインでネイティブに動くOpenAI Codex CLIが、hello.jsを作成してNode.jsで実行している" width="700">
 </p>
 
-- **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には `.ci-versions/` の固定された Android ネイティブの統合 `codex_tui` バイナリが同梱され、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
+- **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には Termux 公式パッケージの Android ネイティブ版 `codex` が `codex_tui` として同梱され（`.ci-versions/` に固定、CI が Termux の署名付き apt index で検証）、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
 - **管理された昇格** — 新しいランタイム候補は、ダウンロード・SHA-256 検証・展開・実行可能性チェック・`codex_tui --version` / `codex_tui exec --help` のスモークチェックをすべて通ってから初めて昇格します。
 - **修復 / リセットのパス** — アプリデータ側のランタイムが壊れている、あるいは不要な場合は、Updates UI から最新のランタイムリリースで修復するか、APK 同梱の Codex ランタイムにリセットできます。
 - **リモート操作（Experimental）** — `shelly codex pair` は Codex 公式の `codex remote-control` をターミナルのタブでホストし、ChatGPT アプリの Codex に入力する短時間有効のペアリングコードを表示します。`shelly codex code` で新しいコードを表示します。ChatGPT のサインインが必要です（API キーは非対応）。ペアリングとアプリからのコマンド実行は実機で検証済みです。
@@ -739,7 +739,7 @@ AI がターミナルを読む。ターミナルが AI を実行する。ユー�
 あり、アプリ内アップデータがそれを直接読むので、このページと乖離することはありません:
 
 - **Android APK** — [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json): `versionCode`、`versionName`、`gitSha`、`apkAssetName`、`apkSizeBytes`、`sha256`。
-- **Codex ランタイム** — [`codex-runtime-latest/codex-runtime.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime.json): `codexVersion`、アセット名、`sha256`。
+- **Codex ランタイム** — [`codex-runtime-latest/codex-runtime-termux.json`](https://github.com/RYOITABASHI/Shelly/releases/download/codex-runtime-latest/codex-runtime-termux.json): `codexVersion`、アセット名、`sha256`。
 
 | 対象 | 実態 | なぜそのコストになるか |
 |---|---|---|
@@ -856,7 +856,7 @@ Shelly はリリース前の Android ソフトウェアです。まだ完璧で�
 - **`@team` は複数の API に同時にルーティングします** — 実行前の確認ステップなしに、すべてのプロバイダのクレジットを一度に消費します。意識して使ってください。
 - **一部編集済みのファイルに対する複数 hunk の Accept** — hunk 単位の Accept はファジー再アンカーを使うので後続の hunk も着地しますが、AI の diff がすでに別内容へ編集済みのコンテキストを参照している場合、その hunk は拒否され、再生成を促すトーストが出ます。
 - **ターミナルフォントの不一致** — アップグレード後に保存済みのレガシーテーマの表示が崩れる場合は、Settings → Display → Theme で 5 つのカラープリセット（Case File、Blue、Red、Purple、Green）のいずれかに切り替えてください。
-- **Codex CLI は Shelly が管理するランタイムルーティングを通ります** — Shelly はまず `~/.shelly-runtime/codex/current` の健全なアプリデータ側ランタイムを優先し、次に APK 同梱ランタイムにフォールバックします。`codex --version` が失敗する場合は `shelly-doctor`、`shelly-update-clis codex --check-only` を実行するか、**Settings → Updates → Repair Codex / Reset** を使ってください。
+- **Codex CLI は Shelly が管理するランタイムルーティングを通ります** — エージェントのワーカーは APK 同梱版で動き、その版はレビューを経た変更でしか動きません。ターミナルの Codex は、まず `~/.shelly-runtime/codex/current` の健全なアプリデータ側ランタイムを優先し、次に APK 同梱ランタイムにフォールバックします。`codex --version` が失敗する場合は `shelly-doctor`、`shelly-update-clis codex --check-only` を実行するか、**Settings → Updates → Repair Codex / Reset** を使ってください。
 - **Codex のログインはアプリ内デバイスコード OAuth フローです** — 任意のターミナルペインで素の `codex` か `codex-login --open` を実行します。Shelly は `~/.codex/auth.json` を検証し、無い / 無効なら OpenAI の検証ページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT の Plus / Pro / Business / Enterprise サブスクリプションに乗ります。デバイスコードには 15 分のタイムアウトがあるので、切れたら再実行してください。確認は `shelly-doctor` で行えます（`~/.codex/auth.json` の有無を報告します）。
 - **`/sdcard` へのアクセスには MANAGE_EXTERNAL_STORAGE が必要です** — Android 11 以降の Scoped Storage は、この権限なしでは `/sdcard` 配下への直接の `open(2)` をブロックします。Shelly は初回起動時に要求しますが、拒否すると `source /sdcard/Download/foo.sh` は `Permission denied` で失敗します。あとから付与する場合はシステムの 設定 → アプリ → Shelly → 権限 → ファイルとメディア → すべてのファイルの管理を許可 から。
 - **Gemini は API のみです** — Gemini はキーを設定した API プロバイダとして利用できます（AI ペイン、`@gemini`、`@team`、バックグラウンドエージェント）。このリリースには Gemini CLI の同梱も、対話的な `gemini` ログインフローもありません。

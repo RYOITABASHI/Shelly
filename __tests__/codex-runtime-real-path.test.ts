@@ -36,8 +36,8 @@ function extract(first: string, last: string): string {
   throw new Error(`could not extract ${first}`);
 }
 
-/** HOME with current -> versions/<id>; a junction also works on the dev PC. */
-function makeRuntime(files = ['.healthy', 'manifest.json', 'codex_tui']) {
+/** HOME with current (or agent-current) -> versions/<id>; a junction also works on the dev PC. */
+function makeRuntime(files = ['.healthy', 'manifest.json', 'codex_tui'], linkName = 'current') {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codex-real-')));
   const runtime = path.join(home, '.shelly-runtime', 'codex');
   const version = (id: string) => {
@@ -47,12 +47,12 @@ function makeRuntime(files = ['.healthy', 'manifest.json', 'codex_tui']) {
     return dir;
   };
   const point = (dir: string) => {
-    const link = path.join(runtime, 'current');
+    const link = path.join(runtime, linkName);
     fs.rmSync(link, { recursive: true, force: true });
     fs.symlinkSync(dir, link, 'junction');
   };
   const cleanup = () => {
-    fs.rmSync(path.join(runtime, 'current'), { recursive: true, force: true });
+    fs.rmSync(path.join(runtime, linkName), { recursive: true, force: true });
     fs.rmSync(home, { recursive: true, force: true });
   };
   return { home, version, point, cleanup };
@@ -67,14 +67,14 @@ describe('driver: runtimeCodexTuiPath', () => {
   });
 
   it('returns the versioned path, not the symlink, and keeps it across a switch', () => {
-    const t = makeRuntime();
+    const t = makeRuntime(undefined, 'agent-current');
     try {
       const v1 = t.version('0.163.0-aaa');
       const v2 = t.version('0.167.0-bbb');
       t.point(v1);
       const first: string = driver.runtimeCodexTuiPath(t.home);
       expect(first).toBe(path.join(fs.realpathSync(v1), 'codex_tui'));
-      expect(first).not.toContain(`${path.sep}current${path.sep}`);
+      expect(first).not.toContain(`${path.sep}agent-current${path.sep}`);
       t.point(v2);
       expect(first).toBe(path.join(fs.realpathSync(v1), 'codex_tui'));
       expect(driver.runtimeCodexTuiPath(t.home)).toBe(path.join(fs.realpathSync(v2), 'codex_tui'));
@@ -84,7 +84,7 @@ describe('driver: runtimeCodexTuiPath', () => {
   });
 
   it('checks health in the resolved directory', () => {
-    const t = makeRuntime(['manifest.json', 'codex_tui']);
+    const t = makeRuntime(['manifest.json', 'codex_tui'], 'agent-current');
     try {
       t.point(t.version('0.163.0-aaa'));
       expect(driver.runtimeCodexTuiPath(t.home)).toBe('');
@@ -93,8 +93,19 @@ describe('driver: runtimeCodexTuiPath', () => {
     }
   });
 
-  it('falls back when there is no runtime or it is turned off', () => {
+  it('never follows current: an update for the TUI does not move the worker', () => {
     const t = makeRuntime();
+    try {
+      t.point(t.version('0.167.0-bbb'));
+      expect(fs.existsSync(path.join(t.home, '.shelly-runtime/codex/current/codex_tui'))).toBe(true);
+      expect(driver.runtimeCodexTuiPath(t.home)).toBe('');
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('falls back when there is no runtime or it is turned off', () => {
+    const t = makeRuntime(undefined, 'agent-current');
     try {
       expect(driver.runtimeCodexTuiPath(t.home)).toBe('');
       t.point(t.version('0.163.0-aaa'));
