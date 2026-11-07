@@ -377,13 +377,33 @@ function renderInline(text, depth, ctx) {
 }
 
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
-const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
 const RULE_RE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const QUOTE_RE = /^ {0,3}>[ ]?/;
 const LIST_RE = /^[ \t]*(?:([-*+])|(\d{1,9})[.)])[ \t]+(.*)$/;
 
+/**
+ * By hand: the obvious regex backtracks cubically over trailing spaces. Returns
+ * `{ level, text }`, or null when the line is not a heading.
+ */
+function parseHeading(line) {
+  let at = 0;
+  while (at < 3 && line[at] === ' ') at += 1;
+  let level = 0;
+  while (line[at + level] === '#') level += 1;
+  if (level < 1 || level > 6) return null;
+  const isBlank = (c) => c === ' ' || c === '\t';
+  if (!isBlank(line[at + level])) return null;
+  let start = at + level;
+  while (isBlank(line[start])) start += 1;
+  let end = line.length;
+  while (end > start && isBlank(line[end - 1])) end -= 1;
+  while (end > start && line[end - 1] === '#') end -= 1;
+  while (end > start && isBlank(line[end - 1])) end -= 1;
+  return { level, text: line.slice(start, end) };
+}
+
 function startsBlock(line) {
-  return FENCE_RE.test(line) || HEADING_RE.test(line) || RULE_RE.test(line) ||
+  return FENCE_RE.test(line) || parseHeading(line) !== null || RULE_RE.test(line) ||
     QUOTE_RE.test(line) || LIST_RE.test(line);
 }
 
@@ -402,7 +422,7 @@ function renderParagraph(lines, ctx) {
   const figure = lines.length === 1 ? renderLoneImage(lines[0].trim(), ctx) : null;
   if (figure) return figure;
   const rendered = lines.map((line, index) => {
-    const hardBreak = index < lines.length - 1 && / {2,}$/.test(line);
+    const hardBreak = index < lines.length - 1 && line.endsWith('  ');
     return renderInline(line.trim(), 0, ctx) + (hardBreak ? '<br>' : '');
   }).join('\n');
   return rendered === '' ? '' : `<p>${rendered}</p>`;
@@ -437,6 +457,7 @@ function renderBlocks(lines, quoteDepth, ctx) {
   while (i < lines.length) {
     const line = lines[i];
     const fence = FENCE_RE.exec(line);
+    const heading = parseHeading(line);
     if (line.trim() === '') {
       i += 1;
     } else if (fence) {
@@ -453,10 +474,9 @@ function renderBlocks(lines, quoteDepth, ctx) {
     } else if (RULE_RE.test(line)) {
       out.push('<hr>');
       i += 1;
-    } else if (HEADING_RE.test(line)) {
-      const heading = HEADING_RE.exec(line);
-      const level = Math.min(heading[1].length, 4);
-      out.push(`<h${level}>${renderInline(heading[2], 0, ctx)}</h${level}>`);
+    } else if (heading) {
+      const level = Math.min(heading.level, 4);
+      out.push(`<h${level}>${renderInline(heading.text, 0, ctx)}</h${level}>`);
       i += 1;
     } else if (QUOTE_RE.test(line)) {
       const inner = [];
@@ -576,16 +596,22 @@ function parseDestinations(text) {
   return { subdomains, imageHosts };
 }
 
+/** Every component is checked, as ClosePawDrafts.kt does; a linked parent is refused. */
 function loadDestinations(home) {
   const file = path.join(home, DESTINATIONS_REL_PATH);
-  let stat;
+  const parts = DESTINATIONS_REL_PATH.split('/');
   try {
-    stat = fs.lstatSync(file);
+    let at = home;
+    parts.forEach((part, index) => {
+      at = path.join(at, part);
+      const stat = fs.lstatSync(at);
+      const expected = index === parts.length - 1 ? stat.isFile() : stat.isDirectory();
+      if (!expected) throw new Error(`${DESTINATIONS_REL_PATH} must not go through a link`);
+    });
   } catch (e) {
     if (e && e.code === 'ENOENT') return { subdomains: [], imageHosts: [] };
     throw e;
   }
-  if (!stat.isFile()) throw new Error(`${DESTINATIONS_REL_PATH} is not a regular file`);
   try {
     return parseDestinations(fs.readFileSync(file, 'utf8'));
   } catch (e) {

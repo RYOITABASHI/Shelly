@@ -149,12 +149,14 @@ class TerminalSessionService : Service() {
     private fun registerUserPresentReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                // onUnlock trusts nothing from this broadcast and re-reads the queue.
                 if (intent.action == Intent.ACTION_USER_PRESENT) ClosePawDrafts.onUnlock(context.applicationContext)
             }
         }
         val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            // Protected: only the system can send it, and it comes from outside this app.
+            registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(receiver, filter)
         }

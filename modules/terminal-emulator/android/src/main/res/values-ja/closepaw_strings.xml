@@ -15,7 +15,8 @@
   <string name="closepaw_decision_failed">引き継げませんでした: %1$s</string>
   <string name="closepaw_decision_locked">スマホのロックを解除してから、もう一度「承認」を押してください</string>
   <string name="closepaw_drafts_approval_title">Shelly: ClosePaw で下書きを保存しますか？</string>
-  <string name="closepaw_drafts_approval_body">%1$s\n\nClosePaw がログイン中のアカウントに下書きとして保存します。公開はしません。Shelly 用の ClosePaw は再確認しません。ハッシュ %2$s。10 分で期限切れになり、次のロック解除時にもう一度確認します。</string>
+  <string name="closepaw_drafts_approval_summary">下書きとして保存し、公開はしません。ハッシュ %1$s。10 分で期限切れになり、次のロック解除時にもう一度確認します。</string>
+  <string name="closepaw_drafts_approval_count">%1$d 件の下書きが待機中です。開いて確認してください。</string>
   <string name="closepaw_drafts_notice_title">Shelly: 下書き</string>
   <string name="closepaw_drafts_held">下書きはまだ待機中です。%1$s</string>
   <string name="closepaw_drafts_done">保存: %1$d 件。要確認: %2$d 件。未保存: %3$d 件。</string>

@@ -321,11 +321,23 @@ object ClosePawHandoff {
     const val VARIANT_SAVE_DRAFT_RECEIVER = "ai.closepaw.app.ShellySaveDraftReceiver"
     const val EXTRA_PLATFORM = "platform"
     const val EXTRA_SUBSTACK_SUBDOMAIN = "substack_subdomain"
-    /** The receiver reads up to 16 MiB before it answers, so 5s is too short. */
-    const val SAVE_DRAFT_BROADCAST_TIMEOUT_MS = 15_000L
+    /** SHA-256 of the served bytes, the ones approved. ClosePaw checks it before parsing. */
+    const val EXTRA_REQUEST_SHA256 = "shelly_request_sha256"
+    /** ClosePaw answers within 3s, read and parse included, or refuses as too slow. */
+    const val SAVE_DRAFT_BROADCAST_TIMEOUT_MS = 5_000L
+    /** ClosePaw's reason when it hit that cap. Nothing started. */
+    const val SAVE_DRAFT_REASON_TOO_SLOW = "request-too-slow"
 
     /** [resultData] is ClosePaw's reason, from a fixed set; it is only logged. */
     data class SaveDraftAnswer(val code: Int, val resultData: String?, val resultCallback: Boolean)
+
+    /** Checked before sending, so that code 0 afterwards cannot mean "no receiver". */
+    fun isSaveDraftReceiverInstalled(context: Context): Boolean = try {
+        context.packageManager.getReceiverInfo(ComponentName(PACKAGE, VARIANT_SAVE_DRAFT_RECEIVER), 0)
+        true
+    } catch (e: Exception) {
+        false
+    }
 
     internal fun buildSaveDraftBroadcast(
         context: Context,
@@ -334,6 +346,7 @@ object ClosePawHandoff {
         substackSubdomain: String?,
         reqId: String,
         resultNonce: String,
+        requestSha256: String,
     ): Intent =
         Intent(VARIANT_SAVE_DRAFT_ACTION).apply {
             component = ComponentName(PACKAGE, VARIANT_SAVE_DRAFT_RECEIVER)
@@ -344,6 +357,7 @@ object ClosePawHandoff {
             putExtra(EXTRA_CALLER_TOKEN, callerToken(context.applicationContext))
             putExtra(EXTRA_SHELLY_REQ_ID, reqId)
             putExtra(EXTRA_SHELLY_RESULT_NONCE, resultNonce)
+            putExtra(EXTRA_REQUEST_SHA256, requestSha256)
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
 

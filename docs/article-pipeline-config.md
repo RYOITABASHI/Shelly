@@ -71,7 +71,7 @@ shelly save-draft --platform note --title-file title.txt --markdown-file post.md
 
 From a script without the `shelly` command, such as the hook below: `node ~/.shelly-save-draft.js <same options>`.
 
-- **What happens**: at the next unlock Shelly shows the waiting drafts in one notification, up to five at a time, with destination, title and a content hash. Tap Approve (device unlock), or reply `approve <hash>` in Shelly's chat. ClosePaw then saves them one by one on its virtual display.
+- **What happens**: at the next unlock Shelly shows the waiting drafts in one notification, up to five at a time, with one line each: destination, content hash, image hosts and title. Tap Approve (device unlock), or reply `approve <hash>` in Shelly's chat. ClosePaw then saves them one by one on its virtual display.
 - **Every batch needs that approval.** Nothing is approved in advance, and the terminal cannot approve. An approval covers those exact files: a draft changed afterwards is not sent. Ignored for 10 minutes, it is asked again at a later unlock. A draft expires after 24 hours.
 - **If it does not start**: the phone locked, Chrome on screen, ClosePaw busy or Shizuku stopped keep the draft waiting. Shelly tries again at the next unlock, for up to 6 hours after the approval.
 - **`uncertain`**: ClosePaw stopped after writing or timed out, so the draft may or may not exist. Shelly does not send it again. Check your drafts.
@@ -87,7 +87,7 @@ Substack needs a list of allowed subdomains in `~/.shelly/agents/draft-destinati
 { "version": 1, "substack_subdomains": ["your-subdomain"], "image_hosts": ["images.example.com"] }
 ```
 
-The gate refuses agent workers any write to this file. That is a match on the command text, not a lock, so the destination in the approval notification is what you should check.
+The gate refuses agent workers any write to this file, and Shelly ignores the file if any folder on its path is a link. Neither is a lock: a process of this app can still edit the file directly. So check the destination and image hosts in the approval notification. Keep in mind that approving an image host means the editor will contact it with your cookies. If the file is missing or broken, Substack drafts wait, and expire after 24 hours.
 
 ## After-draft hook
 

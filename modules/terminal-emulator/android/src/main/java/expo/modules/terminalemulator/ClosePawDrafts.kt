@@ -12,6 +12,7 @@ import android.system.OsConstants
 import android.util.Log
 import androidx.core.content.FileProvider
 import java.io.File
+import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.ExecutorService
@@ -37,25 +38,38 @@ import org.json.JSONObject
  *
  * Authorization: every queued item needs that approval. Nothing is auto-accepted,
  * and a queue item or file carries no authority, because every process of this
- * uid can write them. Same reason for the gate-protected destinations file: the
- * approval text shows the destination, so the owner's tap is the control and the
- * file only narrows what can be asked. The Substack subdomain comes from that
- * file; a queue item can only select an entry of it. So do the image hosts: an
- * `img` is fetched with the owner's cookies as soon as the editor parses it.
+ * uid can write them. The approval text shows destination, image hosts, content
+ * hash and title, so the owner's tap decides what goes where.
+ *
+ * The tap does not make an image safe. An `img` is fetched with the owner's cookies
+ * as soon as the editor parses the HTML, and a name in a notification says nothing
+ * about what that host does. So image hosts, like the Substack subdomain, must be
+ * in the owner's destinations file, read here with every path component checked;
+ * a queue item can only select an entry. That file has no stronger protection than
+ * the gate and this check: a process that writes it directly can list a host, and
+ * only the host shown in the approval reveals that.
  *
  * Unattended sending is not implemented: it needs an authorization a same-uid
- * process cannot mint (DEFERRED.md, "ClosePaw save-draft").
+ * process cannot mint (DEFERRED.md, "ClosePaw save-draft"). [requestApproval] is
+ * the one place that would change, and [ApprovedDraft] already names the
+ * destination a per-destination seal would bind to.
  *
  * At most once: the item is renamed to `.sending` before the broadcast, and a
  * `.sending` file is never sent again, so a crash loses a draft instead of doubling
  * it. Not started (refusal, including 17 locked and 18 Chrome in use, or no
  * receiver): the item stays and goes at the next unlock, without an activity
- * fallback. No answer in time: the run may have started, so it is tracked as
- * running and ends uncertain, never re-sent.
+ * fallback. `request-too-slow` also means nothing started, and that retry takes a
+ * new reqId. No answer, or code 0 (the initial code, which is also what the system
+ * reports when it gives up on a slow receiver): the state is unknown, so the nonce
+ * stays for a late callback and the draft is never re-sent.
  *
- * The file is served from a snapshot of the exact hashed bytes. A same-uid process
- * could still swap the snapshot in the seconds before ClosePaw reads it; ClosePaw's
- * own allow-list is what holds then.
+ * The file is served from a snapshot of the exact hashed bytes, in a fresh directory
+ * with a random name, and ClosePaw gets the approved SHA-256 to check. The name
+ * only stops guessing, since this uid can list the directory; the hash is what makes
+ * a swapped snapshot fail.
+ *
+ * The input is hostile, and this runs from the foreground service's onCreate, so
+ * nothing may escape: a Throwable here ends in a deleted item, not a crash loop.
  *
  * All state below is confined to [worker].
  */
@@ -77,12 +91,20 @@ object ClosePawDrafts {
     private const val MAX_HTML_CHARS = 1024 * 1024
     private const val MAX_IMAGES = 4
     private const val MAX_IMAGE_HOSTS = 8
+    private const val MAX_JSON_DEPTH = 16
+    private val IMAGE_HOST_RE = Regex("^[a-z0-9.-]{1,253}$")
     private val REQUEST_KEYS = setOf("version", "title", "html", "images", "image_hosts")
     private val TITLE_CONTROL_RE = Regex("[\\u0000-\\u001F\\u007F-\\u009F]")
 
     const val MAX_BATCH = 5
     private const val MAX_SHOWN_TITLE_CHARS = 80
+    private const val MAX_SHOWN_HOSTS_CHARS = 120
     private const val ITEM_MAX_AGE_MS = 24L * 60L * 60L * 1000L
+    private const val STALE_TMP_MS = 60L * 60L * 1000L
+    /** Past this a run with no final state is over, even if its state file was removed. */
+    private const val RUN_STALE_MS = ClosePawRunResults.MAX_RUN_MS + 60_000L
+    private const val MAX_REMOVE_DEPTH = 64
+    private val SNAPSHOT_DIR_RE = Regex("^draft-[0-9a-f]{32}$")
     /** One approval covers retries at later unlocks for this long. */
     private const val APPROVAL_MAX_AGE_MS = 6L * 60L * 60L * 1000L
     private const val NOTICE_ID = 0x37C1A030
@@ -100,16 +122,17 @@ object ClosePawDrafts {
         val subdomain: String? = null,
     )
 
-    private class Item(
-        val draft: ApprovedDraft,
-        val title: String,
-        val imageHosts: List<String>,
-        val request: ByteArray,
-    )
+    private class Item(val draft: ApprovedDraft, val title: String, val imageHosts: List<String>)
+
+    /** The request bytes live only as long as this, never across a batch. */
+    private class Loaded(val item: Item, val request: ByteArray)
 
     private class RequestShape(val title: String, val imageHosts: List<String>)
 
     private class Destinations(val subdomains: List<String>, val imageHosts: List<String>)
+
+    /** WAIT: the destinations file is missing or broken, which may be passing. */
+    private enum class Fit { OK, WAIT, REFUSED }
 
     private class Batch(val drafts: ArrayDeque<ApprovedDraft>, val approvedAt: Long) {
         var saved = 0
@@ -117,14 +140,19 @@ object ClosePawDrafts {
         var failed = 0
     }
 
-    enum class SendResult { STARTED, MAYBE_STARTED, NOT_STARTED, REFUSED }
+    enum class SendResult { STARTED, MAYBE_STARTED, NOT_STARTED, TOO_SLOW, REFUSED }
 
-    /** Pure mapping of ClosePaw's ordered result. `answered` false: none in time. */
-    fun classify(answered: Boolean, code: Int): SendResult = when {
-        !answered -> SendResult.MAYBE_STARTED
+    /**
+     * Pure mapping of ClosePaw's ordered result. `answered` false: none in time. Code 0
+     * is ambiguous once the broadcast went out, because [ClosePawHandoff.isSaveDraftReceiverInstalled]
+     * ruled out a missing receiver first: it means the system gave up on a slow one.
+     */
+    fun classify(answered: Boolean, code: Int, reason: String? = null): SendResult = when {
+        !answered || code == ClosePawHandoff.RC_NO_RESPONSE -> SendResult.MAYBE_STARTED
         code == ClosePawHandoff.RC_STARTED_VIRTUAL_DISPLAY || code == ClosePawHandoff.RC_STARTED_MAIN_DISPLAY -> SendResult.STARTED
-        code == ClosePawHandoff.Refusal.UNTRUSTED.resultCode -> SendResult.REFUSED
-        code == ClosePawHandoff.RC_NO_RESPONSE || ClosePawHandoff.Refusal.fromCode(code) != null -> SendResult.NOT_STARTED
+        code == ClosePawHandoff.Refusal.UNTRUSTED.resultCode ->
+            if (reason == ClosePawHandoff.SAVE_DRAFT_REASON_TOO_SLOW) SendResult.TOO_SLOW else SendResult.REFUSED
+        ClosePawHandoff.Refusal.fromCode(code) != null -> SendResult.NOT_STARTED
         else -> SendResult.REFUSED
     }
 
@@ -136,12 +164,15 @@ object ClosePawDrafts {
     @Volatile private var batch: Batch? = null
     /** The draft ClosePaw is working on; its result continues the batch. */
     @Volatile private var runningReqId: String? = null
+    private var runningSince = 0L
+    /** reqId -> the random snapshot directory being served. */
+    private val snapshots = HashMap<String, File>()
 
     private fun post(block: () -> Unit) {
         worker.execute {
             try {
                 block()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG, "draft step failed type=${e.javaClass.simpleName}")
             }
         }
@@ -165,7 +196,7 @@ object ClosePawDrafts {
                 sendNext(app)
             } else {
                 for (d in drafts) {
-                    itemFile(app, d.reqId).delete()
+                    removeEntry(itemFile(app, d.reqId))
                     ClosePawRunResults.writeState(app, d.reqId, ClosePawRunResults.STATUS_REJECTED, "The owner rejected this draft; nothing was sent to ClosePaw")
                 }
                 queueChanged(app)
@@ -177,17 +208,33 @@ object ClosePawDrafts {
     fun onRunFinished(context: Context, reqId: String, status: String, summary: String?) {
         val app = context.applicationContext
         post {
-            if (runningReqId == reqId) {
-                runningReqId = null
-                cleanUp(app, reqId)
-                batch?.let { tally(it, status, summary) }
-                sendNext(app)
-            }
+            if (runningReqId == reqId) finishRun(app, reqId, status, summary)
         }
     }
 
+    private fun finishRun(app: Context, reqId: String, status: String, summary: String?) {
+        runningReqId = null
+        cleanUp(app, reqId)
+        batch?.let { tally(it, status, summary) }
+        sendNext(app)
+    }
+
+    /**
+     * Everything is re-read from disk: the broadcast that got us here says nothing but
+     * "maybe unlocked". Clean-up comes first, so that it also happens with no ClosePaw.
+     */
     private fun unlockStep(app: Context) {
-        if (isHalted(app) || runningReqId != null) return
+        sweepExpired(app)
+        if (isHalted(app) || !ClosePawDecisionReceiver.isUnlocked(app)) return
+        val running = runningReqId
+        if (running != null) {
+            if (System.currentTimeMillis() - runningSince > RUN_STALE_MS) {
+                ClosePawRunResults.forget(running)
+                ClosePawRunResults.writeState(app, running, ClosePawRunResults.STATUS_TIMEOUT, "No final state from ClosePaw; check your drafts")
+                finishRun(app, running, ClosePawRunResults.STATUS_TIMEOUT, null)
+            }
+            return
+        }
         val open = batch
         if (open != null) {
             if (System.currentTimeMillis() - open.approvedAt <= APPROVAL_MAX_AGE_MS) {
@@ -200,9 +247,14 @@ object ClosePawDrafts {
         if (!ClosePawHandoff.isTrustedVariantInstalled(app)) return
         sweepLeftovers(app)
         val items = readQueue(app)
-        if (items.isEmpty()) return
+        if (items.isNotEmpty()) requestApproval(app, items)
+    }
+
+    /** Every batch asks the owner. Its answer arrives in [onBatchDecided]. */
+    private fun requestApproval(app: Context, items: List<Item>) {
         val batchId = "${System.currentTimeMillis()}-${hex(ByteArray(4).also { random.nextBytes(it) })}"
-        ClosePawShellApprovals.create(app, batchId, batchGoal(items), drafts = items.map { it.draft })
+        val lines = items.map(::approvalLine)
+        ClosePawShellApprovals.create(app, batchId, batchGoal(lines), drafts = items.map { it.draft }, lines = lines)
     }
 
     private fun sendNext(app: Context) {
@@ -216,47 +268,87 @@ object ClosePawDrafts {
             // A later unlock resumes from here.
             if (isHalted(app) || !ClosePawDecisionReceiver.isUnlocked(app)) return
             if (!ClosePawHandoff.isTrustedVariantInstalled(app)) return
-            if (!send(app, open, draft)) return
+            val settled = try {
+                send(app, open, draft)
+            } catch (e: Throwable) {
+                abandon(app, open, draft, e)
+            }
+            if (!settled) return
         }
+    }
+
+    /** An item that blew up is deleted, so it cannot do so again at the next unlock. */
+    private fun abandon(app: Context, open: Batch, draft: ApprovedDraft, e: Throwable): Boolean {
+        Log.w(TAG, "draft ${draft.reqId} failed type=${e.javaClass.simpleName}")
+        if (runningReqId == draft.reqId) return false
+        ClosePawRunResults.forget(draft.reqId)
+        cleanUp(app, draft.reqId)
+        removeEntry(itemFile(app, draft.reqId))
+        if (open.drafts.firstOrNull() == draft) {
+            refuse(app, open, draft, "This draft could not be sent; check your drafts")
+        }
+        return true
     }
 
     /** True: this draft is settled, go on with the next one. */
     private fun send(app: Context, open: Batch, draft: ApprovedDraft): Boolean {
         val file = itemFile(app, draft.reqId)
-        val item = try {
+        val loaded = try {
             readItem(file, draft.reqId, System.currentTimeMillis())
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
         val destinations = loadDestinations(app)
-        val current = item?.let { withDestination(it.draft, destinations.subdomains) }
-        if (item == null || current != draft || !destinations.imageHosts.containsAll(item.imageHosts)) {
+        val fit = loaded?.let { fit(it.item.draft, it.item.imageHosts, destinations) } ?: Fit.REFUSED
+        if (fit == Fit.WAIT) {
+            hold(app, draft, "$DESTINATIONS_FILE is missing or unreadable - fix it; Shelly tries again at the next unlock")
+            return false
+        }
+        val current = loaded?.let { withDestination(it.item.draft, destinations?.subdomains.orEmpty()) }
+        if (loaded == null || fit != Fit.OK || current != draft) {
             refuse(app, open, draft, "The draft or its destination changed after it was approved; nothing was sent")
-            file.delete()
+            removeEntry(file)
             return true
+        }
+        if (!ClosePawHandoff.isSaveDraftReceiverInstalled(app)) {
+            hold(app, draft, "This ClosePaw build cannot save drafts - update ClosePaw; Shelly tries again at the next unlock")
+            return false
         }
         val sending = File(file.path + SENDING_SUFFIX)
         if (!file.renameTo(sending)) return false
 
-        val uri = serve(app, draft.reqId, item.request)
+        val uri = serve(app, draft.reqId, loaded.request)
+        val notStarted = { message: String ->
+            ClosePawRunResults.forget(draft.reqId)
+            revokeAndDelete(app, draft.reqId)
+            sending.renameTo(file)
+            hold(app, draft, message)
+        }
+        try {
+            app.grantUriPermission(ClosePawHandoff.PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (e: Exception) {
+            Log.w(TAG, "draft grant failed type=${e.javaClass.simpleName}")
+            notStarted("Shelly could not share the draft with ClosePaw; it tries again at the next unlock")
+            return false
+        }
         val nonce = ClosePawRunResults.register(draft.reqId)
         ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_APPROVED, "Approved; handing off to ClosePaw")
-        val intent = ClosePawHandoff.buildSaveDraftBroadcast(app, uri, draft.platform, draft.subdomain, draft.reqId, nonce)
+        val intent = ClosePawHandoff.buildSaveDraftBroadcast(app, uri, draft.platform, draft.subdomain, draft.reqId, nonce, draft.sha256)
         val answer = try {
-            app.grantUriPermission(ClosePawHandoff.PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             ClosePawHandoff.sendSaveDraftBroadcast(app, intent)
         } catch (e: Exception) {
+            // It may or may not have gone out, which is the same as no answer.
             Log.w(TAG, "draft broadcast failed type=${e.javaClass.simpleName}")
-            ClosePawHandoff.SaveDraftAnswer(ClosePawHandoff.RC_NO_RESPONSE, null, false)
+            null
         }
-        Log.i(TAG, "draft ${draft.reqId} answered rc=${answer?.code} requestBytes=${item.request.size}")
-        return when (classify(answer != null, answer?.code ?: ClosePawHandoff.RC_NO_RESPONSE)) {
+        Log.i(TAG, "draft ${draft.reqId} answered rc=${answer?.code} requestBytes=${loaded.request.size}")
+        return when (classify(answer != null, answer?.code ?: ClosePawHandoff.RC_NO_RESPONSE, answer?.resultData)) {
             SendResult.STARTED -> {
                 // ClosePaw read the file before it answered.
                 cleanUp(app, draft.reqId)
                 open.drafts.removeFirst()
                 if (answer?.resultCallback == true) {
-                    runningReqId = draft.reqId
+                    markRunning(draft.reqId)
                     ClosePawRunResults.writeAfterLaunch(app, draft.reqId, ClosePawRunResults.STATUS_RUNNING, ClosePawHandoff.MSG_BACKGROUND)
                     false
                 } else {
@@ -270,7 +362,7 @@ object ClosePawDrafts {
                 // The grant and snapshot stay: ClosePaw may still be reading. The
                 // late callback, or the overdue check, ends this in onRunFinished.
                 open.drafts.removeFirst()
-                runningReqId = draft.reqId
+                markRunning(draft.reqId)
                 ClosePawRunResults.writeAfterLaunch(app, draft.reqId, ClosePawRunResults.STATUS_RUNNING, "No answer from ClosePaw yet; the run may have started")
                 false
             }
@@ -280,17 +372,51 @@ object ClosePawDrafts {
                 refuse(app, open, draft, "ClosePaw refused this draft: ${reasonOf(answer?.resultData)}")
                 true
             }
-            SendResult.NOT_STARTED -> {
+            SendResult.TOO_SLOW -> {
                 ClosePawRunResults.forget(draft.reqId)
                 revokeAndDelete(app, draft.reqId)
-                sending.renameTo(file)
-                val code = answer?.code ?: ClosePawHandoff.RC_NO_RESPONSE
-                val message = ClosePawHandoff.Refusal.fromCode(code)?.message ?: "ClosePaw did not answer - update ClosePaw; Shelly tries again at the next unlock"
-                ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_QUEUED, message)
-                notice(app, app.getString(R.string.closepaw_drafts_held, message))
+                retryUnderNewId(app, open, draft, sending, loaded.request)
+                false
+            }
+            SendResult.NOT_STARTED -> {
+                notStarted(ClosePawHandoff.Refusal.fromCode(answer?.code ?: ClosePawHandoff.RC_NO_RESPONSE)?.message.orEmpty())
                 false
             }
         }
+    }
+
+    /**
+     * ClosePaw wants a new reqId for this retry. The bytes and their approved hash do not
+     * change, and the creation time stays in the id, so the item expires when it would have.
+     */
+    private fun retryUnderNewId(app: Context, open: Batch, draft: ApprovedDraft, sending: File, request: ByteArray) {
+        val reqId = "${draft.reqId.substringBefore('-')}-${hex(ByteArray(4).also { random.nextBytes(it) })}"
+        val meta = JSONObject().put("version", 1).put("reqId", reqId).put("platform", draft.platform)
+        if (draft.selector != null) meta.put("substack", draft.selector)
+        val target = itemFile(app, reqId)
+        val tmp = File(target.path + ".tmp")
+        val fd = Os.open(tmp.path, OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY, 384) // 0600
+        FileOutputStream(fd).use {
+            it.write((meta.toString() + "\n").toByteArray(Charsets.UTF_8))
+            it.write(request)
+        }
+        Os.rename(tmp.path, target.path)
+        removeEntry(sending)
+        ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_FAILED, "ClosePaw ran out of time and nothing started; retrying as request $reqId")
+        val next = draft.copy(reqId = reqId)
+        open.drafts[0] = next
+        hold(app, next, "ClosePaw ran out of time reading the draft and nothing started; Shelly tries again at the next unlock")
+    }
+
+    private fun markRunning(reqId: String) {
+        runningReqId = reqId
+        runningSince = System.currentTimeMillis()
+    }
+
+    /** Stays first in the batch; [unlockStep] resumes it. */
+    private fun hold(app: Context, draft: ApprovedDraft, message: String) {
+        ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_QUEUED, message)
+        notice(app, app.getString(R.string.closepaw_drafts_held, message))
     }
 
     private fun refuse(app: Context, open: Batch, draft: ApprovedDraft, message: String) {
@@ -328,7 +454,7 @@ object ClosePawDrafts {
     fun imagesMissing(summary: String?): Boolean = try {
         val o = JSONObject(summary ?: "")
         o.optString("kind") == "save_draft" && o.optInt("images_placed", 0) < o.optInt("images_expected", 0)
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
         false
     }
 
@@ -345,7 +471,37 @@ object ClosePawDrafts {
         true
     }
 
-    /** Oldest first. Bad and expired items are dropped here, before the owner is asked. */
+    /** By name only, so it stays cheap and runs with or without ClosePaw. */
+    private fun sweepExpired(app: Context) {
+        val home = HomeInitializer.getHomeDir(app)
+        val now = System.currentTimeMillis()
+        var removed = false
+        for (name in home.list() ?: emptyArray()) {
+            val file = File(home, name)
+            if (QUEUE_FILE_RE.matches(name)) {
+                val reqId = name.removePrefix(QUEUE_PREFIX)
+                if (!isFresh(reqId, now)) {
+                    removeEntry(file)
+                    ClosePawRunResults.writeState(app, reqId, ClosePawRunResults.STATUS_EXPIRED, "The queued draft expired; nothing was sent")
+                    removed = true
+                }
+            } else if (name.startsWith(QUEUE_PREFIX) && name.endsWith(".tmp") && now - file.lastModified() > STALE_TMP_MS) {
+                removeEntry(file)
+            }
+        }
+        if (removed) queueChanged(app)
+    }
+
+    private fun isFresh(reqId: String, now: Long): Boolean {
+        val createdAt = reqId.substringBefore('-').toLongOrNull() ?: return false
+        return now - createdAt in -ITEM_MAX_AGE_MS..ITEM_MAX_AGE_MS
+    }
+
+    /**
+     * Oldest first. Anything unusable is deleted here, before the owner is asked,
+     * whatever went wrong while reading it. A Substack item waits instead while the
+     * destinations file is missing or broken, until it expires.
+     */
     private fun readQueue(app: Context): List<Item> {
         val home = HomeInitializer.getHomeDir(app)
         val now = System.currentTimeMillis()
@@ -357,37 +513,75 @@ object ClosePawDrafts {
             val reqId = name.removePrefix(QUEUE_PREFIX)
             val file = File(home, name)
             val item = try {
-                readItem(file, reqId, now)
-            } catch (e: Exception) {
+                readItem(file, reqId, now)?.item
+            } catch (e: Throwable) {
                 Log.w(TAG, "unreadable draft $reqId type=${e.javaClass.simpleName}")
                 null
             }
-            val draft = item?.let { withDestination(it.draft, destinations.subdomains) }
-            val hostsAllowed = item != null && destinations.imageHosts.containsAll(item.imageHosts)
-            if (item != null && draft != null && hostsAllowed && (draft.platform != "substack" || draft.subdomain != null)) {
-                out.add(Item(draft, item.title, item.imageHosts, item.request))
-            } else {
-                file.delete()
-                val message = if (item == null) {
-                    "The queued draft was invalid or expired; nothing was sent"
-                } else {
-                    "This Substack subdomain or image host is not in $DESTINATIONS_FILE; nothing was sent"
+            val fit = item?.let { fit(it.draft, it.imageHosts, destinations) } ?: Fit.REFUSED
+            when {
+                fit == Fit.OK && item != null ->
+                    out.add(Item(withDestination(item.draft, destinations?.subdomains.orEmpty()), item.title, item.imageHosts))
+                fit == Fit.REFUSED -> {
+                    removeEntry(file)
+                    val message = if (item == null) {
+                        "The queued draft was invalid; nothing was sent"
+                    } else {
+                        "This Substack subdomain or image host is not allowed by $DESTINATIONS_FILE; nothing was sent"
+                    }
+                    ClosePawRunResults.writeState(app, reqId, ClosePawRunResults.STATUS_FAILED, message)
                 }
-                ClosePawRunResults.writeState(app, reqId, ClosePawRunResults.STATUS_EXPIRED, message)
             }
         }
         return out
     }
 
+    private fun fit(draft: ApprovedDraft, imageHosts: List<String>, destinations: Destinations?): Fit = when {
+        draft.platform != "substack" -> if (imageHosts.isEmpty()) Fit.OK else Fit.REFUSED
+        destinations == null -> Fit.WAIT
+        resolveSubdomain(draft.selector, destinations.subdomains) == null -> Fit.REFUSED
+        !destinations.imageHosts.containsAll(imageHosts) -> Fit.REFUSED
+        else -> Fit.OK
+    }
+
+    /**
+     * False when the nesting is too deep for org.json, whose parser recurses. Android's
+     * tokenizer also takes comments and single quotes, which this scan does not model,
+     * so this is the cheap first check and the Throwable handlers are the guarantee.
+     */
+    fun jsonDepthWithin(bytes: ByteArray, from: Int, to: Int, limit: Int): Boolean {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in from until to) {
+            val c = bytes[i].toInt()
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\'.code -> escaped = true
+                    c == '"'.code -> inString = false
+                }
+            } else if (c == '"'.code) {
+                inString = true
+            } else if (c == '{'.code || c == '['.code) {
+                depth++
+                if (depth > limit) return false
+            } else if (c == '}'.code || c == ']'.code) {
+                depth--
+            }
+        }
+        return true
+    }
+
     /** Null when the item is not one this code would send. */
-    private fun readItem(file: File, reqId: String, now: Long): Item? {
-        val ageMs = now - (reqId.substringBefore('-').toLongOrNull() ?: return null)
-        if (ageMs > ITEM_MAX_AGE_MS || ageMs < -ITEM_MAX_AGE_MS) return null
+    private fun readItem(file: File, reqId: String, now: Long): Loaded? {
+        if (!isFresh(reqId, now)) return null
         if (!OsConstants.S_ISREG(Os.lstat(file.path).st_mode)) return null
         if (file.length() > MAX_REQUEST_BYTES + MAX_META_BYTES) return null
         val bytes = file.readBytes()
         val lineEnd = bytes.indexOf('\n'.code.toByte())
         if (lineEnd !in 1..MAX_META_BYTES) return null
+        if (!jsonDepthWithin(bytes, 0, bytes.size, MAX_JSON_DEPTH)) return null
         val meta = JSONObject(String(bytes, 0, lineEnd, Charsets.UTF_8))
         if (meta.optInt("version") != 1 || meta.optString("reqId") != reqId) return null
         val platform = meta.optString("platform")
@@ -397,7 +591,7 @@ object ClosePawDrafts {
         val request = bytes.copyOfRange(lineEnd + 1, bytes.size)
         if (request.size > MAX_REQUEST_BYTES) return null
         val shape = requestShape(String(request, Charsets.UTF_8)) ?: return null
-        return Item(ApprovedDraft(reqId, platform, selector, sha256(request)), shape.title, shape.imageHosts, request)
+        return Loaded(Item(ApprovedDraft(reqId, platform, selector, sha256(request)), shape.title, shape.imageHosts), request)
     }
 
     /** Shape and limits only. ClosePaw's allow-list decides the HTML. */
@@ -422,48 +616,117 @@ object ClosePawDrafts {
     fun resolveSubdomain(selector: String?, allowed: List<String>): String? =
         if (selector != null) selector.takeIf { it in allowed } else allowed.singleOrNull()
 
-    private fun loadDestinations(app: Context): Destinations = try {
-        val file = File(HomeInitializer.getHomeDir(app), DESTINATIONS_FILE)
-        if (!OsConstants.S_ISREG(Os.lstat(file.path).st_mode) || file.length() > 16L * 1024L) {
-            NO_DESTINATIONS
+    /**
+     * Null when the file is missing, broken or not where it should be. The gate matches
+     * command text, so a symlinked parent gets past it: every component below home must
+     * be the real thing, and the canonical path must land inside `.shelly/agents`.
+     */
+    private fun loadDestinations(app: Context): Destinations? = try {
+        val home = HomeInitializer.getHomeDir(app).canonicalFile
+        val agents = File(home, ".shelly/agents")
+        val file = File(home, DESTINATIONS_FILE)
+        val realComponents = OsConstants.S_ISDIR(Os.lstat(File(home, ".shelly").path).st_mode) &&
+            OsConstants.S_ISDIR(Os.lstat(agents.path).st_mode) &&
+            OsConstants.S_ISREG(Os.lstat(file.path).st_mode)
+        if (!realComponents || file.canonicalFile != file || file.length() > 16L * 1024L) {
+            null
         } else {
-            val root = JSONObject(file.readText())
-            val names = stringList(root.optJSONArray("substack_subdomains"))
-            val hosts = stringList(root.optJSONArray("image_hosts"))
-            val valid = root.optInt("version") == 1 && names.all { SUBDOMAIN_RE.matches(it) } && hosts.size <= MAX_IMAGE_HOSTS
-            if (valid) Destinations(names, hosts) else NO_DESTINATIONS
+            val bytes = file.readBytes()
+            if (!jsonDepthWithin(bytes, 0, bytes.size, MAX_JSON_DEPTH)) {
+                null
+            } else {
+                val root = JSONObject(String(bytes, Charsets.UTF_8))
+                val names = stringList(root.optJSONArray("substack_subdomains"))
+                val hosts = stringList(root.optJSONArray("image_hosts"))
+                val valid = root.optInt("version") == 1 && names.all { SUBDOMAIN_RE.matches(it) } &&
+                    hosts.size <= MAX_IMAGE_HOSTS && hosts.all { IMAGE_HOST_RE.matches(it) }
+                if (valid) Destinations(names, hosts) else null
+            }
         }
-    } catch (e: Exception) {
-        NO_DESTINATIONS
+    } catch (e: Throwable) {
+        null
     }
-
-    private val NO_DESTINATIONS = Destinations(emptyList(), emptyList())
 
     private fun stringList(list: JSONArray?): List<String> =
         list?.let { items -> (0 until items.length()).map { items.getString(it) } }.orEmpty()
 
-    /** What the owner reads and approves. Titles are hostile text: cleaned and cut. */
-    private fun batchGoal(items: List<Item>): String =
-        items.joinToString(separator = "; ", prefix = "Save ${items.size} draft(s), publish nothing: ") { item ->
-            val d = item.draft
-            val where = if (d.platform == "substack") "substack ${d.subdomain}" else d.platform
-            val title = ClosePawRunResults.sanitizeSummary(item.title).take(MAX_SHOWN_TITLE_CHARS)
-            "[$where] $title (${d.sha256.take(8)})"
+    /**
+     * Hostile text on one line: every kind of space (U+3000 and NBSP included), line
+     * separator and control becomes one space; format characters (bidi, zero-width,
+     * U+061C) and lone surrogates go. Cut by code point, so no pair is split.
+     */
+    fun displayText(raw: String, maxCodePoints: Int): String {
+        val out = StringBuilder()
+        var count = 0
+        var space = false
+        var i = 0
+        while (i < raw.length && count < maxCodePoints) {
+            val cp = raw.codePointAt(i)
+            i += Character.charCount(cp)
+            when (Character.getType(cp)) {
+                Character.SPACE_SEPARATOR.toInt(), Character.LINE_SEPARATOR.toInt(),
+                Character.PARAGRAPH_SEPARATOR.toInt(), Character.CONTROL.toInt() -> space = out.isNotEmpty()
+                Character.FORMAT.toInt(), Character.SURROGATE.toInt() -> Unit
+                else -> {
+                    if (space) {
+                        out.append(' ')
+                        count++
+                        space = false
+                    }
+                    out.appendCodePoint(cp)
+                    count++
+                }
+            }
         }
+        return out.toString()
+    }
 
-    private fun snapshotDir(app: Context, reqId: String) = File(File(app.cacheDir, "share"), "draft-$reqId")
+    /**
+     * One approval line. The parts the owner decides on come first, because the
+     * notification cuts a long line at its end and the title is the attacker's text.
+     */
+    private fun approvalLine(item: Item): String {
+        val d = item.draft
+        val where = if (d.platform == "substack") "substack ${d.subdomain}" else d.platform
+        val hosts = if (item.imageHosts.isEmpty()) {
+            ""
+        } else {
+            " images: " + displayText(item.imageHosts.joinToString(", "), MAX_SHOWN_HOSTS_CHARS)
+        }
+        return "[$where] ${d.sha256.take(8)}$hosts | ${displayText(item.title, MAX_SHOWN_TITLE_CHARS)}"
+    }
 
-    /** FileProvider path `device_share`. A snapshot of the bytes that were hashed. */
+    /** For the chat and the hash; the notification shows [approvalLine] line by line. */
+    private fun batchGoal(lines: List<String>): String =
+        lines.joinToString(separator = "; ", prefix = "Save ${lines.size} draft(s), publish nothing: ")
+
+    private fun newSnapshotDir(app: Context): File {
+        val share = File(app.cacheDir, "share")
+        share.mkdirs()
+        if (!OsConstants.S_ISDIR(Os.lstat(share.path).st_mode)) throw java.io.IOException("share is not a directory")
+        val dir = File(share, "draft-" + hex(ByteArray(16).also { random.nextBytes(it) }))
+        Os.mkdir(dir.path, 448) // 0700; fails if the name exists, link or not.
+        return dir
+    }
+
+    /**
+     * FileProvider path `device_share`. A snapshot of the bytes that were hashed, in a
+     * directory made here. O_EXCL refuses anything already at the path, a link included.
+     */
     private fun serve(app: Context, reqId: String, request: ByteArray): Uri {
-        val dir = snapshotDir(app, reqId)
-        dir.mkdirs()
+        val dir = newSnapshotDir(app)
+        snapshots[reqId] = dir
         val file = File(dir, "request.json")
-        file.writeBytes(request)
+        val fd = Os.open(file.path, OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY, 384) // 0600
+        FileOutputStream(fd).use { it.write(request) }
         return FileProvider.getUriForFile(app, "${app.packageName}.shelly.fileprovider", file)
     }
 
     private fun revokeAndDelete(app: Context, reqId: String) {
-        val dir = snapshotDir(app, reqId)
+        snapshots.remove(reqId)?.let { revokeAndDeleteDir(app, it) }
+    }
+
+    private fun revokeAndDeleteDir(app: Context, dir: File) {
         try {
             val uri = FileProvider.getUriForFile(app, "${app.packageName}.shelly.fileprovider", File(dir, "request.json"))
             if (Build.VERSION.SDK_INT >= 26) {
@@ -474,12 +737,25 @@ object ClosePawDrafts {
         } catch (e: Exception) {
             Log.w(TAG, "revoke failed type=${e.javaClass.simpleName}")
         }
-        dir.deleteRecursively()
+        removeEntry(dir)
+    }
+
+    /** Never follows a link. File.deleteRecursively would walk into a planted one. */
+    private fun removeEntry(file: File, depth: Int = 0) {
+        val mode = try {
+            Os.lstat(file.path).st_mode
+        } catch (e: Exception) {
+            return
+        }
+        if (OsConstants.S_ISDIR(mode) && depth < MAX_REMOVE_DEPTH) {
+            file.list()?.forEach { removeEntry(File(file, it), depth + 1) }
+        }
+        file.delete()
     }
 
     private fun cleanUp(app: Context, reqId: String) {
         revokeAndDelete(app, reqId)
-        File(itemFile(app, reqId).path + SENDING_SUFFIX).delete()
+        removeEntry(File(itemFile(app, reqId).path + SENDING_SUFFIX))
     }
 
     /** After a crash: a `.sending` file is never sent again; its grant is revoked. */
@@ -490,7 +766,7 @@ object ClosePawDrafts {
         }
         val shareDir = File(app.cacheDir, "share")
         for (name in shareDir.list() ?: emptyArray()) {
-            if (name.startsWith("draft-")) revokeAndDelete(app, name.removePrefix("draft-"))
+            if (SNAPSHOT_DIR_RE.matches(name)) revokeAndDeleteDir(app, File(shareDir, name))
         }
     }
 

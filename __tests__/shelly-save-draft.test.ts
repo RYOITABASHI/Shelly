@@ -166,6 +166,32 @@ describe('markdownToHtml', () => {
     expect(Date.now() - started).toBeLessThan(15000);
   });
 
+  it.each([
+    ['trailing spaces after a heading', `# a${' '.repeat(200000)}`],
+    ['spaces inside a heading', `# ${' '.repeat(200000)}x`],
+    ['a run of closing hashes', `# a ${'# '.repeat(100000)}`],
+    ['spaces before a line break', `a${' '.repeat(200000)}b\nc`],
+    ['spaces in a list', `- ${' '.repeat(200000)}x`],
+    ['spaces in a rule', `-${' '.repeat(200000)}x`],
+  ])('stays fast on %s', (_name, source) => {
+    const started = Date.now();
+    draft.markdownToHtml(source);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it.each([
+    ['# a #', '<h1>a</h1>'],
+    ['## a ##  ', '<h2>a</h2>'],
+    ['   ### a', '<h3>a</h3>'],
+    ['#\ta', '<h1>a</h1>'],
+    ['####### a', '<p>####### a</p>'],
+    ['#a', '<p>#a</p>'],
+    ['    # a', '<p># a</p>'],
+    ['# ###', '<h1></h1>'],
+  ])('reads the heading %j', (source, html) => {
+    expect(draft.markdownToHtml(source)).toBe(html);
+  });
+
   it('every emitted document passes the allow-list (seeded fuzz)', () => {
     const atoms = ['<', '>', '&', '"', "'", '`', '*', '_', '[', ']', '(', ')', '!', '#', '-', '\n', '\n\n', ' ', '  \n',
       'https://a.example.com/', `https://${IMAGE_HOST}/i.png`, 'https://note.com/u/n/n1', '](', '![', '[x](',
@@ -291,6 +317,16 @@ describe('Substack destinations', () => {
 
   it.each([['note.com'], ['x.substack.com'], ['localhost'], ['127.0.0.1'], ['EXAMPLE.com']])('refuses the image host %s', (host) => {
     expect(() => draft.loadDestinations(tempHome({ version: 1, image_hosts: [host] }))).toThrow('image_hosts');
+  });
+
+  it('refuses a linked parent directory', () => {
+    const home = tempHome();
+    const real = path.join(home, 'elsewhere/agents');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'draft-destinations.json'), JSON.stringify({ version: 1, substack_subdomains: ['evil'] }));
+    fs.mkdirSync(path.join(home, '.shelly'));
+    fs.symlinkSync(real, path.join(home, '.shelly/agents'), 'junction');
+    expect(() => draft.loadDestinations(home)).toThrow('must not go through a link');
   });
 
   it('refuses a ninth image host', () => {
