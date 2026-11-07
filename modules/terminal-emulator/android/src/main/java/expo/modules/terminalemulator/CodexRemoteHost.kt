@@ -532,9 +532,8 @@ object CodexRemoteHost {
         val home = home(context)
         File(home, STATE_FILE).delete()
         File(home, "$STATE_FILE.sock").delete()
-        File(home, BG_TMP).listFiles()
-            ?.filter { it.name.startsWith("codex-rc-") || it.name.startsWith(".tmp") } // upstream 0.167 falls back to .tmpXXXXXX
-            ?.forEach { it.deleteRecursively() }
+        runCatching { CodexRemotePolicy.removeHostSocketDirs(File(home, BG_TMP)) }
+            .onFailure { Log.w(TAG, "host socket dir cleanup failed: ${it.message}") }
     }
 
     private fun writeMirror(context: Context, on: Boolean) {

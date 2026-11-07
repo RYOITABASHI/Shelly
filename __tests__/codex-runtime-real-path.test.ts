@@ -172,6 +172,31 @@ maybe('generated wrappers', () => {
     }
   });
 
+  it('a child bash has the helper: exported codex() still resolves the runtime', () => {
+    const exportLine = homeKt.split(/\r?\n/).map((l) => l.match(/sb\.appendLine\("(export -f bash codex .*)"\)/)).find(Boolean)![1];
+    expect(exportLine.split(' ')).toContain('__shelly_codex_runtime_tui');
+    const t = makeRuntime();
+    try {
+      t.point(t.version('0.163.0-aaa'));
+      // The real export line, with a codex() that calls the helper as the real one does.
+      const parent = [
+        helper,
+        'command_not_found_handle() { echo "NOT-FOUND-STDOUT"; return 127; }',
+        'export -f command_not_found_handle',
+        'codex() { local __runtime_tui=""; if __runtime_tui="$(__shelly_codex_runtime_tui)"; then echo "runtime:$__runtime_tui"; else echo "bundled:$__runtime_tui"; fi; }',
+        `${exportLine} 2>/dev/null`,
+      ].join('\n');
+      const viaC = bash(`${parent}\nbash -c 'codex'`, t.home);
+      expect(viaC.out).toMatch(/^runtime:.*\/versions\/0\.163\.0-aaa\/codex_tui$/);
+      const script = path.join(t.home, 'child.sh');
+      fs.writeFileSync(script, 'codex\n');
+      const viaScript = bash(`${parent}\nbash "$CHILD_SCRIPT"`, t.home, { CHILD_SCRIPT: bashPath(script) });
+      expect(viaScript.out).toMatch(/^runtime:.*\/versions\/0\.163\.0-aaa\/codex_tui$/);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it('a crash of the versioned path still quarantines the runtime', () => {
     const t = makeRuntime();
     try {
@@ -190,8 +215,8 @@ maybe('generated wrappers', () => {
 });
 
 describe('HomeInitializer source', () => {
-  it('bumped BASHRC_VERSION to 286', () => {
-    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(286);
+  it('bumped BASHRC_VERSION to 288', () => {
+    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(288);
   });
 
   it('no launcher takes the symlink path any more', () => {

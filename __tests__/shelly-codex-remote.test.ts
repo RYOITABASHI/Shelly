@@ -338,15 +338,39 @@ maybe('shelly codex (bash)', () => {
 // v257: trust / host name / expiry / background host
 // ---------------------------------------------------------------------------
 describe('shelly codex v287 generator invariants', () => {
-  it('bumps BASHRC_VERSION to >= 287', () => {
-    expect(Number(ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/)![1])).toBeGreaterThanOrEqual(287);
+  it('bumps BASHRC_VERSION to >= 288', () => {
+    expect(Number(ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/)![1])).toBeGreaterThanOrEqual(288);
   });
 
-  it('cleans the private background dir of both socket dir names', () => {
-    expect(remoteFns).not.toMatch(/rm -rf "\$__bgtmp"\/codex-rc-\* 2>/);
-    expect(remoteFns.split('rm -rf "$__bgtmp"/codex-rc-* "$__bgtmp"/.tmp* 2>/dev/null').length - 1).toBe(5);
-    const host = fs.readFileSync(path.join(path.dirname(ktPath), 'CodexRemoteHost.kt'), 'utf8');
-    expect(host).toMatch(/it\.name\.startsWith\("codex-rc-"\) \|\| it\.name\.startsWith\("\.tmp"\)/);
+  it('cleans the private background dir of both socket dir names, through one guarded helper', () => {
+    expect(remoteFns).not.toContain('rm -rf "$__bgtmp"');
+    expect(remoteFns.split('__shelly_codex_remote_clean_bg "$__bgtmp"').length - 1).toBe(5);
+    expect(remoteFns).toContain('[ -d "$1" ] && [ ! -L "$1" ] || return 0');
+    const dir = path.dirname(ktPath);
+    const host = fs.readFileSync(path.join(dir, 'CodexRemoteHost.kt'), 'utf8');
+    const policy = fs.readFileSync(path.join(dir, 'CodexRemotePolicy.kt'), 'utf8');
+    expect(host).not.toContain('deleteRecursively');
+    expect(policy).not.toContain('deleteRecursively()');
+    expect(host).toContain('CodexRemotePolicy.removeHostSocketDirs(File(home, BG_TMP))');
+    expect(policy).toMatch(/it\.name\.startsWith\("codex-rc-"\) \|\| it\.name\.startsWith\("\.tmp"\)/);
+    expect(policy).toContain('!isSymlink(it) && it.isDirectory');
+    expect(policy).toContain('isSymlink(parent) || isSymlink(backgroundDir)');
+  });
+
+  itPosix('the bash cleanup removes socket dirs, and leaves a symlinked background dir alone', () => {
+    const fn = remoteFns.slice(remoteFns.indexOf('__shelly_codex_remote_clean_bg() {'));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
+    const real = path.join(home, 'bg');
+    fs.mkdirSync(path.join(real, '.tmpOne'), { recursive: true });
+    fs.mkdirSync(path.join(real, 'codex-rc-1'));
+    const elsewhere = path.join(home, 'elsewhere');
+    fs.mkdirSync(path.join(elsewhere, '.tmp'), { recursive: true });
+    const linked = path.join(home, 'bglink');
+    fs.symlinkSync(elsewhere, linked);
+    const r = spawnSync('bash', ['-c', `${body}\n__shelly_codex_remote_clean_bg "$1"; __shelly_codex_remote_clean_bg "$2"`, 'x', posix(real), posix(linked)], { encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    expect(fs.readdirSync(real)).toEqual([]);
+    expect(fs.existsSync(path.join(elsewhere, '.tmp'))).toBe(true);
   });
 
   it('never removes .tmp dirs from the shared temp dir', () => {

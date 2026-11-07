@@ -1532,7 +1532,12 @@ patchCodex(libDir);
     //      which is $TMPDIR/.tmpXXXXXX/rc.sock. Scan, ownership check and the
     //      cleanup of the private background dir accept both names. Needs
     //      libexec_wrapper.so v227 for /tmp/codex-daemon-<euid>.
-    private const val BASHRC_VERSION = 287
+    // v288: review fixes for v286/v287. __shelly_codex_runtime_tui joins the
+    //      export -f list: codex() is exported, and in a child bash the missing
+    //      helper made it fall back to the bundled binary with the
+    //      command_not_found_handle text in __runtime_tui. The background dir
+    //      cleanup refuses a symlinked directory.
+    private const val BASHRC_VERSION = 288
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4947,6 +4952,11 @@ patchCodex(libDir);
             sb.appendLine("  printf '%s\\n' \"\$__out\" >&2")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
+            // v288: a symlinked background dir must not turn .tmp* into ~/.tmp*.
+            sb.appendLine("__shelly_codex_remote_clean_bg() {")
+            sb.appendLine("  [ -d \"\$1\" ] && [ ! -L \"\$1\" ] || return 0")
+            sb.appendLine("  rm -rf \"\$1\"/codex-rc-* \"\$1\"/.tmp* 2>/dev/null")
+            sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_upstream_link() {")
             sb.appendLine("  local __d=\"\${1%/*}\"")
             sb.appendLine("  printf '%s/%s' \"\${__d%-termux}\" \"\${1##*/}\"")
@@ -5081,7 +5091,7 @@ patchCodex(libDir);
             sb.appendLine("    __i=\$((__i + 1))")
             sb.appendLine("  done")
             sb.appendLine("  for __p in \$__pids; do kill -KILL \"\$__p\" 2>/dev/null; done")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
+            sb.appendLine("  __shelly_codex_remote_clean_bg \"\$__bgtmp\"")
             sb.appendLine("  rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
             sb.appendLine("  echo \"[shelly] Stopped the background Codex remote-control host (pid \$__pid).\"")
             sb.appendLine("}")
@@ -5119,7 +5129,7 @@ patchCodex(libDir);
             sb.appendLine("  fi")
             sb.appendLine("  __name=\"\$(__shelly_codex_remote_host_name)\"")
             sb.appendLine("  rm -f \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
+            sb.appendLine("  __shelly_codex_remote_clean_bg \"\$__bgtmp\"")
             sb.appendLine("  mkdir -p \"\$__bgtmp\" 2>/dev/null && chmod 700 \"\$__bgtmp\" 2>/dev/null")
             sb.appendLine("  printf '[shelly] autostart host starting as \"%s\"\\n' \"\$__name\" > \"\$__log\" 2>/dev/null")
             sb.appendLine("  printf '%s %s native\\n' \"\$\$\" \"\$(__shelly_codex_remote_proc_start \"\$\$\")\" > \"\$__state\"")
@@ -5130,7 +5140,7 @@ patchCodex(libDir);
             sb.appendLine("  if [ \"\$(__shelly_codex_remote_bg_pid \"\$__state\")\" = \"\$\$\" ]; then")
             sb.appendLine("    rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
             sb.appendLine("  fi")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
+            sb.appendLine("  __shelly_codex_remote_clean_bg \"\$__bgtmp\"")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_autostart_cmd() {")
@@ -5260,7 +5270,7 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__tmp\" 2>/dev/null || true")
             sb.appendLine("  if [ \"\$__bg\" = 1 ]; then")
             sb.appendLine("    rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("    rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
+            sb.appendLine("    __shelly_codex_remote_clean_bg \"\$__bgtmp\"")
             sb.appendLine("    mkdir -p \"\$__bgtmp\" 2>/dev/null && chmod 700 \"\$__bgtmp\" 2>/dev/null")
             sb.appendLine("    local -a __shelly_rc_before=()")
             sb.appendLine("    : > \"\$__log\" 2>/dev/null")
@@ -5277,7 +5287,7 @@ patchCodex(libDir);
             sb.appendLine("        echo '[shelly] The background host exited; last log lines:' >&2")
             sb.appendLine("        tail -n 20 \"\$__log\" >&2 2>/dev/null")
             sb.appendLine("        rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("        rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
+            sb.appendLine("        __shelly_codex_remote_clean_bg \"\$__bgtmp\"")
             sb.appendLine("      fi")
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
@@ -5614,7 +5624,7 @@ patchCodex(libDir);
             //   cs               (every subsequent time — opens default in
             //                     Browser Pane)
             sb.appendLine("cs() { shelly-cs \"\$@\"; }")
-            sb.appendLine("export -f bash codex codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-codex-patch-canary shelly-codex-diagnose shelly-cs cs")
+            sb.appendLine("export -f bash codex __shelly_codex_runtime_tui codex-login shelly-codex-smoke shelly-codex-canary shelly-codex-edit-canary shelly-codex-repo-canary shelly-codex-patch-canary shelly-codex-diagnose shelly-cs cs")
             sb.appendLine()
 
             // Coreutils: use --coreutils-prog=NAME to select applet

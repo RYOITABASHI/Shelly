@@ -683,6 +683,20 @@ const CODEX_WEB_SEARCH_AUDIT_MAX = 120;
 const CODEX_LEAK_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD/i;
 const CODEX_LEAK_MIN_LENGTH = 16;
 
+// A header.payload.signature run. Scanned by segment, not with one regex: a
+// failed match from every "eyJ" in a long line is quadratic (152 s on 300 KB of
+// worker output would stall the event loop that answers approvals).
+function hasJwtShape(text) {
+  for (const run of text.split(/[^A-Za-z0-9_.-]+/)) {
+    const parts = run.split('.');
+    for (let i = 0; i + 2 < parts.length; i += 1) {
+      if (parts[i + 1].length >= 11 && parts[i + 1].startsWith('eyJ') && parts[i + 2].length >= 8
+        && /(?:^|[^A-Za-z0-9_])eyJ[A-Za-z0-9_-]{8}/.test(parts[i])) return true;
+    }
+  }
+  return false;
+}
+
 // Shapes only: length or randomness alone never stops a run (git SHAs, UUIDs).
 // The sk- body must be mixed case with a digit, so sk-learn-style words pass.
 const CODEX_LEAK_FORMATS = [
@@ -690,7 +704,7 @@ const CODEX_LEAK_FORMATS = [
   ['github_token', /\bgh[pousr]_[A-Za-z0-9]{36,}/g],
   ['groq_key', /\bgsk_[A-Za-z0-9]{20,}/g],
   ['google_key', /\bAIza[0-9A-Za-z_-]{35}/g],
-  ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
+  ['jwt', hasJwtShape],
   ['pem_private_key', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----\s*[A-Za-z0-9+/=]{16,}/g],
 ];
 
@@ -746,6 +760,10 @@ function codexLeakDetect(text, secrets) {
       if (secret.forms.some((form) => variant.includes(form))) return secret.detector;
     }
     for (const [detector, pattern, accept] of CODEX_LEAK_FORMATS) {
+      if (typeof pattern === 'function') {
+        if (pattern(variant)) return detector;
+        continue;
+      }
       for (const match of variant.matchAll(pattern)) {
         if (!accept || accept(match[0])) return detector;
       }
@@ -793,11 +811,29 @@ function codexWebSearchAudit(item, secrets) {
   return withheld ? { ...entry, withheld } : entry;
 }
 
-/** The wire log echoes every server line; a search carrying a secret is not echoed. */
+/**
+ * The wire log echoes every server line; a search carrying a secret is not
+ * echoed. Checked on the parsed strings: in the raw line a secret holding " or \
+ * or a newline is in its escaped form and would not match.
+ */
 function codexWireLineForLog(line, secrets) {
   if (!/webSearch|web_search/.test(line)) return line;
-  const detector = codexLeakDetect(line.replace(/\\n/g, '\n'), secrets);
-  return detector ? JSON.stringify({ withheld: detector }) : line;
+  let pending;
+  try {
+    pending = [JSON.parse(line)];
+  } catch {
+    pending = [line];
+  }
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      const detector = codexLeakDetect(value, secrets);
+      if (detector) return JSON.stringify({ withheld: detector });
+    } else if (value && typeof value === 'object') {
+      pending.push(...Object.values(value));
+    }
+  }
+  return line;
 }
 
 /** 'gated' | 'harmless' | 'mcp' | 'blocked' (fails closed on a missing type). */

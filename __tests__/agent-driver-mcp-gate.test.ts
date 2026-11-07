@@ -919,6 +919,55 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       expect(driver.codexWebSearchLeakCheck(search({ type: 'search', query: b64Url }), special)!.detector).toBe('env_value');
     });
 
+    it('the wire log matches parsed values, so an escaped secret is found', () => {
+      const tricky = 'pass"word\\with-escapes\nnewline0';
+      const known = driver.codexLeakSecrets({ X_SECRET: tricky }, '');
+      const line = JSON.stringify(completed({ type: 'webSearch', id: 'ws1', query: tricky, action: { type: 'search', query: tricky } }));
+      expect(line).not.toContain(tricky);
+      expect(driver.codexWireLineForLog(line, known)).toBe('{"withheld":"env_value"}');
+      expect(driver.codexWireLineForLog(JSON.stringify(completed({ type: 'webSearch', id: 'p', query: PEM })), secrets)).toBe('{"withheld":"pem_private_key"}');
+      const safe = JSON.stringify(completed({ type: 'webSearch', id: 'ws1', query: 'prices', action: { type: 'search', query: 'prices' } }));
+      expect(driver.codexWireLineForLog(safe, known)).toBe(safe);
+      expect(driver.codexWireLineForLog('not json webSearch ' + GH, secrets)).toBe('{"withheld":"github_token"}');
+      expect(driver.codexWireLineForLog(JSON.stringify({ method: 'other', params: { text: GH } }), secrets)).toContain(GH);
+    });
+
+    it('E2E: a secret with a quote never reaches stdout or the audit log', () => {
+      const tricky = 'pass"word-with-a-quote-0000';
+      const r = run(
+        [completed({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'search', query: tricky } })],
+        { X_SECRET: tricky },
+      );
+      expect(r.status).toBe(1);
+      expect(r.audit).toContain('"detector":"env_value"');
+      const escaped = JSON.stringify(tricky).slice(1, -1);
+      expect(r.out).not.toContain(escaped);
+      expect(r.audit).not.toContain(escaped);
+    }, 60_000);
+
+    it('stays fast on long adversarial input and still finds a token in a long line', () => {
+      const size = 300 * 1024;
+      for (const chunk of ['eyJ', 'eyJaaaaaaaaa.', 'eyJaaaaaaaaaaa.eyJ', 'sk-', 'a.', '-----BEGIN ', 'ghp_', 'gsk_', 'AIza', '%2', '+']) {
+        const text = chunk.repeat(Math.ceil(size / chunk.length));
+        const started_ = Date.now();
+        driver.codexWireLineForLog(JSON.stringify(completed({ type: 'webSearch', id: 'x', query: text })), secrets);
+        hit({ type: 'search', query: text });
+        expect(Date.now() - started_).toBeLessThan(2000);
+      }
+      expect(hit({ type: 'search', query: `${'eyJ'.repeat(100000)} ${JWT}` })!.detector).toBe('jwt');
+    });
+
+    it('the JWT scan finds the same tokens the old pattern did', () => {
+      const j = (query: string) => hit({ type: 'search', query })?.detector ?? null;
+      expect(j(JWT)).toBe('jwt');
+      expect(j(`Authorization: Bearer ${JWT}, more`)).toBe('jwt');
+      expect(j(`x-${JWT}`)).toBe('jwt');
+      expect(j(`https://e.example/cb?token=${JWT}&a=1`)).toBe('jwt');
+      expect(j('a.b.c v1.2.3 example.com/path.html')).toBeNull();
+      expect(j('xeyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0.c2lnbmF0dXJl')).toBeNull();
+      expect(j('eyJhbGciOiJSUzI1NiJ9.notpayload000.c2lnbmF0dXJl')).toBeNull();
+    });
+
     it('does not stop on ordinary search text', () => {
       for (const query of [
         'git commit 210c69714a3f5d6e7b8c9d0e1f2a3b4c5d6e7f80 what changed',

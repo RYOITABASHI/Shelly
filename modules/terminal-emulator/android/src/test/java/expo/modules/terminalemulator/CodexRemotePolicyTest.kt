@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
 /**
  * "Keep ChatGPT connected" start conditions and restart policy
@@ -12,6 +14,56 @@ import org.junit.Test
  * Gradle run yet; CodexRemotePolicy has no android.* imports.
  */
 class CodexRemotePolicyTest {
+    private fun tempDir(): File = Files.createTempDirectory("codex-bg").toFile()
+    private fun link(at: File, to: File) { Files.createSymbolicLink(at.toPath(), to.toPath()) }
+
+    @Test
+    fun cleanupRemovesRealSocketDirsOnly() {
+        val root = tempDir()
+        val bg = File(root, "bg").apply { mkdir() }
+        val outside = File(root, "projects").apply { mkdir() }
+        val keep = File(outside, "keep.txt").apply { writeText("x") }
+        val rc = File(bg, "codex-rc-1").apply { mkdir() }
+        File(rc, "rc.sock").writeText("")
+        val tmp = File(bg, ".tmpAbC").apply { mkdir() }
+        link(File(tmp, "out"), outside) // a link inside is unlinked, its target stays
+        link(File(bg, ".tmpLink"), outside)
+        link(File(bg, "codex-rc-link"), outside)
+        val other = File(bg, "other").apply { mkdir() }
+
+        CodexRemotePolicy.removeHostSocketDirs(bg)
+
+        assertFalse(rc.exists())
+        assertFalse(tmp.exists())
+        assertTrue(keep.exists())
+        assertTrue(File(bg, ".tmpLink").exists())
+        assertTrue(File(bg, "codex-rc-link").exists())
+        assertTrue(other.exists())
+    }
+
+    @Test
+    fun cleanupRefusesASymlinkedBackgroundDir() {
+        val root = tempDir()
+        val home = File(root, "home").apply { mkdir() }
+        val dotTmp = File(home, ".tmp").apply { mkdir() }
+        val bg = File(root, "bg")
+        link(bg, home)
+        CodexRemotePolicy.removeHostSocketDirs(bg)
+        assertTrue(dotTmp.exists())
+    }
+
+    @Test
+    fun cleanupRefusesASymlinkedParent() {
+        val root = tempDir()
+        val real = File(root, "real").apply { mkdir() }
+        val bgReal = File(real, "bg").apply { mkdir() }
+        val rc = File(bgReal, "codex-rc-1").apply { mkdir() }
+        val alias = File(root, "tmp")
+        link(alias, real)
+        CodexRemotePolicy.removeHostSocketDirs(File(alias, "bg"))
+        assertTrue(rc.exists())
+    }
+
     private val ok = CodexRemotePolicy.Inputs(
         autostartOn = true, halted = false, stopRequested = false,
         serviceForeground = true, notificationsEnabled = true,

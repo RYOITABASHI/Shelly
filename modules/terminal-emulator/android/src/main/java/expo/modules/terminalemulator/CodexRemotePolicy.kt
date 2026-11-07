@@ -1,11 +1,42 @@
 package expo.modules.terminalemulator
 
+import java.io.File
+import java.nio.file.Files
+
 /**
  * Pure decision logic for "Keep ChatGPT connected" (CodexRemoteHost.kt).
  * Zero android.* imports so it can be unit-tested on the JVM
  * (src/test/.../CodexRemotePolicyTest.kt).
  */
 object CodexRemotePolicy {
+    /**
+     * Kotlin's File.deleteRecursively follows symlinks, so the walk below checks
+     * each entry. java.nio.file needs API 26: below that (minSdk is 24) the call
+     * throws, and CodexRemoteHost's runCatching skips the cleanup, which is safe.
+     */
+    fun isSymlink(file: File): Boolean = Files.isSymbolicLink(file.toPath())
+
+    /** Removes a tree without leaving it: a link is unlinked, its target is untouched. */
+    fun deleteTreeNoFollow(file: File) {
+        if (!isSymlink(file) && file.isDirectory) file.listFiles()?.forEach { deleteTreeNoFollow(it) }
+        file.delete()
+    }
+
+    /**
+     * Clears a stopped host's socket dirs (codex-rc-*, or upstream's .tmp*) from
+     * the private background dir. Only real directories directly inside a real
+     * background dir count: a symlinked bg dir or its parent could point at
+     * HOME, where .tmp* would match something else.
+     */
+    fun removeHostSocketDirs(backgroundDir: File) {
+        val parent = backgroundDir.absoluteFile.parentFile ?: return
+        if (isSymlink(parent) || isSymlink(backgroundDir) || !backgroundDir.isDirectory) return
+        backgroundDir.listFiles()
+            ?.filter { it.name.startsWith("codex-rc-") || it.name.startsWith(".tmp") }
+            ?.filter { !isSymlink(it) && it.isDirectory }
+            ?.forEach { deleteTreeNoFollow(it) }
+    }
+
     /** `shelly codex __host` exit codes (HomeInitializer.kt, __shelly_codex_remote_host). */
     const val EXIT_NOT_SIGNED_IN = 3
     const val EXIT_ALREADY_RUNNING = 4

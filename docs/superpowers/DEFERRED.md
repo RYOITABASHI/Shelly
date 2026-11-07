@@ -129,8 +129,8 @@ U+200B〜U+200D と U+2060 は消さないので、タイトルに入ってい�
 
 ### Codex リモートコントロール: 公式 Termux 版 0.167.0 対応 — 実装済み・実機未検証 (P1)
 T1（2026-11-07 実機）で Termux 公式 Codex 0.167.0 の version、login、API、MCP list は動いたが、`codex remote-control --no-daemon` と `codex app-server --listen unix://...` は EACCES。上流の `daemon_directory.rs` は Android でも `/tmp/codex-daemon-<euid>` を使い、Android の `/tmp` は `drwxrwx--x shell shell` でアプリは作れない。ブランチ `fix/cli-update-groundwork` で次を実装。
-- `libexec_wrapper.so` v227: `/tmp/codex-daemon-<euid>` とその配下だけを fork と同じ `<app data dir>/cdx` へ写す。fork のルートも残す。rendezvous symlink の中身は `<実dir>/./<name>` で保存し、`readlink` は `/./` の有無で元のルートへ戻す（クライアントはルートに触る前に比較するので、プロセスの状態では判定できない）。bare `/tmp` の `realpath` は Codex にだけそのまま返す。
-- BASHRC_VERSION 287: `shelly codex pair` は `app-server-control-termux` と `app-server-control` の両方へ、pair の間だけリンクする。ホストのソケットは `$TMPDIR/.tmpXXXXXX/rc.sock` になる（上流は `/tmp` が失敗すると `tempfile::tempdir()` に落ち、接頭辞 `codex-rc-` が付かない）ので走査と後始末も両方に対応。
+- `libexec_wrapper.so` v227: `/tmp/codex-daemon-<euid>` とその配下だけを fork と同じ `<app data dir>/cdx` へ写す（非公開ディレクトリの別名なので、「すべて」レベルのスクラッチ扱いから除外した）。fork のルートも残す。rendezvous symlink の中身は `<実dir>/./<name>` で保存し、`readlink` は `/./` の有無で元のルートへ戻す（クライアントはルートに触る前に比較するので、プロセスの状態では判定できない）。bare `/tmp` の `realpath` は Codex にだけそのまま返す。
+- BASHRC_VERSION 287（288 でレビュー修正）: `shelly codex pair` は `app-server-control-termux` と `app-server-control` の両方へ、pair の間だけリンクする。ホストのソケットは `$TMPDIR/.tmpXXXXXX/rc.sock` になる（上流は `/tmp` が失敗すると `tempfile::tempdir()` に落ち、接頭辞 `codex-rc-` が付かない）ので走査と後始末も両方に対応。
 - 実機でしか確認できないこと: (1) `codex remote-control --no-daemon` が起動してソケットを開く。(2) `shelly codex pair` がコードを出し、ChatGPT アプリから接続できる。(3) 停止後に `~/../cdx` のソケット、`$CODEX_HOME/app-server-control*/` のリンクが残らない。(4) `codex app-server --listen unix://...` の起動と再起動（dangling な rendezvous の掃除）。(5) `--background` と「ChatGPT を接続したままにする」の再起動経路。(6) fork の APK 同梱版でも従来どおり動く。(7) 機能が Termux 版で閉じていないこと（fork の README は別パッケージの機能としている）。
 - 未対応と判断したもの: Termux 版が import する `access`、`linkat`、`rename`、`renameat`、`utimensat`、`lchown` はフックしていない。このソケット経路のソースでは仮想パスに使われていない。実機で ENOENT や EACCES が出たらここを疑う。
 
