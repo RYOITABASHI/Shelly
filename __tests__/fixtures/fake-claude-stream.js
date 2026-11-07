@@ -44,6 +44,7 @@ function askNext() {
       is_error: process.env.FAKE_CLAUDE_FAIL === '1',
       result: `decisions: ${decisions.map((d) => d.behavior).join(',')}`,
       num_turns: 1,
+      ...(process.env.FAKE_CLAUDE_STOP_REASON ? { stop_reason: process.env.FAKE_CLAUDE_STOP_REASON } : {}),
       total_cost_usd: 0.0123,
       usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 100, output_tokens: 42 },
     });

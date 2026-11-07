@@ -34,7 +34,7 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 }
 ```
 
-- **Engines** are yours to pick, and there are no defaults. Each is `gemini-api`, `cerebras`, `groq` or `perplexity`, with an optional `model`. Use the same API keys as the rest of Shelly. A CLI and the local LLM cannot run these steps. When review and writing come from the same engine family, the draft is marked unresolved, so pick different families.
+- **Engines** are yours to pick, and there are no defaults. Each is `gemini-api`, `cerebras`, `groq` or `perplexity`, with an optional `model`. Use the same API keys as the rest of Shelly. `write` and `review` can also be a text-only CLI (see below). The local LLM cannot run these steps. When review and writing come from the same engine family, the draft is marked unresolved, so pick different families. Claude Code and Codex each count as their own family.
 - **`outputFolder`** must be inside your Obsidian vault (Settings, default `/sdcard/Documents/ObsidianVault`) or your custom output folder (default `~/agent-output`). A pipeline with `queue` and the digest must be inside the vault, because those are read only from there. Use plain folder names: letters, digits, `_`, `-` and `.`, no spaces.
 - **Instructions** hold 500 characters each. A longer one is refused, not cut. A research instruction that mentions the web gets source capture.
 - **`queue`** takes each run's topic from `_queue.md` in the output folder, as `- [ ] topic` lines. `instructions.topics` also refills that queue through Gemini when it runs low.
@@ -42,6 +42,24 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 - **Digest**: an optional top-level `digest` lists each day's drafts in one note, with `name`, `prompt`, `lang`, `schedule`, `outputFolder`, `footer`, `engine` and `streams` (`[{ "folder": "Garden", "label": "Garden" }]`, folders next to the digest's own). Ask for it with the id `digest`.
 
 The agent only ever saves a draft. It never publishes and is never autonomous, and its runs are scheduled only: Run now is refused, so set a time a few minutes ahead to test one.
+
+## Text-only CLI engines
+
+`engines.write` and `engines.review` can name Claude Code or Codex, so writing, review and revision can use your subscription. Revision uses the `write` engine. Research stays on an HTTP engine, and `engines.agent` and the digest's `engine` cannot be a CLI.
+
+```json
+"engines": {
+  "research": { "type": "perplexity" },
+  "write": { "type": "cli", "cli": "claude", "textOnly": true },
+  "review": { "type": "cli", "cli": "codex", "textOnly": true, "model": "gpt-5.5" }
+}
+```
+
+- **`textOnly` must be `true`.** These steps get text from the web in their prompt, so the CLI runs with no tools: no shell, no file access, no web, no MCP. It can only answer. If it tries anything else, or starts with any tool available, the turn stops and the step fails.
+- **`model`** is optional for Claude Code. Codex needs one here or as `model` in `~/.codex/config.toml`, or the step fails.
+- **What it needs**: the build agents run (`claude-install --agent` for Claude Code, the bundled build for Codex). Claude Code signs in as it does for any agent: your Anthropic API key if one is set, otherwise your subscription, and with the setting "Claude subscription for unattended runs" off a scheduled run is refused. Codex uses your ChatGPT login.
+- **When a step fails**, nothing falls back to another engine. A failed write fails the run. A failed review or revision keeps the last good version and marks the draft unresolved.
+- **Time**: one run has 30 minutes, the CLI steps included. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
 
 ## After-draft hook
 

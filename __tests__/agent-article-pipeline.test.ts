@@ -277,6 +277,37 @@ describe('the config is validated strictly', () => {
     expect(executor.longformPlanRefusal({ action: { type: 'draft' }, steps: { longform: true, list: [{ tool: { type: 'cli', cli: 'codex' } }] } })).not.toBe('');
   });
 
+  it('takes a text-only CLI for write and review, and carries it to the steps and the plan', () => {
+    const claude = { type: 'cli', cli: 'claude', textOnly: true };
+    const codex = { type: 'cli', cli: 'codex', textOnly: true, model: 'gpt-test' };
+    expect(over({ engines: { ...engines, write: claude, review: codex } })).toBeNull();
+    const config = { ...EXAMPLE_CONFIGS['example-a'], engines: { ...EXAMPLE_CONFIGS['example-a'].engines, write: claude, review: codex } } as unknown as ArticlePipelineConfig;
+    const preset = buildArticlePipeline(config);
+    const steps = preset.orchestration.steps as AgentOrchestrationStep[];
+    expect(steps.filter((s) => s.tool?.type === 'cli')).toHaveLength(5);
+    expect(steps[0].tool).toEqual(EXAMPLE_CONFIGS['example-a'].engines.research);
+    expect(preset.tool?.type).toBe('gemini-api');
+    expect(preset.action).toEqual({ type: 'draft' });
+    expect(preset.autonomous).toBe(false);
+    const plan = buildAgentPlanSpec(agentFrom(preset));
+    expect(plan.cliWorker).toBeDefined();
+    expect(executor.textOnlyPlanRefusal(plan)).toBe('');
+    expect(executor.longformPlanRefusal(plan)).toBe('');
+    expect(plan.steps!.list.map((_s: unknown, i: number) => executor.isTextOnlyCliStep(plan, i))).toEqual([false, true, true, true, true, true, false]);
+  });
+
+  it('refuses a CLI anywhere else, without the flag, or with anything extra', () => {
+    const claude = { type: 'cli', cli: 'claude', textOnly: true };
+    expect(over({ engines: { ...engines, research: claude } })).toContain('a CLI cannot run this step');
+    expect(over({ engines: { ...engines, agent: claude } })).toContain('a CLI cannot run this step');
+    expect(over({ engines: { ...engines, write: { type: 'cli', cli: 'claude', textOnly: false } } })).toContain('textOnly');
+    expect(over({ engines: { ...engines, write: { type: 'cli', cli: 'claude', textOnly: 'true' } } })).toContain('textOnly');
+    expect(over({ engines: { ...engines, write: { type: 'cli', cli: 'gemini', textOnly: true } } })).toContain('.cli');
+    expect(over({ engines: { ...engines, write: { ...claude, tools: ['Bash'] } } })).toContain('unknown field');
+    expect(over({ engines: { ...engines, write: { ...claude, model: 'x; rm -rf' } } })).toContain('bad model');
+    expect(articleDigestConfigError({ ...EXAMPLE_DIGEST, engine: claude })).toContain('a CLI cannot run this step');
+  });
+
   it('refuses the local LLM, api-call and unknown engines, and a bad model', () => {
     expect(over({ engines: { ...engines, write: { type: 'local' } } })).toContain('local');
     expect(over({ engines: { ...engines, write: { type: 'ab-article-eval' } } })).not.toBeNull();
@@ -508,6 +539,15 @@ describe('the draft from a config', () => {
     expect(confirmed.longform).toBe(true);
     expect(confirmed.presetOutput?.outputTemplate).toBe('{date}-example-a.md');
     expect(confirmed.orchestrationSteps).toHaveLength(7);
+  });
+
+  it('a text-only engine survives the chat confirm and is named in it', () => {
+    const base = EXAMPLE_CONFIGS['example-a'];
+    const claude = { type: 'cli' as const, cli: 'claude' as const, textOnly: true as const };
+    const draft = parseAgentNL(REQUEST, [], buildArticlePipeline({ ...base, engines: { ...base.engines, write: claude } }));
+    const steps = draftToConfirmedAgentDraft(draft).orchestrationSteps as AgentOrchestrationStep[];
+    expect(steps[1].tool).toEqual(claude);
+    expect(summarizeAgentDraftAsText(draft, undefined, false, { cloudConsent: false })).toContain('Claude Code');
   });
 
   it('an edit of a registered agent keeps the longform flag', () => {

@@ -112,16 +112,23 @@ export function buildCollectionPipeline(opts: {
 //
 // A config grants nothing new. The action is always `draft`, the agent is never
 // autonomous, and the steps are only model steps and local steps, which the
-// executor re-checks in longformPlanRefusal and normalizeStepLocal.
+// executor re-checks in longformPlanRefusal and normalizeStepLocal. A CLI engine
+// is text-only: no tools, re-checked in the executor's textOnlyPlanRefusal.
 
 export const ARTICLE_PIPELINE_FILE_VERSION = 1;
 
-/** Engines a longform model step can run on. A CLI step is refused by the
- *  executor's longformPlanRefusal; the local LLM's token cap cannot finish a
- *  long document, and the executor keeps it off a longform ladder. The list
- *  matches STEP_TOOL_DISPATCHABLE_TYPES in scripts/shelly-plan-executor.js. */
+/** HTTP engines a longform model step can run on. The local LLM's token cap
+ *  cannot finish a long document, and the executor keeps it off a longform
+ *  ladder. The list matches STEP_TOOL_DISPATCHABLE_TYPES in
+ *  scripts/shelly-plan-executor.js. */
 export const ARTICLE_ENGINE_TYPES = ['gemini-api', 'cerebras', 'groq', 'perplexity'] as const;
 export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model?: string };
+
+/** The CLIs a write or review engine can name, always in text-only mode: the
+ *  turn has no tools, because its prompt carries web-derived text. Matches
+ *  CLI_STEP_ENGINES in scripts/shelly-plan-executor.js. */
+export const ARTICLE_TEXT_ONLY_CLIS = ['claude', 'codex'] as const;
+export type ArticleTextOnlyEngine = { type: 'cli'; cli: (typeof ARTICLE_TEXT_ONLY_CLIS)[number]; textOnly: true; model?: string };
 
 export interface ArticlePipelineConfig {
   /** Frontmatter `stream`, the draft's file name, and the name to ask for. */
@@ -145,8 +152,8 @@ export interface ArticlePipelineConfig {
    *  REVIEW_OUTPUT_CONTRACT appended, and the limit counts that too. */
   instructions: { research: string; write: string; review: string; revise: string; topics?: string };
   /** No defaults: the user picks. `agent` is the agent-level tool (default:
-   *  `research`). */
-  engines: { research: ArticleEngine; write: ArticleEngine; review: ArticleEngine; agent?: ArticleEngine };
+   *  `research`). `write` and `review` may be text-only CLIs. */
+  engines: { research: ArticleEngine; write: ArticleEngine | ArticleTextOnlyEngine; review: ArticleEngine | ArticleTextOnlyEngine; agent?: ArticleEngine };
   /** Flagged in frontmatter `lint`, never rewritten. */
   lintTerms?: string[];
   nameLint?: { canonical: string; forms: string[] };
@@ -203,9 +210,17 @@ function articleTextError(v: unknown, max: number, where: string, multiline = fa
   return null;
 }
 
-function articleEngineError(v: unknown, where: string): string | null {
+function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = false): string | null {
   if (!isPlainObject(v)) return `${where}: needs { "type": ... }`;
-  if (v.type === 'cli') return `${where}: a CLI cannot run an article pipeline step`;
+  if (v.type === 'cli') {
+    if (!textOnlyCliAllowed) return `${where}: a CLI cannot run this step`;
+    const keyError = unknownKeyError(v, ['type', 'cli', 'textOnly', 'model'], where);
+    if (keyError) return keyError;
+    if (!(ARTICLE_TEXT_ONLY_CLIS as readonly unknown[]).includes(v.cli)) return `${where}.cli: use one of ${ARTICLE_TEXT_ONLY_CLIS.join(', ')}`;
+    if (v.textOnly !== true) return `${where}: a CLI runs an article step only with "textOnly": true`;
+    if (v.model !== undefined && (typeof v.model !== 'string' || !ARTICLE_MODEL_RE.test(v.model))) return `${where}: bad model name`;
+    return null;
+  }
   if (v.type === 'local') return `${where}: the local LLM cannot finish an article`;
   if (!(ARTICLE_ENGINE_TYPES as readonly unknown[]).includes(v.type)) return `${where}: use one of ${ARTICLE_ENGINE_TYPES.join(', ')}`;
   const keyError = unknownKeyError(v, ['type', 'model'], where);
@@ -263,7 +278,7 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   const enginesKeyError = unknownKeyError(engines, ['research', 'write', 'review', 'agent'], `${where}.engines`);
   if (enginesKeyError) return enginesKeyError;
   for (const key of ['research', 'write', 'review'] as const) {
-    const error = articleEngineError(engines[key], `${where}.engines.${key}`);
+    const error = articleEngineError(engines[key], `${where}.engines.${key}`, key !== 'research');
     if (error) return error;
   }
   if (engines.agent !== undefined) {
@@ -364,7 +379,7 @@ export function articleOutputFolderError(folder: string, roots: ArticleOutputRoo
 }
 
 const withFolderSlash = (folder: string): string => (folder.endsWith('/') ? folder : `${folder}/`);
-const pinned = (tool: ArticleEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
+const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
 
 /**
  * One config's draft agent: [research, write, review1, revise1, review2,

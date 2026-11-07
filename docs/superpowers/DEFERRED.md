@@ -105,6 +105,9 @@
 ### 記事パイプライン（longform チェーンと local ステップ）— 実機確認は一部のみ (P1)
 形式は `docs/article-pipeline-config.md`。`@agent 記事パイプライン <id>` の設定ファイル経路は実機未検証。
 
+### 記事パイプラインのテキスト専用 CLI ステップ（executor v37）— 実機未検証 (P1)
+形式は `docs/article-pipeline-config.md`。PC で確認済み: Claude Code 2.1.314 と Codex 0.167.0 の実バイナリ＋ローカルの mock API で、要求の tools が [] になること、偽の tool 呼び出しが実行されないこと。実機で確認する: (1) スケジュール実行で Claude の `system/init` が tools [] になり、サブスクの認証で通る。(2) bionic の Codex が `read-only` と `tools: []` で ChatGPT のバックエンドに受け付けられる（`tools: []` と 1 モデルのカタログは本物の API では未確認）。(3) `~/.codex/config.toml` に model が無い端末では `model` を指定するまで失敗する。(4) 1 本 30 分の上限に 5 回の CLI ターンが収まるか。限界: Claude の `system/init` は最初のメッセージを送った後にしか出ないので、ツール 0 件の確認より先にプロンプトは claude に渡る（`--tools ""` が効かなかった場合でも、確認で即 SIGKILL）。Codex にツール一覧の報告はないので、確認は `features list` と要求前の設定まで。出力は文章なので、Web 由来の文が下書きに混ざることまでは防げない。エンジンのロックはテキスト専用ステップどうしだけで、Run now の通常 CLI ステップとは取り合わない。Why not now: 実機確認は次のビルドで行う。
+
 ### after-draft フック（executor v36）— 実機未検証 (P1)
 `~/.shelly/agents/after-draft-hook.js`。形式は `docs/article-pipeline-config.md`。Windows の Jest ではプロセスグループの kill・SIGTERM・パーミッションの経路が skip になるので、実機で確認する: (1) スケジュール実行で引数に保存先が渡る。(2) `chmod 666` と symlink が `refused` になる。(3) 終わらないフックが 120 秒で孫プロセスごと止まり、run は success のまま。(4) STOP ALL で止まる。ゲートは文字列照合なので、名前を組み立てるコマンドやワークスペース内 symlink 経由の書き込み（`tar xf` / `git clone` の件）は防げない。ファイルの内容は封印していない。Why not now: 封印には登録の手順が要り、今回の範囲を超える。
 
