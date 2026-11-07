@@ -92,8 +92,9 @@
 **fork との差 [確認]**:
 
 - fork 独自の `cdx-termux-` と `app-server-control-termux` が無い。Termux 版は `app-server-control` と、上流の `/tmp/codex-daemon-<euid>`（`codex-rs/uds/src/daemon_directory.rs`、HOME 等に依存しない固定）。
-- Android に `/tmp` は無い。exec-wrapper v224 の変換規則は `/data/data/com.termux/cdx-termux-` 向けなので一致しない。`shelly codex pair` が使う `$CODEX_HOME/app-server-control-termux` も変わる。
-- fork の README は `/remote-control` などを別パッケージ `@mmmbuto/codex-vl` の機能としている。公式パッケージで使えない可能性がある **[推論]**。exec-wrapper の `realpath` / ソケット系 interposer に `/tmp/codex-daemon-*` の変換を足せば通る見込みだが、機能自体が閉じている可能性も残る。§8 T1 で確認。
+- Android の `/tmp` はアプリから作成できない（T1 の Fold6 では `drwxrwx--x shell shell`。`/tmp` が無い端末もある）。exec-wrapper v224 の変換規則は `/data/data/com.termux/cdx-termux-` 向けなので一致しない。`shelly codex pair` が使う `$CODEX_HOME/app-server-control-termux` も変わる。
+- fork の README は `/remote-control` などを別パッケージ `@mmmbuto/codex-vl` の機能としている。公式パッケージで使えない可能性がある **[推論]**。`/tmp/codex-daemon-<euid>` の変換は exec-wrapper v227 で実装した（実機未検証、下記 T1 の結果を参照）。機能自体が閉じている可能性は残る。
+- 上流のフォアグラウンドホストは `tempdir_in("/tmp")`（接頭辞 `codex-rc-`）が失敗すると `tempfile::tempdir()` に落ちるので、Android のソケットは `$TMPDIR/.tmpXXXXXX/rc.sock` になる **[確認: rust-v0.167.0 のソース]**。
 
 **遅延 [確認]**: upstream の公開から Termux の `build.sh` bump コミットまで。
 
@@ -309,7 +310,7 @@ claude-install [--channel latest|stable]
 
 **driver の穴 2 つ（自動更新の前に修正）[確認]** 2026-11-07 に `fix/cli-update-groundwork` で実装済み（実機未検証）。下の 1、2 は修正前の状態。
 
-実装で分かったこと: `commandExecution` と `fileChange` と MCP 以外にも既定で有効な未ゲートの item があった。`multi_agent`（`collabAgentToolCall`）と `view_image`（`imageView`）は既定で有効なので、許可リストから外すだけでは通常の実行が止まる。ワーカーでは機能も無効にした。`webSearch` は DEFERRED.md P1 の判断待ち。
+実装で分かったこと: `commandExecution` と `fileChange` と MCP 以外にも既定で有効な未ゲートの item があった。`multi_agent`（`collabAgentToolCall`）と `view_image`（`imageView`）は既定で有効なので、許可リストから外すだけでは通常の実行が止まる。ワーカーでは機能も無効にした。`webSearch` と `imageGeneration` はオーナー決定で通す。検索は `indexed` モードで、監査行と秘密の検査がある（DEFERRED.md P1）。§6.2 の CI 契約に、`web_search = "indexed"` が実効値であることの確認を加える。
 
 1. Codex: driver が能動的に止めるのは MCP 関連（`mcpToolCall`、進捗、elicitation、startup）だけ。`commandExecution` と `fileChange` 以外の未知の item（新しい組み込みツールなど）は止めない。Claude 側の「許可外の tool_use で即停止」に相当するものが無い。→ 既知の item 型の許可リストにし、未知の型でターンを止める。
 2. Claude: `system/init` で見ているのは `apiKeySource` だけで、`tools` を確認していない。→ 許可リストと一致しなければ起動直後に止める。
@@ -457,6 +458,8 @@ ln -sfn "$(cat ~/spike/codex/prev-current)" ~/.shelly-runtime/codex/current
 
 合格: `--version` が通る、TLS で API に届く、`!` コマンドと承認が動く。`pair` の結果は §9 の判断材料。
 
+**T1 の結果（2026-11-07 実機、一部）**: Termux 公式 Codex 0.167.0 は Shelly の下で `--version`、ログイン、API、`mcp list` が動いた。`codex remote-control --no-daemon` と `codex app-server --listen unix://...` は EACCES で失敗。原因は上流 `daemon_directory.rs` の `fs::canonicalize("/tmp")` + `codex-daemon-<euid>` で、`/tmp` は `drwxrwx--x shell shell`。`$CODEX_HOME/app-server-control` は端末に作られた。対応は exec-wrapper v227 と BASHRC_VERSION 287（`fix/cli-update-groundwork`、実機未検証）。**再検証の項目は DEFERRED.md「Codex リモートコントロール: 公式 Termux 版 0.167.0 対応」**。TUI の `!` コマンド、Code Mode、エージェント実行はこの結果に含まれない。
+
 ### T2 公式 musl の失敗理由の確定（10 分）
 
 ```bash
@@ -533,7 +536,7 @@ mv "$R/claude" "$R/claude.moved"       # 版ディレクトリの切り替えを
 
 ## 9. オーナーが決めること
 
-1. **`shelly codex pair` が Termux 版で動かない場合**（T1 の結果次第）: (a) exec-wrapper で通るなら直す、(b) 通らなければ機能を諦めて移行する、(c) `@mmmbuto/codex-vl` を別に入れる（第三者 fork で再び同じ依存を抱える）、(d) (c) の代わりにソースビルドで patch を持つ。ChatGPT からのデモに影響するので最優先。推奨は (a)、無理なら一時的に (b)。
+1. **`shelly codex pair` が Termux 版で動かない場合**（exec-wrapper v227 の実機確認の結果次第）: (a) exec-wrapper で通るなら直す、(b) 通らなければ機能を諦めて移行する、(c) `@mmmbuto/codex-vl` を別に入れる（第三者 fork で再び同じ依存を抱える）、(d) (c) の代わりにソースビルドで patch を持つ。ChatGPT からのデモに影響するので最優先。推奨は (a)、無理なら一時的に (b)。
 2. **Claude の更新チャンネル**: `latest`（要望どおり、ほぼ毎日 340MB）か `stable`（約 1 週間遅れ、退行を飛ばす）か。推奨は `latest` で確認は毎日、ダウンロードは Wi-Fi のみ。
 3. **エージェントが最新より遅れるのを許すか**（§6.2）: 推奨は許す。ここを同じにすると安全の検証を飛ばすことになる。
 4. **自動更新の既定**: 既定 ON で Wi-Fi のみ、を推奨。Claude と agy は規約の点からインストールを明示操作にし、その時点で自動更新への同意を取るのが無難。

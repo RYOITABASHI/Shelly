@@ -1389,15 +1389,41 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
  *     target must be real. readlink() maps it back so Codex's own
  *     "is this my alias?" comparison still matches.
  * Only paths under /data/data/com.termux/cdx-termux-<this process's euid>
- * (plus the bare root in realpath) are touched; every other call is handed
+ * (plus the bare root in realpath), and since v227 the upstream root below, are touched; every other call is handed
  * to libc unchanged. Upstream proposal:
  * docs/superpowers/specs/2026-10-13-codex-remote-control-socket-root.md. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_v224_marker[] =
     "shelly-exec-wrapper:v224:termux-socket-root-redirect";
 
+/* v227 (2026-11-07): upstream Codex (official Termux package, 0.167.0) has no
+ * Android case in codex-rs/uds/src/daemon_directory.rs: the root is
+ * fs::canonicalize("/tmp") joined with codex-daemon-<euid>. Android's /tmp is
+ * drwxrwx--x shell shell, so the app gets EACCES from mkdir. The same mapping
+ * now also covers exactly /tmp/codex-daemon-<euid> and paths under it, onto the
+ * same real directory. Nothing else under /tmp is touched. Both virtual roots
+ * stay while the fork and the Termux binary can both be installed.
+ *   - bare "/tmp" in realpath: answered unchanged for Codex only, so the result
+ *     is always the string the match below expects, even on a device with no
+ *     /tmp (or a /tmp that is a symlink);
+ *   - the mkdir / lstat ownership and 0700 check in
+ *     prepare_shared_daemon_socket_directory() runs on the real directory;
+ *   - sun_path: the real path is unchanged, 101 bytes with the 64-hex name;
+ *   - Codex compares read_link() of its rendezvous symlink to the virtual path
+ *     of its own root, and a client can do that before it has touched that
+ *     root, so which virtual root to report cannot come from process state.
+ *     It comes from the link: a /tmp target is stored as <real dir>/./<name>,
+ *     which the kernel resolves the same. No "/./" = the fork's root, which
+ *     keeps links an older build left working. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v227_marker[] =
+    "shelly-exec-wrapper:v227:codex-daemon-socket-root-redirect";
+
 #define TERMUX_SOCKET_ROOT "/data/data/com.termux"
 #define TERMUX_SOCKET_DIR_PREFIX TERMUX_SOCKET_ROOT "/cdx-termux-"
+#define CODEX_DAEMON_TMP_ROOT "/tmp"
+#define CODEX_DAEMON_DIR_PREFIX CODEX_DAEMON_TMP_ROOT "/codex-daemon-"
+#define CODEX_DAEMON_LINK_MARK "/."
 #define SHELLY_SOCKET_DIR_NAME "/cdx"
 #define SHELLY_FILES_HOME_SUFFIX "/files/home"
 #define SOCKET_MAP_BUF_SIZE 512
@@ -1499,6 +1525,42 @@ static size_t termux_socket_virtual_match(const char *path) {
     return (size_t)n;
 }
 
+/* Writes /tmp/codex-daemon-<euid> into out; returns its length or -1. */
+static int codex_daemon_virtual_dir(char *out, size_t out_size) {
+    size_t n = 0;
+    long uid = raw_syscall1(__NR_geteuid, 0);
+    if (uid < 0 || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    if (append_str(out, out_size, &n, CODEX_DAEMON_DIR_PREFIX) != 0 ||
+        append_uint(out, out_size, &n, (unsigned int)uid) != 0) {
+        return -1;
+    }
+    return (int)n;
+}
+
+/* Same contract as termux_socket_virtual_match, for the upstream root. Another
+ * uid's directory and names that only share the prefix do not match. */
+static size_t codex_daemon_virtual_match(const char *path) {
+    char vdir[64];
+    int n;
+    if (!path || !starts_with(path, CODEX_DAEMON_DIR_PREFIX)) return 0;
+    n = codex_daemon_virtual_dir(vdir, sizeof(vdir));
+    if (n <= 0 || !starts_with(path, vdir)) return 0;
+    if (path[n] != '\0' && path[n] != '/') return 0;
+    return (size_t)n;
+}
+
+static size_t socket_virtual_match(const char *path) {
+    size_t n = termux_socket_virtual_match(path);
+    return n ? n : codex_daemon_virtual_match(path);
+}
+
+/* Cheap precheck so unrelated paths never reach geteuid or the HOME lookup. */
+static int socket_path_maybe_virtual(const char *path) {
+    return path && (starts_with(path, TERMUX_SOCKET_DIR_PREFIX) ||
+                    starts_with(path, CODEX_DAEMON_DIR_PREFIX));
+}
+
 /* Writes the real, app-private socket directory into out; returns its length
  * or -1. HOME comes from /proc/self/environ (this file never reads the live
  * environ outside execvp). Server and client processes must agree on this
@@ -1533,10 +1595,10 @@ static int shelly_socket_real_dir(char *out, size_t out_size) {
     return (int)n;
 }
 
-/* 1: `path` is a virtual Termux socket path and `out` holds the real one;
+/* 1: `path` is a virtual socket path (either root) and `out` holds the real one;
  * 0: unrelated path; -1: virtual but cannot be mapped. */
 static int map_termux_socket_path(const char *path, char *out, size_t out_size) {
-    size_t vlen = termux_socket_virtual_match(path);
+    size_t vlen = socket_virtual_match(path);
     size_t pos;
     int n;
     if (!vlen) return 0;
@@ -1551,10 +1613,27 @@ static int map_termux_socket_path(const char *path, char *out, size_t out_size) 
  * mapping, or NULL (errno published) when a virtual path cannot be mapped. */
 static const char *socket_root_path_arg(const char *path, char *buf, size_t buf_size) {
     int m;
-    if (!path || !starts_with(path, TERMUX_SOCKET_DIR_PREFIX)) return path;
+    if (!socket_path_maybe_virtual(path)) return path;
     m = map_termux_socket_path(path, buf, buf_size);
     if (m == 0) return path;
     if (m < 0) {
+        publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+        return NULL;
+    }
+    return buf;
+}
+
+/* symlink() target: as socket_root_path_arg, but a /tmp target keeps which root
+ * it came from (see the v227 note). */
+static const char *socket_link_target_arg(const char *target, char *buf, size_t buf_size) {
+    size_t vlen = codex_daemon_virtual_match(target);
+    size_t pos;
+    int n;
+    if (!vlen) return socket_root_path_arg(target, buf, buf_size);
+    n = shelly_socket_real_dir(buf, buf_size);
+    pos = n < 0 ? 0 : (size_t)n;
+    if (n < 0 || append_str(buf, buf_size, &pos, CODEX_DAEMON_LINK_MARK) != 0 ||
+        append_str(buf, buf_size, &pos, target + vlen) != 0) {
         publish_syscall_errno(-SHELLY_ENAMETOOLONG);
         return NULL;
     }
@@ -1582,6 +1661,7 @@ static long unmap_termux_socket_link(char *buf, size_t bufsiz, long len) {
     size_t n = 0;
     int rlen;
     int vlen;
+    int daemon;
     long i;
     /* A result that filled the whole buffer may be truncated; leave it. */
     if (!buf || len <= 0 || (size_t)len >= bufsiz || (size_t)len >= sizeof(virt)) return len;
@@ -1592,10 +1672,13 @@ static long unmap_termux_socket_link(char *buf, size_t bufsiz, long len) {
         if (buf[i] != real_dir[i]) return len;
     }
     if (len > rlen && buf[rlen] != '/') return len;
-    vlen = termux_socket_virtual_dir(virt, sizeof(virt));
+    daemon = len >= rlen + 2 && buf[rlen] == '/' && buf[rlen + 1] == '.' &&
+             (len == rlen + 2 || buf[rlen + 2] == '/');
+    vlen = daemon ? codex_daemon_virtual_dir(virt, sizeof(virt))
+                  : termux_socket_virtual_dir(virt, sizeof(virt));
     if (vlen <= 0) return len;
     n = (size_t)vlen;
-    for (i = rlen; i < len; i++) {
+    for (i = rlen + (daemon ? 2 : 0); i < len; i++) {
         if (append_char(virt, sizeof(virt), &n, buf[i]) != 0) return len;
     }
     for (i = 0; (size_t)i < n && (size_t)i < bufsiz; i++) buf[i] = virt[i];
@@ -1619,7 +1702,7 @@ static int map_unix_sockaddr(const void *addr, int len, struct shelly_sockaddr_u
         if (!path[i]) break;
     }
     path[path_len] = '\0';
-    if (!starts_with(path, TERMUX_SOCKET_DIR_PREFIX)) return 0;
+    if (!socket_path_maybe_virtual(path)) return 0;
     m = map_termux_socket_path(path, mapped, sizeof(mapped));
     if (m <= 0) {
         if (m < 0) publish_syscall_errno(-SHELLY_ENAMETOOLONG);
@@ -2034,7 +2117,8 @@ static char *realpath_virtual(const char *path, char *resolved, realpath_fn_t fn
             /* Resolved outside the socket dir (a symlink pointing away). */
             return realpath_result(canon, resolved);
         }
-        vlen = termux_socket_virtual_dir(virt, sizeof(virt));
+        vlen = codex_daemon_virtual_match(path) ? codex_daemon_virtual_dir(virt, sizeof(virt))
+                                                : termux_socket_virtual_dir(virt, sizeof(virt));
         if (vlen <= 0) {
             publish_syscall_errno(-SHELLY_ENAMETOOLONG);
             return NULL;
@@ -2048,6 +2132,8 @@ static char *realpath_virtual(const char *path, char *resolved, realpath_fn_t fn
     }
 }
 
+static int self_is_codex(void);
+
 char *realpath(const char *path, char *resolved) {
     realpath_fn_t fn = (realpath_fn_t)real_sym(&g_real_realpath_fn, "realpath");
     if (path && streq(path, TERMUX_SOCKET_ROOT)) {
@@ -2055,7 +2141,11 @@ char *realpath(const char *path, char *resolved) {
          * Codex keeps building virtual paths under it. */
         return realpath_result(path, resolved);
     }
-    if (path && termux_socket_virtual_match(path)) return realpath_virtual(path, resolved, fn);
+    if (path && streq(path, CODEX_DAEMON_TMP_ROOT) && self_is_codex()) {
+        /* fs::canonicalize("/tmp") before the codex-daemon-<euid> join. */
+        return realpath_result(path, resolved);
+    }
+    if (path && socket_virtual_match(path)) return realpath_virtual(path, resolved, fn);
     if (!fn) {
         publish_syscall_errno(-SHELLY_ENOSYS);
         return NULL;
@@ -2188,7 +2278,7 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
 int symlink(const char *target, const char *linkpath) {
     char target_buf[SOCKET_MAP_BUF_SIZE];
     char link_buf[SOCKET_MAP_BUF_SIZE];
-    const char *t = socket_root_path_arg(target, target_buf, sizeof(target_buf));
+    const char *t = socket_link_target_arg(target, target_buf, sizeof(target_buf));
     const char *l = socket_root_path_arg(linkpath, link_buf, sizeof(link_buf));
     path_path_fn_t fn = (path_path_fn_t)real_sym(&g_real_symlink_fn, "symlink");
     if ((target && !t) || (linkpath && !l)) return -1;
@@ -2199,7 +2289,7 @@ int symlink(const char *target, const char *linkpath) {
 int symlinkat(const char *target, int dirfd, const char *linkpath) {
     char target_buf[SOCKET_MAP_BUF_SIZE];
     char link_buf[SOCKET_MAP_BUF_SIZE];
-    const char *t = socket_root_path_arg(target, target_buf, sizeof(target_buf));
+    const char *t = socket_link_target_arg(target, target_buf, sizeof(target_buf));
     const char *l = socket_root_path_arg(linkpath, link_buf, sizeof(link_buf));
     path_dirfd_path_fn_t fn = (path_dirfd_path_fn_t)real_sym(&g_real_symlinkat_fn, "symlinkat");
     if ((target && !t) || (linkpath && !l)) return -1;

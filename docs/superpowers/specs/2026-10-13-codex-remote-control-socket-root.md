@@ -63,6 +63,10 @@ and requires a ChatGPT login (API-key auth is unsupported).
   make every later `codex` TUI silently join the remote-control host). `shelly codex code` repeats
   the pairing step from another tab.
 
+## Update 2026-11-07: upstream Codex (official Termux 0.167.0)
+
+Upstream has no Android case: the root is `fs::canonicalize("/tmp")` plus `codex-daemon-<euid>`, and the control socket is `$CODEX_HOME/app-server-control/app-server-control.sock`. `libexec_wrapper.so` v227 maps exactly that directory onto the same `<app data dir>/cdx`, next to the fork root. A `/tmp` symlink target is stored as `<real dir>/./<name>` so `readlink()` can report the root it came from. The foreground host falls back to `$TMPDIR/.tmpXXXXXX/rc.sock` because `tempdir_in("/tmp")` fails. `shelly codex pair` (bashrc v287) accepts both directory names and links both control paths for the length of the pair call. On-device status: DEFERRED.md.
+
 ## Proposed upstream change (codex-termux, then optionally openai/codex)
 
 Title: `uds: let non-Termux Android hosts choose the shared socket directory (CODEX_ANDROID_SOCKET_DIR)`

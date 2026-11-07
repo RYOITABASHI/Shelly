@@ -32,7 +32,8 @@ const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
 /** Extract a `static <ret> <name>(…) { … }` body by brace matching. */
 function functionBody(name: string): string {
-  const decl = new RegExp(`static\\s+[\\w *]+?\\b${name}\\s*\\(`).exec(src);
+  // The definition, not a forward declaration.
+  const decl = new RegExp(`static\\s+[\\w *]+?\\b${name}\\s*\\([^;{]*\\)\\s*\\{`).exec(src);
   if (!decl) throw new Error(`function ${name} not found in exec-wrapper.c`);
   const open = src.indexOf('{', src.indexOf(')', decl.index));
   let depth = 0;
@@ -429,6 +430,85 @@ describe('v223: explicit "launch without wrapper" opt-outs stay intact', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v227 — upstream socket root /tmp/codex-daemon-<euid> (official Termux Codex)
+// ---------------------------------------------------------------------------
+describe('v227: /tmp/codex-daemon-<euid> goes to the same real directory', () => {
+  it('keeps the marker CI checks for, in the source and in the workflow', () => {
+    const marker = 'shelly-exec-wrapper:v227:codex-daemon-socket-root-redirect';
+    expect(src).toContain(`"${marker}"`);
+    const workflow = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/build-android.yml'), 'utf8');
+    expect(workflow).toContain(`check_marker /tmp/libexec_wrapper.so '${marker}'`);
+    expect(workflow).toContain('v224:termux-socket-root-redirect');
+  });
+
+  it('matches only the per-euid directory, on a path-component boundary', () => {
+    expect(src).toMatch(/#define CODEX_DAEMON_TMP_ROOT "\/tmp"/);
+    expect(src).toMatch(/#define CODEX_DAEMON_DIR_PREFIX CODEX_DAEMON_TMP_ROOT "\/codex-daemon-"/);
+    expect(functionBody('codex_daemon_virtual_dir')).toMatch(/raw_syscall1\(__NR_geteuid, 0\)/);
+    const match = functionBody('codex_daemon_virtual_match');
+    expect(match).toMatch(/if \(n <= 0 \|\| !starts_with\(path, vdir\)\) return 0;/);
+    expect(match).toMatch(/if \(path\[n\] != '\\0' && path\[n\] != '\/'\) return 0;/);
+  });
+
+  it('is the only thing under /tmp the wrapper maps', () => {
+    // The define, the euid directory, its match, and the cheap precheck (comments may add more).
+    expect([...src.matchAll(/\bCODEX_DAEMON_DIR_PREFIX\b/g)].length).toBeGreaterThanOrEqual(4);
+    expect(code).not.toMatch(/"\/tmp\/(?!codex-daemon-)/);
+  });
+
+  it('keeps the fork root working next to it', () => {
+    expect(functionBody('socket_virtual_match')).toMatch(/termux_socket_virtual_match\(path\);[\s\S]*codex_daemon_virtual_match\(path\)/);
+    const precheck = functionBody('socket_path_maybe_virtual');
+    expect(precheck).toContain('TERMUX_SOCKET_DIR_PREFIX');
+    expect(precheck).toContain('CODEX_DAEMON_DIR_PREFIX');
+  });
+
+  it('every path mapping goes through the shared check, so every hook covers both roots', () => {
+    expect(functionBody('map_termux_socket_path')).toMatch(/size_t vlen = socket_virtual_match\(path\);/);
+    expect(functionBody('socket_root_path_arg')).toMatch(/if \(!socket_path_maybe_virtual\(path\)\) return path;/);
+    expect(functionBody('map_unix_sockaddr')).toMatch(/if \(!socket_path_maybe_virtual\(path\)\) return 0;/);
+    expect(code.split('!starts_with(path, TERMUX_SOCKET_DIR_PREFIX)').length - 1).toBe(1); // only termux_socket_virtual_match
+  });
+
+  it('stores a /tmp link target with the mark, and readlink reports the root it came from', () => {
+    expect(src).toMatch(/#define CODEX_DAEMON_LINK_MARK "\/\."/);
+    const target = functionBody('socket_link_target_arg');
+    expect(target).toMatch(/codex_daemon_virtual_match\(target\)/);
+    expect(target).toMatch(/if \(!vlen\) return socket_root_path_arg\(target, buf, buf_size\);/);
+    expect(target).toMatch(/append_str\(buf, buf_size, &pos, CODEX_DAEMON_LINK_MARK\)/);
+    const unmap = functionBody('unmap_termux_socket_link');
+    expect(unmap).toMatch(/daemon \? codex_daemon_virtual_dir\(virt, sizeof\(virt\)\)\s*: termux_socket_virtual_dir\(virt, sizeof\(virt\)\)/);
+    expect(unmap).toMatch(/for \(i = rlen \+ \(daemon \? 2 : 0\); i < len; i\+\+\)/);
+    for (const fn of ['symlink', 'symlinkat']) {
+      expect(code).toMatch(new RegExp(`int ${fn}\\([^)]*\\) \\{[\\s\\S]*?socket_link_target_arg\\(target, target_buf, sizeof\\(target_buf\\)\\)`));
+    }
+    // The link's own path is a normal mapping.
+    expect(code).toMatch(/const char \*l = socket_root_path_arg\(linkpath, link_buf, sizeof\(link_buf\)\);/);
+  });
+
+  it('realpath: bare /tmp only for Codex; virtual paths come back in their own root', () => {
+    expect(code).toMatch(/if \(path && streq\(path, CODEX_DAEMON_TMP_ROOT\) && self_is_codex\(\)\) \{\s*return realpath_result\(path, resolved\);/);
+    expect(functionBody('realpath_virtual')).toMatch(/codex_daemon_virtual_match\(path\) \? codex_daemon_virtual_dir\(virt, sizeof\(virt\)\)\s*: termux_socket_virtual_dir\(virt, sizeof\(virt\)\)/);
+  });
+
+  it('the socket path fits sun_path for both forms', () => {
+    const real = '/data/user/0/dev.shelly.terminal/cdx';
+    const hash = 'f'.repeat(64);
+    expect(`${real}/${hash}`.length).toBeLessThan(108);
+    expect(`/tmp/codex-daemon-4294967295/${hash}`.length).toBeLessThan(108);
+    // The "/./" form is only ever a symlink target, never a sun_path.
+    expect(functionBody('map_unix_sockaddr')).not.toContain('CODEX_DAEMON_LINK_MARK');
+  });
+
+  it('adds no new libc call the CI PLT audit would reject', () => {
+    for (const fn of ['codex_daemon_virtual_dir', 'codex_daemon_virtual_match', 'socket_virtual_match', 'socket_path_maybe_virtual', 'socket_link_target_arg']) {
+      const calls = [...functionBody(fn).matchAll(/\b([a-z_0-9]+)\(/g)].map((m) => m[1]);
+      for (const c of calls) expect(['if', 'return', 'sizeof', 'raw_syscall1', 'append_str', 'append_uint', 'starts_with', 'codex_daemon_virtual_dir', 'codex_daemon_virtual_match', 'termux_socket_virtual_match', 'socket_root_path_arg', 'shelly_socket_real_dir', 'publish_syscall_errno']).toContain(c);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // v224 — Termux socket-root redirect (codex remote-control)
 // ---------------------------------------------------------------------------
 describe('v224: /data/data/com.termux socket root is redirected into the app data dir', () => {
@@ -464,10 +544,10 @@ describe('v224: /data/data/com.termux socket root is redirected into the app dat
 
   it('maps symlink targets (kernel-resolved rendezvous) and unmaps readlink results', () => {
     expect(code).toMatch(
-      /int symlink\(const char \*target, const char \*linkpath\) \{[\s\S]*?socket_root_path_arg\(target,[\s\S]*?socket_root_path_arg\(linkpath,/,
+      /int symlink\(const char \*target, const char \*linkpath\) \{[\s\S]*?socket_link_target_arg\(target,[\s\S]*?socket_root_path_arg\(linkpath,/,
     );
     expect(code).toMatch(
-      /int symlinkat\(const char \*target, int dirfd, const char \*linkpath\) \{[\s\S]*?socket_root_path_arg\(target,/,
+      /int symlinkat\(const char \*target, int dirfd, const char \*linkpath\) \{[\s\S]*?socket_link_target_arg\(target,/,
     );
     for (const fn of ['readlink', 'readlinkat']) {
       expect(code).toMatch(
@@ -482,7 +562,7 @@ describe('v224: /data/data/com.termux socket root is redirected into the app dat
 
   it('realpath(): bare root answered as-is, virtual paths resolved for real, the rest to libc', () => {
     expect(code).toMatch(
-      /char \*realpath\(const char \*path, char \*resolved\) \{[\s\S]*?if \(path && streq\(path, TERMUX_SOCKET_ROOT\)\) \{[\s\S]*?return realpath_result\(path, resolved\);[\s\S]*?if \(path && termux_socket_virtual_match\(path\)\) return realpath_virtual\(path, resolved, fn\);[\s\S]*?return fn\(path, resolved\);/,
+      /char \*realpath\(const char \*path, char \*resolved\) \{[\s\S]*?if \(path && streq\(path, TERMUX_SOCKET_ROOT\)\) \{[\s\S]*?return realpath_result\(path, resolved\);[\s\S]*?if \(path && socket_virtual_match\(path\)\) return realpath_virtual\(path, resolved, fn\);[\s\S]*?return fn\(path, resolved\);/,
     );
     const virt = functionBody('realpath_virtual');
     expect(virt).toMatch(/if \(!fn\(mapped, canon\)\) return NULL;/);

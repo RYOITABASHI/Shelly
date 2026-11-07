@@ -1522,7 +1522,17 @@ patchCodex(libDir);
     //      and started the NEW codex-code-mode-host after an update switched it
     //      (the host speaks a version-pinned protocol). The crash quarantine
     //      accepts the versioned path: .healthy lives in that same directory.
-    private const val BASHRC_VERSION = 286
+    // v287: `shelly codex pair` with upstream Codex (official Termux 0.167.0).
+    //      `codex remote-control pair` now looks in $CODEX_HOME/app-server-control
+    //      (the fork used app-server-control-termux). The link goes to both for
+    //      the length of that call, so neither binary needs detecting; a real
+    //      daemon's entry at either path is left alone. The host's socket dir
+    //      also changed: upstream tries tempdir_in("/tmp") with the codex-rc-
+    //      prefix, gets EACCES on Android and falls back to tempfile::tempdir(),
+    //      which is $TMPDIR/.tmpXXXXXX/rc.sock. Scan, ownership check and the
+    //      cleanup of the private background dir accept both names. Needs
+    //      libexec_wrapper.so v227 for /tmp/codex-daemon-<euid>.
+    private const val BASHRC_VERSION = 287
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4397,9 +4407,11 @@ patchCodex(libDir);
             // official `codex remote-control --no-daemon` foreground host
             // through codex() (same runtime selection / env as the TUI); a
             // background helper waits for the host's private rendezvous
-            // socket ($TMPDIR/codex-rc-*/rc.sock), links it where
+            // socket ($TMPDIR/codex-rc-*/rc.sock, or $TMPDIR/.tmp*/rc.sock from
+            // upstream, see v287), links it where
             // `codex remote-control pair` looks for a daemon
-            // ($CODEX_HOME/app-server-control-termux/app-server-control.sock)
+            // ($CODEX_HOME/app-server-control-termux/app-server-control.sock,
+            // or app-server-control/ from upstream)
             // only for the duration of that call, and prints the manual pairing
             // code. The link is never left in place: a bare `codex` TUI
             // auto-attaches to a connectable socket at that path, and it must
@@ -4890,7 +4902,7 @@ patchCodex(libDir);
             sb.appendLine("  local __t")
             sb.appendLine("  [ -L \"\$1\" ] || return 1")
             sb.appendLine("  __t=\"\$(readlink \"\$1\" 2>/dev/null)\" || return 1")
-            sb.appendLine("  case \"\$__t\" in \"\$2\"/codex-rc-*/rc.sock|\"\$2\"/shelly-codex-bg/codex-rc-*/rc.sock) return 0 ;; esac")
+            sb.appendLine("  case \"\$__t\" in \"\$2\"/codex-rc-*/rc.sock|\"\$2\"/shelly-codex-bg/codex-rc-*/rc.sock|\"\$2\"/.tmp*/rc.sock|\"\$2\"/shelly-codex-bg/.tmp*/rc.sock) return 0 ;; esac")
             sb.appendLine("  return 1")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_show_code() {")
@@ -4935,43 +4947,54 @@ patchCodex(libDir);
             sb.appendLine("  printf '%s\\n' \"\$__out\" >&2")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
+            sb.appendLine("__shelly_codex_remote_upstream_link() {")
+            sb.appendLine("  local __d=\"\${1%/*}\"")
+            sb.appendLine("  printf '%s/%s' \"\${__d%-termux}\" \"\${1##*/}\"")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_codex_remote_unlink() {")
+            sb.appendLine("  local __l")
+            sb.appendLine("  for __l in \"\$1\" \"\$(__shelly_codex_remote_upstream_link \"\$1\")\"; do")
+            sb.appendLine("    __shelly_codex_remote_link_is_ours \"\$__l\" \"\$2\" && rm -f \"\$__l\"")
+            sb.appendLine("  done")
+            sb.appendLine("  return 0")
+            sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_pair_via() {")
-            sb.appendLine("  local __sock=\"\$1\" __link=\"\$2\" __tmp=\"\$3\" __tries=\"\${4:-1}\" __rc")
-            sb.appendLine("  if [ -L \"\$__link\" ] && __shelly_codex_remote_link_is_ours \"\$__link\" \"\$__tmp\"; then")
-            sb.appendLine("    rm -f \"\$__link\"")
-            sb.appendLine("  fi")
-            sb.appendLine("  if [ -e \"\$__link\" ] || [ -L \"\$__link\" ]; then")
-            sb.appendLine("    __shelly_codex_remote_pair_code \"\$__tries\"")
-            sb.appendLine("    return \$?")
-            sb.appendLine("  fi")
-            sb.appendLine("  mkdir -p \"\${__link%/*}\" 2>/dev/null && chmod 700 \"\${__link%/*}\" 2>/dev/null")
-            sb.appendLine("  if ! ln -s \"\$__sock\" \"\$__link\" 2>/dev/null; then")
-            sb.appendLine("    echo \"[shelly] Could not link the host socket at \$__link.\" >&2")
-            sb.appendLine("    return 1")
-            sb.appendLine("  fi")
+            sb.appendLine("  local __sock=\"\$1\" __link=\"\$2\" __tmp=\"\$3\" __tries=\"\${4:-1}\" __rc __l")
+            sb.appendLine("  __shelly_codex_remote_unlink \"\$__link\" \"\$__tmp\"")
+            sb.appendLine("  for __l in \"\$__link\" \"\$(__shelly_codex_remote_upstream_link \"\$__link\")\"; do")
+            sb.appendLine("    [ -e \"\$__l\" ] || [ -L \"\$__l\" ] && continue")
+            sb.appendLine("    mkdir -p \"\${__l%/*}\" 2>/dev/null && chmod 700 \"\${__l%/*}\" 2>/dev/null")
+            sb.appendLine("    if ! ln -s \"\$__sock\" \"\$__l\" 2>/dev/null; then")
+            sb.appendLine("      echo \"[shelly] Could not link the host socket at \$__l.\" >&2")
+            sb.appendLine("      __shelly_codex_remote_unlink \"\$__link\" \"\$__tmp\"")
+            sb.appendLine("      return 1")
+            sb.appendLine("    fi")
+            sb.appendLine("  done")
             sb.appendLine("  __shelly_codex_remote_pair_code \"\$__tries\"")
             sb.appendLine("  __rc=\$?")
-            sb.appendLine("  __shelly_codex_remote_link_is_ours \"\$__link\" \"\$__tmp\" && rm -f \"\$__link\"")
+            sb.appendLine("  __shelly_codex_remote_unlink \"\$__link\" \"\$__tmp\"")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_code() {")
-            sb.appendLine("  local __link=\"\$1\" __tmp=\"\$2\" __sock __found=0")
-            sb.appendLine("  for __sock in \"\$__tmp\"/codex-rc-*/rc.sock \"\$__tmp\"/shelly-codex-bg/codex-rc-*/rc.sock; do")
+            sb.appendLine("  local __link=\"\$1\" __tmp=\"\$2\" __sock __found=0 __l")
+            sb.appendLine("  for __sock in \"\$__tmp\"/codex-rc-*/rc.sock \"\$__tmp\"/.tmp*/rc.sock \"\$__tmp\"/shelly-codex-bg/codex-rc-*/rc.sock \"\$__tmp\"/shelly-codex-bg/.tmp*/rc.sock; do")
             sb.appendLine("    [ -e \"\$__sock\" ] || continue")
             sb.appendLine("    __found=1")
             sb.appendLine("    __shelly_codex_remote_pair_via \"\$__sock\" \"\$__link\" \"\$__tmp\" 1 2>/dev/null && return 0")
             sb.appendLine("  done")
-            sb.appendLine("  if [ -e \"\$__link\" ] && ! __shelly_codex_remote_link_is_ours \"\$__link\" \"\$__tmp\"; then")
-            sb.appendLine("    __shelly_codex_remote_pair_code 1 && return 0")
-            sb.appendLine("    __found=1")
-            sb.appendLine("  fi")
+            sb.appendLine("  for __l in \"\$__link\" \"\$(__shelly_codex_remote_upstream_link \"\$__link\")\"; do")
+            sb.appendLine("    if [ -e \"\$__l\" ] && ! __shelly_codex_remote_link_is_ours \"\$__l\" \"\$__tmp\"; then")
+            sb.appendLine("      __shelly_codex_remote_pair_code 1 && return 0")
+            sb.appendLine("      __found=1")
+            sb.appendLine("    fi")
+            sb.appendLine("  done")
             sb.appendLine("  [ \"\$__found\" = 1 ] && return 1")
             sb.appendLine("  return 2")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_pairer() {")
             sb.appendLine("  local __scan=\"\$1\" __link=\"\$2\" __sockf=\"\${3:-}\" __hostpid=\"\${4:-}\" __tmp=\"\${5:-\$1}\" __d __b __seen __sock='' __i=0")
             sb.appendLine("  while [ \"\$__i\" -lt 60 ]; do")
-            sb.appendLine("    for __d in \"\$__scan\"/codex-rc-*; do")
+            sb.appendLine("    for __d in \"\$__scan\"/codex-rc-* \"\$__scan\"/.tmp*; do")
             sb.appendLine("      [ -e \"\$__d/rc.sock\" ] || continue")
             sb.appendLine("      __seen=0")
             sb.appendLine("      for __b in \"\${__shelly_rc_before[@]}\"; do")
@@ -5058,7 +5081,7 @@ patchCodex(libDir);
             sb.appendLine("    __i=\$((__i + 1))")
             sb.appendLine("  done")
             sb.appendLine("  for __p in \$__pids; do kill -KILL \"\$__p\" 2>/dev/null; done")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* 2>/dev/null")
+            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
             sb.appendLine("  rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
             sb.appendLine("  echo \"[shelly] Stopped the background Codex remote-control host (pid \$__pid).\"")
             sb.appendLine("}")
@@ -5096,7 +5119,7 @@ patchCodex(libDir);
             sb.appendLine("  fi")
             sb.appendLine("  __name=\"\$(__shelly_codex_remote_host_name)\"")
             sb.appendLine("  rm -f \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* 2>/dev/null")
+            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
             sb.appendLine("  mkdir -p \"\$__bgtmp\" 2>/dev/null && chmod 700 \"\$__bgtmp\" 2>/dev/null")
             sb.appendLine("  printf '[shelly] autostart host starting as \"%s\"\\n' \"\$__name\" > \"\$__log\" 2>/dev/null")
             sb.appendLine("  printf '%s %s native\\n' \"\$\$\" \"\$(__shelly_codex_remote_proc_start \"\$\$\")\" > \"\$__state\"")
@@ -5107,7 +5130,7 @@ patchCodex(libDir);
             sb.appendLine("  if [ \"\$(__shelly_codex_remote_bg_pid \"\$__state\")\" = \"\$\$\" ]; then")
             sb.appendLine("    rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
             sb.appendLine("  fi")
-            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* 2>/dev/null")
+            sb.appendLine("  rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_autostart_cmd() {")
@@ -5237,7 +5260,7 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__tmp\" 2>/dev/null || true")
             sb.appendLine("  if [ \"\$__bg\" = 1 ]; then")
             sb.appendLine("    rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("    rm -rf \"\$__bgtmp\"/codex-rc-* 2>/dev/null")
+            sb.appendLine("    rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
             sb.appendLine("    mkdir -p \"\$__bgtmp\" 2>/dev/null && chmod 700 \"\$__bgtmp\" 2>/dev/null")
             sb.appendLine("    local -a __shelly_rc_before=()")
             sb.appendLine("    : > \"\$__log\" 2>/dev/null")
@@ -5254,7 +5277,7 @@ patchCodex(libDir);
             sb.appendLine("        echo '[shelly] The background host exited; last log lines:' >&2")
             sb.appendLine("        tail -n 20 \"\$__log\" >&2 2>/dev/null")
             sb.appendLine("        rm -f \"\$__state\" \"\$__state.sock\" 2>/dev/null")
-            sb.appendLine("        rm -rf \"\$__bgtmp\"/codex-rc-* 2>/dev/null")
+            sb.appendLine("        rm -rf \"\$__bgtmp\"/codex-rc-* \"\$__bgtmp\"/.tmp* 2>/dev/null")
             sb.appendLine("      fi")
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
@@ -5262,7 +5285,7 @@ patchCodex(libDir);
             sb.appendLine("    __shelly_codex_remote_autostart_mirror || __shelly_codex_remote_settings_hint")
             sb.appendLine("    return 0")
             sb.appendLine("  fi")
-            sb.appendLine("  local -a __shelly_rc_before=( \"\$__tmp\"/codex-rc-* )")
+            sb.appendLine("  local -a __shelly_rc_before=( \"\$__tmp\"/codex-rc-* \"\$__tmp\"/.tmp* )")
             sb.appendLine("  echo \"[shelly] Starting Codex remote control as \\\"\$__name\\\" (Experimental). Keep this tab open; Ctrl-C stops hosting.\"")
             sb.appendLine("  __shelly_codex_remote_pairer \"\$__tmp\" \"\$__link\" &")
             sb.appendLine("  local __pairer=\$!")
@@ -5270,7 +5293,7 @@ patchCodex(libDir);
             sb.appendLine("  SHELLY_CODEX_HOST_NAME=\"\$__name\" codex remote-control --no-daemon")
             sb.appendLine("  __rc=\$?")
             sb.appendLine("  kill \"\$__pairer\" 2>/dev/null || true")
-            sb.appendLine("  __shelly_codex_remote_link_is_ours \"\$__link\" \"\$__tmp\" && rm -f \"\$__link\"")
+            sb.appendLine("  __shelly_codex_remote_unlink \"\$__link\" \"\$__tmp\"")
             sb.appendLine("  return \"\$__rc\"")
             sb.appendLine("}")
             sb.appendLine("shelly-codex-smoke() {")

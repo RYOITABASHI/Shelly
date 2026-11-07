@@ -16,7 +16,7 @@
 
 ## History
 
-- 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。調査で「Codex のホスト型 Web 検索がゲートを通らない」を発見し P1 に追加。
+- 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。Codex の Web 検索は承認なしで通し監査行を残すことをオーナーが決定。T1 の結果を受けて exec-wrapper v227 と BASHRC_VERSION 287 で公式 Termux 版の remote control に対応（実機未検証）。
 - 2026-11-06: CC（feat/article-pipeline、未push）が記事の毎日下書き Inc 2〜5 を実装（ダイジェスト、キュー、残り 4 ストリーム、ドキュメント）。レビュー指摘を修正して executor v30（査読の偽合格、material の fail-open、投稿経路の executor 強制ほか）。Inc 1 の `.sh` ミラー変更は既存エージェントに影響するので撤回し、スクリプト版は 77 に戻した。実機未検証。確認項目は下記「記事の毎日下書き」エントリ。
 - 2026-11-02: CC（feat/agent-roles-wp3、未push）がエージェントロール Inc A の WP3（`lib/agent-role-router.ts` の決定的ルーティング、確認文の `[ロール · エンジン]` 表示・ワークスペース・最小レベル行・「ロールなしで」での取り消し、確定時のロール最小レベル書き込み）を実装。暗黙ルーティングはロール名／チーム語のときだけ（「実装＋ホームパス」トリガーは見送り）。残課題は下記「エージェントロール Inc A」エントリ。実機未検証。
 - 2026-10-31: CC（fix/rwa-draft-origin、未push）が build 2739 の実機発見「承認なしで実行 ON でも下書き保存の承認が人に回る」を修正（原因はネイティブの minted コピーに origin が無かったこと）。拒否理由のログ、run log 読み取りの潜在バグ、MONITOR の注記残り、詳細ポップアップの操作行を修正。Codex のトークン数は driver 変更が要るため P2 として記録。実機未検証。
@@ -121,8 +121,18 @@ U+200B〜U+200D と U+2060 は消さないので、タイトルに入ってい�
 ### Web 調査の後のロール間ハンドオフで `VERDICT: PASS` が捨てられ、レビューが早く終わらない — 未対応 (P2)
 `enforceSourcedIntermediate`（`scripts/shelly-plan-executor.js`、`lib/agent-manager.ts`）は引用のない行を落とすので、調査の後ろにある review ステップの 1 行目 `VERDICT:` が消える。`parseReviewVerdict` が null を返し、`shouldSkipHandoffStep` は修正ステップを飛ばさない。記事パイプライン（`orchestration.longform`）はこの処理を通らないので影響なし。ロールのループは残る。直すなら、handoff ステップの結果を `enforceSourcedIntermediate` の対象から外す。
 
-### Codex ワーカーのホスト型 Web 検索がゲートを通らない — 未対応・オーナー判断待ち (P1)
-2026-11-07 の item 許可リスト化で判明。driver は Codex を `sandbox: danger-full-access` で動かすので、Codex は `web_search` を live で有効にしている可能性が高い（rust-v0.163.0 の `resolve_web_search_mode_for_turn` からの推論で、実機では未確認）。検索は OpenAI 側で動き端末では何も実行しないが、モデルが作ったクエリは Shelly のゲートを通らずに外へ出る。`curl` なら `network-send` で止まる経路である。**Why not now**: 検索が実際に使われている可能性があり、止めるとワーカーの動作が変わるのでオーナーの判断が要る。今回は `webSearch` と `imageGeneration` を許可リストに残した（`scripts/shelly-agent-driver.js` の `CODEX_HARMLESS_ITEM_TYPES`）。止めるなら worker の config.toml に `web_search = "disabled"` を足し、`webSearch` を許可リストから外す。Claude ワーカーは WebFetch / WebSearch を禁止済みで、Codex だけ扱いが違う。
+### Codex ワーカーの Web 検索は承認なしで通す — オーナー決定 (P1)
+2026-11-07 オーナー決定。Web 検索に承認は要らないので、`webSearch` と `imageGeneration` は許可リストに残し、無効化もしない（`scripts/shelly-agent-driver.js` の `CODEX_HARMLESS_ITEM_TYPES`）。検索が完了するたびに監査行 `codex_web_search` を残す（短く切った redact 済みのクエリまたは URL、アクション種別、item id）。**残るリスク**: 信頼できない文章を読んだワーカーは検索クエリにデータを載せられる。その記録が監査行である。
+**軽減策（同日、`fix/cli-update-groundwork`、実機未検証）**: worker の config に `web_search = "indexed"`（`cached` は danger-full-access で live に変わる）。完了した検索の `action.queries` 全件・`action.query`・`action.url`・`action.pattern` を `codexWebSearchLeakCheck` が調べ、既知の値（auth.json のトークン、秘密名の env で 16 文字以上、URL エンコードと base64 も）か形式（`sk-`、`ghp_` など、`gsk_`、`AIza`、JWT、PEM 秘密鍵）に当たればターンを止めて失敗にする。監査と wire ログには検出器名だけを残す。Codex ワーカーの env から KEY / TOKEN / SECRET を含む名前を落とした（ツールコマンドが `GH_TOKEN` などに頼っていた場合は使えなくなる）。
+**それでも通るもの**: (1) 最初の送信。検査は完了後なので、そのクエリは既に外へ出ている。(2) 言い換え、要約、独自の符号化、値の一部だけ（途中で切ったトークンや、前後に文字を足して base64 にしたもの）。(3) クエリが空の `Other` アクション。(4) 実行中に更新されたトークンのうち JWT でないもの。
+**実機で確認すること**: 出荷中の fork v0.163.0-termux.3 が `indexed` を受け付けて従うか（タグのソースには同じ処理があるが、バイナリでは未確認。`driver_start` の `codexWebSearchMode` は設定値であり実効値ではない）、0.167.0 も同様か。
+
+### Codex リモートコントロール: 公式 Termux 版 0.167.0 対応 — 実装済み・実機未検証 (P1)
+T1（2026-11-07 実機）で Termux 公式 Codex 0.167.0 の version、login、API、MCP list は動いたが、`codex remote-control --no-daemon` と `codex app-server --listen unix://...` は EACCES。上流の `daemon_directory.rs` は Android でも `/tmp/codex-daemon-<euid>` を使い、Android の `/tmp` は `drwxrwx--x shell shell` でアプリは作れない。ブランチ `fix/cli-update-groundwork` で次を実装。
+- `libexec_wrapper.so` v227: `/tmp/codex-daemon-<euid>` とその配下だけを fork と同じ `<app data dir>/cdx` へ写す。fork のルートも残す。rendezvous symlink の中身は `<実dir>/./<name>` で保存し、`readlink` は `/./` の有無で元のルートへ戻す（クライアントはルートに触る前に比較するので、プロセスの状態では判定できない）。bare `/tmp` の `realpath` は Codex にだけそのまま返す。
+- BASHRC_VERSION 287: `shelly codex pair` は `app-server-control-termux` と `app-server-control` の両方へ、pair の間だけリンクする。ホストのソケットは `$TMPDIR/.tmpXXXXXX/rc.sock` になる（上流は `/tmp` が失敗すると `tempfile::tempdir()` に落ち、接頭辞 `codex-rc-` が付かない）ので走査と後始末も両方に対応。
+- 実機でしか確認できないこと: (1) `codex remote-control --no-daemon` が起動してソケットを開く。(2) `shelly codex pair` がコードを出し、ChatGPT アプリから接続できる。(3) 停止後に `~/../cdx` のソケット、`$CODEX_HOME/app-server-control*/` のリンクが残らない。(4) `codex app-server --listen unix://...` の起動と再起動（dangling な rendezvous の掃除）。(5) `--background` と「ChatGPT を接続したままにする」の再起動経路。(6) fork の APK 同梱版でも従来どおり動く。(7) 機能が Termux 版で閉じていないこと（fork の README は別パッケージの機能としている）。
+- 未対応と判断したもの: Termux 版が import する `access`、`linkat`、`rename`、`renameat`、`utimensat`、`lchown` はフックしていない。このソケット経路のソースでは仮想パスに使われていない。実機で ENOENT や EACCES が出たらここを疑う。
 
 ### Codex ワーカーの ChatGPT アプリ（MCP）ツール呼び出しがゲートを通るか未確認 — ブランチ `fix/codex-worker-mcp-gate` で無効化を実装・実機未検証 (P1)
 - **2026-11-04 実装（未 push・実機未検証）**: エージェントの Codex ワーカーでは MCP / アプリを一切読み込ませない（fail-closed、`scripts/shelly-agent-driver.js` ＋ asset ミラー）。対話の `codex` は不変。

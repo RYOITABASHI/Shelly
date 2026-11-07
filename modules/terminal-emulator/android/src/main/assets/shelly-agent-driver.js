@@ -572,13 +572,19 @@ function codexChildEnv(input) {
 // override CODEX_CA_CERTIFICATE is dropped by the prefix rule). Only the NAMES
 // of dropped vars are audited (driver_start.codexEnvDropped), never values.
 const CODEX_WORKER_ENV_ROUTING = /^(CODEX_|OPENAI_)/i;
+// Credentials in the environment reach every tool command the worker runs, and
+// from there a search query. Nothing the worker needs is named this way: Codex
+// signs in through auth.json, the launch recipe (SHELLY_*, LD_*, PYTHON*, SSL_*)
+// has no such name, and the gate gets its own env (gateSpawnSpec). So there is
+// no exception list. A tool command that needs GH_TOKEN and the like loses it.
+const CODEX_WORKER_ENV_SECRET = /KEY|TOKEN|SECRET/i;
 
 /** → {env, dropped: [names]}; CODEX_HOME is set only from `codexHome`. */
 function codexWorkerEnv(input, codexHome) {
   const env = { ...input };
   const dropped = [];
   for (const key of Object.keys(env)) {
-    if (CODEX_WORKER_ENV_ROUTING.test(key)) {
+    if (CODEX_WORKER_ENV_ROUTING.test(key) || CODEX_WORKER_ENV_SECRET.test(key)) {
       delete env[key];
       if (key !== 'CODEX_HOME') dropped.push(key);
     }
@@ -647,8 +653,10 @@ const CODEX_WORKER_DISABLED_FEATURES = [
 //   imageView             view_image read a local file with no gate
 //   anything else, or an item with no type.
 // Harmless = conversation records and markers, plus the two tools OpenAI hosts:
-//   webSearch             runs on OpenAI's side, nothing on the device, BUT the
-//                         query leaves with no Shelly gate (DEFERRED.md)
+//   webSearch             runs on OpenAI's side, nothing on the device. No
+//                         approval, owner decision (DEFERRED.md). Mode indexed;
+//                         every completed search leaves a codex_web_search audit
+//                         line, and one carrying a secret stops the run
 //   imageGeneration       same; the file lands in the per-run CODEX_HOME
 //   sleep                 display item of the interruptible clock.sleep tool
 //   enteredReviewMode / exitedReviewMode  markers (this driver never starts one)
@@ -665,6 +673,132 @@ const CODEX_HARMLESS_ITEM_TYPES = new Set([
   'enteredReviewMode',
   'exitedReviewMode',
 ]);
+
+// ─── Web search: allowed with no prompt, but not a way to send a secret ────
+// Mode: "cached" does not hold, because under danger-full-access upstream's
+// resolve_web_search_mode_for_turn turns it into live. "indexed" is honoured
+// (rust-v0.163.0, rust-v0.167.0 and the fork tag have the same code).
+const CODEX_WORKER_WEB_SEARCH_MODE = 'indexed';
+const CODEX_WEB_SEARCH_AUDIT_MAX = 120;
+const CODEX_LEAK_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD/i;
+const CODEX_LEAK_MIN_LENGTH = 16;
+
+// Shapes only: length or randomness alone never stops a run (git SHAs, UUIDs).
+// The sk- body must be mixed case with a digit, so sk-learn-style words pass.
+const CODEX_LEAK_FORMATS = [
+  ['sk_key', /\bsk-[A-Za-z0-9_-]{20,}/g, (m) => /[a-z]/.test(m) && /[A-Z]/.test(m) && /\d/.test(m)],
+  ['github_token', /\bgh[pousr]_[A-Za-z0-9]{36,}/g],
+  ['groq_key', /\bgsk_[A-Za-z0-9]{20,}/g],
+  ['google_key', /\bAIza[0-9A-Za-z_-]{35}/g],
+  ['jwt', /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
+  ['pem_private_key', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----\s*[A-Za-z0-9+/=]{16,}/g],
+];
+
+function codexLeakForms(value) {
+  const base64 = Buffer.from(value, 'utf8').toString('base64');
+  const unpadded = base64.replace(/=+$/, '');
+  return [...new Set([value, encodeURIComponent(value), base64, unpadded, unpadded.replace(/\+/g, '-').replace(/\//g, '_')])];
+}
+
+/**
+ * Known values, read once before Codex starts: the login tokens in the real
+ * auth.json and secret-named env entries of 16+ characters. Public keys and
+ * paths are named like secrets but are not. A token refreshed during the run is
+ * not here; the JWT format still catches the access token.
+ */
+function codexLeakSecrets(env, authJsonText) {
+  const secrets = [];
+  const add = (detector, value) => {
+    if (typeof value === 'string' && value.length >= CODEX_LEAK_MIN_LENGTH) {
+      secrets.push({ detector, forms: codexLeakForms(value) });
+    }
+  };
+  for (const [name, value] of Object.entries(env || {})) {
+    if (!CODEX_LEAK_SECRET_NAME.test(name) || /PUBLIC/i.test(name)) continue;
+    if (typeof value === 'string' && value.startsWith('/')) continue;
+    add('env_value', value);
+  }
+  try {
+    const auth = JSON.parse(authJsonText);
+    add('auth_token', auth && auth.OPENAI_API_KEY);
+    const tokens = auth && auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : {};
+    for (const [name, value] of Object.entries(tokens)) {
+      if (/token/i.test(name)) add('auth_token', value);
+    }
+  } catch {}
+  return secrets;
+}
+
+function codexLeakVariants(text) {
+  const spaced = text.replace(/\+/g, ' ');
+  try {
+    return [text, decodeURIComponent(text), decodeURIComponent(spaced)];
+  } catch {
+    return [text, spaced];
+  }
+}
+
+/** The detector name for the first hit, or null. Never returns the value. */
+function codexLeakDetect(text, secrets) {
+  if (typeof text !== 'string' || text === '') return null;
+  for (const variant of codexLeakVariants(text)) {
+    for (const secret of secrets || []) {
+      if (secret.forms.some((form) => variant.includes(form))) return secret.detector;
+    }
+    for (const [detector, pattern, accept] of CODEX_LEAK_FORMATS) {
+      for (const match of variant.matchAll(pattern)) {
+        if (!accept || accept(match[0])) return detector;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The fields of a completed search that left the device. Not item.query: after
+ * the first query it is cut with " ...", so a value there can be incomplete.
+ */
+function codexWebSearchActionTexts(item) {
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const queries = Array.isArray(action.queries) ? action.queries : [];
+  return [...queries, action.query, action.url, action.pattern].filter((value) => typeof value === 'string' && value !== '');
+}
+
+/** → null, or {detector, itemId}. */
+function codexWebSearchLeakCheck(item, secrets) {
+  for (const text of codexWebSearchActionTexts(item)) {
+    const detector = codexLeakDetect(text, secrets);
+    if (detector) {
+      return { detector, itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null };
+    }
+  }
+  return null;
+}
+
+/**
+ * The record of one webSearch item. Text is checked whole, then redacted, then
+ * cut; a value redact() would miss is withheld, not logged. Used on item/completed
+ * because the query is empty on item/started.
+ */
+function codexWebSearchAudit(item, secrets) {
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const text = [...codexWebSearchActionTexts(item), item && item.query]
+    .find((value) => typeof value === 'string' && value !== '');
+  const withheld = codexLeakDetect(text, secrets) || codexLeakDetect(item && item.query, secrets);
+  const entry = {
+    itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null,
+    action: typeof action.type === 'string' ? action.type.slice(0, 40) : null,
+    query: text && !withheld ? redact(text).slice(0, CODEX_WEB_SEARCH_AUDIT_MAX) : '',
+  };
+  return withheld ? { ...entry, withheld } : entry;
+}
+
+/** The wire log echoes every server line; a search carrying a secret is not echoed. */
+function codexWireLineForLog(line, secrets) {
+  if (!/webSearch|web_search/.test(line)) return line;
+  const detector = codexLeakDetect(line.replace(/\\n/g, '\n'), secrets);
+  return detector ? JSON.stringify({ withheld: detector }) : line;
+}
 
 /** 'gated' | 'harmless' | 'mcp' | 'blocked' (fails closed on a missing type). */
 function codexItemDisposition(item) {
@@ -953,6 +1087,7 @@ function codexWorkerConfigToml(carried = {}) {
     ...(carriedLines.length ? ['# Model settings carried over from the real config.toml (allowlist only).', ...carriedLines] : []),
     'check_for_update_on_startup = false',
     'cli_auth_credentials_store = "file"',
+    `web_search = "${CODEX_WORKER_WEB_SEARCH_MODE}"`,
     '',
     '[features]',
     ...CODEX_WORKER_DISABLED_FEATURES.map((feature) => `${feature} = false`),
@@ -2462,6 +2597,14 @@ async function runDriver(config) {
     removeCodexIsolatedHome(isolatedHome.dir);
   });
   config = { ...config, codexHome: isolatedHome.dir };
+  let authJsonText = '';
+  try {
+    authJsonText = readRegularFileCapped(path.join(isolatedHome.realHome, 'auth.json'), CODEX_AUTH_MAX_BYTES).toString('utf8');
+  } catch {
+    // No login file: the format detectors and env values still apply.
+  }
+  const leakSecrets = codexLeakSecrets(process.env, authJsonText);
+  authJsonText = '';
   const mcpPreflight = codexMcpPreflight(config);
   const codexSpawn = codexAppServerSpawnSpec(config, mcpPreflight.ok ? mcpPreflight.names : []);
   const gateSpawn = gateSpawnSpec(config);
@@ -2478,6 +2621,8 @@ async function runDriver(config) {
     codexHomeAgentsMd: isolatedHome.agentsMd,
     codexHomeSwept: isolatedHome.swept,
     codexEnvDropped: codexSpawn.droppedEnv,
+    codexWebSearchMode: CODEX_WORKER_WEB_SEARCH_MODE,
+    codexLeakKnownValues: leakSecrets.length,
     codexMcp: {
       ok: mcpPreflight.ok,
       disabledServers: mcpPreflight.names,
@@ -3143,6 +3288,24 @@ async function runDriver(config) {
 
     if (message.method === 'item/completed') {
       if (blockUngatedItem('completed', message.params)) return;
+      if (message.params.item.type === 'webSearch') {
+        const leak = codexWebSearchLeakCheck(message.params.item, leakSecrets);
+        if (leak) {
+          process.stdout.write(`CODEX_ERROR A web search carried a secret (${leak.detector}); stopped.\n`);
+          stopUngatedActivity('codex_web_search_leak_blocked', {
+            threadId: message.params.threadId,
+            turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
+            itemId: leak.itemId,
+            detector: leak.detector,
+          }, 'web search carried a known secret value or secret format');
+          return;
+        }
+        audit('codex_web_search', {
+          threadId: message.params.threadId,
+          turnId: message.params.turnId,
+          ...codexWebSearchAudit(message.params.item, leakSecrets),
+        });
+      }
       checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
       return;
@@ -3192,7 +3355,7 @@ async function runDriver(config) {
     buffer = lines.pop();
     for (const line of lines) {
       if (!line) continue;
-      rawLine('S->C', line);
+      rawLine('S->C', codexWireLineForLog(line, leakSecrets));
       let message;
       try {
         message = JSON.parse(line);
@@ -4113,6 +4276,10 @@ module.exports = {
   CODEX_GATED_ITEM_TYPES,
   CODEX_HARMLESS_ITEM_TYPES,
   codexItemDisposition,
+  codexWebSearchAudit,
+  codexWebSearchLeakCheck,
+  codexLeakSecrets,
+  codexWireLineForLog,
   runtimeCodexTuiPath,
   claudeInitToolCheck,
   codexMcpDisableArgs,
