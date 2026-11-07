@@ -303,6 +303,78 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "after-draft hook redirect write -> deny (policy-write)",
+    "command": "echo x > ~/.shelly/agents/after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook basename redirect after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && echo x > after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook tee -> deny (policy-write)",
+    "command": "tee -- /data/user/0/dev.shelly.terminal/files/home/.shelly/agents/after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook cp after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && cp /tmp/x after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook ln -> deny (policy-write)",
+    "command": "ln -s /tmp/x ~/.shelly/agents/after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook node -e -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && node -e \"require('fs').writeFileSync('after-draft-hook.js','')\"",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook curl -o -> deny (policy-write)",
+    "command": "curl -o ~/.shelly/agents/after-draft-hook.js http://127.0.0.1/x",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "after-draft hook bare name after an earlier cd -> deny (policy-write)",
+    "command": "tee after-draft-hook.js",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
     "name": "agent roles.json basename ./ redirect after cd -> deny (policy-write)",
     "command": "cd /data/user/0/dev.shelly.terminal/files/home/.shelly/agents; printf '{}' >> ./roles.json",
     "policy": {

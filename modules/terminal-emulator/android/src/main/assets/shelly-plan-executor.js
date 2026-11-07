@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=35
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=36
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -158,7 +158,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // into appended queue items and never carried, and it cannot fail the run. Other
 // plans run exactly as before. Bumped so a stale v34 copy, which refuses the step,
 // is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 35;
+// v36 (2026-11-07, after-draft hook): after a longform chain saved its draft, the
+// run ended and its queue item is ticked, run the user's own
+// ~/.shelly/agents/after-draft-hook.js if it exists. Without the file nothing
+// changes. Bumped so every copy on a device agrees with native.
+const EXECUTOR_SCRIPT_VERSION = 36;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -6647,6 +6651,145 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   return { status: 'success', preview };
 }
 
+// Optional extension point (v36). A longform run that saved its draft runs the
+// user's own script, if it exists, with the saved path as its only argument.
+// run() calls this after the run is recorded, so the hook has no say in the run:
+// every outcome is one audit line holding a status, and nothing here notifies or
+// throws. The gate refuses worker commands naming the file
+// (lib/agent-boundary-policy.ts), which is a string match, so the checks here do
+// not rely on it. The environment is a short allowlist, so NODE_OPTIONS and
+// friends (WORKER_ENV_DROP in the driver) and API keys do not reach the hook.
+const AFTER_DRAFT_HOOK_REL_PATH = '.shelly/agents/after-draft-hook.js';
+const AFTER_DRAFT_HOOK_TIMEOUT_MS = 120 * 1000;
+// Native ends a run at 30 minutes (DEFAULT_TIMEOUT_MS in AgentRuntime.kt) and
+// records that as a failure, so the hook never runs past this point of a run.
+const AFTER_DRAFT_HOOK_RUN_DEADLINE_MS = 28 * 60 * 1000;
+const AFTER_DRAFT_HOOK_HALT_POLL_MS = 500;
+const AFTER_DRAFT_HOOK_ENV = ['PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'OPENSSL_CONF', 'SHELLY_LIB_DIR', 'LD_LIBRARY_PATH'];
+let liveAfterDraftHook = null;
+
+// The time the hook may take, 0 or less when the run is too old for it. Test seam,
+// same rule as longformRetryWaitMs: read from the process environment only, and
+// it can only shorten the limit.
+function afterDraftHookTimeoutMs(startedAt, now) {
+  const raw = Number(process.env.SHELLY_TEST_AFTER_DRAFT_HOOK_TIMEOUT_MS);
+  const limit = Number.isFinite(raw) && raw >= 0 ? Math.min(raw, AFTER_DRAFT_HOOK_TIMEOUT_MS) : AFTER_DRAFT_HOOK_TIMEOUT_MS;
+  return Math.min(limit, startedAt + AFTER_DRAFT_HOOK_RUN_DEADLINE_MS - now);
+}
+
+// From lstat, so a symlink is not a file here. A second hard link would let a
+// write under another name change the hook. uid is null on a host with no POSIX
+// ownership, where the mode bits mean nothing either.
+function afterDraftHookUsable(st, uid) {
+  if (!st.isFile() || st.nlink !== 1) return false;
+  if (uid === null) return true;
+  return st.uid === uid && (st.mode & 0o022) === 0;
+}
+
+// The hook has its own process group, so what it started goes with it.
+function killAfterDraftHook() {
+  const child = liveAfterDraftHook;
+  if (!child) return false;
+  liveAfterDraftHook = null;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (_) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {}
+  }
+  return true;
+}
+
+function auditAfterDraftHook(paths, plan, status) {
+  try {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'after_draft_hook',
+      agentId: plan.agent.id,
+      status,
+    });
+  } catch (_) {}
+}
+
+function spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs) {
+  return new Promise((resolve) => {
+    const invocation = nodeInvocation(hook, [savedPath], paths, opts);
+    const base = childEnv(paths, opts);
+    const env = { HOME: paths.home };
+    for (const name of AFTER_DRAFT_HOOK_ENV) {
+      if (base[name]) env[name] = base[name];
+    }
+    let child;
+    try {
+      // stdio 'ignore': the output goes nowhere, so its size cannot matter.
+      child = spawn(invocation.file, invocation.args, { cwd: paths.home, env, stdio: 'ignore', detached: true });
+    } catch (_) {
+      resolve('spawn-error');
+      return;
+    }
+    liveAfterDraftHook = child;
+    let timer = null;
+    let halt = null;
+    const finish = (status) => {
+      clearTimeout(timer);
+      clearInterval(halt);
+      resolve(status);
+    };
+    timer = setTimeout(() => {
+      killAfterDraftHook();
+      finish('timeout');
+    }, timeoutMs);
+    halt = setInterval(() => {
+      if (!isHalted(paths)) return;
+      killAfterDraftHook();
+      finish('halted');
+    }, AFTER_DRAFT_HOOK_HALT_POLL_MS);
+    child.once('error', () => {
+      liveAfterDraftHook = null;
+      finish('spawn-error');
+    });
+    child.once('close', (code) => {
+      liveAfterDraftHook = null;
+      finish(code === 0 ? 'ok' : 'failed');
+    });
+  });
+}
+
+async function runAfterDraftHook(paths, opts, plan, savedPath, startedAt) {
+  try {
+    const hook = path.join(paths.home, AFTER_DRAFT_HOOK_REL_PATH);
+    let st;
+    try {
+      st = fs.lstatSync(hook);
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return;
+      auditAfterDraftHook(paths, plan, 'refused');
+      return;
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    // lstat sees only the last component: a linked folder must not lead elsewhere.
+    const inPlace = fs.realpathSync(path.dirname(hook)) === path.dirname(path.join(fs.realpathSync(paths.home), AFTER_DRAFT_HOOK_REL_PATH));
+    if (!inPlace || !afterDraftHookUsable(st, uid)) {
+      auditAfterDraftHook(paths, plan, 'refused');
+      return;
+    }
+    if (isHalted(paths)) {
+      auditAfterDraftHook(paths, plan, 'halted');
+      return;
+    }
+    const timeoutMs = afterDraftHookTimeoutMs(startedAt, Date.now());
+    if (timeoutMs <= 0) {
+      auditAfterDraftHook(paths, plan, 'too-late');
+      return;
+    }
+    auditAfterDraftHook(paths, plan, await spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs));
+  } catch (_) {
+    auditAfterDraftHook(paths, plan, 'error');
+  }
+}
+
 // Multi-action fan-out (2026-07-23, mirrors lib/agent-executor.ts's
 // generateRunScript `useMultiActions` bash loop): plan.actions (>= 2 entries
 // — see AgentPlanSpecV1's own doc comment) is dispatched as N INDEPENDENT
@@ -8779,6 +8922,7 @@ async function run(args) {
   // not add a second (skipped) log or a halted run_end for a finished run.
   let runLogWritten = false;
   const onSigterm = () => {
+    if (killAfterDraftHook()) auditAfterDraftHook(paths, plan, 'halted');
     killLiveBrokerChildren();
     // v19: CLI drivers get TERM -> <=3s grace -> KILL (they stop their own
     // codex/claude child on TERM), and their temp files are removed.
@@ -8863,6 +9007,8 @@ async function run(args) {
   // generation having genuinely succeeded. `usedTool` is threaded into writeRunLog
   // explicitly below instead, for `toolUsed` reporting only.
   let usedTool;
+  // v36: set only when a longform chain ended in success with its draft on disk.
+  let afterDraftPath = '';
   try {
     let action;
     if (hasChain) {
@@ -8905,6 +9051,9 @@ async function run(args) {
       status: action.status,
       durationMs,
     });
+    if (hasChain && plan.steps.longform === true && action.status === 'success' && !action.halted && paths.savedOutput) {
+      afterDraftPath = paths.savedOutput.savedPath;
+    }
     return EXIT.OK;
   } catch (e) {
     const durationMs = Date.now() - startedAt;
@@ -8946,14 +9095,17 @@ async function run(args) {
     if (e instanceof PlanFailure && e.handled) return EXIT.OK;
     return e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL;
   } finally {
-    process.removeListener('SIGTERM', onSigterm);
-    process.removeListener('exit', onExitRemoveFanout);
     // 'halted' (STOP-ALL) is recorded as an ordinary skipped iteration.
     continuousRecord(activeContinuous, progressStatus === 'halted' ? 'skipped' : progressStatus, progress && progress.runId);
     activeContinuous = null;
     progressFinish(progress, progressStatus, progressRecords, progressReason);
     activeProgress = null;
     mirrorBrokerAudit(paths, plan);
+    // Last, with the run already recorded and finished for MONITOR. The lock and
+    // the SIGTERM handler stay until it ends, so STOP-ALL still finds this pid.
+    if (afterDraftPath) await runAfterDraftHook(paths, opts, plan, afterDraftPath, startedAt);
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('exit', onExitRemoveFanout);
     releaseLock(paths);
   }
 }
@@ -9631,6 +9783,8 @@ module.exports = {
   scanDraftFolders,
   renderDraftDigest,
   isDigestPlan,
+  afterDraftHookUsable,
+  afterDraftHookTimeoutMs,
   quietDraftNotification,
   modelResponseTruncated,
   stepToolCandidates,

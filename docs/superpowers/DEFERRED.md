@@ -105,6 +105,9 @@
 ### 記事パイプライン（longform チェーンと local ステップ）— 実機確認は一部のみ (P1)
 形式は `docs/article-pipeline-config.md`。`@agent 記事パイプライン <id>` の設定ファイル経路は実機未検証。
 
+### after-draft フック（executor v36）— 実機未検証 (P1)
+`~/.shelly/agents/after-draft-hook.js`。形式は `docs/article-pipeline-config.md`。Windows の Jest ではプロセスグループの kill・SIGTERM・パーミッションの経路が skip になるので、実機で確認する: (1) スケジュール実行で引数に保存先が渡る。(2) `chmod 666` と symlink が `refused` になる。(3) 終わらないフックが 120 秒で孫プロセスごと止まり、run は success のまま。(4) STOP ALL で止まる。ゲートは文字列照合なので、名前を組み立てるコマンドやワークスペース内 symlink 経由の書き込み（`tar xf` / `git clone` の件）は防げない。ファイルの内容は封印していない。Why not now: 封印には登録の手順が要り、今回の範囲を超える。
+
 ### `queue-refill` のエンジンが executor に固定 — 未対応 (P2)
 `scripts/shelly-plan-executor.js` の `QUEUE_REFILL_TOOL_TYPE` は `gemini-api` 固定で、設定の `engines` に従わない（Gemini のキーがなければ補充は失敗し、run は失敗にならない）。直すなら計画に engine を載せ、executor を版上げする。同じ箇所のコメントが消えた定数名を指しているので一緒に直す。
 

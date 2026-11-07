@@ -21,6 +21,8 @@ All notable changes to Shelly are documented here. Format loosely follows
   `~/.shelly/agents/article-pipelines.json`, with your own prompts, engines,
   schedule and folders. Shelly ships none. See
   [docs/article-pipeline-config.md](./docs/article-pipeline-config.md).
+- **After-draft hook.** If `~/.shelly/agents/after-draft-hook.js` exists, it runs
+  once after a long-form draft is saved, and it cannot affect the run.
 
 ### Changed
 
