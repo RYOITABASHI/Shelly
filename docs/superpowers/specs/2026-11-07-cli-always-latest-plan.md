@@ -32,7 +32,7 @@
 
 **[確認]**
 
-- `build-android.yml` の 480 行以降と `bump-codex-runtime.yml` は DioNanos/codex-termux のリリースに直接依存している。`.ci-versions/` は `0.163.0` / `v0.163.0-termux.3`。
+- `build-android.yml`（156 行付近の版の照合と 480 行以降）と `bump-codex-runtime.yml` は DioNanos/codex-termux のリリースに直接依存している。`.ci-versions/` は `0.163.0` / `v0.163.0-termux.3`。
 - `bump-codex-runtime.yml` は更新があると **APK ビルド全体** を起動し、その中で `codex-runtime-latest` を公開している。ランタイムだけの公開経路は無い。
 - 更新の実体は 2 か所に重複している。`BuildsModal.tsx` の `installCodexRuntime()`（シェル文字列）と `shelly-runtime-update.js` の `installFromEnvSync()`。
 - `shelly-runtime-update.js` は Codex 専用で、失敗版のクールダウンは現行コードに無い。CLAUDE.md の表にある「Claude/Codex を昇格」「failed-version cooldown」は過去の記述で、今は成り立たない。
@@ -92,8 +92,9 @@
 **fork との差 [確認]**:
 
 - fork 独自の `cdx-termux-` と `app-server-control-termux` が無い。Termux 版は `app-server-control` と、上流の `/tmp/codex-daemon-<euid>`（`codex-rs/uds/src/daemon_directory.rs`、HOME 等に依存しない固定）。
-- Android に `/tmp` は無い。exec-wrapper v224 の変換規則は `/data/data/com.termux/cdx-termux-` 向けなので一致しない。`shelly codex pair` が使う `$CODEX_HOME/app-server-control-termux` も変わる。
-- fork の README は `/remote-control` などを別パッケージ `@mmmbuto/codex-vl` の機能としている。公式パッケージで使えない可能性がある **[推論]**。exec-wrapper の `realpath` / ソケット系 interposer に `/tmp/codex-daemon-*` の変換を足せば通る見込みだが、機能自体が閉じている可能性も残る。§8 T1 で確認。
+- Android の `/tmp` はアプリから作成できない（T1 の Fold6 では `drwxrwx--x shell shell`。`/tmp` が無い端末もある）。exec-wrapper v224 の変換規則は `/data/data/com.termux/cdx-termux-` 向けなので一致しない。`shelly codex pair` が使う `$CODEX_HOME/app-server-control-termux` も変わる。
+- fork の README は `/remote-control` などを別パッケージ `@mmmbuto/codex-vl` の機能としている。公式パッケージで使えない可能性がある **[推論]**。`/tmp/codex-daemon-<euid>` の変換は exec-wrapper v227 で実装した（実機未検証、下記 T1 の結果を参照）。機能自体が閉じている可能性は残る。
+- 上流のフォアグラウンドホストは `tempdir_in("/tmp")`（接頭辞 `codex-rc-`）が失敗すると `tempfile::tempdir()` に落ちるので、Android のソケットは `$TMPDIR/.tmpXXXXXX/rc.sock` になる **[確認: rust-v0.167.0 のソース]**。
 
 **遅延 [確認]**: upstream の公開から Termux の `build.sh` bump コミットまで。
 
@@ -300,16 +301,18 @@ claude-install [--channel latest|stable]
 **Claude で必須**
 
 - `--tools`、`--disallowedTools`、`--setting-sources`、`--strict-mcp-config`、`--permission-prompt-tool`、`--input-format stream-json` が受理されること。未知のフラグなら Claude が usage エラーで終わるので fail closed。
-- `system/init` の `tools` が `CLAUDE_ALLOWED_TOOLS` と一致、`mcp_servers` が空、`apiKeySource` が想定どおり。
+- `system/init` の `tools` が `CLAUDE_GATED_TOOLS` に収まる（driver も実行時に確認する。deny リストの名前は有効ではないので許容。PC の 2.1.220 では deny された名前はそもそも一覧から消える）、`mcp_servers` が空、`apiKeySource` が想定どおり。
 - Bash、Read、Write、Edit の全部で `can_use_tool` が来ること。`control_response` の拒否が効くこと。
 - 許可外の `tool_use` で driver が止まること。
-- `permissions.ask` と `disableAllHooks` の動作。新しい組み込みツールの検出（`--tools` なしの init と `CLAUDE_DENIED_TOOLS` の比較。許可リストが主防御なので検出は通知のみ）。
+- `permissions.ask` と `disableAllHooks` の動作。新しい組み込みツールの検出（`--tools` なしの init と `CLAUDE_DENIED_TOOLS` の比較。許可リストが主防御なので検出は通知のみ）。 PC の 2.1.220 で `--tools` なしの init を見ると `CronDelete`、`CronList`、`DesignSync`、`PowerShell`、`PushNotification`、`ReportFindings`、`ScheduleWakeup`、`TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate` が `CLAUDE_DENIED_TOOLS` に無かった。
 
 **端末でも確認（CI と端末のずれ防止）**: Codex は `generate-json-schema` のハッシュが `schemaSha256` と一致すること。Claude は `--help` に上記フラグがあること。
 
-**driver の穴 2 つ（自動更新の前に修正）[確認]**
+**driver の穴 2 つ（自動更新の前に修正）[確認]** 2026-11-07 に `fix/cli-update-groundwork` で実装済み（実機未検証）。下の 1、2 は修正前の状態。
 
-1. Codex: driver が能動的に止めるのは `mcpToolCall` だけ。`commandExecution` と `fileChange` 以外の未知の item（新しい組み込みツールなど）は止めない。Claude 側の「許可外の tool_use で即停止」に相当するものが無い。→ 既知の item 型の許可リストにし、未知の型でターンを止める。
+実装で分かったこと: `commandExecution` と `fileChange` と MCP 以外にも既定で有効な未ゲートの item があった。`multi_agent`（`collabAgentToolCall`）と `view_image`（`imageView`）は既定で有効なので、許可リストから外すだけでは通常の実行が止まる。ワーカーでは機能も無効にした。`webSearch` と `imageGeneration` はオーナー決定で通す。検索は `indexed` モードで、監査行と秘密の検査がある（DEFERRED.md P1）。§6.2 の CI 契約に、`web_search = "indexed"` が実効値であることの確認を加える。
+
+1. Codex: driver が能動的に止めるのは MCP 関連（`mcpToolCall`、進捗、elicitation、startup）だけ。`commandExecution` と `fileChange` 以外の未知の item（新しい組み込みツールなど）は止めない。Claude 側の「許可外の tool_use で即停止」に相当するものが無い。→ 既知の item 型の許可リストにし、未知の型でターンを止める。
 2. Claude: `system/init` で見ているのは `apiKeySource` だけで、`tools` を確認していない。→ 許可リストと一致しなければ起動直後に止める。
 
 **プロトコルが変わったとき**: 契約テストが不合格 → `agent-current` は据え置き → TUI の `current` だけ進む → オーナーに通知 → driver を直し `DRIVER_CONTRACT` を上げて APK を出す。古い APK の端末は自分の契約番号の最後の合格版に留まる。Builds 画面に「エージェント用: 0.167.0（新しい版は Shelly の更新待ち）」と出す。**APK の更新が遅れても、エージェントは検証済みの版で動き続ける。**
@@ -338,7 +341,7 @@ Antigravity はワーカーではないので `agent-current` を持たない。
 ### 6.5 実行中の保護
 
 - **切り替えは symlink の rename のみ。** 上書きしない。開いている TUI は影響を受けない。
-- **起動時に実パスへ解決する。** `codex()`、driver の `runtimeCodexTuiPath()`、`shelly-claude-glibc()` で `current` を `readlink -f` してから起動。これをしないと §2 の host 不整合が起きる。
+- **起動時に実パスへ解決する。** `codex()`、`$HOME/bin/codex`、driver の `runtimeCodexTuiPath()` は 2026-11-07 に実装済み（`cd -P` / `realpath` でディレクトリだけ解決、BASHRC_VERSION 286、実機未検証）。`shelly-claude-glibc()` は `current` を持つ Inc 6 で同じことをする。解決後のパスでは `__shelly_codex_mark_tui_failed` の照合も versions/ を受ける必要がある。これをしないと §2 の host 不整合が起きる。
 - **Claude は実行中に自分のファイルを読み続ける**（公式文書に記載）。ファイルが読めなくなるとセッションが落ちるので、起動した版は消さない。
 - **削除の条件**: `leases/<pid>` が生きていない、かつ `/proc/*/maps` にそのパスが無い。同じ UID のプロセスは読める。
 - **エージェント**: driver がリースを取り、実行中は `agent-current` を動かさない。チェーンの途中で版が変わらないようにする（chain lock と per-agent 単一飛行は変更しない）。
@@ -370,9 +373,9 @@ Antigravity はワーカーではないので `agent-current` を持たない。
 
 | Inc | 内容 | APK | リスク | 完了条件 |
 |---|---|---|---|---|
-| 0 | 凍結の検知。upstream と `.ci-versions` の差が 3 日を超えたら Bump ジョブを失敗させる。CLAUDE.md の陳腐な記述を修正 | 不要 | 低 | fork のままなら赤くなる |
+| 0 | 凍結の検知。`.ci-versions` より新しい upstream の安定版のうち最も古いものの公開から 3 日を超えたら Bump ジョブを失敗させる（2026-11-07 実装済み、`scripts/check-codex-freeze.js`）。CLAUDE.md の陳腐な記述を修正 | 不要 | 低 | fork のままなら赤くなる |
 | 1 | 実機検証 §8 の T1〜T3 | 不要 | 低 | `shelly codex pair` の可否、agy の起動可否が判明 |
-| 2 | driver の 2 つの穴を閉じる。起動時の実パス解決。`DISABLE_UPDATES=1`、`AGY_CLI_DISABLE_AUTO_UPDATE=true` | 要 | 中 | 既存のエージェントテスト全通過、未知の item と tool で停止 |
+| 2 | driver の 2 つの穴を閉じる。起動時の実パス解決。（ここまで 2026-11-07 実装済み、実機未検証）残りは `DISABLE_UPDATES=1`、`AGY_CLI_DISABLE_AUTO_UPDATE=true` | 要 | 中 | 既存のエージェントテスト全通過、未知の item と tool で停止 |
 | 3 | CI を Termux へ切り替え（InRelease の GPG 検証）。`publish-cli-runtime.yml` を新設して APK と分離。bump は Termux の版を見る。cron は 6 時間ごと。Ed25519 署名。`exec-wrapper` と `shelly codex pair` の新パス対応 | 要（1 回） | **高**: 起動経路、TLS、remote control | 実機で TUI、`!` コマンド、Code Mode、エージェント実行、`codex login` 済みの再実行 |
 | 4 | CI の契約テストと `cli-compat.json`、`DRIVER_CONTRACT` | 要 | 中 | 0.167.0 が合格し、意図的に壊した偽サーバーで不合格になる |
 | 5 | 共通アップデータ（§6.1 の構成、`agent-current`、失敗記録、ロールバック、GC）。Codex を移行。`BuildsModal` の重複削除 | 要 | 中 | 実行中の切り替えと、壊れた版の自動ロールバックを実機で確認 |
@@ -455,6 +458,8 @@ ln -sfn "$(cat ~/spike/codex/prev-current)" ~/.shelly-runtime/codex/current
 
 合格: `--version` が通る、TLS で API に届く、`!` コマンドと承認が動く。`pair` の結果は §9 の判断材料。
 
+**T1 の結果（2026-11-07 実機、一部）**: Termux 公式 Codex 0.167.0 は Shelly の下で `--version`、ログイン、API、`mcp list` が動いた。`codex remote-control --no-daemon` と `codex app-server --listen unix://...` は EACCES で失敗。原因は上流 `daemon_directory.rs` の `fs::canonicalize("/tmp")` + `codex-daemon-<euid>` で、`/tmp` は `drwxrwx--x shell shell`。`$CODEX_HOME/app-server-control` は端末に作られた。対応は exec-wrapper v227 と BASHRC_VERSION 287（`fix/cli-update-groundwork`、実機未検証）。**再検証の項目は DEFERRED.md「Codex リモートコントロール: 公式 Termux 版 0.167.0 対応」**。TUI の `!` コマンド、Code Mode、エージェント実行はこの結果に含まれない。
+
 ### T2 公式 musl の失敗理由の確定（10 分）
 
 ```bash
@@ -531,7 +536,7 @@ mv "$R/claude" "$R/claude.moved"       # 版ディレクトリの切り替えを
 
 ## 9. オーナーが決めること
 
-1. **`shelly codex pair` が Termux 版で動かない場合**（T1 の結果次第）: (a) exec-wrapper で通るなら直す、(b) 通らなければ機能を諦めて移行する、(c) `@mmmbuto/codex-vl` を別に入れる（第三者 fork で再び同じ依存を抱える）、(d) (c) の代わりにソースビルドで patch を持つ。ChatGPT からのデモに影響するので最優先。推奨は (a)、無理なら一時的に (b)。
+1. **`shelly codex pair` が Termux 版で動かない場合**（exec-wrapper v227 の実機確認の結果次第）: (a) exec-wrapper で通るなら直す、(b) 通らなければ機能を諦めて移行する、(c) `@mmmbuto/codex-vl` を別に入れる（第三者 fork で再び同じ依存を抱える）、(d) (c) の代わりにソースビルドで patch を持つ。ChatGPT からのデモに影響するので最優先。推奨は (a)、無理なら一時的に (b)。
 2. **Claude の更新チャンネル**: `latest`（要望どおり、ほぼ毎日 340MB）か `stable`（約 1 週間遅れ、退行を飛ばす）か。推奨は `latest` で確認は毎日、ダウンロードは Wi-Fi のみ。
 3. **エージェントが最新より遅れるのを許すか**（§6.2）: 推奨は許す。ここを同じにすると安全の検証を飛ばすことになる。
 4. **自動更新の既定**: 既定 ON で Wi-Fi のみ、を推奨。Claude と agy は規約の点からインストールを明示操作にし、その時点で自動更新への同意を取るのが無難。

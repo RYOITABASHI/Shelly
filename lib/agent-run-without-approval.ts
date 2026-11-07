@@ -1243,10 +1243,12 @@ const SED_EXEC_OR_WRITE_ADDR_RE = /(?:^|[\s;{}!$,/0-9~+])[ewW](?:[\s;}]|$)/;
  *  (HomeInitializer .bashrc `export TMPDIR="$HOME/tmp"`, the driver's
  *  default, the Claude runner's `${TMPDIR:-$HOME/tmp}`), which is what
  *  `$TMPDIR` / `${TMPDIR}` resolve to. Inside them: no dot component, no
- *  Shelly / Codex runtime file (`shelly-*`, `codex-rc-*`), no glob directly
+ *  Shelly / Codex runtime file (`shelly-*`, `codex-rc-*`, and
+ *  `codex-daemon-*`, which exec-wrapper v227 maps onto the private <app>/cdx
+ *  socket directory, so it is not scratch at all), no glob directly
  *  under the scratch root and no write of the root itself. */
 const TEMP_ROOT_LITERAL = '/tmp';
-const TEMP_RUNTIME_ENTRY_RE = /^(?:shelly|codex-rc)/i;
+const TEMP_RUNTIME_ENTRY_RE = /^(?:shelly|codex-rc|codex-daemon)/i;
 /** Tools that may name a scratch root itself (`ls $TMPDIR`, `mkdir -p $TMPDIR`). */
 const TEMP_ROOT_OK_TOOLS = new Set([...HOME_ROOT_OK_TOOLS, 'mkdir']);
 

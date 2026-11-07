@@ -91,9 +91,12 @@ codex() {
   echo "codex $*" >> "$HOME/calls.log"
   if [ "$1 $2" = "remote-control --no-daemon" ]; then
     printf 'host-name=%s\\n' "$(printenv SHELLY_CODEX_HOST_NAME)" >> "$HOME/calls.log"
-    mkdir -p "$TMPDIR/codex-rc-new"
-    : > "$TMPDIR/codex-rc-new/rc.sock"
-    : > "$TMPDIR/codex-rc-new/alive"
+    # Upstream 0.167 on Android: tempdir_in("/tmp") fails, tempfile::tempdir() names it .tmpXXXXXX.
+    local rcdir="$TMPDIR/codex-rc-new"
+    [ "\${STUB_UPSTREAM:-0}" = 1 ] && rcdir="$TMPDIR/.tmpAbCdEf"
+    mkdir -p "$rcdir"
+    : > "$rcdir/rc.sock"
+    : > "$rcdir/alive"
     echo "This machine is available for remote control as test-host."
     local i=0
     while [ ! -f "$HOME/paired" ] && [ "$i" -lt 200 ]; do command sleep 0.05; i=$((i + 1)); done
@@ -106,6 +109,7 @@ codex() {
   fi
   if [ "$1 $2" = "remote-control pair" ]; then
     local link="\${CODEX_HOME:-$HOME/.codex}/app-server-control-termux/app-server-control.sock"
+    [ "\${STUB_UPSTREAM:-0}" = 1 ] && link="\${CODEX_HOME:-$HOME/.codex}/app-server-control/app-server-control.sock"
     local target
     target="$(readlink "$link" 2>/dev/null)"
     # A host "answers" only while its dir carries the alive marker.
@@ -259,6 +263,65 @@ maybe('shelly codex (bash)', () => {
     expect(linkLeft()).toBe(false);
   });
 
+  describe('upstream Codex (official Termux 0.167.0)', () => {
+    const controlLink = (dir: string) => path.join(home, '.codex', dir, 'app-server-control.sock');
+    const present = (p: string) => {
+      try {
+        fs.lstatSync(p);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    itPosix('pair finds the .tmp socket dir, links the new control path and leaves no link', () => {
+      const r = run('shelly codex pair', { STUB_UPSTREAM: '1' });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('Pairing code: ABCD-1234');
+      const target = fs.readFileSync(path.join(home, 'link-target'), 'utf8').trim();
+      expect(target.endsWith(`${path.basename(home)}/tmp/.tmpAbCdEf/rc.sock`)).toBe(true);
+      expect(present(controlLink('app-server-control'))).toBe(false);
+      expect(present(controlLink('app-server-control-termux'))).toBe(false);
+    });
+
+    itPosix('code reaches a running host in a .tmp dir', () => {
+      const dir = path.join(home, 'tmp', '.tmpLive01');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'rc.sock'), '');
+      fs.writeFileSync(path.join(dir, 'alive'), '');
+      const r = run('shelly codex code', { STUB_UPSTREAM: '1' });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('Pairing code: ABCD-1234');
+      expect(present(controlLink('app-server-control'))).toBe(false);
+    });
+
+    itPosix('a .tmp dir without rc.sock is not a host', () => {
+      fs.mkdirSync(path.join(home, 'tmp', '.tmpOther'), { recursive: true });
+      const r = run('shelly codex code', { STUB_UPSTREAM: '1' });
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('shelly codex pair');
+    });
+
+    itPosix('a dangling link of ours at the new path is cleared; the fork still pairs', () => {
+      fs.mkdirSync(path.dirname(controlLink('app-server-control')), { recursive: true });
+      fs.symlinkSync(`${posix(home)}/tmp/.tmpGone/rc.sock`, controlLink('app-server-control'));
+      const r = run('shelly codex pair');
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('Pairing code: ABCD-1234');
+      expect(present(controlLink('app-server-control'))).toBe(false);
+      expect(present(controlLink('app-server-control-termux'))).toBe(false);
+    });
+
+    itPosix('an entry that is not ours at the new path is left alone', () => {
+      fs.mkdirSync(path.dirname(controlLink('app-server-control')), { recursive: true });
+      fs.writeFileSync(controlLink('app-server-control'), 'a daemon socket');
+      const r = run('shelly codex pair');
+      expect(r.code).toBe(0);
+      expect(fs.readFileSync(controlLink('app-server-control'), 'utf8')).toBe('a daemon socket');
+      expect(present(controlLink('app-server-control-termux'))).toBe(false);
+    });
+  });
+
   itPosix('a dangling link left by a crashed host is removed before starting a new one', () => {
     const linkDir = path.join(home, '.codex', 'app-server-control-termux');
     fs.mkdirSync(linkDir, { recursive: true });
@@ -274,6 +337,47 @@ maybe('shelly codex (bash)', () => {
 // ---------------------------------------------------------------------------
 // v257: trust / host name / expiry / background host
 // ---------------------------------------------------------------------------
+describe('shelly codex v287 generator invariants', () => {
+  it('bumps BASHRC_VERSION to >= 288', () => {
+    expect(Number(ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/)![1])).toBeGreaterThanOrEqual(288);
+  });
+
+  it('cleans the private background dir of both socket dir names, through one guarded helper', () => {
+    expect(remoteFns).not.toContain('rm -rf "$__bgtmp"');
+    expect(remoteFns.split('__shelly_codex_remote_clean_bg "$__bgtmp"').length - 1).toBe(5);
+    expect(remoteFns).toContain('[ -d "$1" ] && [ ! -L "$1" ] || return 0');
+    const dir = path.dirname(ktPath);
+    const host = fs.readFileSync(path.join(dir, 'CodexRemoteHost.kt'), 'utf8');
+    const policy = fs.readFileSync(path.join(dir, 'CodexRemotePolicy.kt'), 'utf8');
+    expect(host).not.toContain('deleteRecursively');
+    expect(policy).not.toContain('deleteRecursively()');
+    expect(host).toContain('CodexRemotePolicy.removeHostSocketDirs(File(home, BG_TMP))');
+    expect(policy).toMatch(/it\.name\.startsWith\("codex-rc-"\) \|\| it\.name\.startsWith\("\.tmp"\)/);
+    expect(policy).toContain('!isSymlink(it) && it.isDirectory');
+    expect(policy).toContain('isSymlink(parent) || isSymlink(backgroundDir)');
+  });
+
+  itPosix('the bash cleanup removes socket dirs, and leaves a symlinked background dir alone', () => {
+    const fn = remoteFns.slice(remoteFns.indexOf('__shelly_codex_remote_clean_bg() {'));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
+    const real = path.join(home, 'bg');
+    fs.mkdirSync(path.join(real, '.tmpOne'), { recursive: true });
+    fs.mkdirSync(path.join(real, 'codex-rc-1'));
+    const elsewhere = path.join(home, 'elsewhere');
+    fs.mkdirSync(path.join(elsewhere, '.tmp'), { recursive: true });
+    const linked = path.join(home, 'bglink');
+    fs.symlinkSync(elsewhere, linked);
+    const r = spawnSync('bash', ['-c', `${body}\n__shelly_codex_remote_clean_bg "$1"; __shelly_codex_remote_clean_bg "$2"`, 'x', posix(real), posix(linked)], { encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    expect(fs.readdirSync(real)).toEqual([]);
+    expect(fs.existsSync(path.join(elsewhere, '.tmp'))).toBe(true);
+  });
+
+  it('never removes .tmp dirs from the shared temp dir', () => {
+    expect(remoteFns).not.toMatch(/rm -rf "\$__tmp"/);
+  });
+});
+
 describe('shelly codex v257 generator invariants', () => {
   it('bumps BASHRC_VERSION to >= 257', () => {
     const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);

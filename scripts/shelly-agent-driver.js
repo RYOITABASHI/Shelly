@@ -397,13 +397,25 @@ function androidLauncherContext() {
   return { libDir };
 }
 
+// Resolve `current` to its real versioned directory once, before anything else
+// reads it, and run from there. Codex finds codex-code-mode-host next to its own
+// path (SHELLY_CODEX_EXEC_PATH via the /proc/self/exe shim), and that host speaks
+// a version-pinned protocol: launched through the symlink, a running worker
+// would start the NEW host after an update switched `current`. Only the
+// directory is resolved, never the file, so the siblings stay beside codex_tui.
+// Same recipe as HomeInitializer.kt __shelly_codex_runtime_tui.
 function runtimeCodexTuiPath(home) {
   if (!home || process.env.SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME === '1') return '';
-  const current = path.join(home, '.shelly-runtime/codex/current');
-  const tuiPath = path.join(current, 'codex_tui');
+  let runtimeDir;
+  try {
+    runtimeDir = fs.realpathSync(path.join(home, '.shelly-runtime/codex/current'));
+  } catch {
+    return '';
+  }
+  const tuiPath = path.join(runtimeDir, 'codex_tui');
   if (
-    existingPath(path.join(current, '.healthy')) &&
-    existingPath(path.join(current, 'manifest.json')) &&
+    existingPath(path.join(runtimeDir, '.healthy')) &&
+    existingPath(path.join(runtimeDir, 'manifest.json')) &&
     existingPath(tuiPath)
   ) {
     return tuiPath;
@@ -560,13 +572,19 @@ function codexChildEnv(input) {
 // override CODEX_CA_CERTIFICATE is dropped by the prefix rule). Only the NAMES
 // of dropped vars are audited (driver_start.codexEnvDropped), never values.
 const CODEX_WORKER_ENV_ROUTING = /^(CODEX_|OPENAI_)/i;
+// Credentials in the environment reach every tool command the worker runs, and
+// from there a search query. Nothing the worker needs is named this way: Codex
+// signs in through auth.json, the launch recipe (SHELLY_*, LD_*, PYTHON*, SSL_*)
+// has no such name, and the gate gets its own env (gateSpawnSpec). So there is
+// no exception list. A tool command that needs GH_TOKEN and the like loses it.
+const CODEX_WORKER_ENV_SECRET = /KEY|TOKEN|SECRET/i;
 
 /** → {env, dropped: [names]}; CODEX_HOME is set only from `codexHome`. */
 function codexWorkerEnv(input, codexHome) {
   const env = { ...input };
   const dropped = [];
   for (const key of Object.keys(env)) {
-    if (CODEX_WORKER_ENV_ROUTING.test(key)) {
+    if (CODEX_WORKER_ENV_ROUTING.test(key) || CODEX_WORKER_ENV_SECRET.test(key)) {
       delete env[key];
       if (key !== 'CODEX_HOME') dropped.push(key);
     }
@@ -605,7 +623,227 @@ const CODEX_WORKER_DISABLED_FEATURES = [
   // the feature as `hooks`; older builds called it `codex_hooks`).
   'hooks',
   'codex_hooks',
+  // Default-on in 0.163 (codex-rs/features/src/lib.rs). Their items are not in
+  // CODEX_HARMLESS_ITEM_TYPES, so an enabled tool would only get the run
+  // stopped: sub-agents (collabAgentToolCall / subAgentActivity) and view_image
+  // (imageView reads a local file with no approval request). Turned off so the
+  // model is never offered them; the item check stays as the backstop.
+  'multi_agent',
+  'multi_agent_v2',
+  'view_image',
 ];
+
+// ─── Codex thread items: an allowlist, not a list of known-bad types ──────
+// The counterpart of Claude's tool_use check (layer 4 below). Only command and
+// file-change items carry an approval request this driver can gate, so any
+// other type that does something would run past the gate, and a new Codex
+// version can add one at any time. Checked against the ThreadItem enum in
+// codex-rs/app-server-protocol/src/protocol/v2/item.rs at rust-v0.163.0 (the
+// fork we ship, v0.163.0-termux.3, has the same 19 variants) and rust-v0.167.0
+// (same list).
+//
+// Gated: commandExecution, fileChange (approval requests, gateCommandActions).
+// Stopped by the MCP check: mcpToolCall.
+// Stopped here because they are in neither set below:
+//   hookPrompt            a hook ran (hooks are off for the worker)
+//   functionCallOutput    the result of a named tool; turn/start sends text only
+//   dynamicToolCall       client-defined tool; this driver registers none
+//   collabAgentToolCall   spawns / drives a sub-agent
+//   subAgentActivity      a sub-agent was started or used
+//   imageView             view_image read a local file with no gate
+//   anything else, or an item with no type.
+// Harmless = conversation records and markers, plus the two tools OpenAI hosts:
+//   webSearch             runs on OpenAI's side, nothing on the device. No
+//                         approval, owner decision (DEFERRED.md). Mode indexed;
+//                         every completed search leaves a codex_web_search audit
+//                         line, and one carrying a secret stops the run
+//   imageGeneration       same; the file lands in the per-run CODEX_HOME
+//   sleep                 display item of the interruptible clock.sleep tool
+//   enteredReviewMode / exitedReviewMode  markers (this driver never starts one)
+const CODEX_GATED_ITEM_TYPES = new Set(['commandExecution', 'fileChange']);
+const CODEX_HARMLESS_ITEM_TYPES = new Set([
+  'userMessage',
+  'agentMessage',
+  'plan',
+  'reasoning',
+  'contextCompaction',
+  'sleep',
+  'webSearch',
+  'imageGeneration',
+  'enteredReviewMode',
+  'exitedReviewMode',
+]);
+
+// ─── Web search: allowed with no prompt, but not a way to send a secret ────
+// Mode: "cached" does not hold, because under danger-full-access upstream's
+// resolve_web_search_mode_for_turn turns it into live. "indexed" is honoured
+// (rust-v0.163.0, rust-v0.167.0 and the fork tag have the same code).
+const CODEX_WORKER_WEB_SEARCH_MODE = 'indexed';
+const CODEX_WEB_SEARCH_AUDIT_MAX = 120;
+const CODEX_LEAK_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD/i;
+const CODEX_LEAK_MIN_LENGTH = 16;
+
+// A header.payload.signature run. Scanned by segment, not with one regex: a
+// failed match from every "eyJ" in a long line is quadratic (152 s on 300 KB of
+// worker output would stall the event loop that answers approvals).
+function hasJwtShape(text) {
+  for (const run of text.split(/[^A-Za-z0-9_.-]+/)) {
+    const parts = run.split('.');
+    for (let i = 0; i + 2 < parts.length; i += 1) {
+      if (parts[i + 1].length >= 11 && parts[i + 1].startsWith('eyJ') && parts[i + 2].length >= 8
+        && /(?:^|[^A-Za-z0-9_])eyJ[A-Za-z0-9_-]{8}/.test(parts[i])) return true;
+    }
+  }
+  return false;
+}
+
+// Shapes only: length or randomness alone never stops a run (git SHAs, UUIDs).
+// The sk- body must be mixed case with a digit, so sk-learn-style words pass.
+const CODEX_LEAK_FORMATS = [
+  ['sk_key', /\bsk-[A-Za-z0-9_-]{20,}/g, (m) => /[a-z]/.test(m) && /[A-Z]/.test(m) && /\d/.test(m)],
+  ['github_token', /\bgh[pousr]_[A-Za-z0-9]{36,}/g],
+  ['groq_key', /\bgsk_[A-Za-z0-9]{20,}/g],
+  ['google_key', /\bAIza[0-9A-Za-z_-]{35}/g],
+  ['jwt', hasJwtShape],
+  ['pem_private_key', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----\s*[A-Za-z0-9+/=]{16,}/g],
+];
+
+function codexLeakForms(value) {
+  const base64 = Buffer.from(value, 'utf8').toString('base64');
+  const unpadded = base64.replace(/=+$/, '');
+  return [...new Set([value, encodeURIComponent(value), base64, unpadded, unpadded.replace(/\+/g, '-').replace(/\//g, '_')])];
+}
+
+/**
+ * Known values, read once before Codex starts: the login tokens in the real
+ * auth.json and secret-named env entries of 16+ characters. Public keys and
+ * paths are named like secrets but are not. A token refreshed during the run is
+ * not here; the JWT format still catches the access token.
+ */
+function codexLeakSecrets(env, authJsonText) {
+  const secrets = [];
+  const add = (detector, value) => {
+    if (typeof value === 'string' && value.length >= CODEX_LEAK_MIN_LENGTH) {
+      secrets.push({ detector, forms: codexLeakForms(value) });
+    }
+  };
+  for (const [name, value] of Object.entries(env || {})) {
+    if (!CODEX_LEAK_SECRET_NAME.test(name) || /PUBLIC/i.test(name)) continue;
+    if (typeof value === 'string' && value.startsWith('/')) continue;
+    add('env_value', value);
+  }
+  try {
+    const auth = JSON.parse(authJsonText);
+    add('auth_token', auth && auth.OPENAI_API_KEY);
+    const tokens = auth && auth.tokens && typeof auth.tokens === 'object' ? auth.tokens : {};
+    for (const [name, value] of Object.entries(tokens)) {
+      if (/token/i.test(name)) add('auth_token', value);
+    }
+  } catch {}
+  return secrets;
+}
+
+function codexLeakVariants(text) {
+  const spaced = text.replace(/\+/g, ' ');
+  try {
+    return [text, decodeURIComponent(text), decodeURIComponent(spaced)];
+  } catch {
+    return [text, spaced];
+  }
+}
+
+/** The detector name for the first hit, or null. Never returns the value. */
+function codexLeakDetect(text, secrets) {
+  if (typeof text !== 'string' || text === '') return null;
+  for (const variant of codexLeakVariants(text)) {
+    for (const secret of secrets || []) {
+      if (secret.forms.some((form) => variant.includes(form))) return secret.detector;
+    }
+    for (const [detector, pattern, accept] of CODEX_LEAK_FORMATS) {
+      if (typeof pattern === 'function') {
+        if (pattern(variant)) return detector;
+        continue;
+      }
+      for (const match of variant.matchAll(pattern)) {
+        if (!accept || accept(match[0])) return detector;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The fields of a completed search that left the device. Not item.query: after
+ * the first query it is cut with " ...", so a value there can be incomplete.
+ */
+function codexWebSearchActionTexts(item) {
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const queries = Array.isArray(action.queries) ? action.queries : [];
+  return [...queries, action.query, action.url, action.pattern].filter((value) => typeof value === 'string' && value !== '');
+}
+
+/** → null, or {detector, itemId}. */
+function codexWebSearchLeakCheck(item, secrets) {
+  for (const text of codexWebSearchActionTexts(item)) {
+    const detector = codexLeakDetect(text, secrets);
+    if (detector) {
+      return { detector, itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null };
+    }
+  }
+  return null;
+}
+
+/**
+ * The record of one webSearch item. Text is checked whole, then redacted, then
+ * cut; a value redact() would miss is withheld, not logged. Used on item/completed
+ * because the query is empty on item/started.
+ */
+function codexWebSearchAudit(item, secrets) {
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const text = [...codexWebSearchActionTexts(item), item && item.query]
+    .find((value) => typeof value === 'string' && value !== '');
+  const withheld = codexLeakDetect(text, secrets) || codexLeakDetect(item && item.query, secrets);
+  const entry = {
+    itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null,
+    action: typeof action.type === 'string' ? action.type.slice(0, 40) : null,
+    query: text && !withheld ? redact(text).slice(0, CODEX_WEB_SEARCH_AUDIT_MAX) : '',
+  };
+  return withheld ? { ...entry, withheld } : entry;
+}
+
+/**
+ * The wire log echoes every server line; a search carrying a secret is not
+ * echoed. Checked on the parsed strings: in the raw line a secret holding " or \
+ * or a newline is in its escaped form and would not match.
+ */
+function codexWireLineForLog(line, secrets) {
+  if (!/webSearch|web_search/.test(line)) return line;
+  let pending;
+  try {
+    pending = [JSON.parse(line)];
+  } catch {
+    pending = [line];
+  }
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      const detector = codexLeakDetect(value, secrets);
+      if (detector) return JSON.stringify({ withheld: detector });
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) pending.push(child);
+    }
+  }
+  return line;
+}
+
+/** 'gated' | 'harmless' | 'mcp' | 'blocked' (fails closed on a missing type). */
+function codexItemDisposition(item) {
+  const type = item && typeof item === 'object' ? item.type : undefined;
+  if (typeof type !== 'string') return 'blocked';
+  if (type === 'mcpToolCall') return 'mcp';
+  if (CODEX_GATED_ITEM_TYPES.has(type)) return 'gated';
+  return CODEX_HARMLESS_ITEM_TYPES.has(type) ? 'harmless' : 'blocked';
+}
 
 // Codex itself only accepts these characters in an MCP server name; anything
 // else could not be addressed safely as a dotted -c key, so it fails closed.
@@ -885,6 +1123,7 @@ function codexWorkerConfigToml(carried = {}) {
     ...(carriedLines.length ? ['# Model settings carried over from the real config.toml (allowlist only).', ...carriedLines] : []),
     'check_for_update_on_startup = false',
     'cli_auth_credentials_store = "file"',
+    `web_search = "${CODEX_WORKER_WEB_SEARCH_MODE}"`,
     '',
     '[features]',
     ...CODEX_WORKER_DISABLED_FEATURES.map((feature) => `${feature} = false`),
@@ -2394,6 +2633,14 @@ async function runDriver(config) {
     removeCodexIsolatedHome(isolatedHome.dir);
   });
   config = { ...config, codexHome: isolatedHome.dir };
+  let authJsonText = '';
+  try {
+    authJsonText = readRegularFileCapped(path.join(isolatedHome.realHome, 'auth.json'), CODEX_AUTH_MAX_BYTES).toString('utf8');
+  } catch {
+    // No login file: the format detectors and env values still apply.
+  }
+  const leakSecrets = codexLeakSecrets(process.env, authJsonText);
+  authJsonText = '';
   const mcpPreflight = codexMcpPreflight(config);
   const codexSpawn = codexAppServerSpawnSpec(config, mcpPreflight.ok ? mcpPreflight.names : []);
   const gateSpawn = gateSpawnSpec(config);
@@ -2410,6 +2657,8 @@ async function runDriver(config) {
     codexHomeAgentsMd: isolatedHome.agentsMd,
     codexHomeSwept: isolatedHome.swept,
     codexEnvDropped: codexSpawn.droppedEnv,
+    codexWebSearchMode: CODEX_WORKER_WEB_SEARCH_MODE,
+    codexLeakKnownValues: leakSecrets.length,
     codexMcp: {
       ok: mcpPreflight.ok,
       disabledServers: mcpPreflight.names,
@@ -2555,10 +2804,9 @@ async function runDriver(config) {
     send({ id, error: { code, message, data: redactDeep(data || null) } });
   };
 
-  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
-  // inside Codex with no approval request to gate, so any sign of one stops
-  // the turn and fails the run. Only names are recorded, never arguments.
-  const blockMcpActivity = (kind, details) => {
+  // Stop the turn and fail the run for activity no gate can see. Only names are
+  // recorded, never arguments.
+  const stopUngatedActivity = (kind, details, reason) => {
     if (completed) return;
     sawFailure = true;
     const turnId = details && typeof details.turnId === 'string' ? details.turnId : null;
@@ -2572,7 +2820,7 @@ async function runDriver(config) {
       cwd: config.cwd,
       answer: 'n',
       decision: 'abort',
-      reason: 'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+      reason,
     });
     if (threadId && turnId) {
       try {
@@ -2581,6 +2829,15 @@ async function runDriver(config) {
     }
     finish(kind, 1);
   };
+
+  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
+  // inside Codex with no approval request to gate, so any sign of one stops
+  // the turn and fails the run.
+  const blockMcpActivity = (kind, details) => stopUngatedActivity(
+    kind,
+    details,
+    'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+  );
 
   const safeName = (value) => (typeof value === 'string' ? value.slice(0, 120) : null);
 
@@ -2595,6 +2852,30 @@ async function runDriver(config) {
       pluginId: safeName(item.pluginId),
       status: safeName(item.status),
     };
+  };
+
+  // Shared by item/started and item/completed: an item seen on only one of them
+  // is still checked. Returns true when the run was stopped.
+  const blockUngatedItem = (phase, params) => {
+    const item = params && params.item;
+    const disposition = codexItemDisposition(item);
+    if (disposition === 'mcp') {
+      blockMcpActivity('mcp_tool_call_blocked', { phase, ...mcpToolCallDetails(params) });
+      return true;
+    }
+    if (disposition !== 'blocked') return false;
+    const itemType = safeName(item && item.type);
+    process.stdout.write(`CODEX_ERROR Codex reported an item Shelly cannot gate (${itemType || 'no type'}); stopped.\n`);
+    stopUngatedActivity('codex_item_type_blocked', {
+      phase,
+      threadId: params && params.threadId,
+      turnId: params && typeof params.turnId === 'string' ? params.turnId : activeTurnId,
+      itemId: safeName(item && item.id),
+      itemType,
+      tool: safeName(item && item.tool),
+      name: safeName(item && item.name),
+    }, 'Codex item type is outside the Shelly allowlist (no approval request to gate)');
+    return true;
   };
 
   const handleInitialize = () => {
@@ -2990,11 +3271,7 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/started') {
-      const item = message.params && message.params.item;
-      if (item && item.type === 'mcpToolCall') {
-        blockMcpActivity('mcp_tool_call_blocked', { phase: 'started', ...mcpToolCallDetails(message.params) });
-        return;
-      }
+      if (blockUngatedItem('started', message.params)) return;
       auditItemStarted(message.params);
       return;
     }
@@ -3046,10 +3323,24 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/completed') {
-      const item = message.params && message.params.item;
-      if (item && item.type === 'mcpToolCall') {
-        blockMcpActivity('mcp_tool_call_blocked', { phase: 'completed', ...mcpToolCallDetails(message.params) });
-        return;
+      if (blockUngatedItem('completed', message.params)) return;
+      if (message.params.item.type === 'webSearch') {
+        const leak = codexWebSearchLeakCheck(message.params.item, leakSecrets);
+        if (leak) {
+          process.stdout.write(`CODEX_ERROR A web search carried a secret (${leak.detector}); stopped.\n`);
+          stopUngatedActivity('codex_web_search_leak_blocked', {
+            threadId: message.params.threadId,
+            turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
+            itemId: leak.itemId,
+            detector: leak.detector,
+          }, 'web search carried a known secret value or secret format');
+          return;
+        }
+        audit('codex_web_search', {
+          threadId: message.params.threadId,
+          turnId: message.params.turnId,
+          ...codexWebSearchAudit(message.params.item, leakSecrets),
+        });
       }
       checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
@@ -3100,7 +3391,7 @@ async function runDriver(config) {
     buffer = lines.pop();
     for (const line of lines) {
       if (!line) continue;
-      rawLine('S->C', line);
+      rawLine('S->C', codexWireLineForLog(line, leakSecrets));
       let message;
       try {
         message = JSON.parse(line);
@@ -3178,7 +3469,7 @@ async function runDriver(config) {
 // as permission-free (TodoWrite, Skill, ToolSearch, AskUserQuestion,
 // SlashCommand, ExitPlanMode, BashOutput/KillShell, any future built-in) never
 // produce a can_use_tool request, so an ask/deny list alone cannot gate them.
-// Four layers, so one unsupported flag or renamed tool cannot open it:
+// Five layers, so one unsupported flag or renamed tool cannot open it:
 //  1. `--tools Bash,Read,Write,Edit` — the built-in tool set claude exposes to
 //     the model at all (the Agent SDK's `tools` option). An unknown flag makes
 //     claude exit with a usage error = fail closed.
@@ -3186,6 +3477,15 @@ async function runDriver(config) {
 //  3. the same names as settings `permissions.deny` (defense in depth).
 //  4. at runtime: an assistant tool_use for anything outside the allowlist
 //     (built-in we did not know, MCP, …) stops the run immediately.
+//  5. at start: the `tools` list in system/init is checked before any tool can
+//     run (claudeInitToolCheck). Observed on the PC build 2.1.220 (dummy key,
+//     unreachable API): these exact flags give ["Bash","Edit","Read","Write"]
+//     and mcp_servers []; deny rules remove a tool from the list; without
+//     --tools fifteen tools appear, some of them on no list here. So a name
+//     outside the allowlist means `--tools` stopped working or an MCP server
+//     loaded. A name in CLAUDE_DENIED_TOOLS is still accepted: listed but
+//     denied by both --disallowedTools and settings is not enabled, and layer 4
+//     still stops it, so a build that keeps it listed must not fail every run.
 // MultiEdit is not in --tools (absent from recent builds; Edit covers it) but
 // stays gated (ask + tee mapping) in case a build exposes it anyway.
 const CLAUDE_ALLOWED_TOOLS = ['Bash', 'Read', 'Write', 'Edit'];
@@ -3208,6 +3508,24 @@ const CLAUDE_CHILD_ENV_DROP = [
   'ANTHROPIC_BASE_URL',
 ];
 const CLAUDE_INIT_REQUEST_ID = 'shelly-init';
+
+/**
+ * Layer 5. `unexpected` = enabled tools outside the allowlist; `denied` =
+ * listed but denied (not a stop). A missing list cannot be verified, so it
+ * fails closed. MCP tools (mcp__server__tool) are on no list, so they are
+ * unexpected; --strict-mcp-config loads none.
+ */
+function claudeInitToolCheck(tools) {
+  if (!Array.isArray(tools)) return { ok: false, unexpected: [], denied: [], reason: 'no tools list in system/init' };
+  const unexpected = [];
+  const denied = [];
+  for (const tool of tools) {
+    if (CLAUDE_GATED_TOOLS.includes(tool)) continue;
+    if (CLAUDE_DENIED_TOOLS.includes(tool)) denied.push(tool);
+    else unexpected.push(String(tool).slice(0, 80));
+  }
+  return { ok: unexpected.length === 0, unexpected, denied, reason: unexpected.length ? 'tool outside the allowlist' : null };
+}
 
 function claudeAgentSettingsJson() {
   return JSON.stringify({
@@ -3823,6 +4141,15 @@ async function runClaudeDriver(config) {
         finish('claude_auth_mismatch', 1);
         return;
       }
+      const toolCheck = claudeInitToolCheck(message.tools);
+      if (!toolCheck.ok) {
+        sawFailure = true;
+        audit('claude_init_tools_blocked', { reason: toolCheck.reason, unexpected: toolCheck.unexpected.slice(0, 40) });
+        process.stdout.write(`CLAUDE_ERROR Claude Code started with tools outside the Shelly agent allowlist (${toolCheck.unexpected.slice(0, 5).join(', ') || toolCheck.reason}); stopped.\n`);
+        finish('claude_init_tools_blocked', 1);
+        return;
+      }
+      if (toolCheck.denied.length) audit('claude_init_denied_tools_listed', { denied: toolCheck.denied.slice(0, 40) });
       audit('thread_started', {
         engine: 'claude',
         cwd: message.cwd || config.cwd,
@@ -3982,6 +4309,15 @@ module.exports = {
   codexChildEnv,
   codexAppServerSpawnSpec,
   CODEX_WORKER_DISABLED_FEATURES,
+  CODEX_GATED_ITEM_TYPES,
+  CODEX_HARMLESS_ITEM_TYPES,
+  codexItemDisposition,
+  codexWebSearchAudit,
+  codexWebSearchLeakCheck,
+  codexLeakSecrets,
+  codexWireLineForLog,
+  runtimeCodexTuiPath,
+  claudeInitToolCheck,
   codexMcpDisableArgs,
   parseCodexMcpList,
   codexMcpPreflight,

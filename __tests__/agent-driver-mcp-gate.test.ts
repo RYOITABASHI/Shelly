@@ -541,7 +541,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
   type Msg = Record<string, unknown>;
   const SECRET_ARG = 'SECRET-ARGUMENT-VALUE';
 
-  function run(script: Msg[], env: Record<string, string> = {}, real: { configPrefix?: string; agentsMd?: string } = {}) {
+  function run(script: Msg[], env: Record<string, string> = {}, real: { configPrefix?: string; agentsMd?: string; authJson?: string } = {}) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-'));
     const ws = path.join(home, 'demo');
     fs.mkdirSync(ws);
@@ -551,7 +551,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     const realHome = path.join(home, 'real-codex');
     fs.mkdirSync(realHome);
     fs.writeFileSync(path.join(realHome, 'config.toml'), `${real.configPrefix || ''}[mcp_servers.realsrv]\ncommand = "x"\nnotify = ["x"]\n`);
-    fs.writeFileSync(path.join(realHome, 'auth.json'), '{"REAL":"AUTH"}');
+    fs.writeFileSync(path.join(realHome, 'auth.json'), real.authJson ?? '{"REAL":"AUTH"}');
     if (real.agentsMd !== undefined) fs.writeFileSync(path.join(realHome, 'AGENTS.md'), real.agentsMd);
     const tmpParent = path.join(home, 'tmp');
     fs.mkdirSync(tmpParent);
@@ -803,6 +803,303 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(r.status).toBe(1);
     expect(r.audit).toContain('"phase":"completed"');
     expect(r.audit).not.toContain(SECRET_ARG);
+  }, 60_000);
+
+  // Item shapes from ThreadItem in codex-rs/app-server-protocol/src/protocol/v2/item.rs
+  // (rust-v0.163.0, the version we ship).
+  const started = (item: Msg) => ({ method: 'item/started', params: { threadId: 'th1', turnId: 't1', item } });
+  const completed = (item: Msg) => ({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item } });
+  const blockedEntry = (audit: string) => audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'codex_item_type_blocked');
+
+  it('a real-shaped safe turn with every harmless item and a gated command still succeeds', () => {
+    const command = {
+      type: 'commandExecution', id: 'call_1', command: 'pwd', cwd: '/tmp', processId: null, source: 'agent',
+      status: 'inProgress', commandActions: [{ type: 'unknown', command: 'pwd' }], aggregatedOutput: null, exitCode: null, durationMs: null,
+    };
+    const r = run([
+      started({ type: 'userMessage', id: 'u1', clientId: null, content: [{ type: 'text', text: 'look up prices', text_elements: [] }] }),
+      completed({ type: 'userMessage', id: 'u1', clientId: null, content: [{ type: 'text', text: 'look up prices', text_elements: [] }] }),
+      started({ type: 'reasoning', id: 'r1', summary: [], content: [] }),
+      completed({ type: 'reasoning', id: 'r1', summary: ['thinking'], content: [] }),
+      completed({ type: 'plan', id: 'p1', text: 'one step' }),
+      started(command),
+      { id: 'ap-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'th1', turnId: 't1', itemId: 'call_1', command: 'pwd', cwd: '/tmp', commandActions: [{ type: 'unknown', command: 'pwd' }] } },
+      completed({ ...command, status: 'completed', aggregatedOutput: '/tmp\n', exitCode: 0, durationMs: 4 }),
+      started({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'other' } }),
+      completed({ type: 'webSearch', id: 'ws1', query: 'prices', action: { type: 'search', query: 'prices', queries: ['prices'] } }),
+      completed({ type: 'imageGeneration', id: 'ig1', status: 'completed', revisedPrompt: null, result: '' }),
+      started({ type: 'sleep', id: 's1', durationMs: 1000 }),
+      completed({ type: 'sleep', id: 's1', durationMs: 1000 }),
+      started({ type: 'contextCompaction', id: 'c1' }),
+      completed({ type: 'contextCompaction', id: 'c1' }),
+      completed({ type: 'enteredReviewMode', id: 'rv1', review: 'current changes' }),
+      completed({ type: 'exitedReviewMode', id: 'rv2', review: 'looks fine' }),
+    ]);
+    expect(r.out).not.toContain('CODEX_ERROR');
+    expect(auditKinds(r.audit)).not.toContain('codex_item_type_blocked');
+    expect(r.status).toBe(0);
+    expect(r.answerWritten).toBe(true);
+    expect(r.out.split('\n').filter((l) => l.startsWith('GATE ') && l.includes('item/commandExecution/requestApproval'))).toHaveLength(1);
+    // One audit line per search, no approval asked.
+    const searches = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.kind === 'codex_web_search');
+    expect(searches).toEqual([expect.objectContaining({ itemId: 'ws1', action: 'search', query: 'prices', threadId: 'th1', turnId: 't1' })]);
+    expect(r.out.split('\n').filter((l) => l.startsWith('GATE ') && l.includes('webSearch'))).toHaveLength(0);
+  }, 60_000);
+
+  it('the web search audit line is short and redacted', () => {
+    const line = (item: Msg) => driver.codexWebSearchAudit(item);
+    expect(line({ id: 'a', query: 'x'.repeat(500), action: { type: 'search' } }).query).toHaveLength(120);
+    expect(line({ id: 'a', query: 'find API_KEY=sk-abc123 and Bearer tok.en', action: null }).query).toBe('find API_KEY=[REDACTED] and Bearer [REDACTED]');
+    // Redacted before it is cut: a secret near the limit never leaves a prefix.
+    const near = `${'y'.repeat(110)} TOKEN=secretsecretsecret`;
+    expect(line({ id: 'a', query: near }).query).not.toContain('secret');
+    expect(line({ id: 'a', query: '', action: { type: 'search', queries: ['first', 'second'] } }).query).toBe('first');
+    expect(line({ id: 'a', query: '', action: { type: 'openPage', url: 'https://e.example/p' } })).toEqual({ itemId: 'a', action: 'openPage', query: 'https://e.example/p' });
+    expect(line({ id: 'a', query: '', action: { type: 'other' } }).query).toBe('');
+  });
+
+  it('webSearch and imageGeneration stay allowed', () => {
+    expect(driver.codexItemDisposition({ type: 'webSearch' })).toBe('harmless');
+    expect(driver.codexItemDisposition({ type: 'imageGeneration' })).toBe('harmless');
+    expect(driver.CODEX_WORKER_DISABLED_FEATURES).not.toContain('image_generation');
+  });
+
+  it('the worker config sets indexed web search at the top level, and driver_start records it', () => {
+    const toml: string = driver.codexWorkerConfigToml();
+    expect(toml).toMatch(/^web_search = "indexed"$/m);
+    expect(toml.indexOf('web_search')).toBeLessThan(toml.indexOf('[features]'));
+    const r = run([]);
+    expect(r.workerHome.config).toMatch(/^web_search = "indexed"\r?$/m);
+    const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+    expect(start.codexWebSearchMode).toBe('indexed');
+  }, 60_000);
+
+  describe('web search leak check', () => {
+    const OAI = ['sk', 'proj', 'Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv'].join('-');
+    const GH = ['ghp', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('_');
+    const GROQ = ['gsk', 'A1b2C3d4E5f6G7h8I9j0K1l2'].join('_');
+    const GOOGLE = ['AIza', 'SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q'].join('');
+    const JWT = ['eyJhbGciOiJSUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'c2lnbmF0dXJlLXZhbHVl'].join('.');
+    const PEM = ['-----BEGIN', 'RSA', 'PRIVATE', 'KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC'].join(' ');
+    const MY_ENV = 'plain-value-of-a-custom-credential';
+    const MY_AUTH = 'rt_opaqueRefreshTokenValue0123456789';
+    const secrets = driver.codexLeakSecrets(
+      { MY_SERVICE_TOKEN: MY_ENV, SHORT_KEY: 'too-short', SOME_PUBLIC_KEY: 'public-value-not-a-secret-at-all', A_KEY_FILE: '/data/user/0/app/key.der', PATH: '/usr/bin:/bin:/not/a/secret/name' },
+      JSON.stringify({ auth_mode: 'chatgpt', last_refresh: '2026-11-07T00:00:00.000000000Z', tokens: { access_token: 'at-opaque-access-token-value-1234', refresh_token: MY_AUTH, account_id: '123e4567-e89b-12d3-a456-426614174000' } }),
+    );
+    const search = (action: Msg, query = '') => ({ type: 'webSearch', id: 'ws9', query, action });
+    const hit = (action: Msg) => driver.codexWebSearchLeakCheck(search(action), secrets);
+
+    it('hits in each field', () => {
+      expect(hit({ type: 'search', queries: ['first is fine', OAI] })).toEqual({ detector: 'sk_key', itemId: 'ws9' });
+      expect(hit({ type: 'search', query: GH })).toEqual({ detector: 'github_token', itemId: 'ws9' });
+      expect(hit({ type: 'openPage', url: `https://evil.example/?q=${GROQ}` })).toEqual({ detector: 'groq_key', itemId: 'ws9' });
+      expect(hit({ type: 'findInPage', url: 'https://ok.example/', pattern: GOOGLE })).toEqual({ detector: 'google_key', itemId: 'ws9' });
+    });
+
+    it('item.query is not what the check reads', () => {
+      expect(driver.codexWebSearchLeakCheck(search({ type: 'other' }, OAI), secrets)).toBeNull();
+    });
+
+    it('formats and known values, raw and encoded', () => {
+      expect(hit({ type: 'search', query: JWT })!.detector).toBe('jwt');
+      expect(hit({ type: 'search', query: PEM })!.detector).toBe('pem_private_key');
+      expect(hit({ type: 'search', query: encodeURIComponent(PEM) })!.detector).toBe('pem_private_key');
+      expect(hit({ type: 'search', query: `look up ${MY_ENV}` })!.detector).toBe('env_value');
+      expect(hit({ type: 'search', query: MY_AUTH })!.detector).toBe('auth_token');
+      expect(hit({ type: 'search', query: 'at-opaque-access-token-value-1234' })!.detector).toBe('auth_token');
+      const special = driver.codexLeakSecrets({ X_SECRET: 'p@ss/word+with=specials?' }, '');
+      const b64 = Buffer.from(MY_ENV).toString('base64');
+      expect(hit({ type: 'search', query: b64 })!.detector).toBe('env_value');
+      expect(hit({ type: 'search', query: b64.replace(/=+$/, '') })!.detector).toBe('env_value');
+      expect(hit({ type: 'openPage', url: `https://e.example/${encodeURIComponent(MY_AUTH + ' x')}` })!.detector).toBe('auth_token');
+      const url = `https://e.example/?a=${encodeURIComponent('p@ss/word+with=specials?')}`;
+      expect(driver.codexWebSearchLeakCheck(search({ type: 'openPage', url }), special)!.detector).toBe('env_value');
+      const b64Url = Buffer.from('p@ss/word+with=specials?').toString('base64url');
+      expect(driver.codexWebSearchLeakCheck(search({ type: 'search', query: b64Url }), special)!.detector).toBe('env_value');
+    });
+
+    it('the wire log matches parsed values, so an escaped secret is found', () => {
+      const tricky = 'pass"word\\with-escapes\nnewline0';
+      const known = driver.codexLeakSecrets({ X_SECRET: tricky }, '');
+      const line = JSON.stringify(completed({ type: 'webSearch', id: 'ws1', query: tricky, action: { type: 'search', query: tricky } }));
+      expect(line).not.toContain(tricky);
+      expect(driver.codexWireLineForLog(line, known)).toBe('{"withheld":"env_value"}');
+      expect(driver.codexWireLineForLog(JSON.stringify(completed({ type: 'webSearch', id: 'p', query: PEM })), secrets)).toBe('{"withheld":"pem_private_key"}');
+      const safe = JSON.stringify(completed({ type: 'webSearch', id: 'ws1', query: 'prices', action: { type: 'search', query: 'prices' } }));
+      expect(driver.codexWireLineForLog(safe, known)).toBe(safe);
+      expect(driver.codexWireLineForLog('not json webSearch ' + GH, secrets)).toBe('{"withheld":"github_token"}');
+      expect(driver.codexWireLineForLog(JSON.stringify({ method: 'other', params: { text: GH } }), secrets)).toContain(GH);
+    });
+
+    it('E2E: a secret with a quote never reaches stdout or the audit log', () => {
+      const tricky = 'pass"word-with-a-quote-0000';
+      const r = run(
+        [completed({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'search', query: tricky } })],
+        { X_SECRET: tricky },
+      );
+      expect(r.status).toBe(1);
+      expect(r.audit).toContain('"detector":"env_value"');
+      const escaped = JSON.stringify(tricky).slice(1, -1);
+      expect(r.out).not.toContain(escaped);
+      expect(r.audit).not.toContain(escaped);
+    }, 60_000);
+
+    it('stays fast on long adversarial input and still finds a token in a long line', () => {
+      const size = 300 * 1024;
+      for (const chunk of ['eyJ', 'eyJaaaaaaaaa.', 'eyJaaaaaaaaaaa.eyJ', 'sk-', 'a.', '-----BEGIN ', 'ghp_', 'gsk_', 'AIza', '%2', '+']) {
+        const text = chunk.repeat(Math.ceil(size / chunk.length));
+        const started_ = Date.now();
+        driver.codexWireLineForLog(JSON.stringify(completed({ type: 'webSearch', id: 'x', query: text })), secrets);
+        hit({ type: 'search', query: text });
+        expect(Date.now() - started_).toBeLessThan(2000);
+      }
+      expect(hit({ type: 'search', query: `${'eyJ'.repeat(100000)} ${JWT}` })!.detector).toBe('jwt');
+    });
+
+    it('the JWT scan finds the same tokens the old pattern did', () => {
+      const j = (query: string) => hit({ type: 'search', query })?.detector ?? null;
+      expect(j(JWT)).toBe('jwt');
+      expect(j(`Authorization: Bearer ${JWT}, more`)).toBe('jwt');
+      expect(j(`x-${JWT}`)).toBe('jwt');
+      expect(j(`https://e.example/cb?token=${JWT}&a=1`)).toBe('jwt');
+      expect(j('a.b.c v1.2.3 example.com/path.html')).toBeNull();
+      expect(j('xeyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0.c2lnbmF0dXJl')).toBeNull();
+      expect(j('eyJhbGciOiJSUzI1NiJ9.notpayload000.c2lnbmF0dXJl')).toBeNull();
+    });
+
+    it('does not stop on ordinary search text', () => {
+      for (const query of [
+        'git commit 210c69714a3f5d6e7b8c9d0e1f2a3b4c5d6e7f80 what changed',
+        'uuid 123e4567-e89b-12d3-a456-426614174000 not found',
+        'Traceback (most recent call last): File "/usr/lib/python3/site.py", line 73, in <module> KeyError: token',
+        'thread main panicked at src/main.rs:42:5 sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+        'sk-learn-contrib imbalanced-learn tutorial for beginners',
+        'how to rotate an API key -----BEGIN RSA PRIVATE KEY----- format',
+        'public-value-not-a-secret-at-all too-short',
+      ]) {
+        expect(hit({ type: 'search', query, queries: [query] })).toBeNull();
+      }
+      // The account id in auth.json is not a token.
+      expect(hit({ type: 'search', query: '2026-11-07T00:00:00.000000000Z' })).toBeNull();
+    });
+
+    it('a normal search keeps its text; a hit in any text is withheld from the audit line', () => {
+      expect(driver.codexWebSearchAudit(search({ type: 'search', query: 'prices' }), secrets)).toEqual({ itemId: 'ws9', action: 'search', query: 'prices' });
+      const entry = driver.codexWebSearchAudit(search({ type: 'other' }, `hello ${MY_ENV} ...`), secrets);
+      expect(entry).toEqual({ itemId: 'ws9', action: 'other', query: '', withheld: 'env_value' });
+      // Past the 120 character limit the value is still seen.
+      const long = driver.codexWebSearchAudit(search({ type: 'search', query: `${'y'.repeat(110)} ${OAI}` }), secrets);
+      expect(long.query).toBe('');
+      expect(long.withheld).toBe('sk_key');
+    });
+
+    it('E2E: a hit stops the turn, fails the run, and no audit line or log line has the value', () => {
+      const r = run([
+        started({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'other' } }),
+        completed({ type: 'webSearch', id: 'ws1', query: 'q ...', action: { type: 'search', query: 'q', queries: ['q', `send ${GH}`] } }),
+      ]);
+      expect(r.status).toBe(1);
+      const entry = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'codex_web_search_leak_blocked');
+      expect(entry).toEqual(expect.objectContaining({ detector: 'github_token', itemId: 'ws1', turnId: 't1' }));
+      expect(r.out).toMatch(/C->S \{"id":\d+,"method":"turn\/interrupt","params":\{"threadId":"th1","turnId":"t1"\}\}/);
+      expect(r.out).toContain('CODEX_ERROR A web search carried a secret (github_token); stopped.');
+      expect(r.audit).not.toContain(GH);
+      expect(r.out).not.toContain(GH);
+      expect(auditKinds(r.audit)).not.toContain('codex_web_search');
+      expect(r.answerWritten).toBe(false);
+    }, 60_000);
+
+    it('E2E: the login token in the real auth.json is known without being logged', () => {
+      const r = run(
+        [completed({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'openPage', url: `https://e.example/${MY_AUTH}` } })],
+        {},
+        { authJson: JSON.stringify({ tokens: { refresh_token: MY_AUTH } }) },
+      );
+      expect(r.status).toBe(1);
+      expect(r.audit).toContain('"detector":"auth_token"');
+      expect(r.audit).not.toContain(MY_AUTH);
+      expect(r.out).not.toContain(MY_AUTH);
+    }, 60_000);
+
+    it('E2E: a secret env value is known, and secret-named env never reaches the worker', () => {
+      const r = run(
+        [completed({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'search', query: MY_ENV } })],
+        { GH_TOKEN: MY_ENV, MY_API_KEY: 'value-of-api-key-0000', SECRET_THING: 'x' },
+      );
+      expect(r.status).toBe(1);
+      expect(r.audit).toContain('"detector":"env_value"');
+      expect(r.audit).not.toContain(MY_ENV);
+      const start = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'driver_start');
+      expect(start.codexEnvDropped).toEqual(expect.arrayContaining(['GH_TOKEN', 'MY_API_KEY', 'SECRET_THING']));
+      expect(start.codexLeakKnownValues).toBeGreaterThan(0);
+    }, 60_000);
+  });
+
+  it('the Codex worker env keeps what it runs on and drops secret names', () => {
+    const { env, dropped } = driver.codexWorkerEnv({
+      PATH: '/bin', HOME: '/h', TMPDIR: '/t', SSL_CERT_FILE: '/c', LD_PRELOAD: '/w.so', SHELLY_LIB_DIR: '/l', HTTPS_PROXY: 'http://p', SSH_AUTH_SOCK: '/s',
+      GH_TOKEN: 'a', gitlab_token: 'b', MY_API_KEY: 'c', CLIENT_SECRET: 'd', CODEX_HOME: '/old', OPENAI_BASE_URL: 'e',
+    }, '/iso');
+    expect(env).toEqual({ PATH: '/bin', HOME: '/h', TMPDIR: '/t', SSL_CERT_FILE: '/c', LD_PRELOAD: '/w.so', SHELLY_LIB_DIR: '/l', HTTPS_PROXY: 'http://p', SSH_AUTH_SOCK: '/s', CODEX_HOME: '/iso' });
+    expect(dropped).toEqual(['CLIENT_SECRET', 'GH_TOKEN', 'MY_API_KEY', 'OPENAI_BASE_URL', 'gitlab_token']);
+  });
+
+  it('a turn that only speaks passes through the same check', () => {
+    const r = run([started({ type: 'agentMessage', id: 'm1', text: '', phase: null, memoryCitation: null })]);
+    expect(r.status).toBe(0);
+    expect(r.answerWritten).toBe(true);
+  }, 60_000);
+
+  it('an unknown item type aborts the turn, fails the run and writes an audit line with names only', () => {
+    const r = run([started({ type: 'browserAction', id: 'b1', tool: 'open_url', status: 'inProgress', arguments: { url: SECRET_ARG } })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ phase: 'started', itemType: 'browserAction', itemId: 'b1', tool: 'open_url' }));
+    expect(r.audit).toContain('"reason":"codex_item_type_blocked"');
+    expect(r.out).toMatch(/C->S \{"id":\d+,"method":"turn\/interrupt","params":\{"threadId":"th1","turnId":"t1"\}\}/);
+    expect(r.out).toContain('CODEX_ERROR Codex reported an item Shelly cannot gate (browserAction); stopped.');
+    expect(r.audit).not.toContain(SECRET_ARG);
+    expect(r.answerWritten).toBe(false);
+    expect(auditKinds(r.audit)).not.toContain('turn_completed');
+  }, 60_000);
+
+  it('an unknown item seen only on item/completed is also blocked', () => {
+    const r = run([completed({ type: 'browserAction', id: 'b2' })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ phase: 'completed', itemType: 'browserAction' }));
+    expect(r.answerWritten).toBe(false);
+  }, 60_000);
+
+  it('an item with no type fails closed', () => {
+    const r = run([started({ id: 'x1' })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ itemType: null, itemId: 'x1' }));
+    const empty = run([{ method: 'item/completed', params: { threadId: 'th1', turnId: 't1' } }]);
+    expect(empty.status).toBe(1);
+    expect(blockedEntry(empty.audit)).toBeTruthy();
+  }, 90_000);
+
+  it.each([
+    ['collabAgentToolCall', { type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', status: 'inProgress', senderThreadId: 'th1', receiverThreadIds: [], prompt: SECRET_ARG, model: null, reasoningEffort: null, agentsStates: {} }],
+    ['subAgentActivity', { type: 'subAgentActivity', model: null, reasoningEffort: null, id: 'a1', kind: 'started', agentThreadId: 'th2', agentPath: '/root/x' }],
+    ['dynamicToolCall', { type: 'dynamicToolCall', id: 'd1', namespace: null, tool: 'x', arguments: { q: SECRET_ARG }, status: 'inProgress', contentItems: null, success: null, durationMs: null }],
+    ['imageView', { type: 'imageView', id: 'i1', path: '/sdcard/DCIM/photo.jpg' }],
+    ['hookPrompt', { type: 'hookPrompt', id: 'h1', fragments: [] }],
+    ['functionCallOutput', { type: 'functionCallOutput', id: 'f1', name: 'x', namespace: null, output: SECRET_ARG }],
+  ])('the known but ungated item %s stops the run', (itemType, item) => {
+    const r = run([started(item)]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ itemType }));
+    expect(r.audit).not.toContain(SECRET_ARG);
+  }, 60_000);
+
+  it('the sub-agent and view_image tools are switched off for the worker', () => {
+    const r = run([]);
+    const joined = r.appServerArgv!.join(' ');
+    for (const feature of ['multi_agent', 'multi_agent_v2', 'view_image']) {
+      expect(joined).toContain(`-c features.${feature}=false`);
+      expect(r.workerHome.config).toMatch(new RegExp(`^${feature} = false\\r?$`, 'm'));
+    }
   }, 60_000);
 
   it('an MCP elicitation request is declined (never accepted) and fails the run', () => {
