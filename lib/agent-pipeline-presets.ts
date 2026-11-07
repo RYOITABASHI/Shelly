@@ -115,7 +115,7 @@ export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】
 // 2026-11-06, Perplexity only for papers. The topic step uses this same engine,
 // fixed as QUEUE_REFILL_TOOL_TYPE in scripts/shelly-plan-executor.js.
 const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
-const ARTICLE_ACADEMIC_RESEARCH_ENGINE: ToolChoice = { type: 'perplexity' };
+const ARTICLE_ACADEMIC_RESEARCH_ENGINE: ToolChoice = { type: 'perplexity', model: 'sonar-pro' };
 const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };
 const ARTICLE_REVIEWER_ENGINE: ToolChoice = { type: 'cerebras' };
 

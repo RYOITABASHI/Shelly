@@ -74,6 +74,10 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 3 つの CLI を常に最新に保つ（2026-11-07 オーナー要望）(P0)
+
+同梱している Codex の取得元 `DioNanos/codex-termux` は `0.163.0-termux.3` が最終版で終了した（Codex が Termux の公式パッケージになったため）。今のままだと Codex の更新が止まる。Codex、Claude Code、Antigravity を APK の更新なしで最新に保つ。計画は `docs/superpowers/specs/2026-11-07-cli-always-latest-plan.md`。Claude Code は手動配置のままなので `claude-install` も同時に作る。
+
 ### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
 - 2026-11-07: vintage の `queue-refill`（executor v35、`feat/article-topic-refill`）はオフラインのテストのみ。実機で要確認: Gemini grounded の答えが `- [ ]` 形式に沿うか、grounded の 1 回が CAP-001 の 10 分の壁に収まるか、`/sdcard` の `_queue.md` が無い状態から実 broker で作れるか。
 
