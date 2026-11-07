@@ -370,20 +370,23 @@ const CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)
  * Fail-closed on purpose. Telling a mention from a run needs a shell parser, and
  * two rounds of adversarial review broke every shape of this check by comment,
  * brace, NUL and git flag. So any command that names it counts, unless it is
- * nothing but plain readers with no shell syntax at all. The cost is a question,
+ * nothing but plain readers with no shell syntax at all. An ANSI-C quote with a
+ * numeric escape can spell any name, so it counts too. The cost is a question,
  * or a refusal at L3, when a worker writes the word in a commit message or a
  * heredoc. That is rare, and the worker can reword. A name assembled at run time
  * is not seen, the same limit as every string match here.
  */
-const LOGCAT_NAME_RE = /logcat/;
+const LOGCAT_NAME_RE = /(?:^|[^A-Za-z0-9_]|\s-[A-Za-z]+)logcat(?![A-Za-z0-9_])/;
+const NUMERIC_ANSI_QUOTE_RE = /\$'[^']*\\[0-9xuUc]/;
 const LOGCAT_PLAIN_READER_RE = /^\s*(?:cat|head|tail|grep|egrep|fgrep|ls|stat|wc|file|diff)\s/;
 const LOGCAT_SHELL_SYNTAX_RE = /[\n\r\0#$`\\{}()<>;&'"]/;
 function readsLogcat(command: string): boolean {
   const words = dequoteShellWords(command);
+  if (NUMERIC_ANSI_QUOTE_RE.test(command) || NUMERIC_ANSI_QUOTE_RE.test(words)) return true;
   const named = [command.replace(/[\0'"\\]/g, ''), words, dequoteShellWords(words)].some((c) => LOGCAT_NAME_RE.test(c));
   if (!named) return false;
   if (LOGCAT_SHELL_SYNTAX_RE.test(command)) return true;
-  return command.split('|').some((segment) => LOGCAT_NAME_RE.test(segment) && !LOGCAT_PLAIN_READER_RE.test(segment));
+  return !command.split('|').every((segment) => LOGCAT_PLAIN_READER_RE.test(segment));
 }
 // `device <w1> [<w2>]`: the subcommand words, skipping options.
 const DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;

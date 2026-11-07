@@ -90,6 +90,14 @@ describe('logcat', () => {
     ['echo logcat > s; bash s'],
     ['rg --pre logcat foo .'],
     ['rg --hostname-bin=logcat foo'],
+    ["lo$'\\0'gcat"],
+    ["lo$'\\x00'gcat -d"],
+    ["lo$'\\u0067'cat"],
+    ['bash -lc "lo$\'\\0\'gcat"'],
+    ['stat -c logcat notes.txt | command sh'],
+    ['ls logcat | nohup bash'],
+    ['ls logcat | mksh'],
+    ['stat -c logcat notes.txt | tee s | false || . ./s'],
   ])('reading it takes a human: %s', (command) => {
     for (const level of ['L1', 'L2'] as const) {
       const v = classifyProposedCommand(command, ctx(level));
@@ -109,7 +117,8 @@ describe('logcat', () => {
     ['cat logcat.txt'],
     ['ls logcat-dumps'],
     ['git log'],
-    ['git log | grep logcat'],
+    ['cat lib/blogcategory.ts'],
+    ["printf 'a\\n'"],
     ['grep logcat notes.txt | head -5'],
   ])('naming the word is not reading it: %s', (command) => {
     expect(classifyProposedCommand(command, ctx('L2')).signals).not.toContain('secret-read');

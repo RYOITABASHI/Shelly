@@ -1073,15 +1073,17 @@ function hasUnsafeCd(command, root) {
   return false;
 }
 var CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)<>])/;
-var LOGCAT_NAME_RE = /logcat/;
+var LOGCAT_NAME_RE = /(?:^|[^A-Za-z0-9_]|\s-[A-Za-z]+)logcat(?![A-Za-z0-9_])/;
+var NUMERIC_ANSI_QUOTE_RE = /\$'[^']*\\[0-9xuUc]/;
 var LOGCAT_PLAIN_READER_RE = /^\s*(?:cat|head|tail|grep|egrep|fgrep|ls|stat|wc|file|diff)\s/;
 var LOGCAT_SHELL_SYNTAX_RE = /[\n\r\0#$`\\{}()<>;&'"]/;
 function readsLogcat(command) {
   const words = dequoteShellWords(command);
+  if (NUMERIC_ANSI_QUOTE_RE.test(command) || NUMERIC_ANSI_QUOTE_RE.test(words)) return true;
   const named = [command.replace(/[\0'"\\]/g, ""), words, dequoteShellWords(words)].some((c) => LOGCAT_NAME_RE.test(c));
   if (!named) return false;
   if (LOGCAT_SHELL_SYNTAX_RE.test(command)) return true;
-  return command.split("|").some((segment) => LOGCAT_NAME_RE.test(segment) && !LOGCAT_PLAIN_READER_RE.test(segment));
+  return !command.split("|").every((segment) => LOGCAT_PLAIN_READER_RE.test(segment));
 }
 var DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
 var UNRESOLVED_WORD_RE = /[$`*?[{]/;
