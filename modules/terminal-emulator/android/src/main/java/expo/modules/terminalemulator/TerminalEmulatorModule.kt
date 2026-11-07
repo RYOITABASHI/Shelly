@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -1900,6 +1902,19 @@ class TerminalEmulatorModule : Module() {
                 "extractedPaths" to result.extractedPaths,
                 "libDir" to result.libDir,
             )
+        }
+
+        // Claude Code / Antigravity background updates are 300 MB downloads, so
+        // this answers for the active network as Android sees it: Wi-Fi or
+        // Ethernet the user has not marked metered. A phone hotspot reports metered.
+        AsyncFunction("isNetworkUnmetered") {
+            val context = requireReactContext()
+            val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val capabilities = connectivity?.let { it.getNetworkCapabilities(it.activeNetwork) }
+            capabilities != null &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
+                (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
         }
 
         AsyncFunction("getAppVersionInfo") {

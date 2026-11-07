@@ -391,6 +391,13 @@ Antigravity はワーカーではないので `agent-current` を持たない。
 - **前倒し**: ワーカーを `agent-current` に向けた（Inc 5 の一部）。作成は Inc 4/5 なので、当面は同梱版で動く。プローブに `app-server --help`、`mcp list --json`、host の存在を追加（Builds 画面と `shelly-runtime-update.js` の両方）。
 - 未実施: Ed25519 署名、`check_for_update_on_startup` は既存の設定で足りるので変更なし。TLS のプローブは入れていない。
 
+**Inc 6・7 の実施状況（2026-11-07、`feat/claude-install`、CI・実機未検証）**: `scripts/shelly-cli-update.js` に実装。計画との差は次のとおり。
+- 共通アップデータ（Inc 5）を待たず、Claude と agy だけを新しいスクリプトにした。Codex は `shelly-runtime-update.js` のまま。
+- glibc は §4.2 の推奨（CI パック）ではなく端末が Termux から直接取得。Shelly の再配布が発生せず、`.deb` も xz も端末の node だけで扱える。
+- `agent-current` は CI の判定ではなく、レビューした pin（driver と更新スクリプトの定数）で決める。Inc 4 が入るまでの形。`DISABLE_UPDATES=1` と `AGY_CLI_DISABLE_AUTO_UPDATE=true` は実装済み。
+- agy の起動プローブは採らない（§5.4 の判断点を「自動起動しない」側に倒した。オーナー判断 §9-6 で変えられる）。
+- 未実装: オフライン・カナリア、昇格後の監視と自動ロールバック、`--pin`、WorkManager。
+
 **順序の理由**: Inc 2 は Inc 3 より先。0.163 → 0.167 に上げる前にゲートを固めるため。Inc 3 が最も危険なので単独で出す。Inc 4 より前は自動更新しない。
 
 **Inc 3 の変更点の詳細**

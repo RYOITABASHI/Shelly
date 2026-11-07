@@ -1537,7 +1537,21 @@ patchCodex(libDir);
     //      helper made it fall back to the bundled binary with the
     //      command_not_found_handle text in __runtime_tui. The background dir
     //      cleanup refuses a symlinked directory.
-    private const val BASHRC_VERSION = 288
+    // v289: claude-install and an updatable Antigravity. Both functions hand off
+    //      to the asset $HOME/.shelly-cli-update.js (scripts/shelly-cli-update.js),
+    //      through __shelly_cli_update's `node -e` bootstrap (see 226), which
+    //      gives both CLIs versions/, current, previous and a failed-version
+    //      hold. shelly-claude-glibc() resolves `current` to its real directory
+    //      before starting, so an update cannot reach a running TUI; records a
+    //      lease for the updater's cleanup; sets DISABLE_UPDATES=1, because
+    //      Shelly owns the version now. A hand-staged plain $root/claude still
+    //      runs. The agent runner takes the separate path: it starts only the
+    //      directory agent-current names, and only if the driver, which holds
+    //      the reviewed version, has named the same one in SHELLY_CLAUDE_AGENT_DIR.
+    //      agy() sets AGY_CLI_DISABLE_AUTO_UPDATE=true on its own command line
+    //      and resolves `current` the same way. Nothing in Shelly starts agy
+    //      but that function: the updater only reads its ELF header.
+    private const val BASHRC_VERSION = 289
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1820,6 +1834,17 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-runtime-update.js extract failed: ${e.message}")
+        }
+
+        // claude-install / agy-install / the Builds screen / the app-start update
+        // (scripts/shelly-cli-update.js). Extracted every launch like the above.
+        val cliUpdateScript = File(home, ".shelly-cli-update.js")
+        try {
+            context.assets.open("shelly-cli-update.js").use { input ->
+                cliUpdateScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-cli-update.js extract failed: ${e.message}")
         }
 
         val doctorScript = File(home, ".shelly-doctor.js")
@@ -4378,31 +4403,22 @@ patchCodex(libDir);
             // v281: plain `claude` -> the glibc Claude Code (only once its runtime is staged).
             sb.appendLine("claude() {")
             sb.appendLine("  if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ]; then shelly-claude-glibc \"\$@\"; return; fi")
-            sb.appendLine("  echo \"claude: Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)\" >&2; return 127")
+            sb.appendLine("  echo \"claude: Claude Code is not installed. Run: claude-install\" >&2; return 127")
             sb.appendLine("}")
-            // v282: Antigravity CLI (official Android build, verified by SHA-512).
-            sb.appendLine("agy-install() {")
-            sb.appendLine("  local __dir=\"\$HOME/.shelly-runtime/agy\" __stage __man __url __sha __ver")
-            sb.appendLine("  local __base=\"https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/android_arm64.json\"")
-            sb.appendLine("  __man=\"\$(curl -fsSL \"\$__base\")\" || { echo \"agy-install: could not reach the release manifest\" >&2; return 1; }")
-            sb.appendLine("  __url=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"url\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\"")
-            sb.appendLine("  __sha=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"sha512\"[[:space:]]*:[[:space:]]*\"\\([0-9a-f]*\\)\".*/\\1/p')\"")
-            sb.appendLine("  __ver=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\"")
-            sb.appendLine("  case \"\$__url\" in https://storage.googleapis.com/antigravity-public/*) ;; *) echo \"agy-install: unexpected download URL: \$__url\" >&2; return 1 ;; esac")
-            sb.appendLine("  [ \${#__sha} -eq 128 ] || { echo \"agy-install: manifest has no valid sha512\" >&2; return 1; }")
-            sb.appendLine("  __stage=\"\$__dir/.stage.\$\$\"; rm -rf \"\$__stage\"; mkdir -p \"\$__stage\" || return 1")
-            sb.appendLine("  echo \"agy-install: downloading Antigravity CLI \$__ver ...\"")
-            sb.appendLine("  curl -fL --progress-bar -o \"\$__stage/cli.tar.gz\" \"\$__url\" || { rm -rf \"\$__stage\"; echo \"agy-install: download failed\" >&2; return 1; }")
-            sb.appendLine("  ( cd \"\$__stage\" && printf '%s  cli.tar.gz\\n' \"\$__sha\" | sha512sum -c - >/dev/null ) || { rm -rf \"\$__stage\"; echo \"agy-install: SHA-512 mismatch, nothing installed\" >&2; return 1; }")
-            sb.appendLine("  tar -xzf \"\$__stage/cli.tar.gz\" -C \"\$__stage\" antigravity && chmod 700 \"\$__stage/antigravity\" || { rm -rf \"\$__stage\"; echo \"agy-install: extract failed\" >&2; return 1; }")
-            sb.appendLine("  mv -f \"\$__stage/antigravity\" \"\$__dir/antigravity\" && printf '%s\\n' \"\$__ver\" > \"\$__dir/VERSION\"; rm -rf \"\$__stage\"")
-            sb.appendLine("  echo \"agy-install: installed \$__ver. Run: agy\"")
+            // v289: both installers live in the asset, shared with the Builds screen.
+            // Node's Android ESM main-file crash is why this is `node -e` (see 226).
+            sb.appendLine("__shelly_cli_update() {")
+            sb.appendLine("  SHELLY_CLI_UPDATE_SCRIPT=\"\$HOME/.shelly-cli-update.js\" SHELLY_CLI_UPDATE_MAIN=1 SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node -e 'const p=process.env.SHELLY_CLI_UPDATE_SCRIPT; process.argv.splice(1, 0, p); require(p);' \"\$@\"")
             sb.appendLine("}")
+            sb.appendLine("claude-install() { __shelly_cli_update claude install \"\$@\"; }")
+            // v282: Antigravity CLI (Google's official Android build).
+            sb.appendLine("agy-install() { __shelly_cli_update agy install \"\$@\"; }")
             sb.appendLine("agy() {")
-            sb.appendLine("  local __bin=\"\$HOME/.shelly-runtime/agy/antigravity\"")
+            sb.appendLine("  local __bin=\"\$HOME/.shelly-runtime/agy/antigravity\" __dir")
             sb.appendLine("  if [ ! -f \"\$__bin\" ]; then echo \"agy: Antigravity CLI is not installed. Run: agy-install\" >&2; return 127; fi")
+            sb.appendLine("  __dir=\"\$(builtin cd -P \"\$HOME/.shelly-runtime/agy/current\" 2>/dev/null && builtin pwd -P)\" && __bin=\"\$__dir/antigravity\"")
             sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" _run \"\$__bin\" \"\$@\"")
+            sb.appendLine("  AGY_CLI_DISABLE_AUTO_UPDATE=true LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" _run \"\$__bin\" \"\$@\"")
             sb.appendLine("  local __rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \$__rc")
@@ -5642,18 +5658,19 @@ patchCodex(libDir);
             sb.appendLine("# Shelly-managed Codex runtime helpers (explicit only)")
             sb.appendLine("shelly-update-clis() {")
             sb.appendLine("  case \"\${1:-codex}\" in")
+            sb.appendLine("    claude|agy) __shelly_cli_update \"\$1\" \"\${2:-install}\" \"\${@:3}\" ;;")
             sb.appendLine("    codex|all|--check-only|--force)")
             sb.appendLine("      SHELLY_RUNTIME_UPDATE_SCRIPT=\"\$HOME/.shelly-runtime-update.js\" SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node -e 'const p=process.env.SHELLY_RUNTIME_UPDATE_SCRIPT; process.argv.splice(1, 0, p); require(p);' \"\$@\"")
             sb.appendLine("      ;;")
             sb.appendLine("    *)")
-            sb.appendLine("      echo 'shelly-update-clis: only Codex runtime is supported in this build' >&2")
+            sb.appendLine("      echo 'shelly-update-clis: use codex, claude or agy' >&2")
             sb.appendLine("      return 2")
             sb.appendLine("      ;;")
             sb.appendLine("  esac")
             sb.appendLine("}")
             sb.appendLine("shelly-doctor() { SHELLY_LIB_DIR=\"$libDir\" _run $libDir/node \"\$HOME/.shelly-doctor.js\" \"\$@\"; }")
             sb.appendLine("shelly-runtime-canary() { shelly-codex-diagnose; }")
-            sb.appendLine("export -f shelly-update-clis shelly-doctor shelly-runtime-canary")
+            sb.appendLine("export -f shelly-update-clis __shelly_cli_update claude-install agy-install shelly-doctor shelly-runtime-canary")
             sb.appendLine()
 
             sb.appendLine("# Prompt with dynamic HOME shortening")
@@ -5776,7 +5793,7 @@ patchCodex(libDir);
             sb.appendLine("    claude)")
             sb.appendLine("      unset __shelly_front_agent")
             sb.appendLine("      if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ] && declare -F claude >/dev/null; then claude")
-            sb.appendLine("      else printf '\\033[33m[shelly] Front agent: Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)\\033[0m\\n' >&2; fi ;;")
+            sb.appendLine("      else printf '\\033[33m[shelly] Front agent: Claude Code is not installed. Run: claude-install\\033[0m\\n' >&2; fi ;;")
             sb.appendLine("    *) unset __shelly_front_agent ;;")
             sb.appendLine("  esac")
             sb.appendLine("fi")
@@ -5879,12 +5896,24 @@ patchCodex(libDir);
         sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
         sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
         sb.appendLine("  local __bin=\"\$__root/claude\"")
+        sb.appendLine("  local __dir=\"\"")
         sb.appendLine("  local __proxy_js=\"\$HOME/.shelly-claude-proxy.js\"")
+        sb.appendLine("  # v289: the running version is its real directory, so an update cannot reach it.")
+        sb.appendLine("  # The agent runner never reads current: only the build the driver approved.")
+        sb.appendLine("  if [ -n \"\${__SHELLY_CLAUDE_AGENT_RUN:-}\" ]; then")
+        sb.appendLine("    __dir=\"\$(builtin cd -P \"\$__root/agent-current\" 2>/dev/null && builtin pwd -P)\"")
+        sb.appendLine("    if [ -z \"\$__dir\" ] || [ \"\$__dir\" != \"\${SHELLY_CLAUDE_AGENT_DIR:-}\" ]; then")
+        sb.appendLine("      echo \"shelly-claude-glibc: no Claude Code approved for agents. Run: claude-install --agent\" >&2; return 3")
+        sb.appendLine("    fi")
+        sb.appendLine("    __bin=\"\$__dir/claude\"")
+        sb.appendLine("  else")
+        sb.appendLine("    __dir=\"\$(builtin cd -P \"\$__root/current\" 2>/dev/null && builtin pwd -P)\" && __bin=\"\$__dir/claude\"")
+        sb.appendLine("  fi")
         sb.appendLine("  if [ ! -e \"\$__ld\" ]; then")
-        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (stage glibc ld.so first)\" >&2; return 2")
+        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (run: claude-install)\" >&2; return 2")
         sb.appendLine("  fi")
         sb.appendLine("  if [ ! -e \"\$__bin\" ]; then")
-        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (stage the Claude Code glibc binary first)\" >&2; return 2")
+        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (run: claude-install)\" >&2; return 2")
         sb.appendLine("  fi")
         sb.appendLine("  if [ ! -f \"\$__proxy_js\" ]; then")
         sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
@@ -5921,14 +5950,16 @@ patchCodex(libDir);
         sb.appendLine("      fi")
         sb.appendLine("      [ \"\$(cat \"\$__arm\" 2>/dev/null)\" = \"\$__armtag\" ] && rm -f \"\$__arm\"")
         sb.appendLine("      rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"")
+        sb.appendLine("      [ -n \"\$__dir\" ] && rm -f \"\$__root/leases/\$__me\"")
         sb.appendLine("    }")
+        sb.appendLine("    __me=\$BASHPID")
         sb.appendLine("    trap __cleanup EXIT")
+        sb.appendLine("    if [ -n \"\$__dir\" ]; then mkdir -p \"\$__root/leases\" 2>/dev/null; printf '%s\\n' \"\$__dir\" > \"\$__root/leases/\$__me\"; fi")
         sb.appendLine("    # v285: claude captures its shell snapshot with CLAUDE_CODE_SHELL (mksh here), which")
         sb.appendLine("    # records mksh's option table (set -o noexec ...) and every Bash command then ran")
         sb.appendLine("    # nothing. Delete old poisoned snapshots, then neutralize new ones while claude runs.")
         sb.appendLine("    __snapd=\"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/shell-snapshots\"")
         sb.appendLine("    __shelly_claude_snapshot_scrub \"\$__snapd\" delete")
-        sb.appendLine("    __me=\$BASHPID")
         sb.appendLine("    (")
         sb.appendLine("      __n=0")
         sb.appendLine("      while kill -0 \"\$__me\" 2>/dev/null; do")
@@ -5991,10 +6022,11 @@ patchCodex(libDir);
         sb.appendLine("    [ -n \"\${SHELLY_CLAUDE_SETTINGS_JSON:-}\" ] && __settings=\"\$SHELLY_CLAUDE_SETTINGS_JSON\"")
         sb.appendLine("    __xargs=()")
         sb.appendLine("    case \"\${1:-}\" in \"\"|-*) __xargs=(--settings \"\$__settings\") ;; esac")
-        sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON SHELLY_CLAUDE_AUTH")
+        sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON SHELLY_CLAUDE_AUTH SHELLY_CLAUDE_AGENT_DIR __SHELLY_CLAUDE_AGENT_RUN")
         sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
         sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
         sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" \\")
+        sb.appendLine("      DISABLE_UPDATES=1 \\")
         sb.appendLine("      CLAUDE_CODE_SHELL=\"\${CLAUDE_CODE_SHELL:-\$__sh}\" CLAUDE_ENV_FILE=\"\${CLAUDE_ENV_FILE:-\$__envf}\" \\")
         sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
         sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
@@ -6070,6 +6102,8 @@ patchCodex(libDir);
         sb.appendLine("# Non-interactive Claude Code (glibc) launcher for agent workers:")
         sb.appendLine("#   bash ~/.shelly-claude-run.sh <claude args>")
         sb.appendLine("# Same shelly-claude-glibc() as ~/.bashrc; the TUI paste markers are no-ops here.")
+        sb.appendLine("# It starts only the build agent-current names, and only if the driver agrees.")
+        sb.appendLine("__SHELLY_CLAUDE_AGENT_RUN=1")
         sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
         sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
         sb.appendLine("case \":\$PATH:\" in *:/system/bin:*) ;; *) export PATH=\"\${PATH:+\$PATH:}/system/bin\" ;; esac")

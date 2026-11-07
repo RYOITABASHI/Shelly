@@ -123,6 +123,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readDir(path: string): Promise<string>;
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
+  /** Active network is unmetered Wi-Fi or Ethernet. Optional: older native builds lack it. */
+  isNetworkUnmetered?(): Promise<boolean>;
   installApk(apkPath: string): Promise<void>;
   /** Toggle FLAG_SECURE on the activity window (no screenshots / recents thumbnail). Optional: older native builds lack it. */
   setWindowSecure?(secure: boolean): Promise<boolean>;

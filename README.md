@@ -276,13 +276,13 @@ After that, open **Settings → API Keys** (or run `shelly config` from the term
 
 ### Sign in
 
-Shelly's bundled AI CLI is **Codex**. **Claude Code** can be added by staging it yourself (see [Claude Code (manual staging)](#claude-code-manual-staging)), and Google's **Antigravity** CLI (`agy`) can be installed for terminal use. Everything else is an API provider you configure with a key.
+Shelly's bundled AI CLI is **Codex**. **Claude Code** is one command away (`claude-install`, see [Claude Code](#claude-code)), and Google's **Antigravity** CLI (`agy`) can be installed for terminal use. Everything else is an API provider you configure with a key.
 
 | Surface | How to sign in | Notes |
 |---|---|---|
 | **Codex CLI** (ChatGPT subscription) | Run `codex`, or `codex-login --open` directly | Bundled with the APK. If `~/.codex/auth.json` is missing or invalid, the `codex` wrapper starts Shelly's device-code login, opens the OpenAI device-code page in the in-app Browser Pane, writes `~/.codex/auth.json` (mode `0600`) on success, then launches the normal Codex TUI. No OpenAI API key required — this rides your ChatGPT subscription. |
-| **Claude Code** (manually staged) | Run `claude` and sign in, or set **Settings → Anthropic API Key** | Sign in inside the `claude` TUI; the sign-in URL opens only when you tap it (Shelly never opens URLs from terminal output by itself). For agent steps, the Anthropic API key is used when set; otherwise attended runs use the signed-in subscription, and unattended runs follow **Settings → Claude subscription for unattended runs** (on by default). |
-| **Antigravity** (`agy`) | `agy-install`, then `agy` | Terminal TUI only (download is SHA-512 checked). Shelly never starts it from agents or schedules. |
+| **Claude Code** (`claude-install`) | Run `claude` and sign in, or set **Settings → Anthropic API Key** | Sign in inside the `claude` TUI; the sign-in URL opens only when you tap it (Shelly never opens URLs from terminal output by itself). For agent steps, the Anthropic API key is used when set; otherwise attended runs use the signed-in subscription, and unattended runs follow **Settings → Claude subscription for unattended runs** (on by default). |
+| **Antigravity** (`agy`) | `agy-install`, then `agy` | Terminal TUI only (download is SHA-512 checked). Shelly never starts it from agents or schedules. Sign-in happens inside `agy`. |
 | **API providers** (Gemini, Cerebras, Groq, Perplexity, OpenRouter, local) | **Settings → API Keys** or `shelly config` | Paste a key per provider for AI-Pane / `@mention` / `@team` / background-agent use (OpenRouter is attended-only). Keys live in `expo-secure-store`. Local/OpenAI-compatible servers need only a base URL. |
 
 > **Codex login note.** `codex /login` inside the REPL is not the supported path on Shelly. Use bare `codex` and let Shelly's wrapper launch device-code auth, or run `codex-login --open` from bash.
@@ -293,11 +293,13 @@ Shelly's bundled AI CLI is **Codex**. **Claude Code** can be added by staging it
 |---|---|
 | `codex` | Launch the foreground Codex TUI in the native terminal. If auth is missing, Shelly starts the device-code login flow first. |
 | `codex-login --open` | Start ChatGPT subscription device-code auth and open the verification page in Shelly's Browser Pane. |
-| `claude` | Start the Claude Code TUI, if you staged it (see [Claude Code (manual staging)](#claude-code-manual-staging)). Otherwise it prints `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)`. |
-| `agy-install` / `agy` | Install Google's Antigravity CLI (SHA-512 checked) and start its TUI. Terminal use only; never started by agents or schedules. **Settings → Front agent** can open the `agy` or `claude` TUI in the first terminal tab at launch. |
+| `claude-install` | Download the official Claude Code and the glibc libraries it needs, check them, and make `claude` work (see [Claude Code](#claude-code)). `--channel stable` follows the slower channel; `--agent` adds the reviewed version agents use. |
+| `claude` | Start the Claude Code TUI. If it is not installed, it says to run `claude-install`. |
+| `agy-install` / `agy` | Install or update Google's Antigravity CLI (SHA-512 checked) and start its TUI. Terminal use only; never started by agents or schedules. **Settings → Front agent** can open the `agy` or `claude` TUI in the first terminal tab at launch. |
 | `shelly-doctor` / `shelly doctor [--report]` | Check shell/native binary presence, bundled Codex binaries, JS dispatcher, local LLM endpoints, and Codex auth file presence. `shelly doctor` runs the same check; `--report` prints a paste-ready device report. |
 | `shelly-codex-diagnose` | Run deeper Codex smoke/canary/edit/patch diagnostics. |
 | `shelly-update-clis codex --check-only` | Probe the active Codex runtime. Runtime installs are normally driven by the Updates UI. |
+| `shelly-update-clis claude rollback` / `agy rollback` | Go back to the previous Claude Code or Antigravity version. The version you left is held, so an update does not bring it straight back. |
 | `shelly-cs` / `cs` | GitHub Codespaces helper commands. |
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | Record the commands you run into a reusable workflow (see [Learning loop](#learning-loop)). |
 | `shelly install <pack>` / `shelly install --list` / `shelly uninstall <pack>` | Optional tool packs (`dev-tools`: python3, sqlite3, jq, make, gh; `editor-tools`: vim, tmux, nano, less, unzip, rg). Each release build pins the sha256 of its pack archives and verifies the download before installing it. Installed tools work offline and in already-open tabs. A missing pack tool prints `<cmd> is available: shelly install <pack>`; nothing downloads unless you run the command. Today these tools also ship inside the APK, so the packs only matter if a copy is missing. |
@@ -366,25 +368,33 @@ This is the part that makes Shelly more than a terminal skin. It is the reason t
 | Surface | Status | What that means |
 |---|---|---|
 | **Codex CLI** | Supported (bundled) | Bare `codex` launches the normal Codex TUI after Shelly verifies or creates `~/.codex/auth.json` through in-app device-code auth, running over the native PTY. Also an agent worker. |
-| **Claude Code** | Supported, manual staging | Not bundled and not downloaded by Shelly; you stage the official linux-arm64 glibc build yourself ([how](#claude-code-manual-staging)). `claude` starts its TUI; agent steps can run on it as a worker through the same gate as Codex. |
+| **Claude Code** | Supported, one-command install | Not bundled. `claude-install` has the device fetch the official, unmodified linux-arm64 build from Anthropic ([details](#claude-code)). `claude` starts its TUI; agent steps can run a reviewed version as a worker through the same gate as Codex. |
 | **Antigravity** (`agy`) | Terminal only | `agy-install` / `agy`. Never an agent worker or role engine, never started by agents or schedules. Settings → Front agent can open its TUI (or `claude`) in the first terminal tab. |
 | **AI Pane chat** | Supported through APIs | Uses configured providers: Gemini API, Cerebras, Groq, Perplexity, OpenRouter (attended AI-Pane use only), and local OpenAI-compatible servers. |
 | **Background / agent steps** | APIs, local LLM and CLI workers | API and local steps use the providers above. CLI steps run on Codex (ChatGPT sign-in) or Claude Code (Anthropic API key, or the signed-in subscription as described in [Sign in](#sign-in)), all through the same command gate. |
 | **Gemini API** | Supported where configured | Available for the AI Pane, `@gemini` routing, `@team`, multimodal/API-backed tasks, and background agents when a Gemini API key is set. (This is the API provider — there is no bundled Gemini CLI.) |
 
-### Claude Code (manual staging)
+### Claude Code
 
-Shelly does not bundle or download Claude Code. To use it, put the official, unmodified Claude Code **linux-arm64 (glibc)** build and a glibc runtime in this layout:
+Run `claude-install` in a terminal, or tap **Install** under Claude Code in the Builds screen. Then run `claude` and sign in, or set **Settings → Anthropic API Key**.
 
-```
-~/.shelly-runtime/claude-glibc/
-├── claude                        # the official linux-arm64 glibc binary
-└── lib/
-    ├── ld-linux-aarch64.so.1     # glibc's dynamic loader
-    └── ...                       # the glibc shared libraries it needs
-```
+Shelly does not bundle or redistribute Claude Code. Your device downloads it directly, and nothing is modified:
 
-Shelly starts it through its own userland loader (no root, no proot). Then run `claude` and sign in, or set Settings → Anthropic API Key. If the files are missing, `claude` prints `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)`.
+- **Claude Code** comes from Anthropic's release bucket. Its manifest must carry a signature from Anthropic's published release key, which is pinned in Shelly, and that manifest's SHA-256 and size must match the download.
+- **The glibc libraries** it needs (about 30 MB) come from Termux's `termux-glibc` packages, checked through the signed repository index, the same way `apt` would.
+- A new version is tried with `--version` and `--help` before it replaces anything. If that fails, the previous version stays, and the failed one is put on hold.
+
+Shelly starts Claude Code through its own userland loader (no root, no proot). Android is not on Anthropic's list of supported systems, so this path is not supported by Anthropic. Claude Code stays Anthropic's software under Anthropic's terms, and you sign in with your own account or key.
+
+**Updates.** After the first install, Shelly checks when the app starts, at most every 6 hours, and updates on Wi-Fi from the `latest` channel. Turn this off with **Update on Wi-Fi** in the Builds screen. Claude Code's built-in updater is switched off, so Shelly is the only thing changing the version. A running session is not touched; the new version starts with the next `claude`. Each version is about 350 MB, and the current and previous ones are both kept.
+
+**Agents use a reviewed version, not the newest one.** Agent safety depends on details of how Claude Code behaves, and those were reviewed against one version (2.1.314). An update never changes what agents run. Until you run `claude-install --agent` or tap **Enable for agents**, a Claude Code agent step stops and tells you to do so. That downloads the reviewed version as well, about 300 MB.
+
+If you staged Claude Code by hand before, it keeps working, and the next `claude-install` takes it over.
+
+### Antigravity
+
+`agy-install` fetches Google's official Android build, checks the SHA-512 in Google's manifest, and keeps versions the same way. Updates run on Wi-Fi from the same switch, and Antigravity's built-in updater is off. Google publishes no signature for this file, so the check is only as strong as HTTPS and that manifest. Shelly does not run Antigravity to test an update: it checks the hash and that the file is an Android ARM64 executable. So a build that does not start shows up when you run `agy`, and `shelly-update-clis agy rollback` goes back.
 
 ---
 
@@ -575,6 +585,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | STOP-ALL stops runs already in progress (not only future alarms); RESUME restores | ✅ verified on device (Galaxy Z Fold6, N=1, build 2818): a running Codex step ended within 10 seconds |
 | Approve by typing — OK / NO (or `ok <hash>` when two are waiting) in the agent's chat or MONITOR; an attended CLI step waits up to 10 minutes | ✅ approving from the notification is verified on device |
 | Antigravity `agy-install` / `agy` | ✅ `agy --version` verified on device |
+| `claude-install`, and Claude Code / Antigravity updates on Wi-Fi | 🟡 new in this build; checks run against the real vendor files on a PC, not yet verified on device |
 | Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required) | 🟡 Experimental — pairing, command execution and reconnecting after an in-app update with Keep ChatGPT connected verified on device |
 | MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |
 | ChatGPT → phone-app task — Codex runs `shelly closepaw --wait "<goal>"` → owner approves on the phone → the ClosePaw Shelly build works on a background virtual display → the result returns to ChatGPT | ✅ verified on device (Galaxy Z Fold6, N=1) — e.g. saving a Spotify playlist, saving places to a Google Maps list; long multi-step goals are still unreliable |
