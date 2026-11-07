@@ -2785,7 +2785,10 @@ const QUEUE_REFILL_NOT_NEEDED_MESSAGE = 'The queue has enough open topics, so no
 const QUEUE_REFILL_FAILED_MESSAGE = 'No new topics were added to the queue.';
 // A queue item has no use for these, and a listing link or image is against the
 // stream's rules whatever the model was told.
-const QUEUE_REFILL_DROP_LINE_RE = /https?:\/\/|www\.|!\[|<img/i;
+const QUEUE_REFILL_DROP_LINE_RE = /(?:https?|hxxps?):\/\/|\/\/[a-z0-9-]+\.|www\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\/\S|!\[|<\s*im(?:g|age)\b|\bdata:[a-z]+\//i;
+// A grounded call takes well under this. A hung one must leave the run's budget
+// to the article, or a topic lookup could fail the whole run.
+const QUEUE_REFILL_TIMEOUT_SECONDS = 120;
 // Written out rather than with a Unicode property escape: such a regex literal
 // stops this whole script from loading on a node built without ICU.
 const QUEUE_TITLE_NOISE_RE = /[\s!-/:-@[-`{-~、。・「」『』【】〈〉《》…―—–〜]+/g;
@@ -2811,7 +2814,7 @@ function queueTitleKey(title) {
 // One line of model output as plain text, or '' when it has to go.
 function cleanQueueRefillLine(raw, maxChars) {
   const text = String(raw == null ? '' : raw);
-  if (QUEUE_REFILL_DROP_LINE_RE.test(text)) return '';
+  if (QUEUE_REFILL_DROP_LINE_RE.test(text.normalize('NFKC'))) return '';
   const plain = sanitizeDigestText(text.replace(/\[[ xX]\]/g, ' '), QUEUE_MAX_BYTES).replace(/^[\s\-*+>#]+/, '');
   return Array.from(plain).slice(0, maxChars).join('').trim();
 }
@@ -7932,6 +7935,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         tool,
         action: { type: '__suppressed__' },
         toolLadder: [],
+        limits: Object.assign({}, plan.limits, { timeoutSeconds: QUEUE_REFILL_TIMEOUT_SECONDS }),
         sourcing: { mode: 'research', requestText: step.instruction },
       });
       // No quality gate: the parser below is stricter, and it decides what stays.

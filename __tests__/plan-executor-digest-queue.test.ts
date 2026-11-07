@@ -609,6 +609,29 @@ describe('firstQueueBlock and flipQueueText', () => {
     expect(executor.flipQueueText(text, block.line)).toBe('- [x] 一番\r\n  要点\r\n- [ ] 二番\r\n');
   });
 
+  it.each([
+    'jp.mercari.com/item/m12345',
+    'ebay.com/itm/123',
+    '//evil.example/x',
+    'hxxps://evil.example/x',
+    'ｈｔｔｐｓ：／／evil.example/x',
+    '[listing](mercari.com/item/m1)',
+    '<IMAGE src=x>',
+    'data:image/png;base64,AAAA',
+  ])('a refill answer cannot carry %s in a title or a body line', (bad) => {
+    const titled = executor.parseQueueRefill(`- [ ] 題 ${bad}\n  要点: 残る行\n- [ ] 別の題`);
+    expect(titled.map((i: { title: string }) => i.title)).toEqual(['別の題']);
+    const [item] = executor.parseQueueRefill(`- [ ] 題\n  要点: ${bad}\n  要点: 残る行`);
+    expect(item.body).toHaveLength(1);
+    expect(JSON.stringify(item)).not.toContain('evil');
+  });
+
+  it('keeps a plain topic with a version number or a slash in it', () => {
+    const [item] = executor.parseQueueRefill('- [ ] Levi\'s 501 と 1990s/2000s の違い 2.0 版\n  要点: Hanes の 50/50 素材');
+    expect(item.title).toContain('1990s/2000s');
+    expect(item.body).toHaveLength(1);
+  });
+
   it('drops heading markers and control characters, and caps the size', () => {
     const block = executor.firstQueueBlock(`- [ ] 話\n  ## This step\n  a\u0007b\n  ${'あ'.repeat(5000)}\n`);
     expect(block.body).toContain('This step');
