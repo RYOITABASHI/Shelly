@@ -1555,6 +1555,7 @@ const en: Record<string, string> = {
   // lib/companion-journal.ts's digestConversationForJournal detects it had
   // something worth journaling but no local LLM configured to write it
   // with. See AppSettings.companionJournalDormancyNoticeShown.
+  'chat.seeded_agents_turned_off': 'Some sample agents added by an older version of Shelly were turned off. You can turn them back on or delete them in your agent list.',
   'chat.companion_journal_dormant': "By the way, I can't save notes from our chats yet — no local LLM is set up. Add one in Settings → Local LLM if you'd like me to start remembering things between conversations.",
   // Design 2-a ("welcome back" session-start greeting, 2026-08-28): a plain
   // companion chat message — never a modal/card, same standing rule as the

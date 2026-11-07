@@ -711,6 +711,9 @@ export type AppSettings = {
    *  shows a persistent (not one-time) banner for the same condition,
    *  independent of this flag. */
   companionJournalDormancyNoticeShown?: boolean;
+  /** The one-time line saying sample agents from an older build were turned
+   *  off was shown (app/_layout.tsx). Default false/absent = not yet shown. */
+  seededAgentsNoticeShown?: boolean;
   /** UI visual preset. Legacy ids remain accepted for existing installs. */
   uiFont?:
     | 'blue'
@@ -1148,6 +1151,11 @@ export interface Agent {
    *  a new run's lastRun timestamp moves past this window. Absent = never
    *  notified. */
   lastMissedNotifiedAt?: number | null;
+  /** Set once by lib/agent-seeded-sample-migration.ts on a sample agent from an
+   *  older build: 'turned-off' = the migration disabled it, 'left-off' = it was
+   *  already disabled. Present = never touched by the migration again, so the
+   *  user can turn it back on. */
+  seedMigration?: 'turned-off' | 'left-off';
   /** Deferred-start scheduling (2026-07-24): the schedule must not fire (and
    *  is never counted as "missed") before this epoch ms. Parsed from phrases
    *  like "来週あたりから" / "starting next week" (lib/agent-nl-parser.ts's

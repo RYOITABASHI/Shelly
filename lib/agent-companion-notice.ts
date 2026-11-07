@@ -111,6 +111,24 @@ export function postCompanionJournalDormancyNotice(noticeText: string): boolean 
   return true;
 }
 
+const SEEDED_AGENTS_NOTICE_ID = 'seeded-agents-turned-off-notice';
+
+/** One plain chat line after lib/agent-seeded-sample-migration.ts turned sample
+ *  agents off. Fixed id, like the dormancy notice above; the caller
+ *  (app/_layout.tsx) also holds AppSettings.seededAgentsNoticeShown. */
+export function postSeededAgentsOffNotice(noticeText: string): boolean {
+  const store = useAIPaneStore.getState();
+  const messages = store.conversations[COMPANION_CONVERSATION_KEY]?.messages ?? [];
+  if (messages.some((message) => message.id === SEEDED_AGENTS_NOTICE_ID)) return false;
+  store.addMessage(COMPANION_CONVERSATION_KEY, {
+    id: SEEDED_AGENTS_NOTICE_ID,
+    role: 'assistant',
+    content: noticeText,
+    timestamp: Date.now(),
+  });
+  return true;
+}
+
 // ─── Agent hand-off narration (lib/agent-handoff.ts) ─────────────────────────
 
 /**

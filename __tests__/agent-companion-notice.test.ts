@@ -5,6 +5,7 @@ import {
   postAgentRunStartedNotice,
   postCompanionJournalDormancyNotice,
   postLatestAgentRunToCompanion,
+  postSeededAgentsOffNotice,
 } from '@/lib/agent-companion-notice';
 import { COMPANION_CONVERSATION_KEY, useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentStore } from '@/store/agent-store';
@@ -124,6 +125,17 @@ describe('unattended run-log sync deduplication', () => {
 // function itself guarantees is that a second post within the same session
 // (e.g. a settings-flag write racing/failing between two switches) can
 // never produce two lines in the companion thread.
+describe('seeded agents notice', () => {
+  it('posts one plain line and never a second', () => {
+    expect(postSeededAgentsOffNotice('first call')).toBe(true);
+    expect(postSeededAgentsOffNotice('second call')).toBe(false);
+
+    const messages = useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual(expect.objectContaining({ role: 'assistant', content: 'first call' }));
+  });
+});
+
 describe('companion journal dormancy notice', () => {
   it('posts a single plain-chat-text line into the shared companion thread', () => {
     expect(postCompanionJournalDormancyNotice('no local LLM is configured yet')).toBe(true);

@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-07: CC（fix/disable-seeded-content-agents、未push）が旧ビルドのサンプルエージェントを更新時に一度だけオフにするマイグレーションを追加（`lib/agent-seeded-sample-migration.ts`）。id と定義全体のフィンガープリントで判定し、編集済みは触らない。実機は未検証（次回のオンデバイス QA で、サンプルが残る端末で一度だけオフになること・オンに戻したら維持されること・通知 1 行を確認）。
 - 2026-11-07: CC（feat/codex-termux-official、未push）が Codex の取得元を Termux 公式パッケージへ切り替えた（CLI 常時最新計画の Inc 3 の取得元部分）。CI の検証、Bump ジョブからの APK なし配信、ワーカーの `agent-current` 分離。実機未検証。
 - 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。Codex の Web 検索は承認なしで通し監査行を残すことをオーナーが決定。T1 の結果を受けて exec-wrapper v227 と BASHRC_VERSION 287 で公式 Termux 版の remote control に対応（実機未検証）。
 - 2026-11-07: CC（chore/remove-personal-article-pipeline、未push）が記事パイプラインを汎用エンジン＋ユーザーの設定ファイルに整理した。

@@ -585,6 +585,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | STOP-ALL stops runs already in progress (not only future alarms); RESUME restores | ✅ verified on device (Galaxy Z Fold6, N=1, build 2818): a running Codex step ended within 10 seconds |
 | Approve by typing — OK / NO (or `ok <hash>` when two are waiting) in the agent's chat or MONITOR; an attended CLI step waits up to 10 minutes | ✅ approving from the notification is verified on device |
 | Antigravity `agy-install` / `agy` | ✅ `agy --version` verified on device |
+| Sample agents added by older versions are turned off once on update | 🟡 new in this build; tested off device, not yet verified on device |
 | `claude-install`, and Claude Code / Antigravity updates from the Builds screen | 🟡 new in this build; checks run against the real vendor files on a PC, not yet verified on device |
 | Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required) | 🟡 Experimental — pairing, command execution and reconnecting after an in-app update with Keep ChatGPT connected verified on device |
 | MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |

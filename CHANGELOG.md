@@ -30,6 +30,8 @@ All notable changes to Shelly are documented here. Format loosely follows
 - **Shelly no longer adds sample agents.** The seeded content agents and their
   templates are gone, and running an agent no longer creates a project folder.
   Nothing already on your device is removed.
+- **Sample agents added by older versions are turned off once on update**, and
+  stay in your agent list to turn back on or delete.
 - **Claude Code agents run a reviewed version only.** An update never changes
   it. `claude-install --agent` installs it; without it, a Claude Code agent step
   stops and says so.

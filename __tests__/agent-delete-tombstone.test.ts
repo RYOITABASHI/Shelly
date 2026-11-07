@@ -57,9 +57,9 @@ describe('agent deletion tombstones', () => {
 
   it('filters tombstoned agents so deleted seed agents cannot reappear in the sidebar', () => {
     expect(filterDeletedAgentMetadata(
-      [agent('x-casual-draft'), agent('codex-article-draft'), agent('..'), agent('bad.id')],
-      new Set(['x-casual-draft']),
-    ).map((a) => a.id)).toEqual(['codex-article-draft']);
+      [agent('agent-deleted'), agent('agent-kept'), agent('..'), agent('bad.id')],
+      new Set(['agent-deleted']),
+    ).map((a) => a.id)).toEqual(['agent-kept']);
   });
 
   it('rejects path-like agent ids before issuing shell deletes', async () => {

@@ -578,6 +578,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | STOP-ALL が実行中の run も止める（今後のアラームだけでなく）、RESUME で復帰 | ✅ 実機検証済み（Galaxy Z Fold6、N=1、build 2818）: 実行中の Codex ステップが 10 秒以内に終了 |
 | 打って承認 — エージェントのチャットか MONITOR で OK / NO（2 件待ちなら `ok <hash>`）、有人の CLI ステップは最大 10 分待つ | ✅ 通知からの承認は実機検証済み |
 | Antigravity の `agy-install` / `agy` | ✅ `agy --version` は実機で確認済み |
+| 以前のバージョンが追加したサンプルエージェントを更新時に一度だけオフにする | 🟡 このビルドで追加。テストは端末外で実施、実機は未確認 |
 | `claude-install`、Builds 画面からの Claude Code / Antigravity の更新 | 🟡 このビルドで追加。検証は PC 上で公式の配布物に対して実施、実機は未確認 |
 | Codex リモート操作のホスト — `shelly codex pair` が公式の `codex remote-control --no-daemon` を動かし、ChatGPT アプリの Codex からこの端末を操作できる（ChatGPT サインインが必要） | 🟡 Experimental — ペアリング、コマンド実行、「ChatGPT との接続を維持」でのアプリ内アップデート後の再接続は実機検証済み |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |

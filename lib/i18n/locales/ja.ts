@@ -1519,6 +1519,7 @@ const ja: Record<string, string> = {
   // 価値はあるがローカルLLM未設定で書き込めない」と検知した最初のタイミングで
   // lib/agent-companion-notice.tsのpostCompanionJournalDormancyNoticeから
   // 投稿される。AppSettings.companionJournalDormancyNoticeShown参照。
+  'chat.seeded_agents_turned_off': '以前のバージョンの Shelly が追加したサンプルエージェントをオフにしました。エージェント一覧からオンに戻すことも、削除することもできます。',
   'chat.companion_journal_dormant': 'ところで、ローカルLLMが未設定なので、まだ会話の内容を記録できていません。会話の間も覚えておいてほしければ、設定→ローカルLLM から設定してみてください。',
   // Design 2-a（セッション開始「おかえりなさい」挨拶、2026-08-28）:
   // 上のオンボーディング促しと同じ、普通のチャットメッセージ（モーダル/

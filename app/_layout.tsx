@@ -57,7 +57,9 @@ import {
   AgentRunLogNoticeTracker,
   postAgentCompanionNotice,
   postAgentHandoffDigest,
+  postSeededAgentsOffNotice,
 } from '@/lib/agent-companion-notice';
+import { hasTurnedOffSeededSample } from '@/lib/agent-seeded-sample-migration';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
   getCodexApprovalReadiness,
@@ -2931,6 +2933,23 @@ export default function RootLayout() {
   // refactor; reinstate it so switching EN/JA in Settings actually takes
   // effect without relaunching the app.
   const locale = useI18n((s) => s.locale);
+
+  // One line, once, after the migration turned off sample agents from an older
+  // build. Waits for both stores, or the flag and the message could be lost to
+  // their own hydration; the migration ran earlier, in loadAgentsFromDisk.
+  const seededAgentsTurnedOff = useAgentStore((s) => hasTurnedOffSeededSample(s.agents));
+  const aiPaneLoaded = useAIPaneStore((s) => s.isLoaded);
+  useEffect(() => {
+    if (!seededAgentsTurnedOff || !aiPaneLoaded || !baseSettingsLoaded) return;
+    const settingsStore = useSettingsStore.getState();
+    if (settingsStore.settings.seededAgentsNoticeShown) return;
+    try {
+      postSeededAgentsOffNotice(t('chat.seeded_agents_turned_off'));
+      settingsStore.updateSettings({ seededAgentsNoticeShown: true });
+    } catch (e) {
+      logError('RootLayout', 'seeded agents notice failed', e);
+    }
+  }, [seededAgentsTurnedOff, aiPaneLoaded, baseSettingsLoaded, t]);
 
   // MONITOR home-screen widget: mirror the app language natively so the
   // widget's words and currency (yen / dollars) follow the app, not the

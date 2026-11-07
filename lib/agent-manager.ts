@@ -31,6 +31,7 @@ import { ensureAgentKeepAlive, keepAliveDelay } from './agent-keepalive';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
+import { migrateSeededSampleAgents } from './agent-seeded-sample-migration';
 import { CONTINUOUS_CHECKPOINT_FILE, CONTINUOUS_STOP_MARKER_FILE, isContinuousAgent, normalizeContinuousConfig } from './agent-continuous';
 import { t } from '@/lib/i18n';
 import {
@@ -4370,16 +4371,30 @@ export async function loadAgentsFromDisk(
       // ignore — default not halted
     }
 
-    const agents = syncLogs
+    const listedAgents = syncLogs
       ? await readAgentMetadataViaShell(runCommand)
       : await readAgentMetadataLightweight(runCommand);
 
-    if (agents.length === 0) {
+    if (listedAgents.length === 0) {
       useAgentStore.getState().setAgents([]);
       // Still sweep — "deleted every agent" can leave orphan scripts/logs.
       if (syncLogs) void cleanupOrphanAgentFiles(runCommand);
       return;
     }
+    // Before the store and startup repair see the list, so a sample turned off
+    // here is never re-armed.
+    const agents = await migrateSeededSampleAgents(listedAgents, {
+      readAgent: async (agentId) => {
+        const disk: unknown = await readAgentDiskState(agentId, runCommand);
+        return isAgentMetadata(disk) ? disk : null;
+      },
+      writeAgent: async (agent) => {
+        await runCommand(
+          `set -e\n${writeFileCommand(`${agentsDir()}/${agent.id}.json`, JSON.stringify(agent, null, 2))}`
+        );
+      },
+      cancelAlarm: uninstallSchedule,
+    });
     const runHistory = syncLogs
       ? await readAgentRunLogs(runCommand)
       : useAgentStore.getState().runHistory;
