@@ -1174,6 +1174,11 @@ var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|p
 var SHELL_SCRIPT_FILE_RE = /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
 var PIPED_INTERPRETER_RE = /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
 var INDIRECT_EXEC_RE = /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
+var RG_RUNS_PROGRAM_RE = /(?:^|[\s;&|(])(?:[^\s;&|]*\/)?rg\b[^;&|]*\s--(?:pre|pre-glob|hostname-bin)(?:[=\s]|$)|\bRIPGREP_CONFIG_PATH\b/;
+function rgRunsProgram(command) {
+  const words = dequoteShellWords(command);
+  return [command, words, dequoteShellWords(words)].some((c) => RG_RUNS_PROGRAM_RE.test(c));
+}
 var HEREDOC_OWNER_COMMANDS = /* @__PURE__ */ new Set(["cat", "tee"]);
 var HEREDOC_PLAIN_COMMANDS = /* @__PURE__ */ new Set([
   "cat",
@@ -1563,7 +1568,7 @@ function classifyProposedCommand(command, ctx) {
   if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
     signals.push("opaque-script-exec");
   }
-  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command)) || rgRunsProgram(command)) {
     signals.push("indirect-exec");
   }
   const isPureRead = isPureReadCommand(command) && !signals.includes("network-send") && !signals.includes("opaque-script-exec");

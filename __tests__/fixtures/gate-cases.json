@@ -303,6 +303,42 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "rg --pre runs a program -> escalate at L2 (indirect-exec)",
+    "command": "rg --pre ./x foo",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "rg --pre=path -> escalate at L1 (indirect-exec)",
+    "command": "rg --pre=./x foo",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "rg --pre-glob -> escalate at L2 (indirect-exec)",
+    "command": "rg --pre-glob '*.md' foo",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "plain rg stays a read -> allow at L1",
+    "command": "rg --preview-not-a-flag foo",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
     "name": "after-draft hook redirect write -> deny (policy-write)",
     "command": "echo x > ~/.shelly/agents/after-draft-hook.js",
     "policy": {

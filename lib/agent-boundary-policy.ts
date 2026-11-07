@@ -566,6 +566,20 @@ const INDIRECT_EXEC_RE =
   /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
 
 /**
+ * `rg` reads as a read-only tool, but these make it launch a program of the
+ * caller's choosing, so they take the indirect-exec signal: `--pre` and its
+ * `--pre-glob`, `--hostname-bin`, and a config file, which can hold any of them.
+ * Without the signal the command was an auto-allow even at L1.
+ */
+const RG_RUNS_PROGRAM_RE =
+  /(?:^|[\s;&|(])(?:[^\s;&|]*\/)?rg\b[^;&|]*\s--(?:pre|pre-glob|hostname-bin)(?:[=\s]|$)|\bRIPGREP_CONFIG_PATH\b/;
+
+function rgRunsProgram(command: string): boolean {
+  const words = dequoteShellWords(command);
+  return [command, words, dequoteShellWords(words)].some((c) => RG_RUNS_PROGRAM_RE.test(c));
+}
+
+/**
  * Quoted heredocs (DEFERRED.md 2026-11-02 rehearsal, item (m)).
  *
  * Codex writes files as `cat > f.html <<'EOF' … EOF`. With a QUOTED delimiter
@@ -1019,7 +1033,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   }
   // Quoted heredoc bodies are literal data: judged without them, but only
   // ever narrowing — the full command must match too (indirectExecView).
-  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+  if ((INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) || rgRunsProgram(command)) {
     signals.push('indirect-exec');
   }
   const isPureRead =

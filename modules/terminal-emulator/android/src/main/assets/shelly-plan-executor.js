@@ -158,8 +158,8 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // into appended queue items and never carried, and it cannot fail the run. Other
 // plans run exactly as before. Bumped so a stale v34 copy, which refuses the step,
 // is refreshed.
-// v36 (2026-11-07, after-draft hook): after a longform chain saved its draft, the
-// run ended and its queue item is ticked, run the user's own
+// v36 (2026-11-07, after-draft hook): after a longform chain other than a digest
+// saved its draft, the run ended and its queue item is ticked, run the user's own
 // ~/.shelly/agents/after-draft-hook.js if it exists. Without the file nothing
 // changes. Bumped so every copy on a device agrees with native.
 const EXECUTOR_SCRIPT_VERSION = 36;
@@ -6651,8 +6651,8 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   return { status: 'success', preview };
 }
 
-// Optional extension point (v36). A longform run that saved its draft runs the
-// user's own script, if it exists, with the saved path as its only argument.
+// Optional extension point (v36). A longform run that saved its draft, other than
+// a digest, runs the user's own script, if it exists, with the saved path as its only argument.
 // run() calls this after the run is recorded, so the hook has no say in the run:
 // every outcome is one audit line holding a status, and nothing here notifies or
 // throws. The gate refuses worker commands naming the file
@@ -6751,7 +6751,8 @@ function spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs) {
       finish('spawn-error');
     });
     child.once('close', (code) => {
-      liveAfterDraftHook = null;
+      // Its group may outlive it: a hook leaves nothing running.
+      killAfterDraftHook();
       finish(code === 0 ? 'ok' : 'failed');
     });
   });
@@ -9051,7 +9052,7 @@ async function run(args) {
       status: action.status,
       durationMs,
     });
-    if (hasChain && plan.steps.longform === true && action.status === 'success' && !action.halted && paths.savedOutput) {
+    if (hasChain && plan.steps.longform === true && !isDigestPlan(plan) && action.status === 'success' && !action.halted && paths.savedOutput) {
       afterDraftPath = paths.savedOutput.savedPath;
     }
     return EXIT.OK;

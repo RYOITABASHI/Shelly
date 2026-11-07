@@ -108,6 +108,12 @@
 ### after-draft フック（executor v36）— 実機未検証 (P1)
 `~/.shelly/agents/after-draft-hook.js`。形式は `docs/article-pipeline-config.md`。Windows の Jest ではプロセスグループの kill・SIGTERM・パーミッションの経路が skip になるので、実機で確認する: (1) スケジュール実行で引数に保存先が渡る。(2) `chmod 666` と symlink が `refused` になる。(3) 終わらないフックが 120 秒で孫プロセスごと止まり、run は success のまま。(4) STOP ALL で止まる。ゲートは文字列照合なので、名前を組み立てるコマンドやワークスペース内 symlink 経由の書き込み（`tar xf` / `git clone` の件）は防げない。ファイルの内容は封印していない。Why not now: 封印には登録の手順が要り、今回の範囲を超える。
 
+### after-draft フックの内容を封印する — 未対応 (P1)
+今はゲートの文字列照合だけで守っている。ワークスペースで任意のコードを動かせるワーカーは実行時にパスを組み立てられ、フックが読み込む補助ファイルも守られない。フックが何らかの鍵に依存するようになる前に、`roles.json` と同じく Keystore 裏付けの SecureStore にハッシュを封印し、executor が起動前に検証する。Why not now: 登録の手順と UI が要り、フックが鍵を持たない間は急がない。
+
+### gate が読み取りとして通すが、書き込みや実行ができるフラグ — 未対応 (P2)
+`READ_ONLY_RE` は先頭のコマンド名だけを見るので、次は L1 でも auto-allow（2026-11-07、gate の helper で観測）: `find -exec` / `-delete` / `-fprint`、`git diff --ext-diff`、`git log/diff --output=`、`git show --textconv`、`less -o`。`rg --pre` / `--pre-glob` / `--hostname-bin` と `RIPGREP_CONFIG_PATH` は `indirect-exec` にして解消済み。`find -okdir`・`-execdir`・`-ok`・`-fprintf`・`-fls` も同じ形と見込むが未観測。Why not now: 変更の範囲を hook に絞ったため。
+
 ### `queue-refill` のエンジンが executor に固定 — 未対応 (P2)
 `scripts/shelly-plan-executor.js` の `QUEUE_REFILL_TOOL_TYPE` は `gemini-api` 固定で、設定の `engines` に従わない（Gemini のキーがなければ補充は失敗し、run は失敗にならない）。直すなら計画に engine を載せ、executor を版上げする。同じ箇所のコメントが消えた定数名を指しているので一緒に直す。
 

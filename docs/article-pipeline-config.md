@@ -45,7 +45,7 @@ The agent only ever saves a draft. It never publishes and is never autonomous, a
 
 ## After-draft hook
 
-If `~/.shelly/agents/after-draft-hook.js` exists, Shelly runs it with `node` once after a pipeline or digest run has saved its draft, ticked its queue item and been recorded. Without the file, nothing happens.
+If `~/.shelly/agents/after-draft-hook.js` exists, Shelly runs it with `node` once after a pipeline run has saved its draft, ticked its queue item and been recorded. Without the file, nothing happens.
 
 ```js
 // process.argv[2] is the saved draft's absolute path.
@@ -53,8 +53,8 @@ const fs = require('fs');
 const text = fs.readFileSync(process.argv[2], 'utf8');
 ```
 
-- **When it runs**: only after a run that saved a draft. A run skipped because today's draft exists, a failed run and any other agent do not call it.
-- **What it gets**: the saved path as its one argument, your home as its working folder, and a short environment (`HOME`, `PATH`, locale, time zone, certificate paths). No API keys and no `NODE_OPTIONS`.
-- **What it cannot do**: fail or hold up the run. It is stopped after 120 seconds and by Stop All, its output is discarded, and it sends no notice. The agent's audit log (`logs/<id>/plan-executor-audit.jsonl`) gets one `after_draft_hook` line with a status: `ok`, `failed`, `timeout`, `halted`, `refused`, `spawn-error`, `too-late` or `error`.
+- **When it runs**: only after a run that saved a draft. That includes a draft saved with `review: unresolved`, so read the frontmatter before acting on one. A run skipped because today's draft exists, a failed run, a digest and any other agent do not call it.
+- **What it gets**: the saved path as its one argument, your home as its working folder, and a short environment (`HOME`, `PATH`, locale, time zone, certificate paths). The environment holds no API keys and no `NODE_OPTIONS`. That covers the environment only: the hook runs as the app, so it can read any file the app can, including `~/.shelly/agents/.env`.
+- **What it cannot do**: fail or hold up the run. It is stopped after 120 seconds and by Stop All, anything it started is stopped when it exits, its output is discarded, and it sends no notice. The agent's audit log (`logs/<id>/plan-executor-audit.jsonl`) gets one `after_draft_hook` line with a status: `ok`, `failed`, `timeout`, `halted`, `refused`, `spawn-error`, `too-late` or `error`.
 - **Requirements**: a regular file owned by the app, with one hard link, not a symlink, and not writable by group or others (`chmod 600`). Anything else is `refused`.
-- **Who can change it**: you. The gate refuses agent workers any command that names the file, unless it is a plain read.
+- **Who can change it**: the gate refuses agent workers any command that names the file, unless it is a plain read. This is a match on the command text, not a lock. A worker able to run code of its own in a workspace could build the path at run time, and files the hook loads or calls are not protected at all. The file's content is not sealed, so treat it as code that runs without you, and do not give it credentials you would not give an agent.

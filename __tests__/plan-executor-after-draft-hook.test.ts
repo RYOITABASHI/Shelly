@@ -467,16 +467,40 @@ setInterval(() => {}, 1000);
     expect(hookAudit(home)).toEqual([]);
   }, 30000);
 
-  it('a digest is a saved draft too, and a failing hook leaves its notice alone', async () => {
+  it('a digest does not call it', async () => {
     const home = makeHome();
     const vault = makeVault();
     const dir = path.join(vault, 'Drafts', 'Digest');
     fs.mkdirSync(dir);
-    writeHook(home, 'process.exit(1);');
+    writeHook(home, RECORDING_HOOK);
     expect(await runExecutor(writePlan(home, port, vault, dir, digestChain()), home)).toBe(0);
     expect(readRunLog(home).status).toBe('success');
     expect(JSON.parse(fs.readFileSync(notificationFile(home), 'utf8')).status).toBe('success');
-    expect(hookAudit(home).map((e) => e.status)).toEqual(['failed']);
+    expect(fs.existsSync(path.join(home, 'seen.json'))).toBe(false);
+    expect(hookAudit(home)).toEqual([]);
+  }, 30000);
+
+  it('a draft whose review never passed calls it too, for the hook to judge', async () => {
+    const home = makeHome();
+    writeHook(home, RECORDING_HOOK);
+    replies = [research, '# Heading\n\nBody [1].', 'VERDICT: REVISE\n- a', '# Heading\n\nBody [1].', 'VERDICT: REVISE\n- b', '# Heading\n\nBody [1].'];
+    expectUnharmed(home, await runExecutor(streamPlan(home, makeVault()), home));
+    expect(seen(home).draft).toContain('review: unresolved');
+  }, 30000);
+
+  (process.platform === 'win32' ? it.skip : it)('what a hook started does not outlive a hook that exits on its own', async () => {
+    const home = makeHome();
+    writeHook(home, `
+const { spawn } = require('child_process');
+const kid = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: false });
+kid.unref();
+require('fs').writeFileSync(require('path').join(process.env.HOME, 'pids'), String(kid.pid));
+`);
+    goodRun();
+    expectUnharmed(home, await runExecutor(streamPlan(home, makeVault()), home));
+    const pid = Number(fs.readFileSync(path.join(home, 'pids'), 'utf8'));
+    expect(await waitFor(() => !pidAlive(pid), 3000)).toBe(true);
+    expect(hookAudit(home).map((e) => e.status)).toEqual(['ok']);
   }, 30000);
 });
 
