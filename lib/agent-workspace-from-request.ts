@@ -4,7 +4,7 @@
  * 2026-11-01, on-device rehearsal build 2772).
  *
  * Why: an agent without `workspaceRoot` runs its CLI workers (Codex / Claude
- * Code) in the default content project (~/projects/shelly-content-studio).
+ * Code) in the default folder (lib/agent-default-workspace.ts).
  * A request like "build ~/demo/codex.html with Codex and ~/demo/claude.html
  * with Claude Code" then makes every touch of ~/demo a `leaves-root`
  * escalation — the user had to approve 7 of them. When the request's paths

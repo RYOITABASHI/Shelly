@@ -293,7 +293,7 @@ const en: Record<string, string> = {
   'agents.output_custom': 'Custom',
   'agents.vault_path_ph': 'Vault path (e.g. /sdcard/Documents/ObsidianVault)',
   'agents.custom_path_ph': 'Output path (e.g. /sdcard/Download/AgentOut)',
-  'agents.topic_folder_ph': 'Topic folder (optional, e.g. STEAM_AI)',
+  'agents.topic_folder_ph': 'Topic folder (optional, e.g. Research)',
   'agents.output_resolved_path': 'Current save location: {{path}}',
   'agents.output_resolved_path_hint': '`<date>` and `<title>` are filled in when an agent actually saves.',
   'agents.cloud_consent_title': 'Autonomous cloud access',
@@ -427,6 +427,9 @@ const en: Record<string, string> = {
   // PlanSpec-executor-only (scheduled/unattended runs only).
   'agents.api_call_attended_unsupported': 'This agent includes an API-call step, which currently only supports scheduled execution — it can\'t be run now.',
   'agents.longform_attended_unsupported': 'This article pipeline only runs on its schedule, so it can\'t be run now. To test it, set the schedule a few minutes ahead.',
+  'agents.article_pipeline_no_file': 'Shelly has no built-in article pipeline. Add your own series to {{path}}, then ask again with its id.',
+  'agents.article_pipeline_pick': 'Which one? Add its id to your request: {{ids}}',
+  'agents.article_pipeline_invalid': 'I could not use {{path}}: {{detail}}',
 
   // ── Agent confirm/preview card (Phase 0 §2.1) ────────────────────
   'agentcard.title': 'Register this agent?',
@@ -1693,7 +1696,7 @@ const en: Record<string, string> = {
   'obsidian.collect': 'Collect',
   'obsidian.collecting': 'Collecting from arXiv / Semantic Scholar / Perplexity...',
   'obsidian.no_briefing': 'No briefing for today',
-  'obsidian.collect_hint': 'Tap "Collect" to fetch\nthe latest STEAM/EdTech updates',
+  'obsidian.collect_hint': 'Tap "Collect" to fetch\nthe latest updates',
   'obsidian.collect_now': 'Collect now',
   'obsidian.back_list': 'List',
   'obsidian.back_detail': 'Detail',

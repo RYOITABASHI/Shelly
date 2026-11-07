@@ -16,6 +16,7 @@ import { isAgentIntentMode, sanitizeClosePawGoal } from './agent-intent-review';
 import { buildAgentPolicy } from './agent-policy';
 import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
+import { defaultAgentWorkspace } from './agent-default-workspace';
 import { isApiKeyStep, isOrchestrated, isolatedApiStepPolicy, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
 import { applyContinuousProviderPolicy, continuousExcludesPaidApi, isPaidApiTool, normalizeContinuousConfig } from './agent-continuous';
@@ -500,7 +501,9 @@ export function buildAgentPlanSpec(
       : routeDecision,
     ...(orchestrationSteps ? { steps: orchestrationSteps } : {}),
     ...(orchestrationSteps && hasCliStep
-      ? { cliWorker: { cwd: safeWorkspaceRoot, policy: buildAgentPolicy(agent, home, { unattended: true }) } }
+      // Never empty: the executor would run the worker in the home, and the
+      // driver takes its cwd as the workspace root (lib/agent-default-workspace.ts).
+      ? { cliWorker: { cwd: safeWorkspaceRoot || defaultAgentWorkspace(home), policy: buildAgentPolicy(agent, home, { unattended: true }) } }
       : {}),
     ...(continuousConfig
       ? {

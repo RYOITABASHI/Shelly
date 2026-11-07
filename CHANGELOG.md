@@ -16,9 +16,20 @@ All notable changes to Shelly are documented here. Format loosely follows
   `current`, `previous` and a hold on failed versions. The Builds screen now
   shows all three CLIs, with update and go-back buttons, and an optional update
   at app start on Wi-Fi (off by default). Their built-in updaters are off.
+- **Article pipelines from your own config.** A scheduled long-form chain
+  (research, write, review, revise, save a draft) built from
+  `~/.shelly/agents/article-pipelines.json`, with your own prompts, engines,
+  schedule and folders. Shelly ships none. See
+  [docs/article-pipeline-config.md](./docs/article-pipeline-config.md).
 
 ### Changed
 
+- **Requests that say "compare" or name a model use normal routing.** They no
+  longer turn into a fixed two-model evaluation. Existing agents on that tool
+  keep running, with a generic prompt.
+- **Shelly no longer adds sample agents.** The seeded content agents and their
+  templates are gone, and running an agent no longer creates a project folder.
+  Nothing already on your device is removed.
 - **Claude Code agents run a reviewed version only.** An update never changes
   it. `claude-install --agent` installs it; without it, a Claude Code agent step
   stops and says so.

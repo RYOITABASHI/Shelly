@@ -37,7 +37,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 );
 
 import { runAgentNow } from '@/lib/agent-manager';
-import { buildArticlePipeline } from '@/lib/agent-pipeline-presets';
+import { examplePipeline } from './fixtures/article-pipeline-config';
 import { useAgentStore } from '@/store/agent-store';
 import { Agent } from '@/store/types';
 import { t } from '@/lib/i18n';
@@ -119,7 +119,7 @@ describe('runAgentNow — api-call (v1) attended-run guard', () => {
   // step and cannot carry longform text.
   it('refuses cleanly when a step is a local step, or the chain is longform', async () => {
     const message = t('agents.longform_attended_unsupported');
-    const local = { kind: 'assemble' as const, parts: [[0]], stream: 'ai-steam', footer: 'footer' };
+    const local = { kind: 'assemble' as const, parts: [[0]], stream: 'example-a', footer: 'footer' };
     const withLocal: Agent = {
       ...baseAgent,
       orchestration: { steps: ['write the article', { instruction: 'assemble it', local }] },
@@ -138,7 +138,7 @@ describe('runAgentNow — api-call (v1) attended-run guard', () => {
   });
 
   it('refuses the article preset itself', async () => {
-    const preset = buildArticlePipeline('ai-steam');
+    const preset = examplePipeline('example-a');
     useAgentStore.getState().setAgents([{ ...baseAgent, orchestration: preset.orchestration }]);
     const runCommand = jest.fn(async () => '');
     await expect(runAgentNow(AGENT_ID, runCommand)).rejects.toThrow(t('agents.longform_attended_unsupported'));

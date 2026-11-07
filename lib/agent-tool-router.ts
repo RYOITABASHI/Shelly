@@ -46,26 +46,10 @@ export interface AgentRouteResolution {
   decision: AgentRouteDecision;
 }
 
-const ARTICLE_EVAL_KEYWORDS = [
-  'qwen', 'qwen3', 'codex', 'a/b', 'ab test', 'article eval',
-  '記事評価', '文章評価', '比較', '書き比べ',
-];
-
 export function suggestTool(prompt: string): ToolSuggestion {
   const lower = prompt.toLowerCase();
 
-  // Priority 1: Qwen/Codex article drafting evaluation
-  if (ARTICLE_EVAL_KEYWORDS.some((kw) => lower.includes(kw))) {
-    const keyword = ARTICLE_EVAL_KEYWORDS.find((kw) => lower.includes(kw));
-    return {
-      tool: { type: 'ab-article-eval', localModel: 'Qwen3.5-2B-Q4_K_M', codexCmd: 'codex' },
-      label: 'Qwen/Codex A/B Eval',
-      reason: 'Article drafting comparison — runs local Qwen and Codex against the same source context',
-      keyword,
-    };
-  }
-
-  // Priority 2: Academic
+  // Priority 1: Academic
   const academicKeyword = hasAny(lower, ACADEMIC_KEYWORDS);
   if (academicKeyword) {
     return {
@@ -76,7 +60,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
     };
   }
 
-  // Priority 3: Code/GitHub
+  // Priority 2: Code/GitHub
   const codeKeyword = hasAny(lower, CODE_KEYWORDS);
   if (codeKeyword) {
     return {
@@ -87,7 +71,7 @@ export function suggestTool(prompt: string): ToolSuggestion {
     };
   }
 
-  // Priority 4: Text transformation
+  // Priority 3: Text transformation
   const transformKeyword = hasAny(lower, TRANSFORM_KEYWORDS);
   if (transformKeyword) {
     return {
@@ -106,12 +90,6 @@ export function suggestTool(prompt: string): ToolSuggestion {
     reason: 'General-purpose — Gemini API uses Google AI Studio quota without relying on the removed CLI path',
   };
 }
-
-// The explicit A/B comparison cues of ARTICLE_EVAL_KEYWORDS (everything but
-// the bare model names). "Codexで記事を書いて" names Codex as the instrument and
-// must pin Codex; "QwenとCodexで書き比べて" is a genuine A/B request and keeps
-// the ab-article-eval route.
-const ARTICLE_EVAL_COMPARISON_KEYWORDS = ['a/b', 'ab test', 'article eval', '記事評価', '文章評価', '比較', '書き比べ'];
 
 /**
  * Tool selection for an agent DRAFT (NL registration / slot-fill / LLM
@@ -147,9 +125,7 @@ export function suggestToolForDraft(
   if (allLocal) return allLocal;
   if (!opts.orchestrated) {
     const pinned = detectExplicitToolUsage(prompt) ?? detectExplicitToolUsage(opts.mentionText);
-    const lower = `${prompt}\n${opts.mentionText ?? ''}`.toLowerCase();
-    const comparison = ARTICLE_EVAL_COMPARISON_KEYWORDS.some((kw) => lower.includes(kw));
-    if (pinned && !comparison) {
+    if (pinned) {
       return {
         tool: pinned,
         label: toolChoiceToLabel(pinned),

@@ -769,7 +769,11 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // v77 (2026-11-01, MONITOR CLI tokens): every gated driver call (Codex too)
 // passes --usage-file, and any script that calls the driver records the
 // usage sidecar in the run log, so a Codex step no longer shows "0 tok".
-const AGENT_SCRIPT_VERSION = 77;
+// v78 (2026-11-07): the script no longer creates the content project on every
+// run. A device that already has it (or sets SHELLY_CONTENT_PROJECT) keeps it;
+// otherwise PROJECT_DIR is agent-output. The ab-article-eval prompt and rubric
+// are generic. Bump in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 78;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -6080,8 +6084,9 @@ fi
 ${apiKeyEnvScrub}${SHELLY_READ_ENV_KEY_FN}
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
+[ -n "\${SHELLY_CONTENT_PROJECT:-}" ] || [ -d "$PROJECT_DIR" ] || PROJECT_DIR="$HOME/agent-output"
 SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-registry.tsv}"
-mkdir -p "$(dirname "$SOURCE_REGISTRY_FILE")"
+mkdir -p "$PROJECT_DIR" "$(dirname "$SOURCE_REGISTRY_FILE")"
 touch "$SOURCE_REGISTRY_FILE"
 SOURCE_CONTEXT=""
 # 2026-07-17 bug fix: a background agent asked to record "the current time"
@@ -7534,6 +7539,7 @@ function articleEvalCommand(rawPrompt: string, resultVar: string, systemPromptJs
   const localModelValue = (localModel || LOCAL_MODEL_BALANCED).replace(/"/g, '\\"');
   const codexCmdValue = (codexCmd || 'codex').replace(/"/g, '\\"');
   return `PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
+[ -n "\${SHELLY_CONTENT_PROJECT:-}" ] || [ -d "$PROJECT_DIR" ] || PROJECT_DIR="$HOME/agent-output"
 LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
 LOCAL_MODEL="\${SHELLY_AGENT_ARTICLE_EVAL_LOCAL_MODEL:-${localModelValue}}"
 CODEX_CMD="\${CODEX_CMD:-${codexCmdValue}}"
@@ -7568,23 +7574,15 @@ ${promptMarker}
 # PROMPT_FILE.
 printf '%s\\n%s\\n%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" > "$RUN_DIR/prompt.md"
 cat >> "$RUN_DIR/prompt.md" <<'PROMPTEOF'
-あなたは日本語のSubstack記事の編集者です。
+あなたは下書きの編集者です。
 
-目的:
-STEAM x AIを、AI導入論ではなく「AIを理解したうえで基礎学力を再定義する議論」として記事化してください。
-
-必須観点:
-- 語彙力
-- 読解力
-- 想像力 / 創造力
-- 判断力 / 批判的思考
-- 公教育で長く重視されてきた基礎学力との接続
+依頼と文脈をもとに、公開前の下書きとして使える文章を書いてください。
 
 制約:
 - 事実と解釈を分ける
 - 引用元やURLが文脈に含まれる場合は活用する
-- 過剰な断定やAI万能論を避ける
-- 日本語で、公開前の下書きとして使える密度にする
+- 過剰な断定を避ける
+- 依頼と同じ言語で書く
 
 PROMPTEOF
 {
@@ -7685,9 +7683,8 @@ $(cat "$RUN_DIR/metrics.json")
 - Context: $RUN_DIR/context.md
 
 ## Manual Rubric
-- Thesis alignment: AI-era STEAM = foundational academic ability
 - Source faithfulness
-- Japanese readability
+- Readability
 - Article structure
 - Originality
 - Publishability

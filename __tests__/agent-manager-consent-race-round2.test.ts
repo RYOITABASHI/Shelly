@@ -53,6 +53,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 jest.mock('expo-notifications', () => ({}));
 jest.mock('expo-file-system/legacy', () => ({}));
 
+import { DEFAULT_WORKSPACE_PROBE } from '@/lib/agent-default-workspace';
 import {
   rematerializeAutonomousAgents,
   loadAgentsFromDisk,
@@ -105,6 +106,8 @@ describe('materializeAgent shared queue — cross-caller races (round 2)', () =>
     const firstWriteStarted = deferred<void>();
 
     const runCommand = jest.fn(async (command: string): Promise<string> => {
+      // Default workspace probe (loadAgentsFromDisk).
+      if (command === DEFAULT_WORKSPACE_PROBE) return '';
       // Halt-sentinel check (loadAgentsFromDisk).
       if (command.startsWith('[ -f ')) return 'HALTED_NO';
       // Agent metadata listing (readAgentMetadataViaShell).

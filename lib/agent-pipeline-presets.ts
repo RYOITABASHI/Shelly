@@ -1,7 +1,8 @@
 /**
- * lib/agent-pipeline-presets.ts — G6: ready-made multi-step pipelines for the
- * North Star scenario (collect → primary source → summarize → char-limited
- * re-summarize), plus the char-limit guarantee helper.
+ * lib/agent-pipeline-presets.ts — G6: ready-made multi-step pipelines: the
+ * collection pipeline for a topic the user names (collect → primary source → summarize → char-limited
+ * re-summarize), the char-limit guarantee helper, and the article pipeline
+ * builders, which take a user-supplied config.
  *
  * Pure & deterministic (no store/native deps) so it is unit-testable. A preset
  * produces the pieces createAgent() needs: a base prompt, an orchestration
@@ -12,7 +13,7 @@
  * the right step instructions.
  */
 import type { AgentAction, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
-import { REVIEW_OUTPUT_CONTRACT } from './agent-orchestration';
+import { MAX_STEP_INSTRUCTION_CHARS, REVIEW_OUTPUT_CONTRACT, normalizeStepLocal } from './agent-orchestration';
 
 export interface PipelinePreset {
   /** Human-friendly agent name (editable in the confirm card). */
@@ -21,7 +22,7 @@ export interface PipelinePreset {
   prompt: string;
   /** The multi-step chain + char-limit guarantee. */
   orchestration: AgentOrchestrationConfig;
-  /** Suggested cron (the North Star cadence). null = run once. */
+  /** Suggested cron. null = run once. */
   schedule: string | null;
   /** Pipelines collect from the web unattended → autonomous. */
   autonomous: boolean;
@@ -38,28 +39,33 @@ export interface PipelinePreset {
   memoryOff?: boolean;
 }
 
-/** North Star default cadence: Mon & Fri at 08:00. */
-export const STEAM_DEFAULT_CRON = '0 8 * * 1,5';
+/** Asks for a pipeline from the user's config file, never a built-in one. */
+export function isArticlePipelineRequest(text: string): boolean {
+  return /記事パイプライン|\barticle pipelines?\b/i.test(text);
+}
+
+/** Default cadence of the collection pipeline: Mon & Fri at 08:00. */
+export const COLLECTION_DEFAULT_CRON = '0 8 * * 1,5';
 /** X/Twitter post budget (characters). */
 export const X_CHAR_LIMIT = 280;
-const DEFAULT_TOPIC = 'STEAM×AI（科学・技術・工学・芸術・数学 × AI）';
 
 /**
- * Build the STEAM×AI collection pipeline: search the web for fresh papers/news
+ * Build the collection pipeline for the topic the user named: search the web for fresh papers/news
  * WITH sources, go to the primary source, summarize, then re-summarize within a
  * character budget for an X post. The save is the agent's draft action (writes
  * to the configured output destination), so it is NOT a pipeline step.
  */
-export function buildSteamPipeline(opts: {
-  topic?: string;
+export function buildCollectionPipeline(opts: {
+  topic: string;
   charLimit?: number;
   schedule?: string | null;
   count?: number;
-} = {}): PipelinePreset {
-  const topic = (opts.topic && opts.topic.trim()) || DEFAULT_TOPIC;
+}): PipelinePreset {
+  const topic = opts.topic.trim();
+  if (!topic) throw new Error('a collection pipeline needs a topic');
   const charLimit = clampCharLimit(opts.charLimit ?? X_CHAR_LIMIT);
   const count = Math.min(Math.max(opts.count ?? 5, 1), 10);
-  const schedule = opts.schedule === undefined ? STEAM_DEFAULT_CRON : opts.schedule;
+  const schedule = opts.schedule === undefined ? COLLECTION_DEFAULT_CRON : opts.schedule;
 
   const steps = [
     // 1) Collect — web-mandatory (collection verb + freshness) → Gemini grounded
@@ -85,7 +91,7 @@ export function buildSteamPipeline(opts: {
 
   return {
     name: `${topic} 収集`,
-    // NEUTRAL base prompt — no collection verb / freshness word. buildStepPrompt
+    // Base prompt with no collection verb — no collection verb / freshness word. buildStepPrompt
     // prepends this to EVERY step, and the escalation ladder routes a step by its
     // FULL prompt; a freshness/collection word here would force needsWeb on the
     // summarize/re-summarize steps too. Keep routing driven by each step's verb.
@@ -96,358 +102,351 @@ export function buildSteamPipeline(opts: {
   };
 }
 
-// ── Daily article drafts (docs/superpowers/specs/2026-11-06-article-pipeline-plan.md) ──
+// ── Article pipelines: a user-supplied config ────────────────────────────────
+//
+// The longform chain is generic: research, write, two review and revise rounds,
+// then assemble, with optional topic-queue steps first, and a digest over the
+// drafts. Shelly ships no article agent, topic, schedule, engine choice or
+// output folder: all of that comes from the user's own file (see
+// lib/agent-article-pipeline-file.ts).
+//
+// A config grants nothing new. The action is always `draft`, the agent is never
+// autonomous, and the steps are only model steps and local steps, which the
+// executor re-checks in longformPlanRefusal and normalizeStepLocal.
 
-export type ArticleStream = 'ai-steam' | 'dev-ja' | 'dev-en' | 'vintage-ja' | 'vintage-en';
+export const ARTICLE_PIPELINE_FILE_VERSION = 1;
 
-const ARTICLE_VAULT_DRAFTS = '/sdcard/Documents/ObsidianVault/50_Drafts';
-const ARTICLE_DIGEST_FOLDER = 'Digest';
-/** The writer leaves this where the owner's own material belongs; `assemble`
- *  then sets `material: missing`. Mirrored by ARTICLE_MATERIAL_MISSING_RE in
- *  scripts/shelly-plan-executor.js. */
-export const ARTICLE_MATERIAL_MISSING_MARKER = '【本人の材料: 未記入】';
+/** Engines a longform model step can run on. A CLI step is refused by the
+ *  executor's longformPlanRefusal; the local LLM's token cap cannot finish a
+ *  long document, and the executor keeps it off a longform ladder. The list
+ *  matches STEP_TOOL_DISPATCHABLE_TYPES in scripts/shelly-plan-executor.js. */
+export const ARTICLE_ENGINE_TYPES = ['gemini-api', 'cerebras', 'groq', 'perplexity'] as const;
+export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model?: string };
 
-// Pinned free-tier engines. The writer and the reviser share an engine, and the
-// reviewer's pin is a different one. A ladder fallback can still bring them
-// together: the executor then moves that review to the other family, and leaves
-// the draft unresolved if the two still match.
-// Research is Gemini grounded, except the academic stream: owner decision
-// 2026-11-06, Perplexity only for papers. The topic step uses this same engine,
-// fixed as QUEUE_REFILL_TOOL_TYPE in scripts/shelly-plan-executor.js.
-const ARTICLE_RESEARCH_ENGINE: ToolChoice = { type: 'gemini-api' };
-const ARTICLE_ACADEMIC_RESEARCH_ENGINE: ToolChoice = { type: 'perplexity', model: 'sonar-pro' };
-const ARTICLE_WRITER_ENGINE: ToolChoice = { type: 'gemini-api' };
-const ARTICLE_REVIEWER_ENGINE: ToolChoice = { type: 'cerebras' };
-
-/** docs/promo/brand/claims-ledger.md: claims that must not reach a public
- *  page. Matched by the executor's assemble step; flags only. */
-const ARTICLE_LINT_TERMS = [
-  '世界初',
-  'world first',
-  "world's first",
-  'スマホだけで',
-  'スマホ一台だけで',
-  'デスクトップに一度も触れず',
-  'built entirely on a phone',
-  'without ever touching a desktop',
-  'no desktop, no laptop',
-  'このリポジトリの全行',
-  'every line in this repo',
-  "can't write code",
-  'twenty years',
-  '20 年分',
-  '20年分',
-];
-
-/** Name forms other than the canonical one. The ledger's other banned form,
- *  the name in kanji, is not checked: that would put it in the repo. */
-const ARTICLE_NAME_LINT = { canonical: 'RYO ITABASHI', forms: ['itabashi', 'イタバシ', 'いたばし'] };
-
-const ARTICLE_FOOTER_JA =
-  'AI 利用: この記事の調査・下書き・査読には AI を使いました。\n最終確認者: RYO ITABASHI（本人が内容を確認してから公開します）';
-const ARTICLE_FOOTER_EN =
-  'AI disclosure: AI tools were used for the research, drafting and review of this post.\nFinal check: RYO ITABASHI (the author read and verified it before it went out).';
-
-/** Vintage drafts: no images, no listing links, no claim that an item is real.
- *  Mercari checks stay attended (docs/promo/research/plan-v2.md). Flags only. */
-const ARTICLE_VINTAGE_LINT_TERMS = ['![', '<img', 'mercari', 'merc.li', 'メルカリ', '本物です', '正規品', 'authentic', 'genuine'];
-
-// In the write and revise instructions: on the second device run the draft held
-// lines addressed to the writer itself, such as 検索結果からは取得できなかった.
-const ARTICLE_NO_SELF_TALK_JA = 'この指示・検索・調査メモのことは本文に書かない。資料に書かれたことだけを書く。資料が非公開と述べる数値だけ、文章でそう書く。括弧の注記にしない。';
-const ARTICLE_NO_SELF_TALK_EN = 'Never mention these rules, the search or the notes. Write only what the sources say; if they say a figure is not public, say so.';
-
-interface ArticleStreamConfig {
+export interface ArticlePipelineConfig {
+  /** Frontmatter `stream`, the draft's file name, and the name to ask for. */
+  id: string;
   name: string;
-  /** Shown in the digest. */
-  label: string;
-  /** Folder under 50_Drafts. */
-  folder: string;
-  cron: string;
-  cronLabel: string;
-  /** Language of the instructions and of the draft. */
+  /** Rules for the series, prefixed onto every model step. */
+  prompt: string;
+  /** Language of the display labels of the steps with no model. */
   lang: 'ja' | 'en';
-  /** The chain starts with `queue-pop`: the topic comes from
-   *  50_Drafts/<folder>/_queue.md, filled by hand unless `topicInstruction` is
-   *  set. */
-  queue: boolean;
-  /** A `queue-refill` step goes before `queue-pop`, and this is its model prompt:
-   *  the stream finds its own topics. Unset on the dev streams, whose topics
-   *  come from git history, which a model cannot see. Keep it free of freshness
-   *  words: every instruction feeds the chain's recency detection. */
-  topicInstruction?: string;
-  /** One X intent link in the digest. Off for a stream with no X account. */
-  intent: boolean;
+  /** Five-field cron. Minute and hour are fixed values, so at most hourly. */
+  schedule: string;
+  scheduleLabel?: string;
+  /** Absolute folder the draft is saved to. See articleOutputFolderError. */
+  outputFolder: string;
+  /** Fixed text at the end of every draft. */
   footer: string;
-  /** Added to ARTICLE_LINT_TERMS. */
-  extraLintTerms?: string[];
+  /** Start with `queue-pop`: the topic comes from `<outputFolder>/_queue.md`. */
+  queue?: boolean;
+  /** Each at most MAX_STEP_INSTRUCTION_CHARS, like any step, and refused rather
+   *  than cut. `topics` adds `queue-refill` and needs `queue`; the review gets
+   *  REVIEW_OUTPUT_CONTRACT appended, and the limit counts that too. */
+  instructions: { research: string; write: string; review: string; revise: string; topics?: string };
+  /** No defaults: the user picks. `agent` is the agent-level tool (default:
+   *  `research`). */
+  engines: { research: ArticleEngine; write: ArticleEngine; review: ArticleEngine; agent?: ArticleEngine };
+  /** Flagged in frontmatter `lint`, never rewritten. */
+  lintTerms?: string[];
+  nameLint?: { canonical: string; forms: string[] };
   /** Also lint the chain's source titles and URLs. */
   lintSources?: boolean;
-  /** Added to the review instruction, before the output contract. */
-  reviewExtra?: string;
-  /** Flagged in frontmatter `lint`, never enforced. */
-  quality: { minChars?: number; minWords?: number; minSources: number };
-  /** Base prompt, prefixed onto every step. NEUTRAL like buildSteamPipeline's:
-   *  no freshness word (ニュース / 最新 / …), or detectRouteSignals reads the
-   *  agent as web-mandatory and the plan prompt turns into a link-list task. */
-  prompt: string;
-  researchInstruction: string;
-  writeInstruction: string;
+  quality?: { minChars?: number; minWords?: number; minSources?: number };
 }
 
-const ARTICLE_STREAMS: Record<ArticleStream, ArticleStreamConfig> = {
-  'ai-steam': {
-    name: 'AI×STEAM 記事下書き',
-    label: 'AI×STEAM',
-    folder: 'Steam',
-    cron: '0 6 * * *',
-    cronLabel: '毎日 6:00',
-    lang: 'ja',
-    queue: false,
-    intent: true,
-    footer: ARTICLE_FOOTER_JA,
-    quality: { minChars: 2500, minSources: 2 },
-    prompt: [
-      'AI×STEAM（科学・技術・工学・芸術・数学とAI）の解説記事シリーズ。媒体は note、読者は教員・親子・学生。日本語で書く。',
-      '共通ルール:',
-      '- 資料はプレプリント・学会論文・学術誌を区別し、査読前か査読後かを必ず書く。',
-      '- 自分の文章が主で、引用は従。原文は要約し、細かく追いすぎない。全文訳はしない（CC-BY / CC0 と確認できた資料だけ例外。NC・ND・arXiv 標準ライセンスは不可）。',
-      '- 図表は転載しない。',
-      '- 数値・結論・限界は資料のとおりに書く。「世界初」のような言い切りは書かない。',
-    ].join('\n'),
-    // "Web" is what makes this the chain's research step (grounded search +
-    // captured sources); 最近 keeps the search to the last 30 days.
-    researchInstruction:
-      'Webで検索し、最近のAI×STEAMの話題をひとつに絞って調査メモを作る。別々の資料を3件以上使い、プレプリント・学会論文・学術誌を優先し、雑誌の目次ページより論文の記事ページを選ぶ。資料ごとに査読前か査読後か、具体的な数値・結論・限界、わかればライセンスを書く。4000〜6000字。',
-    writeInstruction: `調査メモをもとに、本文3000〜5000字の解説記事を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付け、資料の査読前後を本文で示す。一つの事例から一般化しない。単一の事例に「実証した」と書かない。子どもの未来で締めるような定型の結びは書かない。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
-  },
-  // Dev: docs/promo/research/plan-v2.md and docs/promo/brand/claims-ledger.md.
-  'dev-ja': {
-    name: '開発記 記事下書き',
-    label: '開発記（Zenn）',
-    folder: 'Dev',
-    cron: '20 6 * * *',
-    cronLabel: '毎日 6:20',
-    lang: 'ja',
-    queue: true,
-    intent: true,
-    footer: ARTICLE_FOOTER_JA,
-    quality: { minChars: 2500, minSources: 2 },
-    prompt: [
-      'Shelly（Android で動く AI ターミナル）の開発記シリーズ。媒体は Zenn、読者は開発者。日本語の技術記事として書く。',
-      '共通ルール:',
-      '- テーマはキューの項目のとおり。連載の順に縛られず、そのテーマだけで読める記事にする。',
-      '- 要点と材料のコミットハッシュは、項目にあるものだけ使う。ないコミットや数字を作らない。項目の「要確認」は事実として書かない。',
-      '- コミット数などの数字には取得日と対象ブランチを併記する。行数を見出しにしない。',
-      '- 当時の話と今の話を混ぜない。当時の設計が今も残っていると書くなら、項目か調査メモに根拠が要る。',
-      '- 位置づけは「コードは書かない。AI を率いて、実機で動くまで完了と呼ばない。」。開発は Galaxy Z Fold6 での設計・検証と、スマホと PC の AI コーディングエージェントによる実装で、実機検証は Fold6 の 1 台。',
-      '- 作者の名前は初出だけ RYO ITABASHI、以降は「私」。Codex を「公式」と呼ばない。Shelly の宣伝はしない。',
-    ].join('\n'),
-    researchInstruction:
-      'Webで検索し、項目のテーマひとつの背景を調べて調査メモを作る。別々の資料を3件以上使い、公式ドキュメント・仕様・一次資料を優先し、雑誌の目次ページより記事ページを選ぶ。資料ごとに具体的な数値・結論・限界と、分からないことを書く。項目の要点とコミットハッシュはメモの先頭にそのまま写す。4000〜6000字。',
-    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の技術記事を書く。1行目は「# 」で始まる見出し。問題、原因、やったこと、結果の順に書き、コミットハッシュは短縮形のまま本文に出す。外部の事実には Sources の番号 [n] を付ける。「## 既知の限界」の節を作る。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
-    reviewExtra: '当時と今の混同、項目にないコミットや数字、製品の宣伝も指摘する。',
-  },
-  'dev-en': {
-    name: 'Dev log EN article draft',
-    label: 'Dev log EN (dev.to)',
-    folder: 'DevEn',
-    cron: '40 6 * * *',
-    cronLabel: '毎日 6:40',
-    lang: 'en',
-    queue: true,
-    intent: true,
-    footer: ARTICLE_FOOTER_EN,
-    quality: { minWords: 1000, minSources: 2 },
-    prompt: [
-      'A dev log about Shelly, an AI terminal that runs on Android. It appears on dev.to for developers outside Japan. Write in plain, direct English.',
-      'Rules for every step:',
-      '- Rebuild the topic for an overseas reader. This is not a translation of a Japanese post: open with the problem they would recognize, and explain anything specific to Samsung, Knox or Japan.',
-      '- Use only the commit hashes and points in the queue item. Invent no commits and no numbers. Anything the item marks as unconfirmed, in any language, is not a fact: do not state it as one.',
-      '- Give any count with its date and branch. Never lead with line counts.',
-      '- Keep then and now apart. Say the old design still exists only if the item or the research notes back it.',
-      '- Position: "I don\'t write the code. I direct the AI — and nothing is called done until it works on real hardware." It was designed and verified on one Galaxy Z Fold6, and built with AI coding agents on the phone and a PC.',
-      '- Use the name RYO ITABASHI once, then "I". Do not call Codex official.',
-      '- No promotion in the body: no download or install pitch, no call to action. dev.to does not allow it.',
-    ].join('\n'),
-    researchInstruction:
-      'Search the web for the background of the one topic in the queue item and write research notes from at least 3 separate sources. Prefer official documentation, specifications and primary sources, and article pages over journal index pages. For each source give concrete numbers, conclusions and limits, and what it does not establish. Copy the points and commit hashes of the item to the start of the notes unchanged. 4000 to 6000 characters.',
-    writeInstruction: `Using the queue item and the research notes, write a technical post of 1200 to 2000 words. The first line is a heading starting with "# ". Go from problem to cause, fix and result, with commit hashes in short form. Mark outside facts with their Sources number [n]. Add a "## Known limits" section. ${ARTICLE_NO_SELF_TALK_EN} End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
-    reviewExtra: 'Flag a translated feel, then/now mix-ups, facts not in the item, and promotion.',
-  },
-  // Vintage: no listing links, no images, nothing that reads as an appraisal.
-  'vintage-ja': {
-    name: '古着 記事下書き',
-    label: '古着（はてな）',
-    folder: 'Vintage',
-    cron: '0 7 * * *',
-    cronLabel: '毎日 7:00',
-    lang: 'ja',
-    queue: true,
-    intent: false,
-    footer: `この記事は鑑定ではありません。特定の商品の真贋を鑑定・保証するものではありません。\n${ARTICLE_FOOTER_JA}`,
-    extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
-    lintSources: true,
-    quality: { minChars: 2500, minSources: 2 },
-    reviewExtra: '真贋の断定、出品へのリンク、画像の指定、作品の絵柄の詳しい描写も指摘する。',
-    topicInstruction:
-      '連載の次のテーマを探す。Webで検索し、この連載でまだ書いていないテーマを最大5件挙げる。作品の公開年や原作の背景、服の作りの見方など、別々の資料が3件以上見つかるものを選ぶ。特定の品が本物か偽物かを書かない。出品へのリンク、URL、画像は書かない。渡した一覧と同じテーマは出さない。出力は次の形式だけ。各項目の1行目は「- [ ] テーマ名」、続けて2字下げで「要点: 」で始まる行を1〜4行。ほかの文は書かない。',
-    prompt: [
-      'ビンテージ古着の読み物シリーズ。媒体ははてなブログ、読者は映画Tやアニメ、古着が好きな人。日本語で書く。',
-      '共通ルール:',
-      '- 主役は服としての特徴と、作品や時代の背景。柄（著作物・商標）の説明は必要な範囲にとどめる。',
-      '- 真贋を断定しない。ある品が本物だとも偽物だとも書かず、見るところを判断の材料として書く。',
-      '- 出品へのリンクを貼らない。画像を使わない。写真の転載も、画像の指定も書かない。',
-      '- 価格や相場は資料にあるものだけ書き、自分で確かめた値段のように書かない。',
-      '- 海外の記事は全文を訳さず、自分の構成で書く。',
-      '- 現物を見たように書かない。実物の確認は本人の仕事。',
-    ].join('\n'),
-    researchInstruction:
-      'Webで検索し、項目のテーマひとつについて調査メモを作る。別々の資料を3件以上使い、作品の公開年や原作の背景、服の作りの見方を、資料ごとに分けて具体的な数値・結論・限界とともに書く。雑誌の目次ページより記事ページを選び、出品ページは資料にしない。4000〜6000字。',
-    writeInstruction: `項目と調査メモをもとに、本文3000〜5000字の読み物を書く。1行目は「# 」で始まる見出し。事実には Sources の番号 [n] を付ける。真贋を断定せず、出品リンクも画像も入れない。${ARTICLE_NO_SELF_TALK_JA}最後に「## 本人の見解」の節を作り、本文は書かず ${ARTICLE_MATERIAL_MISSING_MARKER} とだけ書く。`,
-  },
-  'vintage-en': {
-    name: 'Vintage EN article draft',
-    label: 'Vintage EN (Substack)',
-    folder: 'VintageEn',
-    cron: '20 7 * * *',
-    cronLabel: '毎日 7:20',
-    lang: 'en',
-    queue: true,
-    intent: false,
-    footer: `This is not an appraisal. Nothing here authenticates or guarantees any item.\n${ARTICLE_FOOTER_EN}`,
-    extraLintTerms: ARTICLE_VINTAGE_LINT_TERMS,
-    lintSources: true,
-    quality: { minWords: 600, minSources: 2 },
-    reviewExtra: 'Flag real-or-fake claims, listing links, images and detailed print descriptions.',
-    topicInstruction:
-      'Find the next topics for this letter. Search the web and list up to 5 topics this letter has not covered. Pick ones with at least 3 separate sources on the film, the era or how the garment is made. Never say an item is authentic or fake. No listing links, no URLs, no images. Do not repeat any topic in the lists you were given. Output only this format: each item starts with "- [ ] topic", then 1 to 4 lines indented by two spaces, each starting "Points: ". Write nothing else.',
-    prompt: [
-      'A letter about vintage clothing in Japan, on Substack, for English readers who love film and anime tees. Write in plain English, from the point of view of someone in Japan. It is not a translation of a Japanese post.',
-      'Rules for every step:',
-      '- Lead with the garment and with the film, the era or the scene around it. Mention prints and logos only as far as the story needs.',
-      '- Never say an item is authentic or fake. Describe what to look at, as things to weigh.',
-      '- No links to listings. No images, no image suggestions.',
-      '- Give prices only as the sources give them, never as prices you checked yourself.',
-      '- Do not translate foreign articles whole. Use your own structure.',
-      '- Do not write as if you had the item in hand. Checking the real thing is the owner\'s job.',
-    ].join('\n'),
-    researchInstruction:
-      'Search the web for the one topic in the queue item and write research notes from at least 3 separate sources. Cover the release year or source material and how the garment is made, source by source, with concrete numbers, conclusions and limits. Prefer article pages over journal index pages, and do not use listing pages as sources. 4000 to 6000 characters.',
-    writeInstruction: `Using the queue item and the research notes, write a letter of 800 to 1500 words. The first line is a heading starting with "# ". Mark facts with their Sources number [n]. Never say an item is authentic or fake, and add no listing links and no images. ${ARTICLE_NO_SELF_TALK_EN} End with a "## My take" section holding only ${ARTICLE_MATERIAL_MISSING_MARKER}.`,
-  },
-};
+export interface ArticleDigestConfig {
+  name: string;
+  prompt: string;
+  lang: 'ja' | 'en';
+  schedule: string;
+  scheduleLabel?: string;
+  outputFolder: string;
+  footer: string;
+  /** An agent needs a tool. The digest never calls it. */
+  engine: ArticleEngine;
+  /** Folders next to `outputFolder`. */
+  streams: { folder: string; label: string; intent?: boolean }[];
+}
 
-// Digest order and the streams it expects.
-const ARTICLE_STREAM_ORDER: ArticleStream[] = ['ai-steam', 'dev-ja', 'dev-en', 'vintage-ja', 'vintage-en'];
+export interface ArticlePipelineFile {
+  version: typeof ARTICLE_PIPELINE_FILE_VERSION;
+  pipelines: ArticlePipelineConfig[];
+  digest?: ArticleDigestConfig;
+}
 
-// A function: agent-orchestration may still be loading when this module is.
-const articleReviewInstruction = (cfg: ArticleStreamConfig): string => {
-  const extra = cfg.reviewExtra ? `${cfg.lang === 'en' ? ' ' : ''}${cfg.reviewExtra}` : '';
-  const body = cfg.lang === 'en'
-    ? `The notes are the only evidence. Flag claims not in them, wrong numbers, overstatement, any [n] not pointing to the source, a journal index page as proof, and notes like "source unknown". Allow advice stating no fact, figure or cause.${extra} Ignore ${ARTICLE_MATERIAL_MISSING_MARKER}.`
-    : `原文ページはあなたには見えないので、調査メモだけを根拠に下書きの主張を一つずつ照合する。調査メモにない主張、数値の違い、査読前後の取り違え、全文訳に近い箇所、言い切りすぎ、各 [n] がその主張を実際に載せている資料を指していないこと、雑誌の目次ページを根拠にしていること、「出典不明」のような注記を指摘する。事実・数値・因果を含まない助言には根拠を求めない。${extra}${ARTICLE_MATERIAL_MISSING_MARKER} は指摘しない。`
-  return `${body}\n\n${REVIEW_OUTPUT_CONTRACT}`;
+const ARTICLE_ID_RE = /^[a-z0-9-]{1,32}$/;
+const ARTICLE_LINE_MAX_CHARS = 64;
+const ARTICLE_PROMPT_MAX_CHARS = 2000;
+const ARTICLE_FOLDER_MAX_CHARS = 200;
+const ARTICLE_MAX_PIPELINES = 16;
+const ARTICLE_MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
+// Allows a newline; everything else in C0/C1 is refused.
+const ARTICLE_CONTROL_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+// No dot segments and no shell or template characters: `.shelly`, `..`, `~` and
+// `$HOME` all fail here.
+const ARTICLE_FOLDER_RE = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)+\/?$/;
+// Minute and hour fixed, so a typo cannot start a chain every minute.
+const ARTICLE_CRON_RE = /^(?:[0-9]|[1-5][0-9]) (?:[0-9]|1[0-9]|2[0-3])(?:,(?:[0-9]|1[0-9]|2[0-3]))* [0-9*,/-]+ [0-9*,/-]+ [0-9*,/-]+$/;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function unknownKeyError(r: Record<string, unknown>, keys: readonly string[], where: string): string | null {
+  const extra = Object.keys(r).find((k) => !keys.includes(k));
+  return extra === undefined ? null : `${where}: unknown field "${extra}"`;
+}
+
+function articleTextError(v: unknown, max: number, where: string, multiline = false): string | null {
+  if (typeof v !== 'string' || !v.trim() || v !== v.trim()) return `${where}: needs text with no space around it`;
+  if (Array.from(v).length > max) return `${where}: longer than ${max} characters`;
+  if (ARTICLE_CONTROL_RE.test(v) || (!multiline && v.includes('\n'))) return `${where}: has a control character`;
+  return null;
+}
+
+function articleEngineError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "type": ... }`;
+  if (v.type === 'cli') return `${where}: a CLI cannot run an article pipeline step`;
+  if (v.type === 'local') return `${where}: the local LLM cannot finish an article`;
+  if (!(ARTICLE_ENGINE_TYPES as readonly unknown[]).includes(v.type)) return `${where}: use one of ${ARTICLE_ENGINE_TYPES.join(', ')}`;
+  const keyError = unknownKeyError(v, ['type', 'model'], where);
+  if (keyError) return keyError;
+  if (v.model !== undefined && (typeof v.model !== 'string' || !ARTICLE_MODEL_RE.test(v.model))) return `${where}: bad model name`;
+  return null;
+}
+
+/** The fields a pipeline and a digest share. */
+function articleCommonError(r: Record<string, unknown>, where: string): string | null {
+  if (r.lang !== 'ja' && r.lang !== 'en') return `${where}.lang: use "ja" or "en"`;
+  if (typeof r.schedule !== 'string' || !ARTICLE_CRON_RE.test(r.schedule)) return `${where}.schedule: needs a cron with a fixed minute and hour`;
+  if (typeof r.outputFolder !== 'string' || r.outputFolder.length > ARTICLE_FOLDER_MAX_CHARS || !ARTICLE_FOLDER_RE.test(r.outputFolder)) {
+    return `${where}.outputFolder: needs an absolute path of plain folder names`;
+  }
+  return (
+    articleTextError(r.name, ARTICLE_LINE_MAX_CHARS, `${where}.name`) ??
+    articleTextError(r.prompt, ARTICLE_PROMPT_MAX_CHARS, `${where}.prompt`, true) ??
+    (r.scheduleLabel === undefined ? null : articleTextError(r.scheduleLabel, ARTICLE_LINE_MAX_CHARS, `${where}.scheduleLabel`))
+  );
+}
+
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality'] as const;
+
+/** Why `raw` is not a usable pipeline config, or null. Pure. */
+export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): string | null {
+  if (!isPlainObject(raw)) return `${where}: needs an object`;
+  const keyError = unknownKeyError(raw, ARTICLE_PIPELINE_KEYS, where);
+  if (keyError) return keyError;
+  if (typeof raw.id !== 'string' || !ARTICLE_ID_RE.test(raw.id)) return `${where}.id: use lower-case letters, digits and hyphens, at most 32`;
+  const commonError = articleCommonError(raw, where);
+  if (commonError) return commonError;
+  if (raw.queue !== undefined && typeof raw.queue !== 'boolean') return `${where}.queue: needs true or false`;
+  if (raw.lintSources !== undefined && typeof raw.lintSources !== 'boolean') return `${where}.lintSources: needs true or false`;
+
+  const ins = raw.instructions;
+  if (!isPlainObject(ins)) return `${where}.instructions: needs research, write, review and revise`;
+  const insKeyError = unknownKeyError(ins, ['research', 'write', 'review', 'revise', 'topics'], `${where}.instructions`);
+  if (insKeyError) return insKeyError;
+  for (const key of ['research', 'write', 'revise'] as const) {
+    const error = articleTextError(ins[key], MAX_STEP_INSTRUCTION_CHARS, `${where}.instructions.${key}`, true);
+    if (error) return error;
+  }
+  const reviewBudget = MAX_STEP_INSTRUCTION_CHARS - Array.from(REVIEW_OUTPUT_CONTRACT).length - 2;
+  const reviewError = articleTextError(ins.review, reviewBudget, `${where}.instructions.review`, true);
+  if (reviewError) return reviewError;
+  if (ins.topics !== undefined) {
+    if (raw.queue !== true) return `${where}.instructions.topics: needs "queue": true`;
+    const topicsError = articleTextError(ins.topics, MAX_STEP_INSTRUCTION_CHARS, `${where}.instructions.topics`, true);
+    if (topicsError) return topicsError;
+  }
+
+  const engines = raw.engines;
+  if (!isPlainObject(engines)) return `${where}.engines: needs research, write and review`;
+  const enginesKeyError = unknownKeyError(engines, ['research', 'write', 'review', 'agent'], `${where}.engines`);
+  if (enginesKeyError) return enginesKeyError;
+  for (const key of ['research', 'write', 'review'] as const) {
+    const error = articleEngineError(engines[key], `${where}.engines.${key}`);
+    if (error) return error;
+  }
+  if (engines.agent !== undefined) {
+    const error = articleEngineError(engines.agent, `${where}.engines.agent`);
+    if (error) return error;
+  }
+
+  // The bounds of the local step itself. The chain's indexes are built by
+  // buildArticlePipeline, so `parts` here is only a placeholder.
+  const assemble = normalizeStepLocal({
+    kind: 'assemble',
+    parts: [[0]],
+    stream: raw.id,
+    footer: raw.footer,
+    ...(raw.lintTerms !== undefined ? { lintTerms: raw.lintTerms } : {}),
+    ...(raw.nameLint !== undefined ? { nameLint: raw.nameLint } : {}),
+    ...(raw.quality !== undefined ? { quality: raw.quality } : {}),
+  });
+  if (!assemble) return `${where}: footer, lintTerms, nameLint or quality is out of bounds`;
+  if (isPlainObject(raw.quality)) {
+    const qualityKeyError = unknownKeyError(raw.quality, ['minChars', 'minWords', 'minSources'], `${where}.quality`);
+    if (qualityKeyError) return qualityKeyError;
+  }
+  return null;
+}
+
+const ARTICLE_DIGEST_KEYS = ['name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'engine', 'streams'] as const;
+
+/** Why `raw` is not a usable digest config, or null. Pure. */
+export function articleDigestConfigError(raw: unknown, where = 'digest'): string | null {
+  if (!isPlainObject(raw)) return `${where}: needs an object`;
+  const keyError = unknownKeyError(raw, ARTICLE_DIGEST_KEYS, where);
+  if (keyError) return keyError;
+  const commonError = articleCommonError(raw, where) ?? articleEngineError(raw.engine, `${where}.engine`);
+  if (commonError) return commonError;
+  if (!normalizeStepLocal({ kind: 'list-drafts', streams: raw.streams })) return `${where}.streams: needs folders and labels, within bounds`;
+  if (!normalizeStepLocal({ kind: 'assemble', parts: [[0]], stream: 'digest', footer: raw.footer })) return `${where}.footer: out of bounds`;
+  return null;
+}
+
+/** Parse the text of the user's config file. Never throws. */
+export function parseArticlePipelineFile(text: string): { file: ArticlePipelineFile } | { error: string } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { error: 'not valid JSON' };
+  }
+  if (!isPlainObject(raw)) return { error: 'needs an object' };
+  const keyError = unknownKeyError(raw, ['version', 'pipelines', 'digest'], 'file');
+  if (keyError) return { error: keyError };
+  if (raw.version !== ARTICLE_PIPELINE_FILE_VERSION) return { error: `version: use ${ARTICLE_PIPELINE_FILE_VERSION}` };
+  if (!Array.isArray(raw.pipelines) || raw.pipelines.length > ARTICLE_MAX_PIPELINES) return { error: `pipelines: needs a list of at most ${ARTICLE_MAX_PIPELINES}` };
+  const ids = new Set<string>(['digest']);
+  for (let i = 0; i < raw.pipelines.length; i++) {
+    const where = `pipelines[${i}]`;
+    const error = articlePipelineConfigError(raw.pipelines[i], where);
+    if (error) return { error };
+    const id = (raw.pipelines[i] as ArticlePipelineConfig).id;
+    if (ids.has(id)) return { error: `${where}.id: "${id}" is taken` };
+    ids.add(id);
+  }
+  if (raw.digest !== undefined) {
+    const error = articleDigestConfigError(raw.digest);
+    if (error) return { error };
+  }
+  return { file: raw as unknown as ArticlePipelineFile };
+}
+
+export interface ArticleOutputRoots {
+  /** The Obsidian vault: settings' agentVaultPath, or its default. */
+  vault: string;
+  /** The custom output root: settings' agentCustomPath, or ~/agent-output. */
+  custom: string;
+}
+
+// The same storage under its other names. The executor compares real paths.
+const canonicalFolder = (p: string): string =>
+  p.replace(/^\/storage\/(?:emulated\/0|self\/primary)(?=\/|$)/, '/sdcard').replace(/\/+$/, '');
+
+const folderInside = (folder: string, root: string): boolean => {
+  const f = canonicalFolder(folder);
+  const r = canonicalFolder(root);
+  return !!r && (f === r || f.startsWith(`${r}/`));
 };
-const articleReviseInstruction = (cfg: ArticleStreamConfig): string =>
-  cfg.lang === 'en'
-    ? `Apply every finding from the review and output only the full revised article, with no diff and no commentary. Keep the "# " title line. Delete a claim with no source; never add a note such as "source unknown". ${ARTICLE_NO_SELF_TALK_EN} Keep ${ARTICLE_MATERIAL_MISSING_MARKER} as it is.`
-    : `査読の指摘をすべて反映し、修正後の記事全文だけを出力する。差分や説明は書かない。1行目の「# 」見出しは必ず残す。根拠のない主張は削り、「出典不明」のような注記は足さない。${ARTICLE_NO_SELF_TALK_JA}${ARTICLE_MATERIAL_MISSING_MARKER} はそのまま残す。`;
 
 /**
- * One stream's daily draft agent:
- * [research, write, review1, revise1, review2, revise2, assemble], with
- * `queue-pop` first on a queued stream, and `queue-refill` before that on a
- * stream that finds its own topics, run by the PlanSpec executor on the cron
- * (longform chain; Run now is refused). The chain ends in the draft action: it
- * saves to the vault and publishes nothing. autonomous:false keeps the pinned
- * HTTP engines and the local steps (an autonomous plan strips Groq/Cerebras
- * pins). The queue text only reaches the models as a carried result: steps,
- * engines, action and output path are all fixed here.
+ * Why a folder cannot work on this device, or null. Needs the user's settings,
+ * so it runs when the file is used, not in the pure config checks. The broker
+ * saves only under its roots, and the executor reads a queue and a digest only
+ * inside the vault, so `vaultOnly` is set for those.
  */
-export function buildArticlePipeline(stream: ArticleStream): PipelinePreset {
-  const cfg = ARTICLE_STREAMS[stream];
+export function articleOutputFolderError(folder: string, roots: ArticleOutputRoots, vaultOnly: boolean): string | null {
+  if (folderInside(folder, roots.vault)) return null;
+  if (vaultOnly) return `outputFolder: needs to be inside the vault (${roots.vault})`;
+  if (folderInside(folder, roots.custom)) return null;
+  return `outputFolder: needs to be inside the vault (${roots.vault}) or the custom folder (${roots.custom})`;
+}
+
+const withFolderSlash = (folder: string): string => (folder.endsWith('/') ? folder : `${folder}/`);
+const pinned = (tool: ArticleEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
+
+/**
+ * One config's draft agent: [research, write, review1, revise1, review2,
+ * revise2, assemble], with `queue-pop` first on a queued config and
+ * `queue-refill` before that when it has a topics instruction. Run by the
+ * PlanSpec executor on the cron (Run now is refused). It ends in the draft
+ * action: it saves a file and publishes nothing. autonomous:false keeps the
+ * pinned engines and the local steps (an autonomous plan strips pins). Throws
+ * on a config articlePipelineConfigError refuses.
+ */
+export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePreset {
+  const error = articlePipelineConfigError(config);
+  if (error) throw new Error(error);
+  const { instructions: ins, engines, lang } = config;
+  const refill = ins.topics !== undefined;
   // `of` and `parts` count from the research step.
-  const refill = cfg.queue && !!cfg.topicInstruction;
-  const at = (k: number) => k + (cfg.queue ? 1 : 0) + (refill ? 1 : 0);
-  const review = articleReviewInstruction(cfg);
-  const revise = articleReviseInstruction(cfg);
+  const at = (k: number) => k + (config.queue ? 1 : 0) + (refill ? 1 : 0);
+  const review = `${ins.review}\n\n${REVIEW_OUTPUT_CONTRACT}`;
   const assemble: AgentLocalStepConfig = {
     kind: 'assemble',
     parts: [[at(1), at(3), at(5)]],
-    stream,
-    footer: cfg.footer,
-    lintTerms: [...ARTICLE_LINT_TERMS, ...(cfg.extraLintTerms ?? [])],
-    nameLint: ARTICLE_NAME_LINT,
-    ...(cfg.lintSources ? { lintSources: true } : {}),
-    quality: { ...cfg.quality, selfTalk: true },
+    stream: config.id,
+    footer: config.footer,
+    ...(config.lintTerms ? { lintTerms: config.lintTerms } : {}),
+    ...(config.nameLint ? { nameLint: config.nameLint } : {}),
+    ...(config.lintSources ? { lintSources: true } : {}),
+    quality: { ...config.quality, selfTalk: true },
   };
   const steps: AgentOrchestrationStep[] = [
-    ...(refill ? [{ instruction: cfg.topicInstruction as string, local: { kind: 'queue-refill' } as AgentLocalStepConfig }] : []),
-    ...(cfg.queue
-      ? [{ instruction: cfg.lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
+    ...(refill ? [{ instruction: ins.topics as string, local: { kind: 'queue-refill' } as AgentLocalStepConfig }] : []),
+    ...(config.queue
+      ? [{ instruction: lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
       : []),
-    { instruction: cfg.researchInstruction, tool: stream === 'ai-steam' ? ARTICLE_ACADEMIC_RESEARCH_ENGINE : ARTICLE_RESEARCH_ENGINE, toolPinned: true },
-    { instruction: cfg.writeInstruction, tool: ARTICLE_WRITER_ENGINE, toolPinned: true },
-    { instruction: review, tool: ARTICLE_REVIEWER_ENGINE, toolPinned: true, handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
-    { instruction: revise, tool: ARTICLE_WRITER_ENGINE, toolPinned: true, handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },
-    { instruction: review, tool: ARTICLE_REVIEWER_ENGINE, toolPinned: true, handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
-    { instruction: revise, tool: ARTICLE_WRITER_ENGINE, toolPinned: true, handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
-    { instruction: cfg.lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）', local: assemble },
+    { instruction: ins.research, ...pinned(engines.research) },
+    { instruction: ins.write, ...pinned(engines.write) },
+    { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
+    { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },
+    { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
+    { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
+    { instruction: lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）', local: assemble },
   ];
   return {
-    name: cfg.name,
-    prompt: cfg.prompt,
+    name: config.name,
+    prompt: config.prompt,
     orchestration: { steps, longform: true },
-    schedule: cfg.cron,
-    scheduleLabel: cfg.cronLabel,
+    schedule: config.schedule,
+    scheduleLabel: config.scheduleLabel ?? config.schedule,
     autonomous: false,
-    tool: ARTICLE_RESEARCH_ENGINE,
+    tool: (engines.agent ?? engines.research) as ToolChoice,
     action: { type: 'draft' },
-    output: { outputPath: `${ARTICLE_VAULT_DRAFTS}/${cfg.folder}/`, outputTemplate: `{date}-${stream}.md` },
+    output: { outputPath: withFolderSlash(config.outputFolder), outputTemplate: `{date}-${config.id}.md` },
     memoryOff: true,
   };
 }
 
 /**
- * The daily digest agent: [list-drafts, assemble], no model call anywhere. It
- * runs after the last stream has had time to finish: the vintage-en cron plus
- * the 30-minute chain budget, and a margin. It alone notifies on success (its
- * first lines are the notification). `tool` is required by an agent but is
- * never called; Gemini matches the streams, and a local tool would make native
- * start the local LLM for nothing.
+ * The digest agent: [list-drafts, assemble], no model call anywhere. Schedule it
+ * after the last stream has had time to finish. It alone notifies on success
+ * (its first lines are the notification). Throws on a config
+ * articleDigestConfigError refuses.
  */
-export function buildArticleDigestPipeline(): PipelinePreset {
-  const listDrafts: AgentLocalStepConfig = {
-    kind: 'list-drafts',
-    streams: ARTICLE_STREAM_ORDER.map((stream) => {
-      const cfg = ARTICLE_STREAMS[stream];
-      return { folder: cfg.folder, label: cfg.label, ...(cfg.intent ? { intent: true } : {}) };
-    }),
-  };
-  const save: AgentLocalStepConfig = {
-    kind: 'assemble',
-    parts: [[0]],
-    stream: 'digest',
-    footer: 'このノートは自動で作られます。投稿はしません。公開は本人が手で行います。',
-    plain: true,
-  };
+export function buildArticleDigestPipeline(config: ArticleDigestConfig): PipelinePreset {
+  const error = articleDigestConfigError(config);
+  if (error) throw new Error(error);
+  const en = config.lang === 'en';
+  const save: AgentLocalStepConfig = { kind: 'assemble', parts: [[0]], stream: 'digest', footer: config.footer, plain: true };
   return {
-    name: '記事ダイジェスト',
-    prompt: '記事下書きの一覧',
+    name: config.name,
+    prompt: config.prompt,
     orchestration: {
       steps: [
-        { instruction: 'きょうの下書きを一覧にする（モデルは使わない）', local: listDrafts },
-        { instruction: '一覧をダイジェストとして保存する（モデルは使わない）', local: save },
+        { instruction: en ? "List today's drafts (no model)" : 'きょうの下書きを一覧にする（モデルは使わない）', local: { kind: 'list-drafts', streams: config.streams } },
+        { instruction: en ? 'Save the list as the digest (no model)' : '一覧をダイジェストとして保存する（モデルは使わない）', local: save },
       ],
       longform: true,
     },
-    schedule: '0 8 * * *',
-    scheduleLabel: '毎日 8:00',
+    schedule: config.schedule,
+    scheduleLabel: config.scheduleLabel ?? config.schedule,
     autonomous: false,
-    tool: ARTICLE_RESEARCH_ENGINE,
+    tool: config.engine as ToolChoice,
     action: { type: 'draft' },
-    output: { outputPath: `${ARTICLE_VAULT_DRAFTS}/${ARTICLE_DIGEST_FOLDER}/`, outputTemplate: '{date}-digest.md' },
+    output: { outputPath: withFolderSlash(config.outputFolder), outputTemplate: '{date}-digest.md' },
     memoryOff: true,
   };
 }

@@ -8,10 +8,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { normalizeStepLocal as tsNormalizeStepLocal, normalizeSteps } from '@/lib/agent-orchestration';
-import { buildArticleDigestPipeline, buildArticlePipeline, enforceCharLimit, xWeightedLength } from '@/lib/agent-pipeline-presets';
+import { enforceCharLimit, xWeightedLength } from '@/lib/agent-pipeline-presets';
+import { examplePipeline, exampleDigestPipeline, type ExampleStream } from './fixtures/article-pipeline-config';
+import { articleOutputRoots, selectArticlePipeline } from '@/lib/agent-article-pipeline-file';
+import type { PipelinePreset } from '@/lib/agent-pipeline-presets';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
 
-// Article pipeline Inc 2 and 3 (docs/superpowers/specs/2026-11-06-article-pipeline-plan.md):
+// Article pipeline:
 // `list-drafts`, `queue-pop` and the quiet stream notification, against the
 // real executor and broker offline, plus the helpers.
 //
@@ -52,17 +55,17 @@ function makeHome(): string {
 
 function makeVault(): string {
   const vault = tmpDir('shelly-digest-vault-');
-  fs.mkdirSync(path.join(vault, '50_Drafts'));
+  fs.mkdirSync(path.join(vault, 'Drafts'));
   return vault;
 }
 
 function writeDraft(vault: string, folder: string, name: string, frontmatter: string[]): void {
-  const dir = path.join(vault, '50_Drafts', folder);
+  const dir = path.join(vault, 'Drafts', folder);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, name), `---\n${frontmatter.join('\n')}\n---\n\n# 本文\n`);
 }
 
-const GOOD = ['title: "良い記事"', 'stream: "ai-steam"', 'date: 2026-11-06', 'review: pass', 'material: ok', 'lint: []'];
+const GOOD = ['title: "良い記事"', 'stream: "example-a"', 'date: 2026-11-06', 'review: pass', 'material: ok', 'lint: []'];
 
 function writePlan(home: string, port: number, vault: string, outputDir: string, list: unknown[]): string {
   const plan = {
@@ -136,7 +139,7 @@ function auditEvents(home: string): string[] {
 /** The real preset chain with engine pins removed, so every model step reaches
  *  the loopback fixture. */
 function devChain() {
-  return normalizeSteps(buildArticlePipeline('dev-ja').orchestration).map((step) => {
+  return normalizeSteps(examplePipeline('example-queue').orchestration).map((step) => {
     const { tool: _tool, toolPinned: _pinned, ...rest } = step;
     void _tool;
     void _pinned;
@@ -151,7 +154,7 @@ function devChainWithCerebrasReviewer() {
 }
 
 function digestChain() {
-  return normalizeSteps(buildArticleDigestPipeline().orchestration);
+  return normalizeSteps(exampleDigestPipeline().orchestration);
 }
 
 function symlinkOrSkip(target: string, link: string, type: 'dir' | 'file'): boolean {
@@ -164,16 +167,16 @@ function symlinkOrSkip(target: string, link: string, type: 'dir' | 'file'): bool
 }
 
 const streams = [
-  { folder: 'Steam', label: 'AI×STEAM', intent: true },
-  { folder: 'Dev', label: '開発記', intent: true },
-  { folder: 'Vintage', label: '古着' },
+  { folder: 'SeriesA', label: 'シリーズA', intent: true },
+  { folder: 'SeriesB', label: 'シリーズB', intent: true },
+  { folder: 'SeriesC', label: 'シリーズC' },
 ];
 const LOCAL = { kind: 'list-drafts', streams };
 
 function scan(vault: string, today = '2026-11-06', fsImpl?: unknown) {
   return executor.scanDraftFolders(LOCAL, {
     vault,
-    draftsDir: path.join(vault, '50_Drafts'),
+    draftsDir: path.join(vault, 'Drafts'),
     skipFolder: 'Digest',
     today,
     fsImpl,
@@ -217,7 +220,7 @@ describe('the executor with a queue or a digest', () => {
   const research = { content: `1. 資料A: 数値は42%でした。 ${SOURCE_URL}`, citations: [SOURCE_URL] };
 
   function queueIn(vault: string, text: string): string {
-    const dir = path.join(vault, '50_Drafts', 'Dev');
+    const dir = path.join(vault, 'Drafts', 'SeriesB');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '_queue.md'), text);
     return dir;
@@ -261,7 +264,7 @@ describe('the executor with a queue or a digest', () => {
     const text = '- [x] 朝の話\n- [ ] 次の話\n';
     const dir = queueIn(vault, text);
     const saved = `${localToday()}-x.md`;
-    writeDraft(vault, 'Dev', saved, GOOD);
+    writeDraft(vault, 'SeriesB', saved, GOOD);
     const before = fs.readFileSync(path.join(dir, saved), 'utf8');
     expect(await runExecutor(writePlan(home, port, vault, dir, devChain()), home)).toBe(0);
 
@@ -276,8 +279,8 @@ describe('the executor with a queue or a digest', () => {
 
     // The draft it kept still counts for the digest.
     const home2 = makeHome();
-    await runExecutor(writePlan(home2, port, vault, path.join(vault, '50_Drafts', 'Digest'), digestChain()), home2);
-    expect(readResult(home2)).toContain('開発記（Zenn）: 良い記事');
+    await runExecutor(writePlan(home2, port, vault, path.join(vault, 'Drafts', 'Digest'), digestChain()), home2);
+    expect(readResult(home2)).toContain('シリーズB（媒体甲）: 良い記事');
   }, 30000);
 
   it('with no key for the reviewer, the draft is saved as unresolved, the run counts as no failure, and the digest says so', async () => {
@@ -300,7 +303,7 @@ describe('the executor with a queue or a digest', () => {
     expect(fs.existsSync(notificationFile(home))).toBe(false);
 
     const home2 = makeHome();
-    await runExecutor(writePlan(home2, port, vault, path.join(vault, '50_Drafts', 'Digest'), digestChain()), home2);
+    await runExecutor(writePlan(home2, port, vault, path.join(vault, 'Drafts', 'Digest'), digestChain()), home2);
     const digest = readResult(home2);
     expect(digest).toContain('1 本（査読未解決 1、要確認 0）');
     expect(digest).toContain(`記事【査読未解決: ${executor.ARTICLE_REVIEW_FAILED_NOTE}】`);
@@ -323,8 +326,8 @@ describe('the executor with a queue or a digest', () => {
   it('the digest may run twice the same day and rebuilds its file', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localToday()}-ai-steam.md`, GOOD);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${localToday()}-example-a.md`, GOOD);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     writeDraft(vault, 'Digest', `${localToday()}-x.md`, GOOD);
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readRunLog(home).status).toBe('success');
@@ -334,8 +337,8 @@ describe('the executor with a queue or a digest', () => {
   it('a draft saved after yesterday\'s digest is listed today, marked, and does not count as today\'s', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, [...GOOD, `saved_at: ${new Date().toISOString()}`]);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${localYesterday()}-example-a.md`, [...GOOD, `saved_at: ${new Date().toISOString()}`]);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     const result = readResult(home);
     expect(result).toContain('0 本（査読未解決 0、要確認 0）、未作成 5 本、前日分 1 本');
@@ -348,8 +351,8 @@ describe('the executor with a queue or a digest', () => {
     const old = new Date(Date.now() - 3 * 3600_000).toISOString();
     // Written after the digest below, so its mtime is the newer one, as an edit leaves it.
     writeDraft(vault, 'Digest', `${localYesterday()}-x.md`, GOOD);
-    writeDraft(vault, 'Steam', `${localYesterday()}-ai-steam.md`, [...GOOD, `saved_at: ${old}`]);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${localYesterday()}-example-a.md`, [...GOOD, `saved_at: ${old}`]);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readResult(home)).not.toContain('良い記事');
   }, 20000);
@@ -416,7 +419,7 @@ describe('the executor with a queue or a digest', () => {
   it('a missing queue file and a missing folder stop the same way', async () => {
     const home = makeHome();
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Dev');
+    const dir = path.join(vault, 'Drafts', 'SeriesB');
     await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
     expect(readRunLog(home).status).toBe('skipped');
     fs.mkdirSync(dir);
@@ -443,29 +446,29 @@ describe('the executor with a queue or a digest', () => {
     const home = makeHome();
     const vault = makeVault();
     const today = localToday();
-    writeDraft(vault, 'Steam', `${today}-ai-steam.md`, GOOD);
-    writeDraft(vault, 'Dev', `${today}-dev-ja.md`, ['title: "開発の話"', 'review: unresolved', 'material: missing', 'lint: ["世界初"]']);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${today}-example-a.md`, GOOD);
+    writeDraft(vault, 'SeriesB', `${today}-example-queue.md`, ['title: "別の話"', 'review: unresolved', 'material: missing', 'lint: ["禁句"]']);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     expect(await runExecutor(writePlan(home, port, vault, dir, digestChain()), home)).toBe(0);
 
     expect(prompts).toHaveLength(0);
     expect(readRunLog(home).status).toBe('success');
     const result = readResult(home);
     expect(result.startsWith(`記事下書き ${today}: 2 本（査読未解決 1、要確認 0）、未作成 3 本`)).toBe(true);
-    expect(result).toContain('[[50_Drafts/Steam/');
+    expect(result).toContain('[[Drafts/SeriesA/');
     expect(result).not.toMatch(/^---\ntitle/);
     const note = JSON.parse(fs.readFileSync(notificationFile(home), 'utf8'));
     expect(note.status).toBe('success');
     expect(note.preview).toContain('良い記事');
-    expect(note.preview).toContain('開発の話【査読未解決】');
-    expect(note.preview.indexOf('開発の話')).toBeLessThan(note.preview.indexOf('良い記事'));
+    expect(note.preview).toContain('別の話【査読未解決】');
+    expect(note.preview.indexOf('別の話')).toBeLessThan(note.preview.indexOf('良い記事'));
   }, 20000);
 
   it('a title that reads like a refusal does not cost the whole digest', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localToday()}-ai-steam.md`, ['title: "As an AI, I cannot generate これは生成できません"', 'review: pass', 'material: ok', 'lint: []']);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${localToday()}-example-a.md`, ['title: "As an AI, I cannot generate これは生成できません"', 'review: pass', 'material: ok', 'lint: []']);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readRunLog(home).status).toBe('success');
     expect(readResult(home)).toContain('生成できません');
@@ -474,7 +477,7 @@ describe('the executor with a queue or a digest', () => {
   it('a digest with nothing to list still says so', async () => {
     const home = makeHome();
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    const dir = path.join(vault, 'Drafts', 'Digest');
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
     expect(readRunLog(home).status).toBe('success');
     expect(readResult(home)).toContain('0 本（査読未解決 0、要確認 0）、未作成 5 本');
@@ -483,7 +486,7 @@ describe('the executor with a queue or a digest', () => {
   it('REGRESSION: a chain without longform still refuses a local step', async () => {
     const home = makeHome();
     const vault = makeVault();
-    const planFile = writePlan(home, port, vault, path.join(vault, '50_Drafts', 'Dev'), [{ instruction: 'a', local: { kind: 'queue-pop' } }, { instruction: 'b' }]);
+    const planFile = writePlan(home, port, vault, path.join(vault, 'Drafts', 'SeriesB'), [{ instruction: 'a', local: { kind: 'queue-pop' } }, { instruction: 'b' }]);
     const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
     delete plan.steps.longform;
     fs.writeFileSync(planFile, JSON.stringify(plan));
@@ -509,8 +512,8 @@ describe('the executor with a queue or a digest', () => {
   it('the digest saves into its own folder and does notify', async () => {
     const home = makeHome();
     const vault = makeVault();
-    writeDraft(vault, 'Steam', `${localToday()}-ai-steam.md`, GOOD);
-    const dir = path.join(vault, '50_Drafts', 'Digest');
+    writeDraft(vault, 'SeriesA', `${localToday()}-example-a.md`, GOOD);
+    const dir = path.join(vault, 'Drafts', 'Digest');
     fs.mkdirSync(dir);
     await runExecutor(writePlan(home, port, vault, dir, digestChain()), home);
 
@@ -523,7 +526,7 @@ describe('the executor with a queue or a digest', () => {
 describe('readQueueFile', () => {
   it('returns the text and the physical path', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     fs.writeFileSync(path.join(dir, '_queue.md'), '- [ ] 話\n');
     const read = executor.readQueueFile(vault, `${dir}/`);
     expect(read.text).toBe('- [ ] 話\n');
@@ -532,9 +535,9 @@ describe('readQueueFile', () => {
 
   it('a missing file, folder or vault is null, not a failure', () => {
     const vault = makeVault();
-    expect(executor.readQueueFile(vault, path.join(vault, '50_Drafts'))).toBeNull();
+    expect(executor.readQueueFile(vault, path.join(vault, 'Drafts'))).toBeNull();
     expect(executor.readQueueFile(vault, path.join(vault, 'nope'))).toBeNull();
-    expect(executor.readQueueFile(path.join(vault, 'nope'), path.join(vault, '50_Drafts'))).toBeNull();
+    expect(executor.readQueueFile(path.join(vault, 'nope'), path.join(vault, 'Drafts'))).toBeNull();
   });
 
   it('refuses a folder outside the vault, including a sibling that shares the prefix', () => {
@@ -549,14 +552,14 @@ describe('readQueueFile', () => {
     const vault = makeVault();
     const outside = tmpDir('shelly-outside-');
     fs.writeFileSync(path.join(outside, '_queue.md'), '- [ ] 外\n');
-    const link = path.join(vault, '50_Drafts', 'Dev');
+    const link = path.join(vault, 'Drafts', 'SeriesB');
     if (!symlinkOrSkip(outside, link, 'dir')) return;
     expect(() => executor.readQueueFile(vault, link)).toThrow(/outside the vault/);
   });
 
   it('refuses a symlinked queue file', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     const target = path.join(tmpDir('shelly-outside-'), 'secret.md');
     fs.writeFileSync(target, '- [ ] 秘密\n');
     if (!symlinkOrSkip(target, path.join(dir, '_queue.md'), 'file')) return;
@@ -565,7 +568,7 @@ describe('readQueueFile', () => {
 
   it('refuses a queue that lstat reports as a symlink, on any host', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     fs.writeFileSync(path.join(dir, '_queue.md'), '- [ ] 話\n');
     const fake = { ...fs, lstatSync: () => ({ isSymbolicLink: () => true, isFile: () => false, size: 1 }) };
     expect(() => executor.readQueueFile(vault, dir, fake)).toThrow(/not a regular file/);
@@ -573,14 +576,14 @@ describe('readQueueFile', () => {
 
   it('refuses a directory named like the queue', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     fs.mkdirSync(path.join(dir, '_queue.md'));
     expect(() => executor.readQueueFile(vault, dir)).toThrow(/not a regular file/);
   });
 
   it('refuses a queue over the size cap instead of reading part of it', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     fs.writeFileSync(path.join(dir, '_queue.md'), 'a'.repeat(executor.QUEUE_MAX_BYTES + 1));
     expect(() => executor.readQueueFile(vault, dir)).toThrow(/too large/);
     fs.writeFileSync(path.join(dir, '_queue.md'), 'a'.repeat(executor.QUEUE_MAX_BYTES));
@@ -610,12 +613,12 @@ describe('firstQueueBlock and flipQueueText', () => {
   });
 
   it.each([
-    'jp.mercari.com/item/m12345',
+    'shop.example.com/item/m12345',
     'ebay.com/itm/123',
     '//evil.example/x',
     'hxxps://evil.example/x',
     'ｈｔｔｐｓ：／／evil.example/x',
-    '[listing](mercari.com/item/m1)',
+    '[listing](market.example.com/item/m1)',
     '<IMAGE src=x>',
     'data:image/png;base64,AAAA',
   ])('a refill answer cannot carry %s in a title or a body line', (bad) => {
@@ -654,7 +657,7 @@ describe('firstQueueBlock and flipQueueText', () => {
 describe('completeQueuePop', () => {
   function setup(queue: string) {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Dev');
+    const dir = path.join(vault, 'Drafts', 'SeriesB');
     fs.mkdirSync(dir);
     const file = path.join(dir, '_queue.md');
     fs.writeFileSync(file, queue);
@@ -707,8 +710,8 @@ describe('completeQueuePop', () => {
 
 describe('parseDraftFrontmatter', () => {
   it('reads what assemble writes', () => {
-    const fm = executor.parseDraftFrontmatter('---\ntitle: "題"\nstream: "x"\nreview: pass\nmaterial: missing\nlint: ["世界初"]\n---\n\n本文');
-    expect(fm).toEqual({ title: '題', review: 'pass', reviewNote: '', material: 'missing', lint: ['世界初'], savedAtMs: 0 });
+    const fm = executor.parseDraftFrontmatter('---\ntitle: "題"\nstream: "x"\nreview: pass\nmaterial: missing\nlint: ["禁句"]\n---\n\n本文');
+    expect(fm).toEqual({ title: '題', review: 'pass', reviewNote: '', material: 'missing', lint: ['禁句'], savedAtMs: 0 });
     expect(executor.parseDraftFrontmatter('---\nmaterial: unknown\n---\n').material).toBe('unknown');
   });
 
@@ -774,45 +777,45 @@ describe('sanitizeDigestText', () => {
 });
 
 describe('scanDraftFolders', () => {
-  const NAME = '2026-11-06-ai-steam.md';
+  const NAME = '2026-11-06-example-a.md';
 
   it('finds today\'s drafts and names the streams without one', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', NAME, GOOD);
+    writeDraft(vault, 'SeriesA', NAME, GOOD);
     const result = scan(vault);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ folder: 'Steam', path: '50_Drafts/Steam/2026-11-06-ai-steam', title: '良い記事', review: 'pass', material: 'ok', lint: [] });
-    expect(result.missing).toEqual(['開発記', '古着']);
+    expect(result.items[0]).toMatchObject({ folder: 'SeriesA', path: 'Drafts/SeriesA/2026-11-06-example-a', title: '良い記事', review: 'pass', material: 'ok', lint: [] });
+    expect(result.missing).toEqual(['シリーズB', 'シリーズC']);
     expect(result.truncated).toBe(false);
   });
 
   it('ignores other days, the queue, other file types and its own folder', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', GOOD);
-    writeDraft(vault, 'Dev', '_queue.md', GOOD);
-    writeDraft(vault, 'Dev', '2026-11-06-notes.txt', GOOD);
+    writeDraft(vault, 'SeriesA', '2026-11-05-example-a.md', GOOD);
+    writeDraft(vault, 'SeriesB', '_queue.md', GOOD);
+    writeDraft(vault, 'SeriesB', '2026-11-06-notes.txt', GOOD);
     writeDraft(vault, 'Digest', '2026-11-06-digest.md', GOOD);
     expect(scan(vault).items).toEqual([]);
   });
 
   it('skips names that could break a wikilink', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', '2026-11-06-a]]b.md', GOOD);
+    writeDraft(vault, 'SeriesA', '2026-11-06-a]]b.md', GOOD);
     expect(scan(vault).items).toEqual([]);
   });
 
   it('reads only the configured folders, in their order', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Substack', '2026-11-06-x.md', GOOD);
+    writeDraft(vault, 'Other', '2026-11-06-x.md', GOOD);
     writeDraft(vault, 'X', '2026-11-06-x.md', GOOD);
-    writeDraft(vault, 'Vintage', '2026-11-06-y.md', GOOD);
-    writeDraft(vault, 'Steam', '2026-11-06-z.md', GOOD);
-    expect(scan(vault).items.map((i: { folder: string }) => i.folder)).toEqual(['Steam', 'Vintage']);
+    writeDraft(vault, 'SeriesC', '2026-11-06-y.md', GOOD);
+    writeDraft(vault, 'SeriesA', '2026-11-06-z.md', GOOD);
+    expect(scan(vault).items.map((i: { folder: string }) => i.folder)).toEqual(['SeriesA', 'SeriesC']);
   });
 
   it('caps the files per folder and says so', () => {
     const vault = makeVault();
-    for (let i = 0; i < executor.DIGEST_MAX_FILES_PER_FOLDER + 3; i += 1) writeDraft(vault, 'Steam', `2026-11-06-${i}.md`, GOOD);
+    for (let i = 0; i < executor.DIGEST_MAX_FILES_PER_FOLDER + 3; i += 1) writeDraft(vault, 'SeriesA', `2026-11-06-${i}.md`, GOOD);
     const result = scan(vault);
     expect(result.items).toHaveLength(executor.DIGEST_MAX_FILES_PER_FOLDER);
     expect(result.truncated).toBe(true);
@@ -820,7 +823,7 @@ describe('scanDraftFolders', () => {
 
   it('reads only the head of a file, so frontmatter past the cap is flagged, not trusted', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Steam');
+    const dir = path.join(vault, 'Drafts', 'SeriesA');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, NAME), `---\nnote: ${'x'.repeat(executor.DIGEST_HEAD_BYTES)}\nreview: pass\n---\n`);
     const reads: number[] = [];
@@ -830,7 +833,7 @@ describe('scanDraftFolders', () => {
     } };
     const [item] = scan(vault, '2026-11-06', fake).items;
     expect(item.review).toBe('');
-    expect(item.title).toBe('2026-11-06-ai-steam');
+    expect(item.title).toBe('2026-11-06-example-a');
     expect(Math.max(...reads)).toBeLessThanOrEqual(executor.DIGEST_HEAD_BYTES);
   });
 
@@ -838,34 +841,34 @@ describe('scanDraftFolders', () => {
     const vault = makeVault();
     const savedAt = '2026-11-05T09:00:00.000Z';
     const ms = Date.parse(savedAt);
-    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', [...GOOD, `saved_at: ${savedAt}`]);
+    writeDraft(vault, 'SeriesA', '2026-11-05-example-a.md', [...GOOD, `saved_at: ${savedAt}`]);
     const late = (lateAfterMs: number) =>
-      executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs });
+      executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, 'Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs });
     const listed = late(ms - 1000);
     expect(listed.items).toHaveLength(1);
     expect(listed.items[0].late).toBe(true);
-    expect(listed.missing).toContain('AI×STEAM');
+    expect(listed.missing).toContain('シリーズA');
     expect(late(ms + 1000).items).toEqual([]);
   });
 
   it('a draft without saved_at is never late, whatever its mtime', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', '2026-11-05-ai-steam.md', GOOD);
-    const result = executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs: 0 });
+    writeDraft(vault, 'SeriesA', '2026-11-05-example-a.md', GOOD);
+    const result = executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, 'Drafts'), skipFolder: 'Digest', today: '2026-11-06', yesterday: '2026-11-05', lateAfterMs: 0 });
     expect(result.items).toEqual([]);
   });
 
   it('a drafts folder outside the vault is refused', () => {
     const vault = makeVault();
     const other = makeVault();
-    expect(() => executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(other, '50_Drafts'), skipFolder: 'Digest', today: '2026-11-06' })).toThrow(/outside the vault/);
+    expect(() => executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(other, 'Drafts'), skipFolder: 'Digest', today: '2026-11-06' })).toThrow(/outside the vault/);
   });
 
   it('a vault that does not exist yet means no drafts', () => {
     const vault = makeVault();
     const result = executor.scanDraftFolders(LOCAL, { vault, draftsDir: path.join(vault, 'nope'), skipFolder: 'Digest', today: '2026-11-06' });
     expect(result.items).toEqual([]);
-    expect(result.missing).toEqual(['AI×STEAM', '開発記', '古着']);
+    expect(result.missing).toEqual(['シリーズA', 'シリーズB', 'シリーズC']);
   });
 
   it('a vault it may not read fails the step, so it is not reported as no drafts', () => {
@@ -880,15 +883,15 @@ describe('scanDraftFolders', () => {
     const vault = makeVault();
     const outside = tmpDir('shelly-outside-');
     fs.writeFileSync(path.join(outside, NAME), `---\n${GOOD.join('\n')}\n---\n`);
-    if (!symlinkOrSkip(outside, path.join(vault, '50_Drafts', 'Steam'), 'dir')) return;
-    fs.mkdirSync(path.join(vault, '50_Drafts', 'Dev'));
-    symlinkOrSkip(path.join(outside, NAME), path.join(vault, '50_Drafts', 'Dev', NAME), 'file');
+    if (!symlinkOrSkip(outside, path.join(vault, 'Drafts', 'SeriesA'), 'dir')) return;
+    fs.mkdirSync(path.join(vault, 'Drafts', 'SeriesB'));
+    symlinkOrSkip(path.join(outside, NAME), path.join(vault, 'Drafts', 'SeriesB', NAME), 'file');
     expect(scan(vault).items).toEqual([]);
   });
 
   it('skips entries that lstat reports as symlinks, on any host', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Steam', NAME, GOOD);
+    writeDraft(vault, 'SeriesA', NAME, GOOD);
     const realLstat = fs.lstatSync;
     const fake = { ...fs, lstatSync: (p: fs.PathLike) => {
       const st = realLstat(p);
@@ -899,27 +902,27 @@ describe('scanDraftFolders', () => {
 });
 
 describe('renderDraftDigest', () => {
-  const item = (over = {}) => ({ folder: 'Steam', path: '50_Drafts/Steam/2026-11-06-ai-steam', title: '良い記事', review: 'pass', material: 'ok', lint: [], ...over });
+  const item = (over = {}) => ({ folder: 'SeriesA', path: 'Drafts/SeriesA/2026-11-06-example-a', title: '良い記事', review: 'pass', material: 'ok', lint: [], ...over });
   const render = (items: unknown[], missing: string[] = [], truncated = false) => executor.renderDraftDigest(LOCAL, { items, missing, truncated }, '2026-11-06');
 
   it('leads with the counts, then the titles, within the notification\'s 500 characters', () => {
     const items = [
       item(),
-      item({ folder: 'Dev', title: 'あ'.repeat(160), review: 'unresolved' }),
-      item({ folder: 'Vintage', title: 'い'.repeat(160), material: 'missing' }),
+      item({ folder: 'SeriesB', title: 'あ'.repeat(160), review: 'unresolved' }),
+      item({ folder: 'SeriesC', title: 'い'.repeat(160), material: 'missing' }),
     ];
-    const preview = render(items, ['開発EN', '古着EN']).replace(/\s+/g, ' ').slice(0, 500);
+    const preview = render(items, ['シリーズB EN', 'シリーズC EN']).replace(/\s+/g, ' ').slice(0, 500);
     expect(preview.startsWith('記事下書き 2026-11-06: 3 本（査読未解決 1、要確認 1）、未作成 2 本')).toBe(true);
-    expect(preview).toContain('AI×STEAM: 良い記事');
-    expect(preview).toContain(`開発記: ${'あ'.repeat(60)}【査読未解決】`);
-    expect(preview).toContain(`古着: ${'い'.repeat(60)}【要確認】`);
-    expect(preview).toContain('未作成: 開発EN、古着EN');
+    expect(preview).toContain('シリーズA: 良い記事');
+    expect(preview).toContain(`シリーズB: ${'あ'.repeat(60)}【査読未解決】`);
+    expect(preview).toContain(`シリーズC: ${'い'.repeat(60)}【要確認】`);
+    expect(preview).toContain('未作成: シリーズB EN、シリーズC EN');
   });
 
   it('leads with unresolved reviews, in the summary and the list', () => {
-    const text = render([item(), item({ folder: 'Dev', path: '50_Drafts/Dev/x', title: '別', review: 'unresolved' })]);
-    expect(text.indexOf('開発記: 別【査読未解決】')).toBeLessThan(text.indexOf('AI×STEAM: 良い記事'));
-    expect(text.indexOf('[[50_Drafts/Dev/x|別]]')).toBeLessThan(text.indexOf('|良い記事]]'));
+    const text = render([item(), item({ folder: 'SeriesB', path: 'Drafts/SeriesB/x', title: '別', review: 'unresolved' })]);
+    expect(text.indexOf('シリーズB: 別【査読未解決】')).toBeLessThan(text.indexOf('シリーズA: 良い記事'));
+    expect(text.indexOf('[[Drafts/SeriesB/x|別]]')).toBeLessThan(text.indexOf('|良い記事]]'));
   });
 
   it('says why a review is unresolved, in the summary and the list', () => {
@@ -934,7 +937,7 @@ describe('renderDraftDigest', () => {
 
   it('a draft with no material marker needs a look, a review that passed or not', () => {
     const text = render([item({ material: 'unknown' })]);
-    expect(text).toContain('AI×STEAM: 良い記事【要確認】');
+    expect(text).toContain('シリーズA: 良い記事【要確認】');
     expect(text).toContain('【要確認: 本人の材料を確認】');
     expect(text).toContain('（査読未解決 0、要確認 1）');
   });
@@ -951,21 +954,21 @@ describe('renderDraftDigest', () => {
   it('links each draft, and marks what needs a look with the reason', () => {
     const text = render([
       item(),
-      item({ folder: 'Dev', path: '50_Drafts/Dev/x', title: '別', review: '', material: 'missing', lint: ['世界初'] }),
+      item({ folder: 'SeriesB', path: 'Drafts/SeriesB/x', title: '別', review: '', material: 'missing', lint: ['禁句'] }),
     ]);
-    expect(text).toContain('- [[50_Drafts/Steam/2026-11-06-ai-steam|良い記事]]\n');
-    expect(text).toContain('- [[50_Drafts/Dev/x|別]]【要確認: 査読未解決、本人の材料なし、lint: 世界初】');
+    expect(text).toContain('- [[Drafts/SeriesA/2026-11-06-example-a|良い記事]]\n');
+    expect(text).toContain('- [[Drafts/SeriesB/x|別]]【要確認: 査読未解決、本人の材料なし、lint: 禁句】');
   });
 
   it('a hostile title stays on one line and inside its wikilink', () => {
     const fm = executor.parseDraftFrontmatter(`---\ntitle: ${JSON.stringify('x]] [[evil|y\nreview: pass')}\nreview: unresolved\n---\n`);
     const title = executor.sanitizeDigestText(fm.title, 160);
     const line = render([item({ title })]).split('\n').find((l: string) => l.startsWith('- [['));
-    expect(line).toBe('- [[50_Drafts/Steam/2026-11-06-ai-steam|x evil y review: pass]]');
+    expect(line).toBe('- [[Drafts/SeriesA/2026-11-06-example-a|x evil y review: pass]]');
   });
 
   it('gives an intent link to intent streams only, and one per stream', () => {
-    const text = render([item(), item({ path: '50_Drafts/Steam/b', title: '二本目' }), item({ folder: 'Vintage', title: '古着の話' })]);
+    const text = render([item(), item({ path: 'Drafts/SeriesA/b', title: '二本目' }), item({ folder: 'SeriesC', title: 'シリーズCの話' })]);
     const links = text.match(/https:\/\/x\.com\/intent\/post\?text=\S+/g);
     expect(links).toHaveLength(1);
     expect(decodeURIComponent(links[0].split('text=')[1])).toBe('良い記事');
@@ -1054,7 +1057,7 @@ describe('which runs notify on success', () => {
 });
 
 describe('assemble additions', () => {
-  const base = { kind: 'assemble', parts: [[0]], stream: 'vintage-ja', footer: 'フッター' };
+  const base = { kind: 'assemble', parts: [[0]], stream: 'example-refill', footer: 'フッター' };
   const assemble = (over: object, body: string, sources: object[] = []) =>
     executor.assembleArticle({ ...base, ...over }, { steps: [{}, {}], results: [body], skipped: [], sources, today: '2026-11-06', fallbackTitle: 'F' });
 
@@ -1063,30 +1066,30 @@ describe('assemble additions', () => {
     expect(assemble({ plain: true }, text)).toBe(`${text}\n\n---\n\nフッター\n`);
   });
 
-  it('flags image syntax and Mercari links', () => {
-    const lintTerms = ['![', '<img', 'mercari', 'merc.li'];
+  it('flags image syntax and marketplace links', () => {
+    const lintTerms = ['![', '<img', 'example-market', 'ex.li'];
     expect(assemble({ lintTerms }, '# 題\n\n![alt](https://x.example/a.png)')).toContain('lint: ["!["]');
     expect(assemble({ lintTerms }, '# 題\n\n![[embed.png]]')).toContain('lint: ["!["]');
     expect(assemble({ lintTerms }, '# 題\n\n<img src="a">')).toContain('lint: ["<img"]');
-    expect(assemble({ lintTerms }, '# 題\n\nhttps://jp.mercari.com/item/m123')).toContain('lint: ["mercari"]');
-    expect(assemble({ lintTerms }, '# 題\n\nhttps://merc.li/abc')).toContain('lint: ["merc.li"]');
+    expect(assemble({ lintTerms }, '# 題\n\nhttps://example-market.test/item/m123')).toContain('lint: ["example-market"]');
+    expect(assemble({ lintTerms }, '# 題\n\nhttps://ex.li/abc')).toContain('lint: ["ex.li"]');
     expect(assemble({ lintTerms }, '# 題\n\n普通の本文。')).toContain('lint: []');
   });
 
   it('REGRESSION: a term ending in a letter still needs a word edge', () => {
     expect(assemble({ lintTerms: ['world first'] }, '# 題\n\nthe new world firstly')).toContain('lint: []');
-    expect(assemble({ lintTerms: ['mercari'] }, '# 題\n\nmercaris')).toContain('lint: []');
+    expect(assemble({ lintTerms: ['example-market'] }, '# 題\n\nexample-markets')).toContain('lint: []');
   });
 
   it('lintSources catches a listing link in the sources, and only then', () => {
-    const sources = [{ id: 1, title: 'フリマ', url: 'https://jp.mercari.com/item/m123' }];
-    expect(assemble({ lintTerms: ['mercari'], lintSources: true }, '# 題\n\n本文', sources)).toContain('lint: ["mercari"]');
-    expect(assemble({ lintTerms: ['mercari'] }, '# 題\n\n本文', sources)).toContain('lint: []');
+    const sources = [{ id: 1, title: '店舗', url: 'https://example-market.test/item/m123' }];
+    expect(assemble({ lintTerms: ['example-market'], lintSources: true }, '# 題\n\n本文', sources)).toContain('lint: ["example-market"]');
+    expect(assemble({ lintTerms: ['example-market'] }, '# 題\n\n本文', sources)).toContain('lint: []');
   });
 });
 
 describe('normalizeStepLocal parity for the new kinds', () => {
-  const list = { kind: 'list-drafts', streams: [{ folder: 'Steam', label: 'AI×STEAM', intent: true }, { folder: 'Vintage', label: '古着' }] };
+  const list = { kind: 'list-drafts', streams: [{ folder: 'SeriesA', label: 'シリーズA', intent: true }, { folder: 'SeriesC', label: 'シリーズC' }] };
 
   it('accepts them identically', () => {
     for (const raw of [list, { kind: 'queue-pop' }]) {
@@ -1133,7 +1136,65 @@ describe('normalizeStepLocal parity for the new kinds', () => {
   });
 });
 
-describe('topic refill, against the real vintage preset', () => {
+describe('the example in the public doc, through the real executor', () => {
+  const doc = fs.readFileSync(path.join(root, 'docs/article-pipeline-config.md'), 'utf8');
+  const block = doc.split('```')[1];
+  const json = block.slice(block.indexOf('{'));
+  const roots = articleOutputRoots({}, '/home/x');
+  const gemini = (text: string, uri?: string) => ({
+    body: {
+      candidates: [{
+        content: { parts: [{ text }] },
+        finishReason: 'STOP',
+        ...(uri ? { groundingMetadata: { groundingChunks: [{ web: { uri, title: '資料' } }] } } : {}),
+      }],
+    },
+  });
+  const openAi = (content: string) => ({ body: { choices: [{ message: { content }, finish_reason: 'stop' }] } });
+
+  it('its folder obeys the rule, and queue-pop and the save both work there', async () => {
+    const found = selectArticlePipeline(json, '@agent article pipeline garden-notes', roots);
+    if (!('preset' in found)) throw new Error(JSON.stringify(found));
+    const preset: PipelinePreset = found.preset;
+    expect(preset.output?.outputPath.startsWith(`${roots.vault}/`)).toBe(true);
+
+    // The same folder relative to the vault, in a temporary vault.
+    const home = makeHome();
+    const vault = makeVault();
+    const dir = path.join(vault, preset.output!.outputPath.slice(roots.vault.length));
+    fs.mkdirSync(dir, { recursive: true });
+    const queueFile = path.join(dir, '_queue.md');
+    fs.writeFileSync(queueFile, '- [ ] Tomatoes\n  Points: when to start\n- [ ] Compost\n');
+
+    const script = path.join(home, 'fake-http.json');
+    fs.writeFileSync(script, JSON.stringify({
+      generativelanguage: [gemini(`1. Source A: 42% of plants. ${SOURCE_URL}`, SOURCE_URL)],
+      'api.groq.com': [openAi('# Tomatoes\n\nBody [1].')],
+      'api.cerebras.ai': [openAi('VERDICT: PASS')],
+    }));
+    const steps = normalizeSteps(preset.orchestration);
+    expect(steps[0].local).toEqual({ kind: 'queue-pop' });
+    const planFile = writePlan(home, 1, vault, dir, steps);
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    plan.prompt = preset.prompt;
+    plan.tool = { ...preset.tool, label: preset.tool!.type };
+    plan.output.outputNameTemplate = preset.output!.outputTemplate;
+    fs.writeFileSync(planFile, JSON.stringify(plan));
+
+    const exit = await runExecutor(planFile, home, fixtureBroker, { SHELLY_TEST_FAKE_HTTP: script });
+    expect(exit).toBe(0);
+
+    const saved = path.join(dir, `${localToday()}-garden-notes.md`);
+    const draft = fs.readFileSync(saved, 'utf8');
+    expect(draft).toContain('title: "Tomatoes"');
+    expect(draft).toContain('stream: "garden-notes"');
+    expect(draft).toContain('Written with AI tools.');
+    expect(fs.readFileSync(queueFile, 'utf8')).toContain('- [x] Tomatoes');
+    expect(fs.readFileSync(queueFile, 'utf8')).toContain('- [ ] Compost');
+  }, 30000);
+});
+
+describe('topic refill, against a config with a topics instruction', () => {
   const GEMINI = 'generativelanguage';
   const CEREBRAS = 'api.cerebras.ai';
   const GROUNDED_REFILL_URL = 'https://refill.example/only-for-topics';
@@ -1155,7 +1216,7 @@ describe('topic refill, against the real vintage preset', () => {
   function stream(queue: string | null) {
     const home = makeHome();
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Vintage');
+    const dir = path.join(vault, 'Drafts', 'SeriesC');
     if (queue !== null) {
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, '_queue.md'), queue);
@@ -1166,7 +1227,7 @@ describe('topic refill, against the real vintage preset', () => {
   async function run(s: ReturnType<typeof stream>, script: Record<string, unknown[]>, edit: (plan: any) => void = () => undefined) {
     const file = path.join(s.home, 'fake-http.json');
     fs.writeFileSync(file, JSON.stringify(script));
-    const preset = buildArticlePipeline('vintage-ja');
+    const preset = examplePipeline('example-refill');
     const planFile = writePlan(s.home, 1, s.vault, s.dir, normalizeSteps(preset.orchestration));
     const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
     plan.prompt = preset.prompt;
@@ -1206,7 +1267,7 @@ describe('topic refill, against the real vintage preset', () => {
     expect(statuses(log)).toEqual(full('success', 'success'));
     // Grounded, with the stream's own rules, the titles as data, and the format.
     expect(bodies[0]).toContain('google_search');
-    expect(bodies[0]).toContain('出品へのリンクを貼らない');
+    expect(bodies[0]).toContain('資料に書かれたことだけを書く');
     expect(bodies[0]).toContain('済んだ話');
     expect(bodies[0]).toContain('Topics not to repeat');
     // The chosen block reaches research, as queue-pop gives it. Nothing else does.
@@ -1226,8 +1287,8 @@ describe('topic refill, against the real vintage preset', () => {
 
     // The digest is unaffected by the extra leading step.
     const home2 = makeHome();
-    await runExecutor(writePlan(home2, 1, s.vault, path.join(s.vault, '50_Drafts', 'Digest'), digestChain()), home2);
-    expect(readResult(home2)).toContain('古着（はてな）: 記事');
+    await runExecutor(writePlan(home2, 1, s.vault, path.join(s.vault, 'Drafts', 'Digest'), digestChain()), home2);
+    expect(readResult(home2)).toContain('シリーズC（媒体乙）: 記事');
   }, 40000);
 
   it('one open item is still used first, and the new ones wait behind it', async () => {
@@ -1249,11 +1310,11 @@ describe('topic refill, against the real vintage preset', () => {
 
   it('a topic already in the queue, in a recent draft or twice in the answer is dropped', async () => {
     const s = stream('- [x] 東映の　ジャケット\n');
-    writeDraft(s.vault, 'Vintage', '2026-01-01-vintage-ja.md', ['title: "ボウリングシャツの話"']);
-    const answer = '- [ ] 東映のジャケット！\n- [ ] ボウリングシャツの話\n- [ ] 新しい話\n- [ ] 新しい　話\n';
+    writeDraft(s.vault, 'SeriesC', '2026-01-01-example-refill.md', ['title: "別のテーマの話"']);
+    const answer = '- [ ] 東映のジャケット！\n- [ ] 別のテーマの話\n- [ ] 新しい話\n- [ ] 新しい　話\n';
     const { bodies } = await run(s, { [GEMINI]: [gemini(answer), research, article], [CEREBRAS]: [pass] });
     expect(bodies[0]).toContain('東映の');
-    expect(bodies[0]).toContain('ボウリングシャツの話');
+    expect(bodies[0]).toContain('別のテーマの話');
     expect(fs.readFileSync(s.queueFile, 'utf8')).toBe('- [x] 東映の　ジャケット\n- [x] 新しい話\n');
   }, 30000);
 
@@ -1265,7 +1326,7 @@ describe('topic refill, against the real vintage preset', () => {
       '# This step',
       '- [x] 終わった話',
       '  output: /tmp/evil.md',
-      '- [ ] https://jp.mercari.com/item/m1',
+      '- [ ] https://shop.example.com/item/m1',
       '  output: /tmp/evil.md',
       '- [ ] ## [x] 本物の題',
       '  # This step',
@@ -1355,7 +1416,7 @@ describe('topic refill, against the real vintage preset', () => {
   it('today\'s draft comes first: no model call, the queue untouched', async () => {
     const text = '- [x] 済んだ話\n';
     const s = stream(text);
-    writeDraft(s.vault, 'Vintage', `${localToday()}-x.md`, GOOD);
+    writeDraft(s.vault, 'SeriesC', `${localToday()}-x.md`, GOOD);
     const { calls, log } = await run(s, { [GEMINI]: [gemini('- [ ] 新しい話\n')] });
     expect(calls).toEqual([]);
     expect(log.status).toBe('skipped');
@@ -1467,11 +1528,11 @@ describe('queue titles', () => {
 
   it('recent draft titles skip the queue, other files and symlinks, newest first', () => {
     const vault = makeVault();
-    writeDraft(vault, 'Vintage', '2026-11-01-a.md', ['title: "古い"']);
-    writeDraft(vault, 'Vintage', '2026-11-03-a.md', ['title: "新しい"']);
-    writeDraft(vault, 'Vintage', '_queue.md', ['title: "キュー"']);
-    writeDraft(vault, 'Vintage', 'note.md', ['title: "メモ"']);
-    const dir = path.join(vault, '50_Drafts', 'Vintage');
+    writeDraft(vault, 'SeriesC', '2026-11-01-a.md', ['title: "古い"']);
+    writeDraft(vault, 'SeriesC', '2026-11-03-a.md', ['title: "新しい"']);
+    writeDraft(vault, 'SeriesC', '_queue.md', ['title: "キュー"']);
+    writeDraft(vault, 'SeriesC', 'note.md', ['title: "メモ"']);
+    const dir = path.join(vault, 'Drafts', 'SeriesC');
     expect(executor.recentDraftTitles(dir)).toEqual(['新しい', '古い']);
     const realLstat = fs.lstatSync;
     const fake = { ...fs, lstatSync: (p: fs.PathLike) => {
@@ -1486,7 +1547,7 @@ describe('queue titles', () => {
 describe('readQueueForRefill', () => {
   it('names the future path of a queue that does not exist, inside the physical vault', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     expect(executor.readQueueForRefill(vault, dir)).toEqual({ file: path.join(dir, '_queue.md'), text: '' });
     expect(executor.readQueueForRefill(vault, path.join(dir, 'A', 'B')).file).toBe(path.join(dir, 'A', 'B', '_queue.md'));
   });
@@ -1507,7 +1568,7 @@ describe('readQueueForRefill', () => {
 
   it('refuses a symlinked queue, on any host', () => {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts');
+    const dir = path.join(vault, 'Drafts');
     fs.writeFileSync(path.join(dir, '_queue.md'), '- [ ] 話\n');
     const fake = { ...fs, lstatSync: () => ({ isSymbolicLink: () => true, isFile: () => false, size: 1 }) };
     expect(() => executor.readQueueForRefill(vault, dir, fake)).toThrow(/not a regular file/);
@@ -1515,7 +1576,7 @@ describe('readQueueForRefill', () => {
 
   it('refuses a broken symlink on the way to the folder, on any host', () => {
     const vault = makeVault();
-    const link = path.join(vault, '50_Drafts', 'Link');
+    const link = path.join(vault, 'Drafts', 'Link');
     const realLstat = fs.lstatSync;
     const fake = { ...fs, lstatSync: (p: fs.PathLike, ...rest: []) => (String(p) === link ? { isSymbolicLink: () => true } : realLstat(p, ...rest)) };
     expect(() => executor.readQueueForRefill(vault, link, fake)).toThrow(/broken link/);
@@ -1525,7 +1586,7 @@ describe('readQueueForRefill', () => {
 describe('appendQueueRefill', () => {
   function setup(queue: string | null) {
     const vault = makeVault();
-    const dir = path.join(vault, '50_Drafts', 'Vintage');
+    const dir = path.join(vault, 'Drafts', 'SeriesC');
     if (queue !== null) {
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, '_queue.md'), queue);
@@ -1618,19 +1679,19 @@ describe('queue-refill as a step', () => {
   });
 
   it('the fixed engine is the preset\'s research engine', () => {
-    expect(buildArticlePipeline('vintage-ja').tool?.type).toBe(executor.QUEUE_REFILL_TOOL_TYPE);
+    expect(examplePipeline('example-refill').tool?.type).toBe(executor.QUEUE_REFILL_TOOL_TYPE);
     expect(executor.QUEUE_REFILL_TOOL_TYPE).not.toBe('perplexity');
   });
 
-  it.each(['dev-ja', 'dev-en'] as const)('%s keeps its hand-built queue: no refill step', (name) => {
-    const steps = buildArticlePipeline(name).orchestration.steps as Array<{ local?: { kind: string } }>;
+  it.each(['example-queue', 'example-queue-en'] as const)('%s keeps its hand-built queue: no refill step', (name) => {
+    const steps = examplePipeline(name).orchestration.steps as Array<{ local?: { kind: string } }>;
     expect(steps[0].local).toEqual({ kind: 'queue-pop' });
     expect(steps.some((s) => s.local?.kind === 'queue-refill')).toBe(false);
     expect(steps).toHaveLength(8);
   });
 
-  it('ai-steam has neither', () => {
-    const steps = buildArticlePipeline('ai-steam').orchestration.steps as Array<{ local?: { kind: string } }>;
+  it('a chain with no queue has neither', () => {
+    const steps = examplePipeline('example-a').orchestration.steps as Array<{ local?: { kind: string } }>;
     expect(steps.some((s) => s.local?.kind === 'queue-refill' || s.local?.kind === 'queue-pop')).toBe(false);
   });
 });

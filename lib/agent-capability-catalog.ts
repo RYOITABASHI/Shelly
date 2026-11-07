@@ -42,7 +42,7 @@ export interface AgentExampleUtterance {
 export const AGENT_EXAMPLE_UTTERANCES: AgentExampleUtterance[] = [
   {
     id: 'daily-draft',
-    utterance: '@agent 毎日8時にSTEAM×AI教育系の論文とニュースを集めて下書きに保存して',
+    utterance: '@agent 毎日8時に量子コンピュータの論文とニュースを集めて下書きに保存して',
     explain: 'Registers a daily 8:00 agent that writes its findings to a file (the default draft action) — no approval tap needed to deliver the result.',
   },
   {

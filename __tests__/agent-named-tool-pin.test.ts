@@ -147,8 +147,10 @@ describe('single-clause parse pins the named tool (JA + EN)', () => {
     expect(d.toolExplicit).toBeUndefined();
   });
 
-  it('an explicit A/B comparison request keeps the ab-article-eval route', () => {
-    expect(suggestToolForDraft('QwenとCodexで記事を書き比べて').tool.type).toBe('ab-article-eval');
+  it('no request routes to ab-article-eval any more', () => {
+    for (const text of ['QwenとCodexで記事を書き比べて', '2つの案を比較して', 'a/b test the headlines', '記事評価をして']) {
+      expect(suggestToolForDraft(text).tool.type).not.toBe('ab-article-eval');
+    }
   });
 
   it('slot-fill clarification keeps the pin from the original utterance', () => {

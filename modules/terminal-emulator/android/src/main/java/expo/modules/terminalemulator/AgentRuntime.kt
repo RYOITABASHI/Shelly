@@ -472,7 +472,10 @@ object AgentRuntime {
     // that deletes the request no longer empties the hash. JS-only.
     // v77 (2026-11-01, MONITOR CLI tokens): Codex driver calls also pass
     // --usage-file and the run log records it. JS-only.
-    private const val CURRENT_SCRIPT_VERSION = 77
+    // v78 (2026-11-07): a device with no content project no longer gets one made
+    // for it (PROJECT_DIR falls back to agent-output), and the A/B eval prompt is
+    // generic. JS-only.
+    private const val CURRENT_SCRIPT_VERSION = 78
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request

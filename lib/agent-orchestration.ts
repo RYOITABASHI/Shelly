@@ -30,7 +30,7 @@ export const DEFAULT_MAX_STEPS = 6;
 export const HARD_MAX_STEPS = 10;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
 export const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
-const MAX_STEP_INSTRUCTION_CHARS = 500;
+export const MAX_STEP_INSTRUCTION_CHARS = 500;
 // Exported (not just module-local) for the same reason as MAX_RESULT_CARRY_CHARS
 // below: bug #155(b) follow-up (docs/superpowers/DEFERRED.md, 2026-07-16) —
 // lib/agent-executor.ts's generated shell script now ports buildStepPrompt's
@@ -888,7 +888,7 @@ const EN_TRIGGER_VERB = '(?:call|invoke|query|request|use)';
  * the RAW instruction verbatim as the chat message — but that text was
  * authored as a ROUTING directive for the agent ("use Perplexity for this
  * step"), not as a question for the model itself. A real search-augmented
- * model (sonar) reads "call the Perplexity API and get the latest STEAM
+ * model (sonar) reads "call the Perplexity API and get the latest
  * news" as a meta-request to explain HOW to call an API, and answers with
  * usage instructions instead of performing the search — reproduced live via
  * agent-mrnaqw5g (step 1 "succeeded" at the HTTP layer, but step 2 correctly

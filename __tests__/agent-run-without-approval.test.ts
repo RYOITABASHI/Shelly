@@ -9,7 +9,6 @@ import {
   analyzeEscalationCommand,
   AUTO_APPROVABLE_ACTION_TYPES,
   auditCommandText,
-  DEFAULT_AGENT_PROJECT_DIR,
   detectRunWithoutApprovalIntent,
   escalationAutoApprovable,
   forgetRunWithoutApproval,
@@ -239,8 +238,11 @@ describe('escalation auto-approve rules (review H2)', () => {
     // /data/data alias of the same root is accepted.
     expect(escalationAutoApprovable({ ...v, workspaceRoot: WS.replace('/data/user/0/', '/data/data/') }, on).ok).toBe(true);
     // Agents without a workspaceRoot run in the driver's default project dir.
-    const def = `${HOME}/projects/shelly-content-studio`;
-    expect(escalationAutoApprovable({ ...v, workspaceRoot: def, cwd: def }, { ...on, trustedWorkspaceRoot: DEFAULT_AGENT_PROJECT_DIR }).ok).toBe(true);
+    for (const def of [`${HOME}/agent-output`, `${HOME}/projects/shelly-content-studio`]) {
+      expect(escalationAutoApprovable({ ...v, workspaceRoot: def, cwd: def }, { ...on, trustedWorkspaceRoot: def }).ok).toBe(true);
+    }
+    // The home itself is never a trusted root, whatever an old plan's cwd was.
+    expect(escalationAutoApprovable({ ...v, workspaceRoot: HOME, cwd: HOME }, { ...on, trustedWorkspaceRoot: HOME })).toEqual({ ok: false, reason: 'unsafe-root' });
   });
 
   it('reads that write, execute or touch protected state are not reads', () => {
@@ -353,7 +355,7 @@ describe('RN choke points use the signed path and log visibly', () => {
   it('escalations: hash-bound flag → minted copy re-check → signed accept → audit line, before the notification', () => {
     const fn = layout.slice(layout.indexOf('const autoApproveEscalation = async'), layout.indexOf('const drainAgentEscalationRequests = async'));
     expect(fn).toMatch(/isRunWithoutApprovalEnabled\(agent\)/);
-    expect(fn).toMatch(/trustedWorkspaceRoot: agent\?\.workspaceRoot\?\.trim\(\) \|\| DEFAULT_AGENT_PROJECT_DIR/);
+    expect(fn).toMatch(/trustedWorkspaceRoot: agent\?\.workspaceRoot\?\.trim\(\) \|\| defaultAgentWorkspace\(getHomePath\(\)\)/);
     expect(fn).toMatch(/registeredRunOrigin\(parsed\.agentId\) === 'user'/);
     expect(fn).toMatch(/readAgentEscalationRequest\(parsed\.runId, parsed\.reqId\)/);
     expect(fn).toMatch(/escalationAutoApprovable\(minted/);

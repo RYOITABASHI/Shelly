@@ -509,7 +509,7 @@ export type AppSettings = {
   agentOutputTarget?: 'local' | 'obsidian' | 'custom';
   /** Obsidian Vault root (also used for the content-studio mirror). */
   agentVaultPath?: string;
-  /** Optional topic root inserted before the date folder (e.g. "STEAM_AI"). */
+  /** Optional topic root inserted before the date folder (e.g. "Research"). */
   agentTopicFolder?: string;
   /** Base path when agentOutputTarget === 'custom'. */
   agentCustomPath?: string;
@@ -1438,7 +1438,7 @@ export interface AgentAssembleStepConfig {
   parts: number[][];
   /** Frontmatter `stream` value. */
   stream: string;
-  /** Fixed footer text (AI use, final checker). */
+  /** Fixed footer text. */
   footer: string;
   /** Terms flagged in frontmatter `lint`; the text itself is never rewritten. */
   lintTerms?: string[];
@@ -1446,7 +1446,7 @@ export interface AgentAssembleStepConfig {
   nameLint?: { canonical: string; forms: string[] };
   /** Keep the parts as they are, adding only the footer (the digest). */
   plain?: boolean;
-  /** Lint the chain's source titles and URLs too (vintage: no listing links). */
+  /** Lint the chain's source titles and URLs too. */
   lintSources?: boolean;
   /** Flags in frontmatter `lint`, nothing rewritten: a body under the minimum
    *  (characters for Japanese, words for English), too few sources, and with
@@ -1457,7 +1457,7 @@ export interface AgentAssembleStepConfig {
 
 /** One stream the digest expects a draft from. */
 export interface AgentDigestStream {
-  /** Folder next to the digest's own output folder (under 50_Drafts). */
+  /** Folder next to the digest's own output folder. */
   folder: string;
   /** Shown in the digest, also when the stream has no draft today. */
   label: string;

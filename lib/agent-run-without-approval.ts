@@ -403,10 +403,6 @@ export const AUTO_APPROVABLE_ACTION_TYPES = ['draft', 'notify'] as const;
  *  `leaves-root` is only ever acceptable for a pure read (see module doc). */
 export const ESCALATION_AUTO_SIGNALS: ReadonlySet<string> = new Set(['leaves-root', 'write-or-exec']);
 
-/** The default driver cwd when an agent has no workspaceRoot
- *  (lib/agent-executor.ts PROJECT_DIR). */
-export const DEFAULT_AGENT_PROJECT_DIR = '~/projects/shelly-content-studio';
-
 /** App trust / approval state, never auto-approved (read or write). */
 const TRUST_STATE_RE = /shared_prefs|no_backup|(?:^|[\s/'"=:<>])\.shelly|shelly-agent-(?:escalation|preapproval|action)/i;
 
@@ -675,7 +671,7 @@ export type EscalationAutoApproveOpts = {
   enabled: boolean;
   policyBlocksAutoAccept?: boolean;
   /** The workspace root of the hash-verified agent definition (or
-   *  DEFAULT_AGENT_PROJECT_DIR). Absent ⇒ no in-root write is auto-approved. */
+   *  defaultAgentWorkspace, lib/agent-default-workspace.ts). Absent ⇒ no in-root write is auto-approved. */
   trustedWorkspaceRoot?: string | null;
   /** Home directory spellings, to expand `~` in trustedWorkspaceRoot. */
   homePaths?: readonly string[];

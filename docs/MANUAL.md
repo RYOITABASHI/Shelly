@@ -112,10 +112,10 @@ You don't need every provider. A reasonable starting set: Codex signed in, one f
 
 Everything up to this chapter has been you, present, typing. This is the part that runs without you.
 
-An agent is a plain-language instruction plus a schedule. You register one by typing `@agent` followed by both, in a single sentence, in any pane. Here's the one I actually run:
+An agent is a plain-language instruction plus a schedule. You register one by typing `@agent` followed by both, in a single sentence, in any pane. For example:
 
 ```
-@agent every weekday at 8am, collect the latest STEAM×AI education papers and news,
+@agent every weekday at 8am, collect the latest quantum computing papers and news,
 and write the primary-source links + a short summary to my Obsidian vault
 ```
 

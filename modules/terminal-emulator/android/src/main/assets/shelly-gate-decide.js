@@ -1612,6 +1612,8 @@ var OVERRIDES_FILE_RE = /(?:^|[\s/'"=])\.?overrides\.json\b/;
 var REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
 var ROLES_BASENAME_RE = /(?:^|[\s/'"=])roles\.json\b/;
 var REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
+var ARTICLE_PIPELINES_BASENAME_RE = /(?:^|[\s/'"=])article-pipelines\.json\b/;
+var REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?article-pipelines\.json\b/;
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
@@ -1620,6 +1622,8 @@ function touchesProtectedPolicyFiles(command) {
   if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
   const rolesBasename = ROLES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  const articleBasename = ARTICLE_PIPELINES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (articleBasename && (REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

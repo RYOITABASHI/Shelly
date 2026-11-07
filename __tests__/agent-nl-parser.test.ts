@@ -1081,13 +1081,26 @@ describe('parseAgentNL — invariants', () => {
 
 describe('parseAgentNL — G6 pipeline preset', () => {
   it('a "パイプライン" request builds the multi-step collection preset (Mon/Fri, autonomous)', () => {
-    const d = parseAgentNL('STEAMのパイプライン');
+    const d = parseAgentNL('天文学のパイプライン');
     expect(d.orchestrationSteps?.length).toBe(4);
     expect(d.charLimit).toBe(280);
     expect(d.autonomous).toBe(true);
     expect(d.schedule).toBe('0 8 * * 1,5');
     expect(d.scheduleConfident).toBe(true);
     expect(d.schedule!).toMatch(WHITELIST_CRON);
+  });
+
+  it.each(['パイプライン', 'パイプラインを作って', 'pipeline'])('%s names no topic, so it is no preset', (text) => {
+    const d = parseAgentNL(text);
+    expect(d.orchestrationSteps).toBeUndefined();
+    expect(d.charLimit).toBeUndefined();
+    expect(d.autonomous).not.toBe(true);
+  });
+
+  it('keeps a topic as the user wrote it', () => {
+    const d = parseAgentNL('STEAM教育のパイプライン');
+    expect(d.orchestrationSteps?.[0]).toContain('STEAM教育');
+    expect(d.name).toContain('STEAM教育');
   });
 
   it('carries a custom topic stated before the keyword', () => {
@@ -1106,7 +1119,7 @@ describe('parseAgentNL — G6 pipeline preset', () => {
   });
 
   it('an unparseable user schedule falls to manual selection, NOT silently Mon/Fri', () => {
-    const d = parseAgentNL('90分ごとにSTEAMのパイプライン');
+    const d = parseAgentNL('90分ごとに天文学のパイプライン');
     expect(d.orchestrationSteps?.length).toBe(4); // still the pipeline
     expect(d.scheduleConfident).toBe(false); // but the schedule needs picking
     expect(d.schedule).toBeNull();
@@ -1191,7 +1204,7 @@ describe('parseAgentNL — autonomous intent (explicit unattended-execution phra
   });
 
   it('the G6 "パイプライン" preset stays hardcoded autonomous regardless of phrasing (unchanged behavior)', () => {
-    expect(parseAgentNL('STEAM×AIのパイプラインを作って').autonomous).toBe(true);
+    expect(parseAgentNL('天文学のパイプラインを作って').autonomous).toBe(true);
   });
 
   // Negation blind spot (same bug class independently found and fixed in
@@ -1611,7 +1624,7 @@ describe('parseAgentNL — startNotBefore wiring + prompt/name stripping (2026-0
   });
 
   it('the G6 pipeline-preset return site also carries startNotBefore', () => {
-    const d = parseAgentNL('来週あたりからSTEAMのパイプライン');
+    const d = parseAgentNL('来週あたりから天文学のパイプライン');
     expect(d.startNotBefore).toBeDefined();
     expect(d.orchestrationSteps?.length).toBe(4);
   });

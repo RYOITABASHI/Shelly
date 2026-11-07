@@ -122,6 +122,7 @@ import {
 } from './agent-sources';
 import type { AgentRunStep } from '@/store/types';
 import { clampCharLimit, xWeightedLength } from './agent-pipeline-presets';
+import { refreshDefaultAgentWorkspace } from './agent-default-workspace';
 import { getHomePath } from '@/lib/home-path';
 import {
   agentRollbackWorkspaceRoot,
@@ -1267,7 +1268,7 @@ async function applyMemoryAndSkills(
       // Skill injection is best-effort; never block a run on a read failure.
     }
   }
-  // Article pipeline: memory is off. Recall would otherwise bake the owner's
+  // Article pipeline: memory is off. Recall would otherwise bake the user's
   // notes into the prompt every cloud step of the chain receives.
   if (agent.orchestration?.longform === true) return prompt === agent.prompt ? agent : { ...agent, prompt };
   // Phase 1 memory recall. Reads the agent's own notes PLUS the user-scope
@@ -4358,6 +4359,7 @@ export async function loadAgentsFromDisk(
   } = options;
 
   try {
+    await refreshDefaultAgentWorkspace(runCommand);
     // Restore the global kill-switch (§2.5) from its sentinel so a halt survives restart.
     try {
       const haltedOut = await runCommand(

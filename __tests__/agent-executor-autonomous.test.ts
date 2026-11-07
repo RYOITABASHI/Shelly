@@ -602,7 +602,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=77');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=78');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -1036,6 +1036,25 @@ describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
     // The safe ${VAR:-} guard is still present and unconditional, so the
     // script stays valid shell even though the variable is never assigned.
     expect(s).toContain('if [ -n "${WEB_CODEX_FALLBACK_NOTE:-}" ]; then');
+  });
+});
+
+describe('generateRunScript — the content project', () => {
+  const s = generateRunScript(agent({ type: 'local' }));
+
+  it('is not created on a device that does not have it', () => {
+    const start = s.indexOf('PROJECT_DIR="${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"');
+    const block = s.slice(start, s.indexOf('SOURCE_CONTEXT=""', start));
+    expect(block).toContain('[ -n "${SHELLY_CONTENT_PROJECT:-}" ] || [ -d "$PROJECT_DIR" ] || PROJECT_DIR="$HOME/agent-output"');
+    expect(block).toContain('mkdir -p "$PROJECT_DIR" "$(dirname "$SOURCE_REGISTRY_FILE")"');
+    expect(block.indexOf('PROJECT_DIR="$HOME/agent-output"')).toBeLessThan(block.indexOf('mkdir -p'));
+  });
+
+  it('the A/B eval prompt is generic', () => {
+    const ab = generateRunScript(agent({ type: 'ab-article-eval' }, true));
+    expect(ab).not.toContain('Substack記事の編集者');
+    expect(ab).not.toContain('Thesis alignment');
+    expect(ab).toContain('[ -n "${SHELLY_CONTENT_PROJECT:-}" ] || [ -d "$PROJECT_DIR" ] || PROJECT_DIR="$HOME/agent-output"');
   });
 });
 

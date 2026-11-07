@@ -292,7 +292,7 @@ const ja: Record<string, string> = {
   'agents.output_custom': 'カスタム',
   'agents.vault_path_ph': 'Vault パス（例 /sdcard/Documents/ObsidianVault）',
   'agents.custom_path_ph': '保存先パス（例 /sdcard/Download/AgentOut）',
-  'agents.topic_folder_ph': 'トピックフォルダ（任意・例 STEAM_AI）',
+  'agents.topic_folder_ph': 'トピックフォルダ（任意・例 Research）',
   'agents.output_resolved_path': '現在の保存先: {{path}}',
   'agents.output_resolved_path_hint': '`<date>`と`<title>`はエージェントが実際に保存する時に入ります。',
   'agents.cloud_consent_title': '自律エージェントのクラウド利用',
@@ -420,6 +420,9 @@ const ja: Record<string, string> = {
   // api-call (v1): 手動「今すぐ実行」のガード — この action type はスケジュール実行専用
   'agents.api_call_attended_unsupported': 'このエージェントはAPI呼び出しステップを含むため、現在はスケジュール実行のみサポートされています。今すぐ実行はできません。',
   'agents.longform_attended_unsupported': 'この記事パイプラインはスケジュール実行のみ対応のため、今すぐ実行はできません。試すときは数分後の時刻にスケジュールしてください。',
+  'agents.article_pipeline_no_file': 'Shelly に組み込みの記事パイプラインはありません。{{path}} に自分の連載を書いてから、その id を付けて頼んでください。',
+  'agents.article_pipeline_pick': 'どれにしますか。id を付けて頼んでください: {{ids}}',
+  'agents.article_pipeline_invalid': '{{path}} を使えませんでした: {{detail}}',
 
   // ── エージェント確認/プレビューカード (Phase 0 §2.1) ────────────
   'agentcard.title': 'このエージェントを登録しますか？',
@@ -1658,7 +1661,7 @@ const ja: Record<string, string> = {
   'obsidian.collect': '収集',
   'obsidian.collecting': 'arXiv / Semantic Scholar / Perplexityから収集中...',
   'obsidian.no_briefing': '今日のブリーフィングはありません',
-  'obsidian.collect_hint': '「収集」をタップして\n最新のSTEAM/EdTech情報を取得',
+  'obsidian.collect_hint': '「収集」をタップして\n最新の情報を取得',
   'obsidian.collect_now': '今すぐ収集',
   'obsidian.back_list': '一覧',
   'obsidian.back_detail': '詳細',

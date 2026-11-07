@@ -304,7 +304,7 @@ Shelly に同梱している AI CLI は **Codex** です。**Claude Code** は `
 | `shelly device <battery\|info\|clipboard\|notify\|toast\|vibrate\|tts\|share>` | スクリプト・エージェント・Codex から使えるスマホ機能。バッテリーと端末情報（JSON）、クリップボード、通知、トースト、バイブ、読み上げ、共有シート（[シェルからスマホの機能を使う](#シェルからスマホの機能を使う)参照）。 |
 | `shelly codex pair` / `code` / `trust` / `untrust` / `status` / `stop` / `autostart` | **Experimental。** Codex のリモート操作（`codex remote-control --no-daemon`）をこのタブで（`pair --background` なら切り離して）ホストし、ChatGPT アプリの Codex に入力するペアリングコードを有効期限つきで表示します。`code` は新しいコードを表示、`trust <dir>` はフォルダを信頼済みの Codex プロジェクトにしてアプリから開けるようにし、`untrust <dir>` で外します。`status` / `stop` はバックグラウンドのホストを管理、`autostart off\|status` は「ChatGPT との接続を維持」を操作します（オンにできるのは Settings だけ）。ChatGPT のサインインが必要です。 |
 
-**まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 毎朝8時に、最新の STEAM×AI 教育に関する論文とニュースを集めて、要約して Obsidian に保存して`。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
+**まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 毎朝8時に、最新の量子コンピュータに関する論文とニュースを集めて、要約して Obsidian に保存して`。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
 
 ### シェルからスマホの機能を使う
 
@@ -453,10 +453,10 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 
 売りは「クラウドエージェントより賢い」ことではありません。**クラウドエージェントが届かない場所で動く**ことです。あなたのファイル、あなたのターミナルとスクリプト、あなたのローカル LLM、そしてスマホそのもの。
 
-これは決まりきった機能ではなく、**自分のツールに向けて使う能力**です。私自身の例を 1 つ挙げます:
+これは決まりきった機能ではなく、**自分のツールに向けて使う能力**です。例を 1 つ挙げます:
 
 ```
-@agent every day at 8am, collect the latest STEAM×AI education papers and news,
+@agent every day at 8am, collect the latest quantum computing papers and news,
 and write the primary-source links + a short summary to my Obsidian vault
 ```
 

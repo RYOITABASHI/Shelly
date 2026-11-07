@@ -127,7 +127,6 @@ import {
   decideActionAutoApproval,
   autoApprovalLinkProbe,
   auditCommandText,
-  DEFAULT_AGENT_PROJECT_DIR,
   escalationAutoApprovable,
   linkProbeIsClean,
   getRunWithoutApprovalSetting,
@@ -137,6 +136,7 @@ import {
 } from '@/lib/agent-run-without-approval';
 import { registeredRunOrigin } from '@/lib/agent-run-origin-registry';
 import { getHomePath } from '@/lib/home-path';
+import { defaultAgentWorkspace } from '@/lib/agent-default-workspace';
 import enStrings from '@/lib/i18n/locales/en';
 import jaStrings from '@/lib/i18n/locales/ja';
 import { colors as C } from '@/theme.config';
@@ -2328,7 +2328,7 @@ export default function RootLayout() {
         // Keystore entry; 'all' applies only to an attended run.
         const setting = await getRunWithoutApprovalSetting(agent);
         const gateOpts = {
-          trustedWorkspaceRoot: agent?.workspaceRoot?.trim() || DEFAULT_AGENT_PROJECT_DIR,
+          trustedWorkspaceRoot: agent?.workspaceRoot?.trim() || defaultAgentWorkspace(getHomePath()),
           homePaths: [getHomePath(), '/data/user/0/dev.shelly.terminal/files/home', '/data/data/dev.shelly.terminal/files/home'],
           level: setting === 'all' ? ('all' as const) : ('standard' as const),
           attended: userStarted,

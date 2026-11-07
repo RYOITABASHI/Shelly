@@ -18,7 +18,7 @@
 
 - 2026-11-07: CC（feat/codex-termux-official、未push）が Codex の取得元を Termux 公式パッケージへ切り替えた（CLI 常時最新計画の Inc 3 の取得元部分）。CI の検証、Bump ジョブからの APK なし配信、ワーカーの `agent-current` 分離。実機未検証。
 - 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。Codex の Web 検索は承認なしで通し監査行を残すことをオーナーが決定。T1 の結果を受けて exec-wrapper v227 と BASHRC_VERSION 287 で公式 Termux 版の remote control に対応（実機未検証）。
-- 2026-11-06: CC（feat/article-pipeline、未push）が記事の毎日下書き Inc 2〜5 を実装（ダイジェスト、キュー、残り 4 ストリーム、ドキュメント）。レビュー指摘を修正して executor v30（査読の偽合格、material の fail-open、投稿経路の executor 強制ほか）。Inc 1 の `.sh` ミラー変更は既存エージェントに影響するので撤回し、スクリプト版は 77 に戻した。実機未検証。確認項目は下記「記事の毎日下書き」エントリ。
+- 2026-11-07: CC（chore/remove-personal-article-pipeline、未push）が記事パイプラインを汎用エンジン＋ユーザーの設定ファイルに整理した。
 - 2026-11-02: CC（feat/agent-roles-wp3、未push）がエージェントロール Inc A の WP3（`lib/agent-role-router.ts` の決定的ルーティング、確認文の `[ロール · エンジン]` 表示・ワークスペース・最小レベル行・「ロールなしで」での取り消し、確定時のロール最小レベル書き込み）を実装。暗黙ルーティングはロール名／チーム語のときだけ（「実装＋ホームパス」トリガーは見送り）。残課題は下記「エージェントロール Inc A」エントリ。実機未検証。
 - 2026-10-31: CC（fix/rwa-draft-origin、未push）が build 2739 の実機発見「承認なしで実行 ON でも下書き保存の承認が人に回る」を修正（原因はネイティブの minted コピーに origin が無かったこと）。拒否理由のログ、run log 読み取りの潜在バグ、MONITOR の注記残り、詳細ポップアップの操作行を修正。Codex のトークン数は driver 変更が要るため P2 として記録。実機未検証。
 - 2026-10-31: CC（fix/approvals-review、integ/approvals 上、未push）がセキュリティレビュー指摘 H1/H2/M1-M4/L1/L2 を修正。「承認なしで実行」の自動許可を「純粋な読み取り（場所不問）」と「ワークスペース内に収まる書き込み」に限定（ワークスペース外への書き込み・削除は常に人に聞く）、フラグをエージェント定義のハッシュに束縛、チャット/MONITOR の承認表示を署名対象と同じネイティブ読み取りから作るよう変更、通知の nonce をチャネル別に。下記 P1 エントリ 2 件を更新。実機未検証。
@@ -101,23 +101,23 @@
 - **残り**: 古い `versions/` の削除（1 版 344MB、削除処理なし）、`previous` と自動ロールバック、失敗版の保留（Inc 5）。Ed25519 署名（§6.7、オーナーの Secret 登録が必要）。`codex-runtime.json` を読む切替前の APK への案内は無い（APK 更新で解消）。`codex-runtime-latest` の古いアセットの掃除。
 - **署名鍵の交代**: Termux が `termux-autobuilds` の鍵を替えると Bump は赤くなる（意図どおり）。新しい鍵を確かめて `scripts/termux-autobuilds.gpg` と `TERMUX_SIGNING_FINGERPRINTS` を更新する。
 
-### 記事の毎日下書き（5 ストリーム＋ダイジェスト）— 実装済み、実機未検証 (P1)
-- 2026-11-07: vintage の `queue-refill`（executor v35、`feat/article-topic-refill`）はオフラインのテストのみ。実機で要確認: Gemini grounded の答えが `- [ ]` 形式に沿うか、grounded の 1 回が CAP-001 の 10 分の壁に収まるか、`/sdcard` の `_queue.md` が無い状態から実 broker で作れるか。
+### 記事パイプライン（longform チェーンと local ステップ）— 実機確認は一部のみ (P1)
+形式は `docs/article-pipeline-config.md`。`@agent 記事パイプライン <id>` の設定ファイル経路は実機未検証。
 
-**2026-11-07 オーナー要望（未実装）: コピペでの投稿はしない。** 各媒体の下書き箱に入った状態にして、オーナーは公開を押すだけにする。経路の案: dev.to = Forem API（`published:false` を固定）、はてな = AtomPub（`app:draft=yes` を固定、省略すると公開になる）、note / Substack = ClosePaw で公式アプリの下書き保存（どちらの規約にも下書き保存の補助を直接禁じる文言は見つからなかったが、Substack の publisher terms は未読）、Zenn = 公開に push が要るなら ClosePaw か PR マージで代替（要検証）。ソフトウェアに公開の経路は持たせない。画像の生成と挿入も希望あり（古着は著作物の絵柄を生成しない方針と要調整）。既存の Obsidian 下書きは正本として残す。
-設計は `docs/superpowers/specs/2026-11-06-article-pipeline-plan.md`、executor v35。下はテストでは確かめられず、実機でしか分からないこと。
-- **cron での再試験の手順**: 同じ日の 2 回目は skipped になる。近い時刻の cron で試し直す前に `50_Drafts/<folder>/<今日の日付>-<stream>.md` を消す。キューの項目が `[x]` になっていたら `[ ]` に戻す（下書きを消しても自動では戻らない）。ダイジェストは何度でも走る。
-- **遅れた下書き**: ダイジェストは前日の下書きのうち、frontmatter の `saved_at` が前日のダイジェストより後のものを【前日分】として載せる（新しい状態ファイルなし）。下書き側は本人が編集しても動かないが、比較相手の前日のダイジェストは mtime なので、本人がそのノートを編集すると遅れた下書きを見落とす。
-- **Gemini キーだけの端末**: 査読（Cerebras）が動かなくても ai-steam 以外の 4 本は下書きが `review: unresolved` で保存され、ダイジェストに【査読未解決: 査読が動かなかった】と出ること。native のバックオフが進まないこと。
-- **実際の出力**: 記事の長さと finish reason（Gemini `MAX_TOKENS`、Cerebras `length`）。途中で切れるなら Inc 6（章分割プリセット）に進む。
-- **無料枠**: 5 本×毎日で Gemini / Cerebras の上限に当たらないか。CAP-001 の 10 分の壁に 8 ステップのチェーンが当たらないか（broker の予算は run ごとにリセットだが、1 run が 10 分を超える可能性がある）。
-- **`/sdcard` の直接読み取り**: `queue-pop` と `list-drafts` は broker を通さず executor の node から読む。`/sdcard/Documents/ObsidianVault` を読めること、realpath（`/storage/emulated/0/…`）が vault の内側と判定されることを確認。読めない場合はダイジェストがエラーになる設計（全ストリーム「未作成」とは出さない）。
-- **`_queue.md` の更新**: broker の fs.write で `[x]` に変わること。Obsidian で開いたままでも壊れないこと。broker の書き込みは atomic でない（`O_TRUNC`）ので、書き込み中に落ちるとキューが欠ける。
-- **アラーム**: Samsung の Doze で 6 本（6:00〜8:00）が発火すること。8:00 のダイジェストが最後のストリームより後になること。
-- **Obsidian と X**: `[[path|title]]` の wikilink が開くこと、intent リンクで X アプリが文面入りで開くこと。
-- **確認の流れ**: 5 本とダイジェストの NL 登録が平文の確認で通ること。ダイジェストの確認文にはツールとして Gemini が出るが、ダイジェストはモデルを呼ばない（表示だけの問題。`tool` は必須項目で、local にするとネイティブがローカル LLM を起動するため避けた）。
-- **通知**: ストリームの成功では通知が出ず、ダイジェストだけが出ること。失敗は通知されること。キューが空の日は通知なしでダイジェストに「未作成」と出ること。
-- **種まき（手作業）**: `docs/promo/articles/devlog/queue-seed.md` を `50_Drafts/Dev/_queue.md` と `50_Drafts/DevEn/_queue.md` に置く。古着の 2 ストリームは `queue-refill` がキューを作るので種まきは要らない（v35）。
+### `queue-refill` のエンジンが executor に固定 — 未対応 (P2)
+`scripts/shelly-plan-executor.js` の `QUEUE_REFILL_TOOL_TYPE` は `gemini-api` 固定で、設定の `engines` に従わない（Gemini のキーがなければ補充は失敗し、run は失敗にならない）。直すなら計画に engine を載せ、executor を版上げする。同じ箇所のコメントが消えた定数名を指しているので一緒に直す。
+
+### CLI ワーカーの cwd が空のとき executor が home に落ちる — 未対応 (P1)
+`scripts/shelly-plan-executor.js` は `cliWorker.cwd` が空か実在しないと `paths.home` を使い、driver はその cwd を `policy.workspaceRoot` にする。新しい計画は `lib/agent-default-workspace.ts` が必ず狭いフォルダを入れるので当たらないが、以前の計画（cwd が空）は作り直されるまで残る。直すなら executor 側で home に落とさず失敗にする。executor の版上げが要る。
+
+### 記事パイプラインの保存先の確認は作成時だけ — 未対応 (P2)
+`outputFolder` は作成時に、その時点の設定の vault と custom フォルダの内側かを確かめる（`articleOutputFolderError`）。あとで設定の vault を変えると、登録済みのエージェントは保存を broker に拒否される。キューとダイジェストは設定側の vault を見るので、保存先と食い違う。直すなら、vault の変更時に影響するエージェントを知らせる。
+
+### executor と native に残る固定の文言 — 未対応 (P2)
+`scripts/shelly-plan-executor.js` のダイジェストの注記（`本人の材料を確認`、`【本人の材料: 未記入】`、日本語の `review_note`）と `50_Drafts/Substack` の対応表、`lib/agent-executor.ts` の同じ対応表、`AgentRuntime.kt` の版履歴のコメントは、題材や個人の運用に寄った文言のまま。executor の版上げが要るので別途直す。
+
+### 既存の端末に残る Content Studio のエージェント — 記録 (P3)
+`HomeInitializer.kt` のシードは削除した。以前は `projects/shelly-content-studio` があるだけでシードが動き、そのフォルダは生成スクリプトが毎回作っていたので、エージェントを動かした端末には 7 件のエージェントが cron 付きで入っていることがある。端末のものは消していない（消す場合はユーザーに確認する）。`ab-article-eval` への自動ルートも削除したが、保存済みのエージェントのためにツール自体は残している。
 
 ### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
 `REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。
@@ -130,9 +130,6 @@ Gemini の出典 URL は `vertexaisearch.cloud.google.com/grounding-api-redirect
 
 ### チャット確認のボタン撤去で確定できなくなる場面 — 記録 (P3)
 2026-11-06 に Confirm / Cancel ボタンを外した（確認はチャットの平文のみ）。ボタンは次の 3 つの場面で唯一の経路だったので、今はもう一度依頼し直すしかない: 確認待ちが 15 分（`SLOT_FILL_STALE_MS`）を過ぎたとき、別の依頼で新しい下書きに置き換えられたとき（bug #157、複数セッション対応が本筋）、確認待ちの間にアプリが終了・更新されたとき（`pendingAgentSession` は永続化されないので「OK」が通常のチャットに流れる。自動登録はされない）。`components/panes/AgentChatConfirm.tsx` と `__tests__/AgentChatConfirm.test.tsx` は描画されなくなったので削除してよい。`AgentConfirmCard`（チャット確認の対象外の action の下書き）は確認の経路がカードしかないので残っている。全廃するなら `shouldUseChatConfirm` を全 action に広げ、ピッカーでしか決められなかった項目を平文の確認に移す必要がある。
-
-### 記事パイプラインの vault パスがプリセットに直書き — 未対応 (P2)
-`lib/agent-pipeline-presets.ts` の `ARTICLE_VAULT_DRAFTS` は `/sdcard/Documents/ObsidianVault/50_Drafts` 固定で、`OBSIDIAN_VAULT_PATH` を別の場所にしている端末では broker が保存を拒否し、キューとダイジェストは設定側の vault を見るので食い違う。直すなら、エージェント作成時に設定の vault から出力先を組み立てる。
 
 ### `sanitizeDigestText` がゼロ幅文字を残す — 未対応 (P3)
 U+200B〜U+200D と U+2060 は消さないので、タイトルに入っていても見えないまま wikilink の別名や intent リンクの文面に残る。絵文字の結合に使う U+200D を壊さずに扱う必要がある。正規表現にこの範囲の文字を足す修正は、エスケープの扱いに注意してスクリプトで行う。

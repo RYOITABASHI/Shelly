@@ -15,10 +15,10 @@ import {
   ROLE_RESULTS_DATA_NOTE,
   normalizeSteps,
 } from '@/lib/agent-orchestration';
-import { buildArticlePipeline } from '@/lib/agent-pipeline-presets';
+import { examplePipeline, exampleDigestPipeline, type ExampleStream } from './fixtures/article-pipeline-config';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
 
-// Article pipeline Inc 1 (docs/superpowers/specs/2026-11-06-article-pipeline-plan.md):
+// Article pipeline:
 // orchestration.longform and the `assemble` local step, against the real
 // executor + broker offline, plus the pure helpers.
 //
@@ -44,7 +44,7 @@ const MARKER = '【本人の材料: 未記入】';
 type Reply = string | { content: string; finish_reason?: string; citations?: string[]; status?: number };
 
 function articleChain() {
-  return normalizeSteps(buildArticlePipeline('ai-steam').orchestration).map((step) => {
+  return normalizeSteps(examplePipeline('example-a').orchestration).map((step) => {
     const { tool: _tool, toolPinned: _pinned, ...rest } = step;
     void _tool;
     void _pinned;
@@ -166,7 +166,7 @@ describe('shelly-plan-executor.js longform chain', () => {
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'success']);
 
     const result = readResult(home);
-    expect(result.startsWith('---\ntitle: "見出し"\nstream: "ai-steam"\n')).toBe(true);
+    expect(result.startsWith('---\ntitle: "見出し"\nstream: "example-a"\n')).toBe(true);
     expect(result).toMatch(/^date: \d{4}-\d{2}-\d{2}$/m);
     expect(result).toContain('review: pass');
     expect(result).toContain('material: missing');
@@ -177,7 +177,7 @@ describe('shelly-plan-executor.js longform chain', () => {
     expect(result).toContain(article);
     expect(result).toContain('## Sources');
     expect(result).toContain(SOURCE_URL);
-    expect(result).toContain('最終確認者: RYO ITABASHI');
+    expect(result).toContain('最終確認者: Example Author');
   }, 20000);
 
   it('the reviewer gets the research and the draft with their paragraphs, and is not sent back to the web', async () => {
@@ -489,7 +489,7 @@ describe('shelly-plan-executor.js longform chain', () => {
   it('a local step on a plan without longform fails too', async () => {
     const home = makeHome();
     replies = ['本文です。'];
-    const local = { kind: 'assemble', parts: [[0]], stream: 'ai-steam', footer: 'footer' };
+    const local = { kind: 'assemble', parts: [[0]], stream: 'example-a', footer: 'footer' };
     await runExecutor(writePlan(home, port, [{ instruction: 'write it' }, { instruction: 'assemble', local }], false), home);
     expect(prompts).toHaveLength(1);
     expect(readRunLog(home).steps[1].status).toBe('error');
@@ -519,7 +519,7 @@ describe('an independent review after a writer fallback', () => {
     const home = makeHome();
     const file = path.join(home, 'fake-http.json');
     fs.writeFileSync(file, JSON.stringify(script));
-    const list = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    const list = normalizeSteps(examplePipeline('example-a').orchestration);
     const planFile = patchPlan(writePlan(home, 1, list), (plan) => {
       plan.tool = { type: 'gemini-api', label: 'Gemini' };
       plan.toolLadder = [{ type: 'groq', label: 'Groq' }];
@@ -580,7 +580,7 @@ describe('an independent review after a writer fallback', () => {
   }, 20000);
 
   describe('longformIndependentReviewEngine', () => {
-    const steps = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    const steps = normalizeSteps(examplePipeline('example-a').orchestration);
     const review1 = 2;
     const review2 = 4;
     const pick = (i: number, used: Array<string | undefined>, reviewer = 'cerebras') =>
@@ -714,10 +714,10 @@ describe('normalizeStepLocal parity', () => {
   const valid = {
     kind: 'assemble' as const,
     parts: [[1, 3, 5]],
-    stream: 'ai-steam',
+    stream: 'example-a',
     footer: 'line one\nline two',
-    lintTerms: ['世界初'],
-    nameLint: { canonical: 'RYO ITABASHI', forms: ['itabashi'] },
+    lintTerms: ['禁句'],
+    nameLint: { canonical: 'Example Author', forms: ['author'] },
   };
 
   it('accepts a valid config identically', () => {
@@ -776,10 +776,10 @@ describe('assembleArticle', () => {
   const local = {
     kind: 'assemble',
     parts: [[1, 3, 5]],
-    stream: 'ai-steam',
+    stream: 'example-a',
     footer: 'フッター',
-    lintTerms: ['世界初', 'world first'],
-    nameLint: { canonical: 'RYO ITABASHI', forms: ['itabashi'] },
+    lintTerms: ['禁句', 'world first'],
+    nameLint: { canonical: 'Example Author', forms: ['author'] },
   };
   const steps = [
     {},
@@ -893,10 +893,10 @@ describe('assembleArticle', () => {
     });
 
     it('rewrites nothing, and puts its flags before the term hits', () => {
-      const body = `# 記事\n\n世界初`;
+      const body = `# 記事\n\n禁句`;
       const out = withQuality({ minChars: 2500 }, body);
       expect(lintOf(out)[0]).toContain('本文が短い');
-      expect(lintOf(out)).toContain('世界初');
+      expect(lintOf(out)).toContain('禁句');
       expect(out).toContain(body);
     });
 
@@ -915,8 +915,8 @@ describe('assembleArticle', () => {
       expect(lintOf(withQuality({ selfTalk: true }, '# 記事\n\n実機では未確認です。The signature was not verified.（年代不明）（2026年）'))).toEqual([]);
     });
 
-    it.each(['ai-steam', 'dev-ja', 'dev-en', 'vintage-ja', 'vintage-en'] as const)('drops the series line of the real %s prompt', (stream) => {
-      const prompt = buildArticlePipeline(stream).prompt;
+    it.each(['example-a', 'example-queue', 'example-queue-en', 'example-refill', 'example-refill-en'] as ExampleStream[])('drops the series line of the real %s prompt', (stream) => {
+      const prompt = examplePipeline(stream).prompt;
       const series = prompt.split('\n')[0];
       expect(series.length).toBeGreaterThan(12);
       const out = executor.assembleArticle(local, { steps, results: ['r', `${series}\n\n# 記事\n\n本文`, 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', basePrompt: `OUTPUT LANGUAGE (REQUIRED): x.\n\n${prompt}` });
@@ -1050,7 +1050,7 @@ describe('assembleArticle', () => {
       ['https://github.com/systemd/systemd/blob/main/src/journal/journald.c', false],
       ['https://github.com/JetBrains/kotlin/blob/master/libraries/stdlib/src/kotlin/collections/Collections.kt', false],
       ['https://developer.android.com/reference/kotlin/collections/package-summary', false],
-      ['https://shop.example.com/blogs/journal/vintage-tee', false],
+      ['https://shop.example.com/blogs/journal/old-tee', false],
     ])('reads %s as an index page: %s', (url, index) => {
       const flags = lintOf(withQuality({ minChars: 1 }, '# 記事\n\n本文 [1]', [{ id: 1, title: 'S', url }]));
       expect(flags).toEqual(index ? ['目次ページを引用: [1]'] : []);
@@ -1109,9 +1109,9 @@ describe('assembleArticle', () => {
   });
 
   it('lint flags terms and never rewrites them', () => {
-    const body = '# 記事\n\nこれは世界初で、ＷＯＲＬＤ ＦＩＲＳＴ と書かれた。';
+    const body = '# 記事\n\nこれは禁句で、ＷＯＲＬＤ ＦＩＲＳＴ と書かれた。';
     const out = assemble(['r', body, 'VERDICT: PASS']);
-    expect(out).toContain('lint: ["世界初","world first"]');
+    expect(out).toContain('lint: ["禁句","world first"]');
     expect(out).toContain(body);
   });
 
@@ -1121,8 +1121,8 @@ describe('assembleArticle', () => {
   });
 
   it('the canonical name is fine, other forms are flagged', () => {
-    expect(assemble(['r', '# 記事\n\nRYO ITABASHI が書いた', 'VERDICT: PASS'])).toContain('lint: []');
-    expect(assemble(['r', '# 記事\n\nRyo Itabashi が書いた', 'VERDICT: PASS'])).toContain('lint: ["itabashi"]');
+    expect(assemble(['r', '# 記事\n\nExample Author が書いた', 'VERDICT: PASS'])).toContain('lint: []');
+    expect(assemble(['r', '# 記事\n\nExample author が書いた', 'VERDICT: PASS'])).toContain('lint: ["author"]');
   });
 
   it('a hostile title cannot break out of the frontmatter', () => {
@@ -1221,7 +1221,7 @@ describe('truncation and candidates', () => {
   });
 
   it('names each side\'s engines from the real chain', () => {
-    const steps = normalizeSteps(buildArticlePipeline('ai-steam').orchestration);
+    const steps = normalizeSteps(examplePipeline('example-a').orchestration);
     expect([...new Set(executor.longformOtherRoleTools(steps, 1))]).toEqual(['cerebras']);
     expect([...new Set(executor.longformOtherRoleTools(steps, 2))]).toEqual(['perplexity', 'gemini-api']);
     expect([...new Set(executor.longformOtherRoleTools(steps, 3))]).toEqual(['cerebras']);
@@ -1229,35 +1229,35 @@ describe('truncation and candidates', () => {
 });
 
 describe('the draft lands in the vault with no mirror copy', () => {
-  const { output } = buildArticlePipeline('ai-steam');
+  const { output } = examplePipeline('example-a');
 
-  it('saves under 50_Drafts/Steam with the preset file name', () => {
+  it('saves under Drafts/SeriesA with the preset file name', () => {
     const plan = {
       agent: { id: AGENT_ID },
       output: { outputDir: output!.outputPath, outputNameTemplate: output!.outputTemplate, slug: 'x', useGlobalOutput: false },
     };
     const { dest, rel, useGlobalOutput } = executor.resolveDraftDestination({ home: '/home/x' }, plan, {}, new Date(2026, 10, 6, 6, 0, 0));
     expect(useGlobalOutput).toBe(false);
-    expect(rel).toBe('2026-11-06-ai-steam.md');
-    expect(dest).toBe(path.join('/sdcard/Documents/ObsidianVault/50_Drafts/Steam/', '2026-11-06-ai-steam.md'));
+    expect(rel).toBe('2026-11-06-example-a.md');
+    expect(dest).toBe(path.join('/storage/example/Notes/Drafts/SeriesA/', '2026-11-06-example-a.md'));
   });
 
   it('no 90_Log copy when a longform output folder is inside the vault', () => {
     const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-vault-'));
-    const plan = { steps: { longform: true }, output: { outputDir: path.join(vault, '50_Drafts', 'Steam') } };
+    const plan = { steps: { longform: true }, output: { outputDir: path.join(vault, 'Drafts', 'SeriesA') } };
     expect(executor.resolveObsidianMirror(plan, { OBSIDIAN_VAULT_PATH: vault }, 'a.md')).toBeNull();
   });
 
   it('REGRESSION: another agent saving inside the vault keeps its 90_Log copy, the .sh context source', () => {
     const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-vault-'));
-    const plan = { output: { outputDir: path.join(vault, '50_Drafts', 'Steam') } };
+    const plan = { output: { outputDir: path.join(vault, 'Drafts', 'SeriesA') } };
     expect(executor.resolveObsidianMirror(plan, { OBSIDIAN_VAULT_PATH: vault }, 'a.md')).toBe(path.join(vault, '90_Log/Agent_Output', 'a.md'));
   });
 
   it('REGRESSION: the .sh save path keeps its mirror and its script version', () => {
     const src = fs.readFileSync(path.join(root, 'lib', 'agent-executor.ts'), 'utf8');
     expect(src).not.toContain('OBSIDIAN_VAULT_PATH%/}');
-    expect(src).toContain('const AGENT_SCRIPT_VERSION = 77;');
+    expect(src).toContain('const AGENT_SCRIPT_VERSION = 78;');
   });
 
   it('a sibling folder that only shares the prefix is not inside the vault', () => {

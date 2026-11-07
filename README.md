@@ -308,7 +308,7 @@ Shelly's bundled AI CLI is **Codex**. **Claude Code** is one command away (`clau
 | `shelly device <battery\|info\|clipboard\|notify\|toast\|vibrate\|tts\|share>` | Phone features for scripts, agents and Codex: battery and device info as JSON, clipboard, notifications, toast, vibration, text-to-speech and the share sheet (see [Phone features from the shell](#phone-features-from-the-shell)). |
 | `shelly codex pair` / `code` / `trust` / `untrust` / `status` / `stop` / `autostart` | **Experimental.** Host Codex remote control (`codex remote-control --no-daemon`) in this tab (or detached with `pair --background`) and print a pairing code with its expiry for the ChatGPT app's Codex; `code` prints a fresh code; `trust <dir>` marks a folder as a trusted Codex project so the app can open it, `untrust <dir>` removes it; `status` / `stop` manage the background host; `autostart off\|status` controls "Keep ChatGPT connected" (it can only be turned on in Settings). Needs a ChatGPT sign-in. |
 
-**First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
+**First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest quantum computing papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
 
 ### Phone features from the shell
 
@@ -457,10 +457,10 @@ Say what you want in plain language; Shelly registers a scheduled agent that run
 
 The wedge isn't "smarter than a cloud agent" — it's that it **works where a cloud agent can't reach**: your files, your terminal/scripts, your local LLM, the phone itself.
 
-It's a **capability you point at your own tools**, not a fixed feature. One example (mine):
+It's a **capability you point at your own tools**, not a fixed feature. One example:
 
 ```
-@agent every day at 8am, collect the latest STEAM×AI education papers and news,
+@agent every day at 8am, collect the latest quantum computing papers and news,
 and write the primary-source links + a short summary to my Obsidian vault
 ```
 

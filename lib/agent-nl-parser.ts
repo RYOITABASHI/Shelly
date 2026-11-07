@@ -19,7 +19,7 @@
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
-import { buildArticleDigestPipeline, buildArticlePipeline, buildSteamPipeline, type ArticleStream, type PipelinePreset } from './agent-pipeline-presets';
+import { buildCollectionPipeline, isArticlePipelineRequest, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import { detectRunWithoutApprovalLevel, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
 import { deriveWorkspaceRootFromText } from './agent-workspace-from-request';
@@ -2420,29 +2420,13 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   return s || text.trim();
 }
 
-/** Which daily article stream an utterance names, or the digest. English comes
- *  from the words 英語 / English, or from a medium that is only used in English. */
-function detectArticleStream(text: string): ArticleStream | 'digest' | null {
-  if (!/記事|下書き|\barticles?\b|\bdrafts?\b/i.test(text)) return null;
-  // "STEAMの記事を集めるパイプライン" asks for the collection preset.
-  if (/集め|収集|\bcollect|\bgather/i.test(text)) return null;
-  if (/ダイジェスト|\bdigest\b/i.test(text)) return 'digest';
-  if (/steam/i.test(text)) return 'ai-steam';
-  const english = /英語|\benglish\b/i.test(text);
-  if (/substack/i.test(text)) return 'vintage-en';
-  if (/古着|ビンテージ|ヴィンテージ|\bvintage\b|はてな|\bhatena\b/i.test(text)) return english ? 'vintage-en' : 'vintage-ja';
-  if (/dev\.to/i.test(text)) return 'dev-en';
-  if (/開発記|開発ログ|開発の記事|\bdevlog\b|\bzenn\b/i.test(text)) return english ? 'dev-en' : 'dev-ja';
-  return null;
-}
-
 /**
- * G6: an explicit "パイプライン" / "pipeline" request builds the ready-made STEAM
- * collection pipeline (search → primary source → summarize → char-limited
+ * G6: an explicit "パイプライン" / "pipeline" request with a topic builds the
+ * ready-made collection pipeline (search → primary source → summarize → char-limited
  * re-summarize) instead of the single-step parse. A topic before the keyword is
- * carried through ("量子コンピュータのパイプライン" → topic=量子コンピュータ); a bare
- * "パイプライン" or a STEAM topic falls back to the STEAM×AI default. Returns null
- * when the utterance isn't a pipeline request, so the normal parse path runs.
+ * carried through ("量子コンピュータのパイプライン" → topic=量子コンピュータ). There is
+ * no default topic. Returns null when the utterance names none or is not a
+ * pipeline request, so the normal parse path runs.
  */
 function detectPipelinePreset(text: string): PipelinePreset | null {
   if (!/パイプライン|pipeline/i.test(text)) return null;
@@ -2455,11 +2439,9 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
   ) {
     return null;
   }
-  // "AI×STEAMの記事パイプライン": a daily article stream or the digest, not the
-  // collection preset below.
-  const articleStream = detectArticleStream(text);
-  if (articleStream === 'digest') return buildArticleDigestPipeline();
-  if (articleStream) return buildArticlePipeline(articleStream);
+  // An article pipeline comes from the user's own file (lib/agent-article-
+  // pipeline-file.ts, read by the chat path), never from the collection preset.
+  if (isArticlePipelineRequest(text)) return null;
   const m = text.match(
     /(.+?)(?:の|を|に関する)?\s*(?:最新の?)?\s*(?:ニュース|論文|情報|動向)?\s*(?:を)?\s*(?:パイプライン|pipeline)/i,
   );
@@ -2472,8 +2454,8 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
       '',
     )
     .trim();
-  if (/^steam/i.test(topic) || topic.length < 2) topic = '';
-  return buildSteamPipeline({ topic: topic || undefined });
+  if (topic.length < 2) return null;
+  return buildCollectionPipeline({ topic });
 }
 
 // Explicit autonomous/unattended-execution intent — the ONLY way to set
@@ -2707,13 +2689,19 @@ function resolveAntigravityRequested(
   return promptNamedIt || markedSteps.length > 0 ? { steps: [] } : undefined;
 }
 
-export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[] = []): ParsedAgentDraft {
+export function parseAgentNL(
+  utterance: string,
+  connectors: SocialConnectorMeta[] = [],
+  /** An article pipeline built from the user's file. This parser stays pure, so
+   *  the caller reads the file. */
+  articlePreset?: PipelinePreset,
+): ParsedAgentDraft {
   const rawText = utterance.trim();
   const startNotBefore = parseStartNotBefore(rawText);
 
   // G6: a "パイプライン" request becomes the multi-step collection preset. The
   // user's own schedule (if confidently parsed) overrides the preset's Mon/Fri.
-  const preset = detectPipelinePreset(rawText);
+  const preset = articlePreset ?? detectPipelinePreset(rawText);
   if (preset) {
     const presetSched = parseSchedule(rawText);
     const presetSuggestion = suggestTool(preset.prompt);

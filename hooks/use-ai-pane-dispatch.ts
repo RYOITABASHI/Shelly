@@ -71,6 +71,8 @@ import type { Agent } from '@/store/types';
 import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
 import { consentSignalsFor } from '@/lib/agent-credential-policy';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
+import { isArticlePipelineRequest, type PipelinePreset } from '@/lib/agent-pipeline-presets';
+import { ARTICLE_PIPELINE_FILE_PATH, articleOutputRoots, loadArticlePipeline } from '@/lib/agent-article-pipeline-file';
 import { parseAgentNL, detectFreeTextAgentDeleteIntent, isContinuousDraft, isManualTriggerDraft } from '@/lib/agent-nl-parser';
 import { formatContinuousSummary, mergeContinuousOnEdit } from '@/lib/agent-continuous';
 import { resolveAgentOutputBase } from '@/lib/agent-executor';
@@ -3064,12 +3066,39 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               return;
             }
 
+            // Article pipeline: built only from the user's own file, and only
+            // from their own typing (anything else parses as usual).
+            // Without a usable file there is no agent, just a short answer.
+            let articlePreset: PipelinePreset | undefined;
+            if (dispatchOpts?.typedByUser === true && !dispatchOpts?.source && isArticlePipelineRequest(promptText)) {
+              const lookup = await loadArticlePipeline(promptText, (cmd) => execCommand(cmd, 15_000), articleOutputRoots(useSettingsStore.getState().settings, getHomePath()));
+              if ('refusal' in lookup) {
+                const articleStrings = detectMessageLocale(promptText) === 'ja' ? ja : en;
+                const content =
+                  lookup.refusal === 'missing'
+                    ? articleStrings['agents.article_pipeline_no_file'].replace('{{path}}', ARTICLE_PIPELINE_FILE_PATH)
+                    : lookup.refusal === 'pick'
+                    ? articleStrings['agents.article_pipeline_pick'].replace('{{ids}}', lookup.ids.join(', '))
+                    : articleStrings['agents.article_pipeline_invalid'].replace('{{path}}', ARTICLE_PIPELINE_FILE_PATH).replace('{{detail}}', lookup.detail);
+                store.addMessage(paneId, {
+                  id: generateId(),
+                  role: 'assistant',
+                  content,
+                  timestamp: Date.now(),
+                  agent: agent as ChatMessage['agent'],
+                  flowTurn: true,
+                });
+                return;
+              }
+              articlePreset = lookup.preset;
+            }
+
             // social-post (2026-07-22): parseAgentNL stays pure/offline, so the
             // registered connectors (needed to resolve "post this to X" against a
             // real connectorId) are read here and passed in explicitly — same
             // pattern as slotFillCtx below reading agentVaultPath/agentTopicFolder
             // from the store for lib/agent-slot-fill.ts's SlotFillContext.
-            let draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? []);
+            let draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? [], articlePreset);
             // The legacy `@agent autonomous …` alias only PRE-SETS the toggle (per
             // the comment above) — it must never clobber a true value parseAgentNL
             // already derived from richer, anywhere-in-the-sentence phrasing like
@@ -3077,7 +3106,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             // testing 2026-07-31: every hand-authored (non-preset) multi-step agent
             // silently lost its autonomous flag because this used to be an
             // unconditional overwrite.
-            draft.autonomous = draft.autonomous || agentResult.data?.autonomous === true;
+            // A longform chain is never autonomous (the executor refuses one).
+            draft.autonomous = !draft.longform && (draft.autonomous || agentResult.data?.autonomous === true);
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
               draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;

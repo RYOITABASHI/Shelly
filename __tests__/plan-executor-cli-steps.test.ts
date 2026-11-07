@@ -10,6 +10,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { cliBranchOverlap } from '@/lib/agent-progress';
+import { __resetDefaultAgentWorkspaceForTests, defaultAgentWorkspace, refreshDefaultAgentWorkspace } from '@/lib/agent-default-workspace';
+import { classifyProposedCommand } from '@/lib/agent-boundary-policy';
 
 // Parallel CLI steps Inc0/Inc1 (docs/superpowers/specs/2026-11-01-parallel-cli-steps-plan.md,
 // executor v19). Runs the REAL executor + broker against a loopback fake model
@@ -247,6 +249,23 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     { instruction: 'review the diff with Claude Code', parallelGroup: 'g1', tool: { type: 'cli', cli: 'claude' } },
     { instruction: 'combine both reviews' },
   ];
+
+  it('a plan with the default folder runs the driver there, not in the home', async () => {
+    const home = makeHome();
+    const folder = path.join(home, 'agent-output');
+    fs.mkdirSync(folder, { recursive: true });
+    const { driver, recordDir } = makeDriver();
+    writeDriverConfig(recordDir, { codex: { answer: 'CODEX_REVIEW: fine.' }, claude: { answer: 'CLAUDE_REVIEW: fine.' } });
+    const policy = { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [], unattended: false };
+    const result = await runExecutor(writePlan(home, port, parallelSteps, { cliWorker: { cwd: folder, policy } }), home, driver, recordDir);
+    expect(result.status).toBe(0);
+    const calls = readCalls(recordDir);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const argv: string[] = call.argv;
+      expect(argv[argv.indexOf('--cwd') + 1]).toBe(folder);
+    }
+  }, 30000);
 
   it('attended Run now: each CLI branch goes through the driver with a fixed argv, explicit unattended:false, distinct runIds, overlapping in time', async () => {
     const home = makeHome();
@@ -1057,13 +1076,63 @@ describe('buildAgentPlanSpec cliWorker (Inc1)', () => {
       orchestration: { steps: [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, 'summarize'] },
     });
     expect(withCli.cliWorker).toBeDefined();
-    expect(withCli.cliWorker!.cwd).toBe('');
+    expect(withCli.cliWorker!.cwd).toBe('/home/shelly-test/agent-output');
     expect(withCli.cliWorker!.policy.unattended).toBe(true);
     expect(withCli.cliWorker!.policy.level).toBe('L2');
 
     const withoutCli = buildAgentPlanSpec({ ...baseAgent, orchestration: { steps: ['collect', 'summarize'] } });
     expect(withoutCli.cliWorker).toBeUndefined();
     expect(buildAgentPlanSpec(baseAgent).cliWorker).toBeUndefined();
+  });
+
+  it.each(['echo x >> /home/shelly-test/.bashrc', 'rm /home/shelly-test/notes.txt'])('the gate does not allow %s from the default folder at L2', (command) => {
+    const verdict = classifyProposedCommand(command, { level: 'L2', workspaceRoot: defaultAgentWorkspace('/home/shelly-test') });
+    expect(verdict.decision).not.toBe('allow');
+    expect(verdict.signals).toContain('leaves-root');
+  });
+
+  describe('with no workspaceRoot, cliWorker.cwd is never empty and never the home', () => {
+    const cliAgent = { ...baseAgent, orchestration: { steps: [{ instruction: 'review with Codex', tool: { type: 'cli' as const, cli: 'codex' as const } }, 'summarize'] } };
+    afterEach(() => __resetDefaultAgentWorkspaceForTests());
+
+    it('defaults to agent-output on a device with no project', async () => {
+      await refreshDefaultAgentWorkspace(async () => '');
+      expect(buildAgentPlanSpec(cliAgent).cliWorker!.cwd).toBe('/home/shelly-test/agent-output');
+    });
+
+    it('keeps a content project that exists, as an explicit path', async () => {
+      const project = '/home/shelly-test/projects/shelly-content-studio';
+      await refreshDefaultAgentWorkspace(async () => `SHELLY_PROJECT_DIR=${project}\n`);
+      expect(buildAgentPlanSpec(cliAgent).cliWorker!.cwd).toBe(project);
+      expect(defaultAgentWorkspace('/home/shelly-test')).toBe(project);
+    });
+
+    it('a probe that names the home, a root or junk falls to agent-output', async () => {
+      for (const out of ['SHELLY_PROJECT_DIR=/home/shelly-test', 'SHELLY_PROJECT_DIR=/', 'SHELLY_PROJECT_DIR=relative/x', '/home/shelly-test/projects/x', 'error: nope']) {
+        await refreshDefaultAgentWorkspace(async () => out);
+        expect(buildAgentPlanSpec(cliAgent).cliWorker!.cwd).toBe('/home/shelly-test/agent-output');
+      }
+    });
+
+    it('a failed probe keeps the last answer', async () => {
+      const project = '/home/shelly-test/projects/app';
+      await refreshDefaultAgentWorkspace(async () => `SHELLY_PROJECT_DIR=${project}`);
+      await refreshDefaultAgentWorkspace(async () => { throw new Error('no shell'); });
+      expect(buildAgentPlanSpec(cliAgent).cliWorker!.cwd).toBe(project);
+    });
+  });
+
+  it('startup refreshes the answer before anything else loads, outside the materialize queue', () => {
+    const manager = fs.readFileSync(path.join(root, 'lib/agent-manager.ts'), 'utf8');
+    const load = manager.slice(manager.indexOf('export async function loadAgentsFromDisk('));
+    expect(load.indexOf('await refreshDefaultAgentWorkspace(runCommand);')).toBeGreaterThan(0);
+    expect(load.indexOf('await refreshDefaultAgentWorkspace(runCommand);')).toBeLessThan(load.indexOf('readAgentMetadataViaShell'));
+    expect(manager.split('await refreshDefaultAgentWorkspace(runCommand);')).toHaveLength(2);
+  });
+
+  it('HomeInitializer creates the folder before any agent runs', () => {
+    const kt = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt'), 'utf8');
+    expect(kt).toContain('File(home, "agent-output").mkdirs()');
   });
 
   it('cliWorker.cwd is the agent workspaceRoot only when it validates', () => {
@@ -1078,6 +1147,6 @@ describe('buildAgentPlanSpec cliWorker (Inc1)', () => {
       workspaceRoot: '/',
       orchestration: { steps: [{ instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } }, 'summarize'] },
     });
-    expect(bad.cliWorker!.cwd).toBe('');
+    expect(bad.cliWorker!.cwd).toBe('/home/shelly-test/agent-output');
   });
 });
