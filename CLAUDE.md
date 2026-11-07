@@ -224,13 +224,15 @@ Shelly/
 
 | タグ | 出力元 | 内容 |
 |------|--------|------|
-| `ShellyPaste` | `TerminalEmulator.paste` / `TerminalView.pasteViaEmulator` | paste 入出力 byte 数、改行数、先頭 32 文字 preview（改行は `↵⏎` に可視化） |
-| `ShellyIME` | `TerminalView` IME 経路 | commitText / setComposingText / deleteSurroundingText / finishComposing の全ログ |
+| `ShellyPaste` | `TerminalEmulator.paste` / `TerminalView.pasteViaEmulator` | paste 入出力の長さ、改行数、bracketed / TUI の状態。**内容は出さない**（`__tests__/no-input-in-logs.test.ts`） |
+| `ShellyIME` | `TerminalView` IME 経路 | commitText / setComposingText / deleteSurroundingText / finishComposing のイベント名と長さ。**内容は出さない** |
 | `ShellyExec` | `shelly-exec.c execSubprocess` | 子 PID、exit code、stdout/stderr byte 数、EAGAIN 回数 |
 | `ShellyPTY` | `shelly-pty.c createSubprocess` | fork / ptsname / termios 設定結果 |
 | `HomeInitializer` | `HomeInitializer.kt` | .bashrc バージョンチェック、CLI staging promote、stale rootfs/proot のクリーンアップ |
 | `TerminalEmulator` | `TerminalEmulatorModule.kt` | hasAllFilesAccess / requestAllFilesAccess の権限状態遷移 |
 | `Shelly` | `lib/debug-logger.ts` | `logInfo(module, ...)` 経由の汎用 JS ログ。**`Sidebar`はここに含まれるmoduleラベルの一つであり、独立したlogcat tagではない**(`logInfo`は`console.log`実装のみでネイティブLog呼び出しが無いため、`adb logcat -s Sidebar:D`は何も出力しない — 2026-08-17実機調査で確認)。`tryAddRepo`のprobe結果/ghost entry診断を追うには`adb logcat -s ReactNativeJS:V \| grep -F '[Shelly][Sidebar]'`を使うこと |
+
+**入力の内容はログに出さない**: logcat は同じ uid の全プロセスが読める。パスワードは `read -s` でも IME とペーストの経路を通るので、打った・貼った・音声入力した文字列とコマンドは長さとイベント名だけを記録する。ゲートはワーカーの logcat 読み取りを人に回す（`secret-read`）。
 
 **典型的な使い方**:
 

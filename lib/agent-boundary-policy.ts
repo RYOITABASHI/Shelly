@@ -362,6 +362,20 @@ export function hasUnsafeCd(command: string, root: string): boolean {
  * opaque-script-exec / indirect-exec.
  */
 const CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)])/;
+/**
+ * logcat: a worker runs as the app's uid, so it reads the app's whole log, which
+ * holds whatever the app or a library ever printed. As the clipboard, it takes a
+ * human. Only as a command, so `grep logcat notes.txt` and `cat logcat.txt` stay
+ * reads; anything else that names it (`adb shell logcat`, `timeout 5 logcat`,
+ * `bash -lc logcat`) counts. A substitution inside `echo` is indirect-exec.
+ */
+const LOGCAT_WORD_RE = /(?:^|[\s/=])logcat(?=$|\s)/;
+const LOGCAT_TEXT_ONLY_COMMAND_RE = /^\s*(?:cat|less|more|head|tail|grep|egrep|fgrep|rg|ls|find|stat|file|wc|diff|git|echo|printf|sed|awk|tee|cp|mv|rm|mkdir|touch)\b/;
+function readsLogcat(command: string): boolean {
+  return command
+    .split(/\|\||&&|[|;&\n]/)
+    .some((segment) => LOGCAT_WORD_RE.test(segment) && !LOGCAT_TEXT_ONLY_COMMAND_RE.test(segment));
+}
 // `device <w1> [<w2>]`: the subcommand words, skipping options.
 const DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
 const UNRESOLVED_WORD_RE = /[$`*?[{]/;
@@ -459,7 +473,7 @@ export function readsDeviceSecret(command: string): boolean {
   // second dequote; more levels still hit opaque-script-exec/indirect-exec.
   const twice = dequoteShellWords(words);
   return [raw, words, twice].some(
-    (c) => CLIPBOARD_READ_RE.test(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c),
+    (c) => CLIPBOARD_READ_RE.test(c) || readsLogcat(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c),
   );
 }
 

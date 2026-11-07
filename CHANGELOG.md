@@ -24,6 +24,9 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ### Changed
 
+- **Typed and pasted text stays out of the logs.** The terminal logged the start
+  of each paste, IME text and commands to logcat. It now logs lengths and event
+  names only, and an agent worker needs your OK to read logcat.
 - **Requests that say "compare" or name a model use normal routing.** They no
   longer turn into a fixed two-model evaluation. Existing agents on that tool
   keep running, with a generic prompt.

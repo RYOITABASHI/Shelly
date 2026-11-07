@@ -300,7 +300,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   runCommand: (command: string) => {
     const { sessions, activeSessionId, connectionMode } = get();
     const session = sessions.find((s) => s.id === activeSessionId);
-    logInfo('TerminalStore', 'runCommand: ' + command.slice(0, 80));
+    logInfo('TerminalStore', 'runCommand len=' + command.length);
     if (!session) return;
 
     const blockId = `block-${Date.now()}`;

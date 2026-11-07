@@ -48,6 +48,35 @@ describe('normalizePath / isWithinRoot', () => {
   });
 });
 
+describe('logcat', () => {
+  it.each([
+    ['logcat -d'],
+    ['logcat'],
+    ['adb logcat -d'],
+    ['adb shell logcat -d'],
+    ['/system/bin/logcat -d'],
+    ['lo""gcat -d'],
+    ["bash -lc 'logcat -d'"],
+    ['timeout 5 logcat -d'],
+    ['logcat -d | grep ShellyIME'],
+    ['ls && logcat -d'],
+  ])('reading it takes a human: %s', (command) => {
+    for (const level of ['L1', 'L2'] as const) {
+      const v = classifyProposedCommand(command, ctx(level));
+      expect(v.signals).toContain('secret-read');
+      expect(v.decision).toBe('gray');
+    }
+  });
+
+  it('is refused outright at L3', () => {
+    expect(classifyProposedCommand('logcat -d', ctx('L3')).decision).toBe('deny');
+  });
+
+  it.each([['grep logcat notes.txt'], ['cat logcat.txt'], ['rg logcat src'], ['ls logcat-dumps']])('naming the word is not reading it: %s', (command) => {
+    expect(classifyProposedCommand(command, ctx('L2')).signals).not.toContain('secret-read');
+  });
+});
+
 describe('extractPaths', () => {
   it('picks path-like tokens, drops flags', () => {
     expect(extractPaths('grep -n foo ./src/a.ts /etc/hosts')).toEqual(['./src/a.ts', '/etc/hosts']);

@@ -572,7 +572,7 @@ public class TerminalView extends View {
             @Override
             public boolean setComposingText(CharSequence text, int newCursorPosition) {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
-                    mClient.logInfo(LOG_TAG, "IME: setComposingText(\"" + text + "\", " + newCursorPosition + ")");
+                    mClient.logInfo(LOG_TAG, "IME: setComposingText(len=" + (text != null ? text.length() : 0) + ", " + newCursorPosition + ")");
                 }
                 // We do NOT write compose runs to the PTY. The IME's own
                 // candidate bar is the compose preview. When the user
@@ -580,7 +580,7 @@ public class TerminalView extends View {
                 // carry the final string and we flush it then.
                 mComposingRun = text != null ? text.toString() : "";
                 mComposingText = mComposingRun;
-                Log.d("ShellyIME", "setComposing=\"" + mComposingRun + "\"");
+                Log.d("ShellyIME", "setComposing len=" + mComposingRun.length());
                 return super.setComposingText(text, newCursorPosition);
             }
 
@@ -594,7 +594,7 @@ public class TerminalView extends View {
                 // the text does not get held back until the keyboard
                 // collapses.
                 if (!mComposingRun.isEmpty()) {
-                    Log.d("ShellyIME", "finishComposing flush=\"" + mComposingRun + "\"");
+                    Log.d("ShellyIME", "finishComposing flush len=" + mComposingRun.length());
                     mLastFinishFlush = mComposingRun;
                     sendToPtyAndShadow(mComposingRun);
                     mComposingRun = "";
@@ -607,7 +607,7 @@ public class TerminalView extends View {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
                 if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
-                    mClient.logInfo(LOG_TAG, "IME: commitText(\"" + text + "\", " + newCursorPosition + ")");
+                    mClient.logInfo(LOG_TAG, "IME: commitText(len=" + (text != null ? text.length() : 0) + ", " + newCursorPosition + ")");
                 }
                 String commitStr = text != null ? text.toString() : "";
 
@@ -618,7 +618,7 @@ public class TerminalView extends View {
                 // followed immediately by commitText with the same run, eating
                 // the trailing Enter/quote characters from pasted text.
                 if (!commitStr.isEmpty() && commitStr.equals(mLastFinishFlush)) {
-                    Log.d("ShellyIME", "commit SUPPRESSED (already flushed via finishComposing) =\"" + commitStr + "\"");
+                    Log.d("ShellyIME", "commit SUPPRESSED (already flushed via finishComposing) len=" + commitStr.length());
                     mPrevCommitWasPaste = false;
                 } else if (!commitStr.isEmpty()) {
                     // bug #91: if the IME just handed us a multi-line block or a
@@ -671,7 +671,7 @@ public class TerminalView extends View {
                         TerminalView.this.pasteViaEmulator(commitStr);
                         mPrevCommitWasPaste = true;
                     } else {
-                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " text=\"" + commitStr + "\" delta=" + delta + "ms");
+                        Log.d("ShellyIME", "commit-as-typed len=" + commitStr.length() + " delta=" + delta + "ms");
                         sendToPtyAndShadow(commitStr);
                         mPrevCommitWasPaste = false;
                     }
@@ -806,8 +806,7 @@ public class TerminalView extends View {
                     try {
                         boolean alt = mEmulator.isAlternateBufferActive();
                         mClient.logInfo(LOG_TAG, "sendTextToTerminal: altBuffer=" + alt
-                            + " len=" + text.length() + " first=0x"
-                            + (text.length() > 0 ? Integer.toHexString(text.charAt(0)) : "-"));
+                            + " len=" + text.length());
                     } catch (Throwable t) { /* diag only */ }
                 }
                 final int textLengthInChars = text.length();
@@ -1445,8 +1444,7 @@ public class TerminalView extends View {
             if (action == KeyEvent.ACTION_DOWN) {
                 int code = event.getUnicodeChar(event.getMetaState());
                 if (code != 0) {
-                    android.util.Log.d("ShellyPaste",
-                        "KEYCODE_UNKNOWN unicodeChar=0x" + Integer.toHexString(code));
+                    android.util.Log.d("ShellyPaste", "KEYCODE_UNKNOWN unicodeChar");
                     mTermSession.write(new String(Character.toChars(code)));
                     return true;
                 }
@@ -1490,7 +1488,7 @@ public class TerminalView extends View {
 
         int result = event.getUnicodeChar(effectiveMetaState);
         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED)
-            mClient.logInfo(LOG_TAG, "KeyEvent#getUnicodeChar(" + effectiveMetaState + ") returned: " + result);
+            mClient.logInfo(LOG_TAG, "KeyEvent#getUnicodeChar(" + effectiveMetaState + ") returned: " + (result == 0 ? "none" : "a character"));
         if (result == 0) {
             return false;
         }
@@ -1517,7 +1515,7 @@ public class TerminalView extends View {
 
     public void inputCodePoint(int eventSource, int codePoint, boolean controlDownFromEvent, boolean leftAltDownFromEvent) {
         if (TERMINAL_VIEW_KEY_LOGGING_ENABLED) {
-            mClient.logInfo(LOG_TAG, "inputCodePoint(eventSource=" + eventSource + ", codePoint=" + codePoint + ", controlDownFromEvent=" + controlDownFromEvent + ", leftAltDownFromEvent="
+            mClient.logInfo(LOG_TAG, "inputCodePoint(eventSource=" + eventSource + ", controlDownFromEvent=" + controlDownFromEvent + ", leftAltDownFromEvent="
                 + leftAltDownFromEvent + ")");
         }
 

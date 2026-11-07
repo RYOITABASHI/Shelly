@@ -2636,7 +2636,7 @@ class TerminalEmulatorModule : Module() {
             val exitCode = result[0].toInt()
             val stderr = result[2]
             if (exitCode != 0) {
-                Log.e("TerminalEmulator", "execCommand FAILED: exit=$exitCode stderr=$stderr cmd=${command.take(80)}")
+                Log.e("TerminalEmulator", "execCommand FAILED: exit=$exitCode stderrLen=${stderr.length} cmdLen=${command.length}")
             }
 
             mapOf(

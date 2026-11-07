@@ -269,7 +269,7 @@ object VoiceBridge {
                                 )
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "unparseable control line: $line")
+                            Log.w(TAG, "unparseable control line len=${line.length}")
                         }
                     }
                 }

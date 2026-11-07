@@ -49,13 +49,13 @@ function shQuote(s: string): string {
 }
 
 export async function execCommand(command: string, timeoutMs?: number, lane?: 'long'): Promise<ExecResult> {
-  logInfo('NativeExec', 'exec: ' + command.slice(0, 80));
+  logInfo('NativeExec', 'exec len=' + command.length);
   try {
     const result = await TerminalEmulator.execCommand(command, timeoutMs, lane);
     logInfo('NativeExec', 'exit=' + result.exitCode + ' stdout=' + result.stdout.length + 'chars');
     return result;
   } catch (error: any) {
-    logError('NativeExec', 'exec failed: ' + command.slice(0, 40), error);
+    logError('NativeExec', 'exec failed len=' + command.length, error);
     throw error;
   }
 }

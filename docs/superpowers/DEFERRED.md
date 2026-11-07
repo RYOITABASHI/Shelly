@@ -105,6 +105,9 @@
 ### 記事パイプライン（longform チェーンと local ステップ）— 実機確認は一部のみ (P1)
 形式は `docs/article-pipeline-config.md`。`@agent 記事パイプライン <id>` の設定ファイル経路は実機未検証。
 
+### 入力以外の文字列がログに残る箇所 — 未対応 (P2)
+打った・貼った文字列はログから除いた（`__tests__/no-input-in-logs.test.ts`）。残り: `app/_layout.tsx` の deep-link / コマンドキューの拒否行（`line.slice(0, 96)` / `url.slice(0, 96)` / `line.slice(0, 64)`）、`lib/teach-controller.ts` の不正行、`lib/skill-offer-chat.ts` の未投稿文、`lib/managed-cli-update.ts` の stdout/stderr、`TerminalEmulator.shellyPasteProcProbe` の shell の cmdline。キューの行は shell が書くので、URL にトークンが含まれる場合がある。Why not now: 打鍵の内容ではなく、拒否の診断に使っている。
+
 ### `queue-refill` のエンジンが executor に固定 — 未対応 (P2)
 `scripts/shelly-plan-executor.js` の `QUEUE_REFILL_TOOL_TYPE` は `gemini-api` 固定で、設定の `engines` に従わない（Gemini のキーがなければ補充は失敗し、run は失敗にならない）。直すなら計画に engine を載せ、executor を版上げする。同じ箇所のコメントが消えた定数名を指しているので一緒に直す。
 

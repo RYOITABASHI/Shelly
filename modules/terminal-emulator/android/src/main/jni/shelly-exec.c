@@ -297,7 +297,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
 
-    LOGI("execSubprocess: child pid=%d, cmd=%.80s", (int)pid, command);
+    LOGI("execSubprocess: child pid=%d, cmdLen=%zu", (int)pid, strlen(command));
 
     /* Set non-blocking on read ends for timeout support */
     fcntl(stdout_pipe[0], F_SETFL, O_NONBLOCK);

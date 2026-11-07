@@ -2689,10 +2689,11 @@ public final class TerminalEmulator {
         text = text.replaceAll("\r\n", "\n");
 
         // bug #91: paste byte-stream trace. Logs length before/after
-        // normalization, count of newlines, and the first 32 chars so
-        // future paste regressions can be diagnosed from logcat without
-        // needing to reproduce interactively. Tag "ShellyPaste" to keep
-        // it grep-friendly.
+        // normalization and the count of newlines, so future paste
+        // regressions can be diagnosed from logcat without needing to
+        // reproduce interactively. Never the pasted text: it can be a
+        // password, and every process of this uid can read logcat. Tag
+        // "ShellyPaste" to keep it grep-friendly.
         //
         // bug #97: also log whether the guest shell has activated
         // DECSET 2004 (bracketed-paste-mode). On Android/bionic bash 5.3
@@ -2716,16 +2717,13 @@ public final class TerminalEmulator {
                 char c = text.charAt(i);
                 if (c == '\n' || c == '\r') nlCount++;
             }
-            String preview = text.length() > 32 ? text.substring(0, 32) + "…" : text;
-            preview = preview.replace('\n', '↵').replace('\r', '⏎').replace('\t', '→');
             android.util.Log.d("ShellyPaste",
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
                 + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", tui=" + tui
                 + ", forceTui=" + forceTui
                 + ", forceTuiSource=" + (forceTuiSource != null ? forceTuiSource : "none")
-                + ", " + shellyPasteProcProbe()
-                + ", preview=\"" + preview + "\")");
+                + ", " + shellyPasteProcProbe() + ")");
         } catch (Throwable ignore) { /* never let diagnostics break paste */ }
 
         // bug #97 follow-up: bash 5.3 on bionic silently drops the ESC in

@@ -1073,6 +1073,11 @@ function hasUnsafeCd(command, root) {
   return false;
 }
 var CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)])/;
+var LOGCAT_WORD_RE = /(?:^|[\s/=])logcat(?=$|\s)/;
+var LOGCAT_TEXT_ONLY_COMMAND_RE = /^\s*(?:cat|less|more|head|tail|grep|egrep|fgrep|rg|ls|find|stat|file|wc|diff|git|echo|printf|sed|awk|tee|cp|mv|rm|mkdir|touch)\b/;
+function readsLogcat(command) {
+  return command.split(/\|\||&&|[|;&\n]/).some((segment) => LOGCAT_WORD_RE.test(segment) && !LOGCAT_TEXT_ONLY_COMMAND_RE.test(segment));
+}
 var DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
 var UNRESOLVED_WORD_RE = /[$`*?[{]/;
 function hasUnresolvedDeviceSubcommand(command) {
@@ -1155,7 +1160,7 @@ function readsDeviceSecret(command) {
   const words = dequoteShellWords(raw2);
   const twice = dequoteShellWords(words);
   return [raw2, words, twice].some(
-    (c) => CLIPBOARD_READ_RE.test(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c)
+    (c) => CLIPBOARD_READ_RE.test(c) || readsLogcat(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c)
   );
 }
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;

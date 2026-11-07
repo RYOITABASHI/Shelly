@@ -276,6 +276,51 @@
     "expectedAnswer": "n"
   },
   {
+    "name": "logcat -d -> escalate at L2 (secret-read)",
+    "command": "logcat -d",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "logcat -d -> escalate at L1 (secret-read)",
+    "command": "logcat -d",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "adb shell logcat -> escalate at L2 (secret-read)",
+    "command": "adb shell logcat -d",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "quoted lo\"\"gcat -> escalate at L2 (secret-read)",
+    "command": "lo\"\"gcat -d",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "grep for the word logcat stays a read -> allow at L1",
+    "command": "grep logcat notes.txt",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
     "name": "article-pipelines.json redirect write -> deny (policy-write)",
     "command": "echo '{}' > ~/.shelly/agents/article-pipelines.json",
     "policy": {
