@@ -300,6 +300,68 @@ describe('driver: Claude engine', () => {
     return result;
   }
 
+  describe('system/init tools (layer 5)', () => {
+    // The tools / mcp_servers fields of a real init from claude 2.1.220 on the
+    // dev PC, run with claudeAgentArgs() + settings (dummy key, unreachable API).
+    const REAL_INIT = {
+      type: 'system', subtype: 'init', tools: ['Bash', 'Edit', 'Read', 'Write'], mcp_servers: [],
+      permissionMode: 'default', apiKeySource: 'ANTHROPIC_API_KEY', claude_code_version: '2.1.220',
+    };
+    const check = driver.claudeInitToolCheck;
+    const key = { ANTHROPIC_API_KEY: 'sk-ant-test-key' };
+    const bash = [{ tool_name: 'Bash', input: { command: 'ls' } }];
+
+    it('a real init passes, in any order, with or without MultiEdit', () => {
+      expect(check(REAL_INIT.tools)).toEqual({ ok: true, unexpected: [], denied: [], reason: null });
+      expect(check(['Write', 'Read', 'Edit', 'MultiEdit', 'Bash']).ok).toBe(true);
+    });
+
+    it('a tool on the deny list is listed, not enabled: no stop', () => {
+      expect(check(['Bash', 'WebFetch', 'Task'])).toEqual({ ok: true, unexpected: [], denied: ['WebFetch', 'Task'], reason: null });
+      for (const t of driver.CLAUDE_DENIED_TOOLS) expect(check([t]).ok).toBe(true);
+    });
+
+    it('a tool on no list, an MCP tool or a missing list stops the run', () => {
+      // What 2.1.220 lists when --tools is not applied (deny rules only).
+      const withoutToolsFlag = ['Bash', 'CronDelete', 'CronList', 'DesignSync', 'Edit', 'PowerShell', 'PushNotification', 'Read', 'ReportFindings', 'ScheduleWakeup', 'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate', 'Write'];
+      expect(check(withoutToolsFlag).unexpected).toEqual(expect.arrayContaining(['PowerShell', 'CronDelete', 'TaskCreate']));
+      expect(check(withoutToolsFlag).ok).toBe(false);
+      expect(check(['Bash', 'mcp__mercari__search']).unexpected).toEqual(['mcp__mercari__search']);
+      expect(check(['Bash', 'bash']).ok).toBe(false);
+      expect(check(['Bash', 42]).ok).toBe(false);
+      expect(check(undefined).ok).toBe(false);
+      expect(check('Bash').ok).toBe(false);
+    });
+
+    it('E2E: a safe init runs the tools through the gate', () => {
+      const r = runFake({ policy: { unattended: true }, env: { ...key, FAKE_CLAUDE_INIT_TOOLS: JSON.stringify(REAL_INIT.tools) }, tools: bash });
+      expect(r.status).toBe(0);
+      expect(r.answer).toBe('decisions: allow');
+      expect(r.out).not.toContain('outside the Shelly agent allowlist');
+    }, 60_000);
+
+    it('E2E: a listed but denied tool does not stop the run', () => {
+      const r = runFake({ policy: { unattended: true }, env: { ...key, FAKE_CLAUDE_INIT_TOOLS: '["Bash","Read","WebFetch"]' }, tools: bash });
+      expect(r.status).toBe(0);
+      expect(r.answer).toBe('decisions: allow');
+    }, 60_000);
+
+    it('E2E: a tool outside the allowlist stops the run before any tool reaches the gate', () => {
+      const r = runFake({ policy: { unattended: true }, env: { ...key, FAKE_CLAUDE_INIT_TOOLS: '["Bash","PowerShell","mcp__x__y"]' }, tools: bash });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('CLAUDE_ERROR Claude Code started with tools outside the Shelly agent allowlist (PowerShell, mcp__x__y); stopped.');
+      expect(r.out.split('\n').filter((l) => l.startsWith('GATE '))).toHaveLength(0);
+      expect(r.answer).toBeNull();
+    }, 60_000);
+
+    it('E2E: an init with no tools list stops the run', () => {
+      const r = runFake({ policy: { unattended: true }, env: { ...key, FAKE_CLAUDE_OMIT_TOOLS: '1' }, tools: bash });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('no tools list in system/init');
+      expect(r.answer).toBeNull();
+    }, 60_000);
+  });
+
   it('host E2E: every can_use_tool goes through the real gate; unattended gray is declined', () => {
     const tools = [
       { tool_name: 'Bash', input: { command: 'ls' } },

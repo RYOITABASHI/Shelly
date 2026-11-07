@@ -135,3 +135,20 @@ jobs:
           # the bumped codex. A bad bump fails the build's codex canaries first,
           # so no broken release is ever published.
           gh workflow run build-android.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      # Runs last and whether or not anything changed: when the fork stops
+      # releasing, every step above reports "no change" and stays green. Reads
+      # the pin as the steps above left it, so a bump today counts.
+      - name: Fail if Codex is frozen behind upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAX_LAG_DAYS: '3'
+        run: |
+          set -euo pipefail
+          upstream="$RUNNER_TEMP/codex-upstream-releases.json"
+          gh release list --repo openai/codex --limit 100 --exclude-drafts --exclude-pre-releases \
+            --json tagName,publishedAt,isPrerelease > "$upstream"
+          node scripts/check-codex-freeze.js \
+            --shipped "$(tr -d '[:space:]' < .ci-versions/codex.txt)" \
+            --releases "$upstream" \
+            --max-lag-days "$MAX_LAG_DAYS"

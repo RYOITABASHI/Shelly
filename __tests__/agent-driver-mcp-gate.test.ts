@@ -805,6 +805,100 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(r.audit).not.toContain(SECRET_ARG);
   }, 60_000);
 
+  // Item shapes from ThreadItem in codex-rs/app-server-protocol/src/protocol/v2/item.rs
+  // (rust-v0.163.0, the version we ship).
+  const started = (item: Msg) => ({ method: 'item/started', params: { threadId: 'th1', turnId: 't1', item } });
+  const completed = (item: Msg) => ({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item } });
+  const blockedEntry = (audit: string) => audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'codex_item_type_blocked');
+
+  it('a real-shaped safe turn with every harmless item and a gated command still succeeds', () => {
+    const command = {
+      type: 'commandExecution', id: 'call_1', command: 'pwd', cwd: '/tmp', processId: null, source: 'agent',
+      status: 'inProgress', commandActions: [{ type: 'unknown', command: 'pwd' }], aggregatedOutput: null, exitCode: null, durationMs: null,
+    };
+    const r = run([
+      started({ type: 'userMessage', id: 'u1', clientId: null, content: [{ type: 'text', text: 'look up prices', text_elements: [] }] }),
+      completed({ type: 'userMessage', id: 'u1', clientId: null, content: [{ type: 'text', text: 'look up prices', text_elements: [] }] }),
+      started({ type: 'reasoning', id: 'r1', summary: [], content: [] }),
+      completed({ type: 'reasoning', id: 'r1', summary: ['thinking'], content: [] }),
+      completed({ type: 'plan', id: 'p1', text: 'one step' }),
+      started(command),
+      { id: 'ap-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'th1', turnId: 't1', itemId: 'call_1', command: 'pwd', cwd: '/tmp', commandActions: [{ type: 'unknown', command: 'pwd' }] } },
+      completed({ ...command, status: 'completed', aggregatedOutput: '/tmp\n', exitCode: 0, durationMs: 4 }),
+      started({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'other' } }),
+      completed({ type: 'webSearch', id: 'ws1', query: 'prices', action: { type: 'search', query: 'prices', queries: ['prices'] } }),
+      completed({ type: 'imageGeneration', id: 'ig1', status: 'completed', revisedPrompt: null, result: '' }),
+      started({ type: 'sleep', id: 's1', durationMs: 1000 }),
+      completed({ type: 'sleep', id: 's1', durationMs: 1000 }),
+      started({ type: 'contextCompaction', id: 'c1' }),
+      completed({ type: 'contextCompaction', id: 'c1' }),
+      completed({ type: 'enteredReviewMode', id: 'rv1', review: 'current changes' }),
+      completed({ type: 'exitedReviewMode', id: 'rv2', review: 'looks fine' }),
+    ]);
+    expect(r.out).not.toContain('CODEX_ERROR');
+    expect(auditKinds(r.audit)).not.toContain('codex_item_type_blocked');
+    expect(r.status).toBe(0);
+    expect(r.answerWritten).toBe(true);
+    expect(r.out.split('\n').filter((l) => l.startsWith('GATE ') && l.includes('item/commandExecution/requestApproval'))).toHaveLength(1);
+  }, 60_000);
+
+  it('a turn that only speaks passes through the same check', () => {
+    const r = run([started({ type: 'agentMessage', id: 'm1', text: '', phase: null, memoryCitation: null })]);
+    expect(r.status).toBe(0);
+    expect(r.answerWritten).toBe(true);
+  }, 60_000);
+
+  it('an unknown item type aborts the turn, fails the run and writes an audit line with names only', () => {
+    const r = run([started({ type: 'browserAction', id: 'b1', tool: 'open_url', status: 'inProgress', arguments: { url: SECRET_ARG } })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ phase: 'started', itemType: 'browserAction', itemId: 'b1', tool: 'open_url' }));
+    expect(r.audit).toContain('"reason":"codex_item_type_blocked"');
+    expect(r.out).toMatch(/C->S \{"id":\d+,"method":"turn\/interrupt","params":\{"threadId":"th1","turnId":"t1"\}\}/);
+    expect(r.out).toContain('CODEX_ERROR Codex reported an item Shelly cannot gate (browserAction); stopped.');
+    expect(r.audit).not.toContain(SECRET_ARG);
+    expect(r.answerWritten).toBe(false);
+    expect(auditKinds(r.audit)).not.toContain('turn_completed');
+  }, 60_000);
+
+  it('an unknown item seen only on item/completed is also blocked', () => {
+    const r = run([completed({ type: 'browserAction', id: 'b2' })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ phase: 'completed', itemType: 'browserAction' }));
+    expect(r.answerWritten).toBe(false);
+  }, 60_000);
+
+  it('an item with no type fails closed', () => {
+    const r = run([started({ id: 'x1' })]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ itemType: null, itemId: 'x1' }));
+    const empty = run([{ method: 'item/completed', params: { threadId: 'th1', turnId: 't1' } }]);
+    expect(empty.status).toBe(1);
+    expect(blockedEntry(empty.audit)).toBeTruthy();
+  }, 90_000);
+
+  it.each([
+    ['collabAgentToolCall', { type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', status: 'inProgress', senderThreadId: 'th1', receiverThreadIds: [], prompt: SECRET_ARG, model: null, reasoningEffort: null, agentsStates: {} }],
+    ['subAgentActivity', { type: 'subAgentActivity', model: null, reasoningEffort: null, id: 'a1', kind: 'started', agentThreadId: 'th2', agentPath: '/root/x' }],
+    ['dynamicToolCall', { type: 'dynamicToolCall', id: 'd1', namespace: null, tool: 'x', arguments: { q: SECRET_ARG }, status: 'inProgress', contentItems: null, success: null, durationMs: null }],
+    ['imageView', { type: 'imageView', id: 'i1', path: '/sdcard/DCIM/photo.jpg' }],
+    ['hookPrompt', { type: 'hookPrompt', id: 'h1', fragments: [] }],
+    ['functionCallOutput', { type: 'functionCallOutput', id: 'f1', name: 'x', namespace: null, output: SECRET_ARG }],
+  ])('the known but ungated item %s stops the run', (itemType, item) => {
+    const r = run([started(item)]);
+    expect(r.status).toBe(1);
+    expect(blockedEntry(r.audit)).toEqual(expect.objectContaining({ itemType }));
+    expect(r.audit).not.toContain(SECRET_ARG);
+  }, 60_000);
+
+  it('the sub-agent and view_image tools are switched off for the worker', () => {
+    const r = run([]);
+    const joined = r.appServerArgv!.join(' ');
+    for (const feature of ['multi_agent', 'multi_agent_v2', 'view_image']) {
+      expect(joined).toContain(`-c features.${feature}=false`);
+      expect(r.workerHome.config).toMatch(new RegExp(`^${feature} = false\\r?$`, 'm'));
+    }
+  }, 60_000);
+
   it('an MCP elicitation request is declined (never accepted) and fails the run', () => {
     const r = run([
       { id: 'el-1', method: 'mcpServer/elicitation/request', params: { threadId: 'th1', turnId: 't1', serverName: 'mercari', mode: 'form', message: `Confirm purchase? ${SECRET_ARG}`, requestedSchema: { default: SECRET_ARG } } },

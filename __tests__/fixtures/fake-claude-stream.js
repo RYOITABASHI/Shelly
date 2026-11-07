@@ -65,7 +65,7 @@ process.stdin.on('data', (chunk) => {
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
     } else if (msg.type === 'user') {
       prompt = msg.message.content[0].text;
-      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', ...(process.env.FAKE_CLAUDE_OMIT_API_KEY_SOURCE === '1' ? {} : { apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || (process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none') }), tools: ['Bash', 'Read'] });
+      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', ...(process.env.FAKE_CLAUDE_OMIT_API_KEY_SOURCE === '1' ? {} : { apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || (process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none') }), ...(process.env.FAKE_CLAUDE_OMIT_TOOLS === '1' ? {} : { tools: JSON.parse(process.env.FAKE_CLAUDE_INIT_TOOLS || '["Bash","Edit","Read","Write"]') }), mcp_servers: [] });
       askNext();
     } else if (msg.type === 'control_response' && msg.response.request_id === pending) {
       decisions.push(msg.response.response);

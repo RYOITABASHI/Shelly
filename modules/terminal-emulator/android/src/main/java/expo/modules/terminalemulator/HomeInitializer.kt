@@ -1516,7 +1516,13 @@ patchCodex(libDir);
     //      interactive `agy` / `claude` TUI with no arguments, or prints a
     //      one-line install hint and stays in bash. Interactive TUI only —
     //      never `agy -p` / `--print` (Google ToS).
-    private const val BASHRC_VERSION = 285
+    // v286: codex() and the $HOME/bin/codex shim resolve `current` to its real
+    //      versioned directory before launching (__shelly_codex_runtime_tui).
+    //      Through the symlink, a running Codex took `current` as its own path
+    //      and started the NEW codex-code-mode-host after an update switched it
+    //      (the host speaks a version-pinned protocol). The crash quarantine
+    //      accepts the versioned path: .healthy lives in that same directory.
+    private const val BASHRC_VERSION = 286
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -3133,11 +3139,17 @@ patchCodex(libDir);
             sb.appendLine("  fi")
             sb.appendLine("  echo '[shelly] Codex login OK; starting Codex.'")
             sb.appendLine("fi")
-            sb.appendLine("__runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            // v286: same recipe as __shelly_codex_runtime_tui below (this shim
+            // cannot call .bashrc functions).
+            sb.appendLine("__runtime_tui=\"\"")
             sb.appendLine("__tui=\"\$SHELLY_LIB_DIR/codex_tui\"")
             sb.appendLine("__runtime_ready=0")
-            sb.appendLine("if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_tui\" ]; then")
-            sb.appendLine("  __runtime_ready=1")
+            sb.appendLine("if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ]; then")
+            sb.appendLine("  __runtime_dir=\"\$(cd -P \"\$HOME/.shelly-runtime/codex/current\" 2>/dev/null && pwd -P)\"")
+            sb.appendLine("  if [ -n \"\$__runtime_dir\" ] && [ -f \"\$__runtime_dir/.healthy\" ] && [ -f \"\$__runtime_dir/manifest.json\" ] && [ -x \"\$__runtime_dir/codex_tui\" ]; then")
+            sb.appendLine("    __runtime_tui=\"\$__runtime_dir/codex_tui\"")
+            sb.appendLine("    __runtime_ready=1")
+            sb.appendLine("  fi")
             sb.appendLine("fi")
             sb.appendLine("__shelly_codex_alias_for() {")
             sb.appendLine("  case \"\$1\" in")
@@ -3257,7 +3269,7 @@ patchCodex(libDir);
             sb.appendLine("__shelly_codex_mark_tui_failed() {")
             sb.appendLine("  __candidate_dir=\"\${1%/*}\"")
             sb.appendLine("  case \"\$__candidate_dir\" in")
-            sb.appendLine("    \"\$HOME/.shelly-runtime/codex/current\")")
+            sb.appendLine("    \"\$HOME/.shelly-runtime/codex/current\"|*/.shelly-runtime/codex/versions/*)")
             sb.appendLine("      if [ -f \"\$__candidate_dir/.healthy\" ]; then")
             sb.appendLine("        __stamp=\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)")
             sb.appendLine("        mv \"\$__candidate_dir/.healthy\" \"\$__candidate_dir/.healthy.tui-failed.\$__stamp\" 2>/dev/null || rm -f \"\$__candidate_dir/.healthy\" 2>/dev/null || true")
@@ -3928,14 +3940,23 @@ patchCodex(libDir);
             // matching upstream's codex-exec shell wrapper. Keeping a single
             // selected binary path also keeps SHELLY_CODEX_EXEC_PATH aligned
             // with /proc/self/exe and fs-helper self-relaunch.
-            sb.appendLine("__shelly_codex_runtime_ready() {")
-            sb.appendLine("  [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$HOME/.shelly-runtime/codex/current/codex_tui\" ]")
+            // v286: print the app-data codex_tui under the REAL versioned
+            // directory, or fail. `current` is resolved once, before any
+            // check, so a switch mid-launch cannot mix two versions, and the
+            // running Codex keeps its own codex-code-mode-host next to it
+            // (SHELLY_CODEX_EXEC_PATH / LD_LIBRARY_PATH follow this path).
+            sb.appendLine("__shelly_codex_runtime_tui() {")
+            sb.appendLine("  [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] || return 1")
+            sb.appendLine("  local __dir")
+            sb.appendLine("  __dir=\"\$(builtin cd -P \"\$HOME/.shelly-runtime/codex/current\" 2>/dev/null && builtin pwd -P)\" || return 1")
+            sb.appendLine("  [ -n \"\$__dir\" ] && [ -f \"\$__dir/.healthy\" ] && [ -f \"\$__dir/manifest.json\" ] && [ -x \"\$__dir/codex_tui\" ] || return 1")
+            sb.appendLine("  printf '%s\\n' \"\$__dir/codex_tui\"")
             sb.appendLine("}")
             sb.appendLine("codex() {")
             sb.appendLine("  local __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  local __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  local __runtime_tui=\"\"")
             sb.appendLine("  local __runtime_ready=0")
-            sb.appendLine("  if [ \"\${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}\" != \"1\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/.healthy\" ] && [ -f \"\$HOME/.shelly-runtime/codex/current/manifest.json\" ] && [ -x \"\$__runtime_tui\" ]; then")
+            sb.appendLine("  if __runtime_tui=\"\$(__shelly_codex_runtime_tui)\"; then")
             sb.appendLine("    __runtime_ready=1")
             sb.appendLine("  fi")
             sb.appendLine("  local __first=\"\${1:-}\"")
@@ -4104,7 +4125,7 @@ patchCodex(libDir);
             sb.appendLine("  __shelly_codex_mark_tui_failed() {")
             sb.appendLine("    local __candidate_dir=\"\${1%/*}\"")
             sb.appendLine("    case \"\$__candidate_dir\" in")
-            sb.appendLine("      \"\$HOME/.shelly-runtime/codex/current\")")
+            sb.appendLine("      \"\$HOME/.shelly-runtime/codex/current\"|*/.shelly-runtime/codex/versions/*)")
             sb.appendLine("        if [ -f \"\$__candidate_dir/.healthy\" ]; then")
             sb.appendLine("          local __stamp=\"\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)\"")
             sb.appendLine("          mv \"\$__candidate_dir/.healthy\" \"\$__candidate_dir/.healthy.tui-failed.\$__stamp\" 2>/dev/null || rm -f \"\$__candidate_dir/.healthy\" 2>/dev/null || true")
@@ -5259,9 +5280,9 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-smoke-\$__stamp.log\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$(__shelly_codex_runtime_tui)\" || __runtime_tui=\"\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
-            sb.appendLine("  if __shelly_codex_runtime_ready; then")
+            sb.appendLine("  if [ -n \"\$__runtime_tui\" ]; then")
             sb.appendLine("    __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  fi")
             sb.appendLine("  {")
@@ -5310,9 +5331,9 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-canary-\$__stamp.log\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$(__shelly_codex_runtime_tui)\" || __runtime_tui=\"\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  [ -n \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __prompt=\"Reply with exactly this token and nothing else: \$__nonce\"")
             sb.appendLine("  {")
@@ -5350,9 +5371,9 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-edit-canary-\$__stamp.log\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$(__shelly_codex_runtime_tui)\" || __runtime_tui=\"\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  [ -n \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_EDIT_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-edit-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"In the current working directory, create or overwrite result.txt. Write exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. Then reply with exactly DONE.\"")
@@ -5406,9 +5427,9 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-repo-canary-\$__stamp.log\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$(__shelly_codex_runtime_tui)\" || __runtime_tui=\"\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  [ -n \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_REPO_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-repo-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"This directory is a tiny project. Edit README.md by appending one new line containing exactly the token between <token> and </token>, excluding the tags: <token>\$__nonce</token>. Also create notes.txt containing exactly READY. Then reply with exactly DONE.\"")
@@ -5460,9 +5481,9 @@ patchCodex(libDir);
             sb.appendLine("  mkdir -p \"\$__dir\" 2>/dev/null || true")
             sb.appendLine("  __log=\"\$__dir/codex-patch-canary-\$__stamp.log\"")
             sb.appendLine("  __tui=\"$libDir/codex_tui\"")
-            sb.appendLine("  __runtime_tui=\"\$HOME/.shelly-runtime/codex/current/codex_tui\"")
+            sb.appendLine("  __runtime_tui=\"\$(__shelly_codex_runtime_tui)\" || __runtime_tui=\"\"")
             sb.appendLine("  __chosen_tui=\"\$__tui\"")
-            sb.appendLine("  __shelly_codex_runtime_ready && __chosen_tui=\"\$__runtime_tui\"")
+            sb.appendLine("  [ -n \"\$__runtime_tui\" ] && __chosen_tui=\"\$__runtime_tui\"")
             sb.appendLine("  __nonce=\"SHELLY_CODEX_PATCH_CANARY_\$(date +%s)_\$\$\"")
             sb.appendLine("  __work=\"\$HOME/shelly-codex-patch-canary-\$__stamp\"")
             sb.appendLine("  __prompt=\"\$(cat <<EOF")

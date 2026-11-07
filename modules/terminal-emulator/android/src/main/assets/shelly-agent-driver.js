@@ -397,13 +397,25 @@ function androidLauncherContext() {
   return { libDir };
 }
 
+// Resolve `current` to its real versioned directory once, before anything else
+// reads it, and run from there. Codex finds codex-code-mode-host next to its own
+// path (SHELLY_CODEX_EXEC_PATH via the /proc/self/exe shim), and that host speaks
+// a version-pinned protocol: launched through the symlink, a running worker
+// would start the NEW host after an update switched `current`. Only the
+// directory is resolved, never the file, so the siblings stay beside codex_tui.
+// Same recipe as HomeInitializer.kt __shelly_codex_runtime_tui.
 function runtimeCodexTuiPath(home) {
   if (!home || process.env.SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME === '1') return '';
-  const current = path.join(home, '.shelly-runtime/codex/current');
-  const tuiPath = path.join(current, 'codex_tui');
+  let runtimeDir;
+  try {
+    runtimeDir = fs.realpathSync(path.join(home, '.shelly-runtime/codex/current'));
+  } catch {
+    return '';
+  }
+  const tuiPath = path.join(runtimeDir, 'codex_tui');
   if (
-    existingPath(path.join(current, '.healthy')) &&
-    existingPath(path.join(current, 'manifest.json')) &&
+    existingPath(path.join(runtimeDir, '.healthy')) &&
+    existingPath(path.join(runtimeDir, 'manifest.json')) &&
     existingPath(tuiPath)
   ) {
     return tuiPath;
@@ -605,7 +617,63 @@ const CODEX_WORKER_DISABLED_FEATURES = [
   // the feature as `hooks`; older builds called it `codex_hooks`).
   'hooks',
   'codex_hooks',
+  // Default-on in 0.163 (codex-rs/features/src/lib.rs). Their items are not in
+  // CODEX_HARMLESS_ITEM_TYPES, so an enabled tool would only get the run
+  // stopped: sub-agents (collabAgentToolCall / subAgentActivity) and view_image
+  // (imageView reads a local file with no approval request). Turned off so the
+  // model is never offered them; the item check stays as the backstop.
+  'multi_agent',
+  'multi_agent_v2',
+  'view_image',
 ];
+
+// ─── Codex thread items: an allowlist, not a list of known-bad types ──────
+// The counterpart of Claude's tool_use check (layer 4 below). Only command and
+// file-change items carry an approval request this driver can gate, so any
+// other type that does something would run past the gate, and a new Codex
+// version can add one at any time. Checked against the ThreadItem enum in
+// codex-rs/app-server-protocol/src/protocol/v2/item.rs at rust-v0.163.0 (the
+// fork we ship, v0.163.0-termux.3, has the same 19 variants) and rust-v0.167.0
+// (same list).
+//
+// Gated: commandExecution, fileChange (approval requests, gateCommandActions).
+// Stopped by the MCP check: mcpToolCall.
+// Stopped here because they are in neither set below:
+//   hookPrompt            a hook ran (hooks are off for the worker)
+//   functionCallOutput    the result of a named tool; turn/start sends text only
+//   dynamicToolCall       client-defined tool; this driver registers none
+//   collabAgentToolCall   spawns / drives a sub-agent
+//   subAgentActivity      a sub-agent was started or used
+//   imageView             view_image read a local file with no gate
+//   anything else, or an item with no type.
+// Harmless = conversation records and markers, plus the two tools OpenAI hosts:
+//   webSearch             runs on OpenAI's side, nothing on the device, BUT the
+//                         query leaves with no Shelly gate (DEFERRED.md)
+//   imageGeneration       same; the file lands in the per-run CODEX_HOME
+//   sleep                 display item of the interruptible clock.sleep tool
+//   enteredReviewMode / exitedReviewMode  markers (this driver never starts one)
+const CODEX_GATED_ITEM_TYPES = new Set(['commandExecution', 'fileChange']);
+const CODEX_HARMLESS_ITEM_TYPES = new Set([
+  'userMessage',
+  'agentMessage',
+  'plan',
+  'reasoning',
+  'contextCompaction',
+  'sleep',
+  'webSearch',
+  'imageGeneration',
+  'enteredReviewMode',
+  'exitedReviewMode',
+]);
+
+/** 'gated' | 'harmless' | 'mcp' | 'blocked' (fails closed on a missing type). */
+function codexItemDisposition(item) {
+  const type = item && typeof item === 'object' ? item.type : undefined;
+  if (typeof type !== 'string') return 'blocked';
+  if (type === 'mcpToolCall') return 'mcp';
+  if (CODEX_GATED_ITEM_TYPES.has(type)) return 'gated';
+  return CODEX_HARMLESS_ITEM_TYPES.has(type) ? 'harmless' : 'blocked';
+}
 
 // Codex itself only accepts these characters in an MCP server name; anything
 // else could not be addressed safely as a dotted -c key, so it fails closed.
@@ -2555,10 +2623,9 @@ async function runDriver(config) {
     send({ id, error: { code, message, data: redactDeep(data || null) } });
   };
 
-  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
-  // inside Codex with no approval request to gate, so any sign of one stops
-  // the turn and fails the run. Only names are recorded, never arguments.
-  const blockMcpActivity = (kind, details) => {
+  // Stop the turn and fail the run for activity no gate can see. Only names are
+  // recorded, never arguments.
+  const stopUngatedActivity = (kind, details, reason) => {
     if (completed) return;
     sawFailure = true;
     const turnId = details && typeof details.turnId === 'string' ? details.turnId : null;
@@ -2572,7 +2639,7 @@ async function runDriver(config) {
       cwd: config.cwd,
       answer: 'n',
       decision: 'abort',
-      reason: 'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+      reason,
     });
     if (threadId && turnId) {
       try {
@@ -2581,6 +2648,15 @@ async function runDriver(config) {
     }
     finish(kind, 1);
   };
+
+  // Defense in depth for the MCP/app preflight: MCP and app tool calls run
+  // inside Codex with no approval request to gate, so any sign of one stops
+  // the turn and fails the run.
+  const blockMcpActivity = (kind, details) => stopUngatedActivity(
+    kind,
+    details,
+    'MCP / app tool calls are disabled for the Codex worker (no Shelly gate)',
+  );
 
   const safeName = (value) => (typeof value === 'string' ? value.slice(0, 120) : null);
 
@@ -2595,6 +2671,30 @@ async function runDriver(config) {
       pluginId: safeName(item.pluginId),
       status: safeName(item.status),
     };
+  };
+
+  // Shared by item/started and item/completed: an item seen on only one of them
+  // is still checked. Returns true when the run was stopped.
+  const blockUngatedItem = (phase, params) => {
+    const item = params && params.item;
+    const disposition = codexItemDisposition(item);
+    if (disposition === 'mcp') {
+      blockMcpActivity('mcp_tool_call_blocked', { phase, ...mcpToolCallDetails(params) });
+      return true;
+    }
+    if (disposition !== 'blocked') return false;
+    const itemType = safeName(item && item.type);
+    process.stdout.write(`CODEX_ERROR Codex reported an item Shelly cannot gate (${itemType || 'no type'}); stopped.\n`);
+    stopUngatedActivity('codex_item_type_blocked', {
+      phase,
+      threadId: params && params.threadId,
+      turnId: params && typeof params.turnId === 'string' ? params.turnId : activeTurnId,
+      itemId: safeName(item && item.id),
+      itemType,
+      tool: safeName(item && item.tool),
+      name: safeName(item && item.name),
+    }, 'Codex item type is outside the Shelly allowlist (no approval request to gate)');
+    return true;
   };
 
   const handleInitialize = () => {
@@ -2990,11 +3090,7 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/started') {
-      const item = message.params && message.params.item;
-      if (item && item.type === 'mcpToolCall') {
-        blockMcpActivity('mcp_tool_call_blocked', { phase: 'started', ...mcpToolCallDetails(message.params) });
-        return;
-      }
+      if (blockUngatedItem('started', message.params)) return;
       auditItemStarted(message.params);
       return;
     }
@@ -3046,11 +3142,7 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/completed') {
-      const item = message.params && message.params.item;
-      if (item && item.type === 'mcpToolCall') {
-        blockMcpActivity('mcp_tool_call_blocked', { phase: 'completed', ...mcpToolCallDetails(message.params) });
-        return;
-      }
+      if (blockUngatedItem('completed', message.params)) return;
       checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
       return;
@@ -3178,7 +3270,7 @@ async function runDriver(config) {
 // as permission-free (TodoWrite, Skill, ToolSearch, AskUserQuestion,
 // SlashCommand, ExitPlanMode, BashOutput/KillShell, any future built-in) never
 // produce a can_use_tool request, so an ask/deny list alone cannot gate them.
-// Four layers, so one unsupported flag or renamed tool cannot open it:
+// Five layers, so one unsupported flag or renamed tool cannot open it:
 //  1. `--tools Bash,Read,Write,Edit` — the built-in tool set claude exposes to
 //     the model at all (the Agent SDK's `tools` option). An unknown flag makes
 //     claude exit with a usage error = fail closed.
@@ -3186,6 +3278,15 @@ async function runDriver(config) {
 //  3. the same names as settings `permissions.deny` (defense in depth).
 //  4. at runtime: an assistant tool_use for anything outside the allowlist
 //     (built-in we did not know, MCP, …) stops the run immediately.
+//  5. at start: the `tools` list in system/init is checked before any tool can
+//     run (claudeInitToolCheck). Observed on the PC build 2.1.220 (dummy key,
+//     unreachable API): these exact flags give ["Bash","Edit","Read","Write"]
+//     and mcp_servers []; deny rules remove a tool from the list; without
+//     --tools fifteen tools appear, some of them on no list here. So a name
+//     outside the allowlist means `--tools` stopped working or an MCP server
+//     loaded. A name in CLAUDE_DENIED_TOOLS is still accepted: listed but
+//     denied by both --disallowedTools and settings is not enabled, and layer 4
+//     still stops it, so a build that keeps it listed must not fail every run.
 // MultiEdit is not in --tools (absent from recent builds; Edit covers it) but
 // stays gated (ask + tee mapping) in case a build exposes it anyway.
 const CLAUDE_ALLOWED_TOOLS = ['Bash', 'Read', 'Write', 'Edit'];
@@ -3208,6 +3309,24 @@ const CLAUDE_CHILD_ENV_DROP = [
   'ANTHROPIC_BASE_URL',
 ];
 const CLAUDE_INIT_REQUEST_ID = 'shelly-init';
+
+/**
+ * Layer 5. `unexpected` = enabled tools outside the allowlist; `denied` =
+ * listed but denied (not a stop). A missing list cannot be verified, so it
+ * fails closed. MCP tools (mcp__server__tool) are on no list, so they are
+ * unexpected; --strict-mcp-config loads none.
+ */
+function claudeInitToolCheck(tools) {
+  if (!Array.isArray(tools)) return { ok: false, unexpected: [], denied: [], reason: 'no tools list in system/init' };
+  const unexpected = [];
+  const denied = [];
+  for (const tool of tools) {
+    if (CLAUDE_GATED_TOOLS.includes(tool)) continue;
+    if (CLAUDE_DENIED_TOOLS.includes(tool)) denied.push(tool);
+    else unexpected.push(String(tool).slice(0, 80));
+  }
+  return { ok: unexpected.length === 0, unexpected, denied, reason: unexpected.length ? 'tool outside the allowlist' : null };
+}
 
 function claudeAgentSettingsJson() {
   return JSON.stringify({
@@ -3823,6 +3942,15 @@ async function runClaudeDriver(config) {
         finish('claude_auth_mismatch', 1);
         return;
       }
+      const toolCheck = claudeInitToolCheck(message.tools);
+      if (!toolCheck.ok) {
+        sawFailure = true;
+        audit('claude_init_tools_blocked', { reason: toolCheck.reason, unexpected: toolCheck.unexpected.slice(0, 40) });
+        process.stdout.write(`CLAUDE_ERROR Claude Code started with tools outside the Shelly agent allowlist (${toolCheck.unexpected.slice(0, 5).join(', ') || toolCheck.reason}); stopped.\n`);
+        finish('claude_init_tools_blocked', 1);
+        return;
+      }
+      if (toolCheck.denied.length) audit('claude_init_denied_tools_listed', { denied: toolCheck.denied.slice(0, 40) });
       audit('thread_started', {
         engine: 'claude',
         cwd: message.cwd || config.cwd,
@@ -3982,6 +4110,11 @@ module.exports = {
   codexChildEnv,
   codexAppServerSpawnSpec,
   CODEX_WORKER_DISABLED_FEATURES,
+  CODEX_GATED_ITEM_TYPES,
+  CODEX_HARMLESS_ITEM_TYPES,
+  codexItemDisposition,
+  runtimeCodexTuiPath,
+  claudeInitToolCheck,
   codexMcpDisableArgs,
   parseCodexMcpList,
   codexMcpPreflight,
