@@ -1,7 +1,8 @@
 /**
- * Google Antigravity CLI (BASHRC_VERSION 282; current 283): agy-install stages Google's
- * official Android build after a SHA-512 check, and agy runs it through
- * linker64 with the bionic exec wrapper (like codex).
+ * Google Antigravity CLI (BASHRC_VERSION 282; installer moved in 289): agy-install
+ * hands off to scripts/shelly-cli-update.js (see shelly-cli-update.test.ts for the
+ * checks), and agy runs the build through linker64 with the bionic exec wrapper
+ * (like codex).
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,24 +26,10 @@ function fnBody(name: string): string {
 }
 
 describe('Antigravity CLI bashrc functions', () => {
-  const install = fnBody('agy-install');
   const run = fnBody('agy');
 
-  it('reads the official Android manifest and only accepts Google storage URLs', () => {
-    expect(install).toContain('/manifests/android_arm64.json');
-    expect(install).toContain('https://storage.googleapis.com/antigravity-public/*) ;;');
-  });
-
-  it('verifies the published SHA-512 before anything is installed', () => {
-    expect(install).toMatch(/\[ \$\{#__sha\} -eq 128 \]/);
-    const verify = install.indexOf('sha512sum -c -');
-    const move = install.indexOf('mv -f "$__stage/antigravity" "$__dir/antigravity"');
-    expect(verify).toBeGreaterThan(0);
-    expect(move).toBeGreaterThan(verify);
-  });
-
-  it('never runs the vendor install step (it edits shell config)', () => {
-    expect(install).not.toMatch(/antigravity"? install/);
+  it('hands off to the shared installer', () => {
+    expect(homeKt).toContain('sb.appendLine("agy-install() { __shelly_cli_update agy install \\"\\$@\\"; }")');
   });
 
   it('agy runs the staged binary via linker64 with the exec wrapper and TUI paste mode', () => {

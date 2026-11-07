@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -19,6 +21,7 @@ import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
@@ -27,12 +30,38 @@ import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
 import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.lang.ref.WeakReference
 import java.util.zip.ZipInputStream
+
+/**
+ * Where execCommand runs. The ~100 callers grew up with one command at a time, in
+ * call order, and some rely on it (fire-and-forget `.then` chains, read-after-
+ * write on the same file), so ordinary commands stay strictly one at a time.
+ * Semaphore waiters are FIFO, and the permit is taken on Expo's queue, so order
+ * holds. Only a caller that names the "long" lane leaves that line, and only the
+ * Claude Code / Antigravity installer does (lib/managed-cli-update.ts, a test
+ * holds it there): it would otherwise stop FileTree and every poller for 45
+ * minutes, and it touches only ~/.shelly-runtime. The timeout must not decide
+ * this: backup restore has a long timeout too, and overwriting $HOME beside the
+ * pollers is exactly what the serial lane prevents.
+ *
+ * Process-wide, not per-module: a reload makes a new module while the old
+ * command may still be running.
+ */
+private object ExecLanes {
+    private val serial = Semaphore(1)
+    private val long = Semaphore(2)
+
+    fun named(lane: String?): Semaphore = if (lane == "long") long else serial
+}
 
 class TerminalEmulatorModule : Module() {
 
@@ -1902,6 +1931,19 @@ class TerminalEmulatorModule : Module() {
             )
         }
 
+        // Claude Code / Antigravity background updates are 300 MB downloads, so
+        // this answers for the active network as Android sees it: Wi-Fi or
+        // Ethernet the user has not marked metered. A phone hotspot reports metered.
+        AsyncFunction("isNetworkUnmetered") {
+            val context = requireReactContext()
+            val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val capabilities = connectivity?.let { it.getNetworkCapabilities(it.activeNetwork) }
+            capabilities != null &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) &&
+                (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        }
+
         AsyncFunction("getAppVersionInfo") {
             val context = requireReactContext()
             val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -2518,7 +2560,11 @@ class TerminalEmulatorModule : Module() {
 
         // ── Non-interactive command execution (replaces Termux bridge) ───────
 
-        AsyncFunction("execCommand") { command: String, timeoutMs: Int? ->
+        // A coroutine, because execSubprocess blocks until the command ends. As a
+        // plain AsyncFunction it held Expo's one queue for that long, and with
+        // it writeToSession, createSession and agent approvals. Everything up to
+        // the permit still runs on that queue, in call order. See ExecLanes.
+        AsyncFunction("execCommand") Coroutine { command: String, timeoutMs: Int?, lane: String? ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("No React context")
             val timeout = timeoutMs ?: 120_000
@@ -2570,14 +2616,22 @@ class TerminalEmulatorModule : Module() {
                 Log.i("TerminalEmulator", "execCommand: extractedNow=$extractedNow bash=$bashPath exists=$bashExists lib=$libPath home=$homePath")
             }
 
-            val result = ShellyJNI.execSubprocess(
-                "/system/bin/linker64",
-                bashPath,
-                libPath,
-                homePath,
-                wrappedCommand,
-                timeout
-            )
+            // The command enforces its own timeout in shelly-exec.c (SIGKILL to the
+            // process group). A JS reload cancels this coroutine, but withContext
+            // waits for the blocking call, so the permit stays held until the
+            // process is really gone, as it did on the queue.
+            val result = ExecLanes.named(lane).withPermit {
+                withContext(Dispatchers.IO) {
+                    ShellyJNI.execSubprocess(
+                        "/system/bin/linker64",
+                        bashPath,
+                        libPath,
+                        homePath,
+                        wrappedCommand,
+                        timeout
+                    )
+                }
+            }
 
             val exitCode = result[0].toInt()
             val stderr = result[2]

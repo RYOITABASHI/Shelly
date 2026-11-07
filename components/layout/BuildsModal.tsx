@@ -12,6 +12,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -24,6 +25,16 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { codexRuntimeUpdateAvailable } from '@/lib/codex-runtime-update';
+import {
+  fetchManagedCliStatuses,
+  managedCliAction,
+  runManagedCliInstall,
+  runManagedCliRollback,
+  type ManagedCli,
+  type ManagedCliStatus,
+  type ManagedCliStatuses,
+} from '@/lib/managed-cli-update';
+import { useSettingsStore } from '@/store/settings-store';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
 import {
@@ -1160,6 +1171,10 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [preparingUpdateInstall, setPreparingUpdateInstall] = useState(false);
   const [downloadingUpdate, setDownloadingUpdate] = useState(false);
   const [installingCodexRuntime, setInstallingCodexRuntime] = useState(false);
+  const [managedClis, setManagedClis] = useState<ManagedCliStatuses | null>(null);
+  const [managedCliBusy, setManagedCliBusy] = useState<ManagedCli | null>(null);
+  const cliAutoUpdateWifi = useSettingsStore((s) => s.settings.cliAutoUpdateWifi) === true;
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [resettingCodexRuntime, setResettingCodexRuntime] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [migrationBackupOpen, setMigrationBackupOpen] = useState(false);
@@ -1258,10 +1273,29 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     }
   }, [onStatusChange]);
 
+  const refreshManagedClis = useCallback(async () => {
+    // What is installed first, from local files, so the buttons do not wait on
+    // the network or vanish without it. Then the latest versions on top.
+    try {
+      setManagedClis(await withTimeout(fetchManagedCliStatuses('status'), 25_000, 'CLI status'));
+    } catch (e: any) {
+      logError('BuildsModal', 'managed CLI status failed', e);
+    }
+    try {
+      const checked = await withTimeout(fetchManagedCliStatuses('check'), 25_000, 'CLI versions');
+      if (checked) setManagedClis(checked);
+    } catch (e: any) {
+      logError('BuildsModal', 'managed CLI check failed', e);
+    }
+  }, []);
+
   useEffect(() => {
     setAdvancedOpen(false);
-    if (visible) void refresh();
-  }, [refresh, visible]);
+    if (visible) {
+      void refresh();
+      void refreshManagedClis();
+    }
+  }, [refresh, refreshManagedClis, visible]);
 
   useEffect(() => {
     if (!downloadingUpdate) return undefined;
@@ -1601,6 +1635,154 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       setResettingCodexRuntime(false);
     }
   }, [refresh, t]);
+
+  const installManagedCli = useCallback(async (cli: ManagedCli, options: { agent?: boolean; force?: boolean } = {}) => {
+    setManagedCliBusy(cli);
+    try {
+      const output = await runManagedCliInstall(cli, options);
+      Alert.alert(t('updates.cli_ready_title'), output.split('\n').slice(-3).join('\n'));
+    } catch (e: any) {
+      Alert.alert(t('updates.cli_failed_title'), String(e?.message || e));
+    } finally {
+      setManagedCliBusy(null);
+      await refreshManagedClis();
+    }
+  }, [refreshManagedClis, t]);
+
+  const rollbackManagedCli = useCallback(async (cli: ManagedCli) => {
+    setManagedCliBusy(cli);
+    try {
+      const output = await runManagedCliRollback(cli);
+      Alert.alert(t('updates.cli_ready_title'), output);
+    } catch (e: any) {
+      Alert.alert(t('updates.cli_failed_title'), String(e?.message || e));
+    } finally {
+      setManagedCliBusy(null);
+      await refreshManagedClis();
+    }
+  }, [refreshManagedClis, t]);
+
+  const confirmManagedCliInstall = useCallback((cli: ManagedCli) => {
+    Alert.alert(
+      t(cli === 'claude' ? 'updates.claude_install_title' : 'updates.agy_install_title'),
+      t(cli === 'claude' ? 'updates.claude_install_body' : 'updates.agy_install_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('updates.cli_install'), onPress: () => void installManagedCli(cli) },
+      ],
+    );
+  }, [installManagedCli, t]);
+
+  const confirmClaudeAgents = useCallback((status: ManagedCliStatus) => {
+    Alert.alert(
+      t('updates.claude_agents_title'),
+      t('updates.claude_agents_body', { version: status.agent?.reviewed ?? '' }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('updates.claude_agents_enable'), onPress: () => void installManagedCli('claude', { agent: true }) },
+      ],
+    );
+  }, [installManagedCli, t]);
+
+  const renderManagedCli = (status: ManagedCliStatus) => {
+    const action = managedCliAction(status);
+    const busy = managedCliBusy === status.cli;
+    const blocked = managedCliBusy !== null;
+    const enabled = !blocked && (action === 'install' || action === 'update' || action === 'held');
+    const name = t(status.cli === 'claude' ? 'updates.claude_name' : 'updates.agy_name');
+    const label = busy
+      ? t('updates.cli_working')
+      : action === 'install'
+        ? t('updates.cli_install')
+        : action === 'update'
+          ? t('updates.cli_update')
+          : action === 'held'
+            ? t('updates.cli_retry')
+            : t('updates.cli_up_to_date');
+    const agent = status.agent;
+    return (
+      <View style={styles.updateBox} key={status.cli}>
+        <View style={styles.updateHead}>
+          <View style={styles.statusIcon}>
+            <MaterialIcons name="terminal" size={18} color={C.accent} />
+          </View>
+          <View style={styles.updateCopy}>
+            <Text style={styles.updateTitle} numberOfLines={2}>{name}</Text>
+            <Text style={styles.updateMeta} numberOfLines={2}>
+              {t('updates.cli_installed', {
+                version: status.version ?? t(status.installed ? 'updates.cli_manual' : 'updates.cli_not_installed'),
+              })}
+            </Text>
+            <Text style={styles.updateMeta} numberOfLines={2}>
+              {status.latestError
+                ? t('updates.cli_latest_unknown')
+                : t('updates.cli_latest', { version: status.latest ?? '-' })}
+            </Text>
+            {action === 'held' && (
+              <Text style={styles.updateHint} numberOfLines={3}>{t('updates.cli_held', { version: status.latest ?? '' })}</Text>
+            )}
+            {agent && status.installed && (
+              <Text style={styles.updateHint} numberOfLines={3}>
+                {agent.enabled
+                  ? t('updates.claude_agents_on', { version: agent.reviewed })
+                  : t('updates.claude_agents_off', { version: agent.reviewed })}
+              </Text>
+            )}
+            {status.cli === 'agy' && (
+              <Text style={styles.updateHint} numberOfLines={3}>{t('updates.agy_terminal_only')}</Text>
+            )}
+          </View>
+          <View style={styles.actionGroup}>
+            <Pressable
+              style={[styles.actionBtn, !enabled && styles.actionBtnDisabled]}
+              onPress={() => {
+                if (action === 'install') confirmManagedCliInstall(status.cli);
+                else void installManagedCli(status.cli, { force: action === 'held' });
+              }}
+              disabled={!enabled}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={C.bgDeep} />
+              ) : (
+                <MaterialIcons name="upgrade" size={13} color={enabled ? C.bgDeep : C.text3} />
+              )}
+              <Text style={[styles.actionText, !enabled && styles.actionTextDisabled]} numberOfLines={1}>{label}</Text>
+            </Pressable>
+            {status.previous && (
+              <Pressable
+                style={[styles.actionBtn, styles.secondaryActionBtn, blocked && styles.actionBtnDisabled]}
+                onPress={() => void rollbackManagedCli(status.cli)}
+                disabled={blocked}
+              >
+                <MaterialIcons name="restore" size={13} color={blocked ? C.text3 : C.accent} />
+                <Text
+                  style={[styles.actionText, styles.secondaryActionText, blocked && styles.actionTextDisabled]}
+                  numberOfLines={1}
+                >
+                  {t('updates.cli_previous', { version: status.previous })}
+                </Text>
+              </Pressable>
+            )}
+            {agent && status.installed && !agent.enabled && (
+              <Pressable
+                style={[styles.actionBtn, styles.secondaryActionBtn, blocked && styles.actionBtnDisabled]}
+                onPress={() => confirmClaudeAgents(status)}
+                disabled={blocked}
+              >
+                <MaterialIcons name="smart-toy" size={13} color={blocked ? C.text3 : C.accent} />
+                <Text
+                  style={[styles.actionText, styles.secondaryActionText, blocked && styles.actionTextDisabled]}
+                  numberOfLines={1}
+                >
+                  {t('updates.claude_agents_enable')}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+      </View>
+    );
+  };
 
   const showFailedLog = useCallback(async (run: BuildRun) => {
     setLogLoadingId(run.databaseId);
@@ -2048,6 +2230,24 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                 codexInstallDots,
               )}
             </View>
+
+            {managedClis && renderManagedCli(managedClis.claude)}
+            {managedClis && renderManagedCli(managedClis.agy)}
+            {managedClis && (
+              <View style={styles.updateBox}>
+                <View style={styles.updateHead}>
+                  <View style={styles.updateCopy}>
+                    <Text style={styles.updateTitle} numberOfLines={2}>{t('updates.cli_auto_title')}</Text>
+                    <Text style={styles.updateHint} numberOfLines={3}>{t('updates.cli_auto_hint')}</Text>
+                  </View>
+                  <Switch
+                    value={cliAutoUpdateWifi}
+                    onValueChange={(value) => void updateSettings({ cliAutoUpdateWifi: value })}
+                    accessibilityLabel={t('updates.cli_auto_title')}
+                  />
+                </View>
+              </View>
+            )}
 
             {advancedOpen && (
               <View style={styles.advancedSection}>

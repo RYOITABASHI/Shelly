@@ -48,10 +48,10 @@ function shQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-export async function execCommand(command: string, timeoutMs?: number): Promise<ExecResult> {
+export async function execCommand(command: string, timeoutMs?: number, lane?: 'long'): Promise<ExecResult> {
   logInfo('NativeExec', 'exec: ' + command.slice(0, 80));
   try {
-    const result = await TerminalEmulator.execCommand(command, timeoutMs);
+    const result = await TerminalEmulator.execCommand(command, timeoutMs, lane);
     logInfo('NativeExec', 'exit=' + result.exitCode + ' stdout=' + result.stdout.length + 'chars');
     return result;
   } catch (error: any) {

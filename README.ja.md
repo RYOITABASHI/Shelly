@@ -272,12 +272,12 @@ Termux は不要です。bash、Node.js、Python 3、git、curl、ssh、sqlite3�
 
 ### サインイン
 
-Shelly に同梱している AI CLI は **Codex** です。**Claude Code** は自分で配置すれば使えます（[Claude Code（手動配置）](#claude-code手動配置)参照）。Google の **Antigravity** CLI（`agy`）もターミナル用にインストールできます。それ以外はすべて、キーを設定して使う API プロバイダです。
+Shelly に同梱している AI CLI は **Codex** です。**Claude Code** は `claude-install` の 1 コマンドで導入できます（[Claude Code](#claude-code) 参照）。Google の **Antigravity** CLI（`agy`）もターミナル用にインストールできます。それ以外はすべて、キーを設定して使う API プロバイダです。
 
 | 対象 | サインイン方法 | 補足 |
 |---|---|---|
 | **Codex CLI**（ChatGPT サブスクリプション） | `codex` を実行、または `codex-login --open` を直接実行 | APK に同梱。`~/.codex/auth.json` が無い、または無効な場合、`codex` ラッパーが Shelly のデバイスコードログインを開始し、OpenAI のデバイスコードページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT サブスクリプションに乗ります。 |
-| **Claude Code**（手動配置） | `claude` を実行してサインイン、または **Settings → Anthropic API Key** を設定 | サインインは `claude` の TUI の中で行います。サインイン URL はタップしたときだけ開きます（Shelly がターミナル出力の URL を勝手に開くことはありません）。エージェントのステップでは、Anthropic API キーがあればそれを使い、無ければ有人実行はサインイン中のサブスクリプション、無人実行は **Settings →「Claude subscription for unattended runs」**（既定 ON）に従います。 |
+| **Claude Code**（`claude-install`） | `claude` を実行してサインイン、または **Settings → Anthropic API Key** を設定 | サインインは `claude` の TUI の中で行います。サインイン URL はタップしたときだけ開きます（Shelly がターミナル出力の URL を勝手に開くことはありません）。エージェントのステップでは、Anthropic API キーがあればそれを使い、無ければ有人実行はサインイン中のサブスクリプション、無人実行は **Settings →「Claude subscription for unattended runs」**（既定 ON）に従います。 |
 | **Antigravity**（`agy`） | `agy-install` のあと `agy` | ターミナルの TUI 専用（ダウンロードは SHA-512 で検証）。エージェントやスケジュールから起動することはありません。 |
 | **API プロバイダ**（Gemini・Cerebras・Groq・Perplexity・OpenRouter・ローカル） | **Settings → API Keys** または `shelly config` | AI ペイン / `@mention` / `@team` / バックグラウンドエージェント用に、プロバイダごとにキーを貼り付けます（OpenRouter は有人時のみ）。キーは `expo-secure-store` に保存されます。ローカル / OpenAI 互換サーバーはベース URL だけで動きます。 |
 
@@ -289,10 +289,12 @@ Shelly に同梱している AI CLI は **Codex** です。**Claude Code** は�
 |---|---|
 | `codex` | ネイティブターミナル内でフォアグラウンドの Codex TUI を起動。認証が無い場合は、先にデバイスコードログインを開始します。 |
 | `codex-login --open` | ChatGPT サブスクリプションのデバイスコード認証を開始し、Shelly のブラウザペインで検証ページを開きます。 |
-| `claude` | 配置済みなら Claude Code の TUI を起動（[Claude Code（手動配置）](#claude-code手動配置)参照）。無ければ `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)` と表示します。 |
-| `agy-install` / `agy` | Google の Antigravity CLI をインストール（SHA-512 検証）し、その TUI を起動。ターミナル専用で、エージェントやスケジュールからは起動しません。**Settings → Front agent（起動時の窓口）** で、起動時に最初のターミナルタブで `agy` か `claude` の TUI を開けます。 |
+| `claude-install` | 公式の Claude Code と、必要な glibc ライブラリをダウンロードして検証し、`claude` を使える状態にします（[Claude Code](#claude-code) 参照）。`--channel stable` で遅いチャンネルに、`--agent` でエージェント用のレビュー済みの版も入れます。 |
+| `claude` | Claude Code の TUI を起動。未導入なら `claude-install` を案内します。 |
+| `agy-install` / `agy` | Google の Antigravity CLI をインストールまたは更新（SHA-512 検証）し、その TUI を起動。ターミナル専用で、エージェントやスケジュールからは起動しません。**Settings → Front agent（起動時の窓口）** で、起動時に最初のターミナルタブで `agy` か `claude` の TUI を開けます。 |
 | `shelly-doctor` / `shelly doctor [--report]` | シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、Codex 認証ファイルの有無をチェック。`shelly doctor` も同じチェックで、`--report` は端末レポートにそのまま貼れる形で出力します。 |
 | `shelly-codex-diagnose` | Codex のスモーク / カナリア / 編集 / パッチのより深い診断を実行。 |
+| `shelly-update-clis claude rollback` / `agy rollback` | Claude Code または Antigravity を 1 つ前の版に戻します。離れた版は保留になるので、更新ですぐ戻ってくることはありません。 |
 | `shelly-update-clis codex --check-only` | 現在の Codex ランタイムをプローブ。ランタイムのインストールは通常 Updates UI から行います。 |
 | `shelly-cs` / `cs` | GitHub Codespaces のヘルパーコマンド。 |
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | 実行したコマンドを再利用可能なワークフローとして記録します（[学習ループ](#学習ループ)参照）。 |
@@ -362,25 +364,33 @@ Termux や proot、あるいは別の Android ターミナル環境で AI コー
 | 対象 | 状態 | 意味 |
 |---|---|---|
 | **Codex CLI** | サポート対象（同梱） | 素の `codex` は、Shelly がアプリ内デバイスコード認証で `~/.codex/auth.json` を検証・作成したあと、ネイティブ PTY 上で通常の Codex TUI を起動します。エージェントのワーカーにもなります。 |
-| **Claude Code** | サポート対象、手動配置 | 同梱せず、Shelly がダウンロードすることもありません。公式の linux-arm64 glibc 版を自分で配置します（[手順](#claude-code手動配置)）。`claude` で TUI が起動し、エージェントのステップは Codex と同じゲートを通るワーカーとしてこれを使えます。 |
+| **Claude Code** | サポート対象、1 コマンドで導入 | 同梱しません。`claude-install` で端末が Anthropic から公式の無改変の linux-arm64 版を取得します（[詳細](#claude-code)）。`claude` で TUI が起動し、エージェントのステップはレビュー済みの版を、Codex と同じゲートを通るワーカーとして使えます。 |
 | **Antigravity**（`agy`） | ターミナルのみ | `agy-install` / `agy`。エージェントのワーカーやロールのエンジンにはならず、エージェントやスケジュールから起動することもありません。Settings → Front agent で、最初のターミナルタブにその TUI（または `claude`）を開けます。 |
 | **AI ペインのチャット** | API 経由でサポート | 設定済みプロバイダ（Gemini API・Cerebras・Groq・Perplexity・OpenRouter〈有人の AI ペイン利用のみ〉・ローカルの OpenAI 互換サーバー）を使います。 |
 | **バックグラウンド / エージェントのステップ** | API・ローカル LLM・CLI ワーカー | API とローカルのステップは上のプロバイダを使います。CLI のステップは Codex（ChatGPT サインイン）か Claude Code（Anthropic API キー、または[サインイン](#サインイン)に書いたとおりサインイン中のサブスクリプション）で動き、すべて同じコマンドゲートを通ります。 |
 | **Gemini API** | 設定済みなら利用可 | Gemini API キーを設定すると、AI ペイン、`@gemini` ルーティング、`@team`、マルチモーダル / API ベースのタスク、バックグラウンドエージェントで使えます。（これは API プロバイダとしての話で、Gemini CLI は同梱していません。） |
 
-### Claude Code（手動配置）
+### Claude Code
 
-Shelly は Claude Code を同梱もダウンロードもしません。使う場合は、公式の改変していない Claude Code **linux-arm64（glibc）** 版と glibc ランタイムを次の配置で置いてください:
+ターミナルで `claude-install` を実行するか、Builds 画面の Claude Code の **導入** をタップします。そのあと `claude` を実行してサインインするか、**Settings → Anthropic API Key** を設定します。
 
-```
-~/.shelly-runtime/claude-glibc/
-├── claude                        # 公式の linux-arm64 glibc バイナリ
-└── lib/
-    ├── ld-linux-aarch64.so.1     # glibc の動的ローダ
-    └── ...                       # それが必要とする glibc の共有ライブラリ
-```
+Shelly は Claude Code を同梱も再配布もしません。端末が直接ダウンロードし、何も改変しません。
 
-Shelly は自前のユーザーランドのローダでこれを起動します（root も proot も不要）。そのあと `claude` を実行してサインインするか、Settings → Anthropic API Key を設定してください。ファイルが無い場合、`claude` は `Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)` と表示します。
+- **Claude Code** は Anthropic のリリース用バケットから取得します。マニフェストには、Anthropic が公開しているリリース鍵（Shelly に固定）の署名が必要で、そのマニフェストの SHA-256 とサイズがダウンロードと一致しなければなりません。
+- **glibc ライブラリ**（約 30 MB）は Termux の `termux-glibc` パッケージから取得します。Shelly に固定した鍵でリポジトリ索引の署名を確かめ、パッケージのハッシュを索引と照合します。`apt` と違い、索引の古さは確かめません。
+- 新しい版は、置き換える前に `--version` と `--help` で試します。失敗すれば前の版のまま残り、2 回失敗すると新しい版は保留になります。署名や checksum の失敗ではすぐ保留します。
+
+Shelly は自前のユーザーランドのローダで Claude Code を起動します（root も proot も不要）。Android は Anthropic の対応システムの一覧に無いので、この経路は Anthropic のサポート対象ではありません。Claude Code は Anthropic のソフトウェアで Anthropic の規約が適用され、サインインは自分のアカウントまたはキーで行います。
+
+**更新。** Builds 画面に導入済みの版と最新版が出て、**更新** と 1 つ前の版に戻すボタンがあります。更新は `latest` チャンネルを使います。**Wi-Fi で自動更新** は既定でオフで、オンにするとアプリの起動時に（最短で 6 時間に 1 回）、従量制でない Wi-Fi のときに確認します。Claude Code 内蔵のアップデータは止めているので、版を変えるのは Shelly だけです。実行中のセッションには影響せず、新しい版は次に `claude` を起動したときから使われます。1 版は約 350 MB で、現在と 1 つ前の版を残します。
+
+**エージェントが使うのは最新版ではなく、レビュー済みの版です。** エージェントの安全性は Claude Code の細かな動作に依存していて、その確認は 1 つの版（2.1.314）に対して行っています。更新でエージェントの版が変わることはありません。`claude-install --agent` を実行するか **エージェントで使う** をタップするまで、Claude Code を使うエージェントのステップは止まり、その手順を案内します。このときレビュー済みの版も別に約 300 MB ダウンロードします。
+
+以前に手動で配置した Claude Code は、`claude` ではそのまま動きます。エージェントは `claude-install` を一度実行するまで止まります。実行すると手元のファイルを管理下に入れ、それがレビュー済みの版と完全に同じなら、ダウンロードなしでエージェントも使えるようになります。違う場合は `claude-install --agent` でレビュー済みの版をダウンロードします。
+
+### Antigravity
+
+`agy-install` は Google の公式 Android 版を取得し、Google のマニフェストにある SHA-512 を確かめて、同じ形で版を管理します。更新の仕組みは同じで、Antigravity 内蔵のアップデータは止めています。このファイルに Google の署名は無いので、検証の強さは HTTPS とそのマニフェストの範囲です。Shelly は更新の確認のために Antigravity を起動しません。ハッシュと、Android ARM64 の実行ファイルであることだけを確かめます。そのため起動しない版は `agy` を実行したときに分かり、`shelly-update-clis agy rollback` で戻せます。
 
 ---
 
@@ -568,6 +578,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | STOP-ALL が実行中の run も止める（今後のアラームだけでなく）、RESUME で復帰 | ✅ 実機検証済み（Galaxy Z Fold6、N=1、build 2818）: 実行中の Codex ステップが 10 秒以内に終了 |
 | 打って承認 — エージェントのチャットか MONITOR で OK / NO（2 件待ちなら `ok <hash>`）、有人の CLI ステップは最大 10 分待つ | ✅ 通知からの承認は実機検証済み |
 | Antigravity の `agy-install` / `agy` | ✅ `agy --version` は実機で確認済み |
+| `claude-install`、Builds 画面からの Claude Code / Antigravity の更新 | 🟡 このビルドで追加。検証は PC 上で公式の配布物に対して実施、実機は未確認 |
 | Codex リモート操作のホスト — `shelly codex pair` が公式の `codex remote-control --no-daemon` を動かし、ChatGPT アプリの Codex からこの端末を操作できる（ChatGPT サインインが必要） | 🟡 Experimental — ペアリング、コマンド実行、「ChatGPT との接続を維持」でのアプリ内アップデート後の再接続は実機検証済み |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |
 | ChatGPT からのスマホアプリ操作 — Codex が `shelly closepaw --wait "<ゴール>"` を実行 → 持ち主がスマホで承認 → Shelly 用 ClosePaw ビルドがバックグラウンドの仮想ディスプレイで操作 → 結果が ChatGPT に返る | ✅ 実機検証済み（Galaxy Z Fold6、N=1）。例: Spotify のプレイリスト保存、Google マップのリストへの保存。長い多段のゴールはまだ不安定 |

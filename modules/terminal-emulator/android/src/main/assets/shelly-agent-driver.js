@@ -3518,6 +3518,18 @@ const CLAUDE_CHILD_ENV_DROP = [
 ];
 const CLAUDE_INIT_REQUEST_ID = 'shelly-init';
 
+// The one Claude Code build agents may run. `current` is the newest build that
+// passed a device probe, for the person at the terminal; a worker rests on flags
+// and stream-json details that probe does not look at, so no update may move it.
+// Changed only by a reviewed commit, in lockstep with REVIEWED_CLAUDE in
+// shelly-cli-update.js (a test holds them equal). The size here catches a swapped
+// file without hashing 300 MB before every step; the installer checks the hash.
+const CLAUDE_AGENT_REVIEWED = {
+  version: '2.1.314',
+  sha256: 'a66c0a8f5d0c87a439953d797985192bbcbaefbce2e0d7b2eaa8df30ef0f3ef2',
+  size: 297067016,
+};
+
 /**
  * Layer 5. `unexpected` = enabled tools outside the allowlist; `denied` =
  * listed but denied (not a stop). A missing list cannot be verified, so it
@@ -3866,7 +3878,49 @@ function claudeChildEnv(input, plan = { source: 'subscription' }) {
   return env;
 }
 
-function claudeRunnerSpawnSpec(config, plan) {
+/**
+ * The real directory of the reviewed build, from agent-current. Nothing moves
+ * that link but `claude-install --agent`, and this still does not take its word
+ * for it: a link left by an older pin, or pointing outside versions/, is refused.
+ * Claude Code is not bundled, so there may be no such build at all, and then
+ * the only honest answer is to say what to run.
+ */
+function resolveClaudeAgentRuntime(home, reviewed = CLAUDE_AGENT_REVIEWED) {
+  const fix = 'Run claude-install --agent in a terminal, or use "Enable for agents" in the Builds screen.';
+  const refuse = (found) => ({
+    ok: false,
+    refusal: `Claude Code agent worker refused: agents run only the reviewed Claude Code ${reviewed.version}, and ${found}. ${fix}`,
+  });
+  const root = path.join(home, '.shelly-runtime/claude-glibc');
+  let dir;
+  let versions;
+  try {
+    dir = fs.realpathSync(path.join(root, 'agent-current'));
+    versions = fs.realpathSync(path.join(root, 'versions'));
+  } catch {
+    return refuse('none is installed for agents');
+  }
+  if (path.dirname(dir) !== versions) return refuse('agent-current points outside the runtime');
+  let version = null;
+  try {
+    ({ version } = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')));
+  } catch {
+    return refuse('the installed copy has no version record');
+  }
+  if (version !== reviewed.version) return refuse(`the installed copy is ${String(version).slice(0, 40)}`);
+  let size = -1;
+  try {
+    ({ size } = fs.statSync(path.join(dir, 'claude')));
+  } catch {
+    // Reported as a damaged copy below.
+  }
+  if (!existingPath(path.join(dir, '.healthy')) || size !== reviewed.size) {
+    return refuse('the installed copy is damaged');
+  }
+  return { ok: true, dir, version };
+}
+
+function claudeRunnerSpawnSpec(config, plan, agentDir = '') {
   const claudeArgs = claudeAgentArgs();
   const android = androidLauncherContext();
   if (android) {
@@ -3879,6 +3933,8 @@ function claudeRunnerSpawnSpec(config, plan) {
       LD_LIBRARY_PATH: android.libDir,
     }, plan);
     delete env.LD_PRELOAD;
+    // The runner refuses to start unless this is the directory agent-current names.
+    env.SHELLY_CLAUDE_AGENT_DIR = agentDir;
     const args = [path.join(android.libDir, 'shelly_shell'), config.claudeRunner, ...claudeArgs];
     return { mode: 'android-linker64-shelly_shell', command: ANDROID_LINKER64, args, env, display: [ANDROID_LINKER64, ...args] };
   }
@@ -3964,7 +4020,20 @@ async function runClaudeDriver(config) {
     process.exit(1);
     return;
   }
-  const claudeSpawn = claudeRunnerSpawnSpec(config, authPlan);
+  // Android only: the host mode exists for tests, with a fake claude as the runner.
+  let agentDir = '';
+  if (androidLauncherContext()) {
+    const runtime = resolveClaudeAgentRuntime(process.env.HOME || '');
+    audit('claude_agent_runtime', { ok: runtime.ok, version: runtime.version || null, reason: runtime.refusal || null });
+    if (!runtime.ok) {
+      process.stdout.write(`CLAUDE_ERROR ${runtime.refusal}\n`);
+      audit('driver_finish', { reason: 'claude_agent_runtime_refused', exitCode: 1, engine: 'claude' });
+      process.exit(1);
+      return;
+    }
+    agentDir = runtime.dir;
+  }
+  const claudeSpawn = claudeRunnerSpawnSpec(config, authPlan, agentDir);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(claudeSpawn.command, claudeSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -4347,6 +4416,8 @@ module.exports = {
   sweepStaleCodexIsolatedHomes,
   persistIsolatedCodexAuth,
   claudeRunnerSpawnSpec,
+  resolveClaudeAgentRuntime,
+  CLAUDE_AGENT_REVIEWED,
   gateSpawnSpec,
   isUnattendedPolicy,
   preapprovalGrantSignatureMessage,

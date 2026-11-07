@@ -1177,8 +1177,10 @@ export function validateWorkspaceRoot(root: string, homePaths: string[] = []): W
     return { ok: false, reason: 'workspace root cannot be the entire external storage root' };
   }
   const segments = normalized.split('/');
-  if (segments.some((seg) => seg === '.shelly' || seg === '.codex' || seg === '.ssh')) {
-    return { ok: false, reason: 'workspace root cannot be inside .shelly, .codex, or .ssh' };
+  // A prefix, not a name: .shelly-runtime holds the CLI binaries agents run, and
+  // .shelly-ssl, .shelly-agent-driver.js and the rest sit beside it.
+  if (segments.some((seg) => seg.startsWith('.shelly') || seg === '.codex' || seg === '.ssh')) {
+    return { ok: false, reason: 'workspace root cannot be inside .shelly*, .codex, or .ssh' };
   }
   return { ok: true };
 }

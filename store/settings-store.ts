@@ -146,6 +146,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Claude glibc S4: owner decision 2026-10-31 — owner-configured schedules may
   // use the owner's own claude.ai login / setup-token. Default ON; can be turned off.
   claudeSubscriptionUnattended: true,
+  // Off for this release: an update stays a tap until the device checks pass
+  // (DEFERRED.md, the planned default is on). Never applies to a CLI nobody installed.
+  cliAutoUpdateWifi: false,
   autonomousCloudOnExhaustion: 'escalate' as const,
   webhookHostAllowlist: [],
   socialHostAllowlist: [],

@@ -119,10 +119,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   testExecve(): Promise<{ success: boolean; result?: string; error?: string }>;
   scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string | null): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
-  execCommand(command: string, timeoutMs?: number): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  /** `lane: 'long'` is for the CLI installer only; everything else runs one at a time. See ExecLanes. */
+  execCommand(command: string, timeoutMs?: number, lane?: 'long'): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   readDir(path: string): Promise<string>;
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
+  /** Active network is unmetered Wi-Fi or Ethernet. Optional: older native builds lack it. */
+  isNetworkUnmetered?(): Promise<boolean>;
   installApk(apkPath: string): Promise<void>;
   /** Toggle FLAG_SECURE on the activity window (no screenshots / recents thumbnail). Optional: older native builds lack it. */
   setWindowSecure?(secure: boolean): Promise<boolean>;

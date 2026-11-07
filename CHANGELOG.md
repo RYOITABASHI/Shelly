@@ -6,6 +6,23 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **`claude-install`.** One command, or one tap in the Builds screen, and
+  `claude` runs. The device fetches the official, unmodified Claude Code from
+  Anthropic (signed manifest, SHA-256) and the glibc libraries from Termux
+  (signed index). Shelly does not bundle or redistribute either.
+- **Claude Code and Antigravity stay current.** Versioned installs with
+  `current`, `previous` and a hold on failed versions. The Builds screen now
+  shows all three CLIs, with update and go-back buttons, and an optional update
+  at app start on Wi-Fi (off by default). Their built-in updaters are off.
+
+### Changed
+
+- **Claude Code agents run a reviewed version only.** An update never changes
+  it. `claude-install --agent` installs it; without it, a Claude Code agent step
+  stops and says so.
+
 ## [8.2.0] - 2026-11-03
 
 ### Added

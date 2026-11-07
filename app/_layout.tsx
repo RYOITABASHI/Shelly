@@ -736,6 +736,15 @@ export default function RootLayout() {
         .catch((e: any) => logError('RootLayout', 'stale APK cleanup failed', e));
     }, 15_000);
 
+    // Claude Code / Antigravity follow their vendors on unmetered Wi-Fi. Late, so
+    // it never competes with boot work; the script limits how often it checks.
+    const managedCliUpdateTimer = setTimeout(() => {
+      if (disposed) return;
+      void import('@/lib/managed-cli-update')
+        .then(({ runManagedCliAutoUpdate }) => runManagedCliAutoUpdate(useSettingsStore.getState().settings.cliAutoUpdateWifi))
+        .catch((e: any) => logError('RootLayout', 'managed CLI update failed', e));
+    }, 60_000);
+
     // Background agents can complete while the JS bridge is asleep. Refresh
     // their on-disk logs when Shelly returns to foreground, and periodically
     // while it is open, so the sidebar/history reflects scheduled runs.
@@ -2897,6 +2906,7 @@ export default function RootLayout() {
       linkSub.remove();
       clearTimeout(agentLogStartTimer);
       clearTimeout(staleApkCleanupTimer);
+      clearTimeout(managedCliUpdateTimer);
       clearInterval(queueInterval);
       clearInterval(commandQueueInterval);
       clearInterval(agentAddInterval);
