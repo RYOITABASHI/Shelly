@@ -312,6 +312,42 @@
     "expectedAnswer": "escalate"
   },
   {
+    "name": "subshell logcat -> escalate at L2 (secret-read)",
+    "command": "(logcat -d)",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "logcat with a redirect -> escalate at L2 (secret-read)",
+    "command": "logcat>out.txt",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "process substitution logcat -> escalate at L1 (secret-read)",
+    "command": "cat <(logcat -d)",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "quoted pipe naming logcat stays a read -> allow at L2",
+    "command": "grep -E \"foo|logcat\" notes.txt",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
     "name": "grep for the word logcat stays a read -> allow at L1",
     "command": "grep logcat notes.txt",
     "policy": {

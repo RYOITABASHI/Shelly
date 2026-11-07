@@ -60,6 +60,20 @@ describe('logcat', () => {
     ['timeout 5 logcat -d'],
     ['logcat -d | grep ShellyIME'],
     ['ls && logcat -d'],
+    ['(logcat -d)'],
+    ['logcat>out.txt'],
+    ['logcat>/dev/null'],
+    ['logcat<x'],
+    ['ls;(logcat -d)'],
+    ['true && (logcat)'],
+    ['cat <(logcat -d)'],
+    ['head <(logcat -d)'],
+    ["find . -maxdepth 0 -exec logcat -d ';'"],
+    ['awk \'BEGIN{system("logcat -d")}\''],
+    ["sed -n '1e logcat -d' f.txt"],
+    ["git -c alias.x='!logcat -d' x"],
+    ['cat-foo logcat'],
+    ["cat $'\\'' ; logcat -d ; echo $'\\'' ' '"],
   ])('reading it takes a human: %s', (command) => {
     for (const level of ['L1', 'L2'] as const) {
       const v = classifyProposedCommand(command, ctx(level));
@@ -70,10 +84,29 @@ describe('logcat', () => {
 
   it('is refused outright at L3', () => {
     expect(classifyProposedCommand('logcat -d', ctx('L3')).decision).toBe('deny');
+    expect(classifyProposedCommand('(logcat -d)', ctx('L3')).decision).toBe('deny');
+    expect(classifyProposedCommand('logcat>out.txt', ctx('L3')).decision).toBe('deny');
   });
 
-  it.each([['grep logcat notes.txt'], ['cat logcat.txt'], ['rg logcat src'], ['ls logcat-dumps']])('naming the word is not reading it: %s', (command) => {
+  it.each([
+    ['grep logcat notes.txt'],
+    ['cat logcat.txt'],
+    ['rg logcat src'],
+    ['ls logcat-dumps'],
+    ['git log'],
+    ['git log | grep logcat'],
+    ['grep -E "foo|logcat" notes.txt'],
+    ["git commit -m 'capture; logcat output'"],
+    ["rg 'a|logcat' src"],
+    ['echo "a; logcat b"'],
+  ])('naming the word is not reading it: %s', (command) => {
     expect(classifyProposedCommand(command, ctx('L2')).signals).not.toContain('secret-read');
+  });
+});
+
+describe('clipboard read', () => {
+  it('is seen with a redirect right after it', () => {
+    expect(classifyProposedCommand('shelly device clipboard get>f.txt', ctx('L2')).signals).toContain('secret-read');
   });
 });
 
