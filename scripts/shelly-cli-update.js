@@ -111,6 +111,9 @@ const AGY_SPACE = 400 * MB;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const PROBE_HOLD_AFTER = 2;
+// A timeout never holds a version, but each one threw away a 350 MB download.
+const TIMEOUT_BACKOFF_AFTER = 3;
+const TIMEOUT_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
 // Generous: this also runs at app start, while the phone is busy. Running out of
 // time says nothing about the version; see probeClaude.
 const PROBE_TIMEOUT_MS = 120 * 1000;
@@ -167,6 +170,7 @@ class ProbeError extends Error {
 }
 class UsageError extends Error {}
 class LockBusy extends Error {}
+class ProbeTimeout extends Error {}
 
 function sha(algorithm, data) {
   return crypto.createHash(algorithm).update(data).digest('hex');
@@ -991,6 +995,21 @@ function recordFailure(state, version, stage, reason, now) {
   };
 }
 
+// Separate from the count that leads to a hold: the phone being busy says nothing
+// about the version. After a few in a row it only stops the repeated downloads,
+// until the backoff ends or a person asks.
+function recordTimeout(state, version, now) {
+  const failed = state.failed || (state.failed = {});
+  const entry = failed[version] || { stage: 'timeout', reason: 'the check could not finish', count: 0, hold: false, retryAt: null };
+  const timeouts = (entry.timeouts || 0) + 1;
+  failed[version] = {
+    ...entry,
+    timeouts,
+    at: now,
+    retryAt: timeouts >= TIMEOUT_BACKOFF_AFTER ? now + TIMEOUT_BACKOFF_MS : entry.retryAt,
+  };
+}
+
 // ─── Files ──────────────────────────────────────────────────────────────────
 
 const CLIS = {
@@ -1072,6 +1091,7 @@ function readState(paths) {
           at: Number.isFinite(failure.at) ? failure.at : 0,
           hold: failure.hold === true,
           retryAt: Number.isFinite(failure.retryAt) ? failure.retryAt : null,
+          timeouts: Number.isInteger(failure.timeouts) ? failure.timeouts : 0,
         };
       }
     }
@@ -1152,10 +1172,14 @@ function syncDir(dir) {
   }
 }
 
+// Read-only is enough for fsync. Opening a binary for writing fails with ETXTBSY
+// if it is running, which an adopted claude may be.
 function syncFile(file) {
-  const fd = fs.openSync(file, 'r+');
+  const fd = fs.openSync(file, 'r');
   try {
     fs.fsyncSync(fd);
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
   } finally {
     fs.closeSync(fd);
   }
@@ -1325,8 +1349,18 @@ function request(url, redirects, onResponse, reject) {
     const { location } = response.headers;
     if (status >= 300 && status < 400 && location) {
       response.resume();
-      if (redirects >= 5) reject(new Error('too many redirects'));
-      else request(new URL(location, parsed).toString(), redirects + 1, onResponse, reject);
+      // The vendors' hosts do not redirect (see ALLOWED_HOSTS), so all of these
+      // say the file is not coming from where it should: trust failures, which
+      // hold the version once a download has named one.
+      let next = null;
+      try {
+        next = new URL(location, parsed).toString();
+      } catch (_) {
+        reject(new TrustError(`bad redirect from ${parsed.hostname}`));
+        return;
+      }
+      if (redirects >= 5) reject(new TrustError('too many redirects'));
+      else request(next, redirects + 1, onResponse, reject);
       return;
     }
     if (status !== 200) {
@@ -1616,7 +1650,7 @@ function probeClaude(ctx, binary, libDir, probeHome) {
 }
 
 function assertProbe(probe, version) {
-  if (!probe.ok && probe.transient) throw new Error('the check could not finish, so nothing changed; try again later');
+  if (!probe.ok && probe.transient) throw new ProbeTimeout('the check could not finish, so nothing changed; try again later');
   if (!probe.ok) throw new ProbeError(probe.stage || 'probe', String(probe.detail || 'probe failed').slice(0, 300));
   if (probe.version !== version) {
     throw new ProbeError('version', `binary reports ${probe.version}, expected ${version}`);
@@ -1934,6 +1968,8 @@ async function install(ctx, cli, options = {}) {
       recordFailure(state, attempt.version, 'trust', error.message, ctx.now());
     } else if (attempt.version && error instanceof ProbeError) {
       recordFailure(state, attempt.version, error.stage, error.message, ctx.now());
+    } else if (attempt.version && error instanceof ProbeTimeout) {
+      recordTimeout(state, attempt.version, ctx.now());
     }
     throw error;
   } finally {
@@ -2170,6 +2206,8 @@ module.exports = {
   elfInfo,
   checkAgyElf,
   checkFetchUrl,
+  fetchBytes,
+  downloadTo,
   compareVersions,
   claudeChannelUrl,
   readClaudeManifest,

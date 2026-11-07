@@ -94,7 +94,7 @@ export async function runManagedCliInstall(cli: ManagedCli, options: { agent?: b
   const args: ('claude' | 'agy' | 'install' | '--agent' | '--force')[] = [cli, 'install'];
   if (options.agent) args.push('--agent');
   if (options.force) args.push('--force');
-  const result = await execCommand(managedCliCommand(args), MANAGED_CLI_INSTALL_TIMEOUT_MS);
+  const result = await execCommand(managedCliCommand(args), MANAGED_CLI_INSTALL_TIMEOUT_MS, 'long');
   if (result.exitCode !== 0) {
     throw new Error((result.stderr || result.stdout || `exit ${result.exitCode}`).trim());
   }
@@ -120,7 +120,7 @@ export async function runManagedCliAutoUpdate(enabled: boolean | undefined): Pro
     logInfo('ManagedCliUpdate', `app-start update skipped (enabled=${enabled === true}, unmetered=${unmetered})`);
     return;
   }
-  const result = await execCommand(managedCliCommand(['auto']), AUTO_UPDATE_TIMEOUT_MS);
+  const result = await execCommand(managedCliCommand(['auto']), AUTO_UPDATE_TIMEOUT_MS, 'long');
   if (result.exitCode === 0) {
     logInfo('ManagedCliUpdate', `app-start update: ${result.stdout.trim().split('\n').pop()?.slice(0, 300)}`);
   } else {

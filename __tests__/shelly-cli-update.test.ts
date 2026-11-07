@@ -295,6 +295,47 @@ describe('where the network may go', () => {
   });
 });
 
+describe('redirects', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const https = require('https');
+  const answer = (location: string) => (_url: unknown, _options: unknown, callback: (response: unknown) => void) => {
+    callback({ statusCode: 302, headers: { location }, resume() {} });
+    return { setTimeout() {}, on() {}, destroy() {} };
+  };
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    ['another host', 'https://evil.example/claude'],
+    ['plain http', 'http://downloads.claude.ai/claude'],
+    ['a bad location', 'https://'],
+  ])('%s is a trust failure', async (_name, location) => {
+    jest.spyOn(https, 'get').mockImplementation(answer(location) as never);
+    await expect(update.fetchBytes('https://downloads.claude.ai/x', 1024)).rejects.toThrow(update.TrustError);
+  });
+
+  it('a redirect loop is a trust failure', async () => {
+    jest.spyOn(https, 'get').mockImplementation(answer('https://downloads.claude.ai/again') as never);
+    await expect(update.fetchBytes('https://downloads.claude.ai/x', 1024)).rejects.toThrow(/too many redirects/);
+    await expect(update.fetchBytes('https://downloads.claude.ai/x', 1024)).rejects.toThrow(update.TrustError);
+  });
+
+  it('a download sent elsewhere installs nothing and holds the version', async () => {
+    const world = makeWorld();
+    try {
+      world.stageLib();
+      world.addClaude('2.1.320', claudeBody('320'));
+      world.setChannel('latest', '2.1.320');
+      (world.ctx as { downloadTo: unknown }).downloadTo = update.downloadTo;
+      jest.spyOn(https, 'get').mockImplementation(answer('https://evil.example/claude') as never);
+      await expect(update.install(world.ctx, 'claude')).rejects.toThrow(update.TrustError);
+      expect(world.current()).toBeNull();
+      expect(world.state().failed['2.1.320']).toMatchObject({ stage: 'trust', hold: true });
+    } finally {
+      world.cleanup();
+    }
+  });
+});
+
 describe('tar', () => {
   it('stops at any path that climbs out, wanted or not', () => {
     expect(() => update.readTar(tar(tarFile('../../.bashrc', 'x')))).toThrow(/unsafe path/);
@@ -701,10 +742,42 @@ describe('claude install', () => {
     world.setProbe(() => ({ ok: false, stage: 'version', transient: true, detail: 'signal SIGKILL' }));
     await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
     await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
-    expect(world.state().failed || {}).toEqual({});
+    expect(world.state().failed['2.1.321']).toMatchObject({ hold: false, count: 0, timeouts: 2, retryAt: null });
     expect(world.current()).toBe('2.1.320');
     world.setProbe(() => ({ ok: true, version: '2.1.321' }));
     await expect(update.install(world.ctx, 'claude')).resolves.toMatchObject({ installed: true });
+    expect(world.state().failed['2.1.321']).toBeUndefined();
+  });
+
+  it('repeated timeouts stop the downloads for a while, and never hold', async () => {
+    await update.install(world.ctx, 'claude');
+    world.addClaude('2.1.321', claudeBody('321'));
+    world.setChannel('latest', '2.1.321');
+    world.setProbe(() => ({ ok: false, stage: 'version', transient: true, detail: 'timeout' }));
+    for (let i = 0; i < 3; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
+    }
+    const downloads = world.probes.length;
+    await expect(update.install(world.ctx, 'claude', { auto: true })).resolves.toMatchObject({ installed: false, reason: 'cooldown' });
+    expect(world.probes.length).toBe(downloads);
+    expect(world.state().failed['2.1.321'].hold).toBe(false);
+    expect(update.cliStatus(world.ctx, 'claude').held).toEqual([]);
+
+    world.now += 8 * 24 * 3600 * 1000;
+    world.setProbe(() => ({ ok: true, version: '2.1.321' }));
+    await expect(update.install(world.ctx, 'claude', { auto: true })).resolves.toMatchObject({ installed: true });
+  });
+
+  it('a timeout does not add up to a hold with one real failure', async () => {
+    await update.install(world.ctx, 'claude');
+    world.addClaude('2.1.321', claudeBody('321'));
+    world.setChannel('latest', '2.1.321');
+    world.setProbe(() => ({ ok: false, stage: 'version', transient: true, detail: 'timeout' }));
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/could not finish/);
+    world.setProbe(() => ({ ok: false, stage: 'version', detail: 'SIGSEGV' }));
+    await expect(update.install(world.ctx, 'claude')).rejects.toThrow(/SIGSEGV/);
+    expect(world.state().failed['2.1.321']).toMatchObject({ hold: false, count: 1 });
   });
 
   it('going back clears the hold on where it lands, and can be undone', async () => {
@@ -1334,20 +1407,61 @@ describe('execCommand and the Expo queue', () => {
   const body = module.slice(module.indexOf('AsyncFunction("execCommand")'), module.indexOf('AsyncFunction("readDir")'));
 
   it('is a coroutine, and the blocking call leaves the queue', () => {
-    expect(body).toMatch(/^AsyncFunction\("execCommand"\) Coroutine \{ command: String, timeoutMs: Int\? ->/);
-    expect(body).toMatch(/ExecLanes\.laneFor\(timeout\)\.withPermit \{\n\s+withContext\(Dispatchers\.IO\) \{\n\s+ShellyJNI\.execSubprocess\(/);
+    expect(body).toMatch(/^AsyncFunction\("execCommand"\) Coroutine \{ command: String, timeoutMs: Int\?, lane: String\? ->/);
+    expect(body).toMatch(/ExecLanes\.named\(lane\)\.withPermit \{\n\s+withContext\(Dispatchers\.IO\) \{\n\s+ShellyJNI\.execSubprocess\(/);
   });
 
-  it('keeps ordinary commands one at a time, and only long ones apart', () => {
+  it('a timeout never picks the lane: only the name does', () => {
     expect(module).toContain('private val serial = Semaphore(1)');
     expect(module).toContain('private val long = Semaphore(2)');
-    expect(module).toContain('if (timeoutMs >= LONG_TIMEOUT_MS) long else serial');
+    expect(module).toContain('if (lane == "long") long else serial');
+    expect(module).not.toMatch(/timeoutMs >=|LONG_TIMEOUT/);
   });
 
-  it('the app\'s long commands declare a long timeout', () => {
-    const lib = fs.readFileSync(path.join(root, 'lib/managed-cli-update.ts'), 'utf8');
-    expect(lib).toContain('MANAGED_CLI_INSTALL_TIMEOUT_MS = 30 * 60 * 1000');
-    expect(lib).toContain('AUTO_UPDATE_TIMEOUT_MS = 45 * 60 * 1000');
+  it('only the CLI installer asks for the long lane, and only for install and auto', () => {
+    const skip = new Set(['node_modules', '.git', 'android', '__tests__', 'docs', 'assets', 'build']);
+    const hits: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of fs.readdirSync(dir)) {
+        const file = path.join(dir, name);
+        if (fs.statSync(file).isDirectory()) {
+          if (!skip.has(name) && !name.startsWith('.')) walk(file);
+        } else if (/\.tsx?$/.test(name)) {
+          const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+          for (const line of lines) {
+            if (/execCommand\(.*, 'long'\)/.test(line)) hits.push(path.relative(root, file).replace(/\\/g, '/'));
+          }
+        }
+      }
+    };
+    for (const dir of ['app', 'components', 'hooks', 'lib', 'store']) walk(path.join(root, dir));
+    expect(hits).toEqual(['lib/managed-cli-update.ts', 'lib/managed-cli-update.ts']);
+  });
+});
+
+describe('native command pipes', () => {
+  const c = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/jni/shelly-exec.c'), 'utf8').replace(/\r\n/g, '\n');
+
+  it('are close-on-exec, and the child still gets stdout and stderr', () => {
+    expect(c).toContain('pipe2(stdout_pipe, O_CLOEXEC) < 0 || pipe2(stderr_pipe, O_CLOEXEC) < 0');
+    expect(c).toContain('move_fd(stdout_pipe[1], STDOUT_FILENO);');
+    expect(c).toContain('move_fd(stderr_pipe[1], STDERR_FILENO);');
+    expect(c).toMatch(/if \(fd == target\) \{\n\s+fcntl\(fd, F_SETFD, 0\);\n\s+return;/);
+  });
+});
+
+describe('helper scripts', () => {
+  it('are replaced whole, never rewritten in place', () => {
+    expect(homeKt).not.toMatch(/\.outputStream\(\)\.use \{ output -> input\.copyTo\(output\) \}/);
+    expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(17);
+    expect(homeKt).toContain('input.copyToAtomically(agentDriverScript)');
+    expect(homeKt).toContain('input.copyToAtomically(gateDecideScript)');
+  });
+
+  it('are fsynced by a read-only descriptor, which a running binary allows', () => {
+    const body = source.slice(source.indexOf('function syncFile'), source.indexOf('function syncTree'));
+    expect(body).toContain("fs.openSync(file, 'r')");
+    expect(body).not.toContain("'r+'");
   });
 });
 

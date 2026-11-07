@@ -46,19 +46,21 @@ import java.util.zip.ZipInputStream
  * call order, and some rely on it (fire-and-forget `.then` chains, read-after-
  * write on the same file), so ordinary commands stay strictly one at a time.
  * Semaphore waiters are FIFO, and the permit is taken on Expo's queue, so order
- * holds. Only commands that declare a long timeout, the installers, leave that
- * line: one would otherwise stop FileTree and every poller for 45 minutes. They
- * touch their own directories, so overlapping the serial lane is safe.
+ * holds. Only a caller that names the "long" lane leaves that line, and only the
+ * Claude Code / Antigravity installer does (lib/managed-cli-update.ts, a test
+ * holds it there): it would otherwise stop FileTree and every poller for 45
+ * minutes, and it touches only ~/.shelly-runtime. The timeout must not decide
+ * this: backup restore has a long timeout too, and overwriting $HOME beside the
+ * pollers is exactly what the serial lane prevents.
  *
  * Process-wide, not per-module: a reload makes a new module while the old
  * command may still be running.
  */
 private object ExecLanes {
-    private const val LONG_TIMEOUT_MS = 300_000
     private val serial = Semaphore(1)
     private val long = Semaphore(2)
 
-    fun laneFor(timeoutMs: Int): Semaphore = if (timeoutMs >= LONG_TIMEOUT_MS) long else serial
+    fun named(lane: String?): Semaphore = if (lane == "long") long else serial
 }
 
 class TerminalEmulatorModule : Module() {
@@ -2562,7 +2564,7 @@ class TerminalEmulatorModule : Module() {
         // plain AsyncFunction it held Expo's one queue for that long, and with
         // it writeToSession, createSession and agent approvals. Everything up to
         // the permit still runs on that queue, in call order. See ExecLanes.
-        AsyncFunction("execCommand") Coroutine { command: String, timeoutMs: Int? ->
+        AsyncFunction("execCommand") Coroutine { command: String, timeoutMs: Int?, lane: String? ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("No React context")
             val timeout = timeoutMs ?: 120_000
@@ -2618,7 +2620,7 @@ class TerminalEmulatorModule : Module() {
             // process group). A JS reload cancels this coroutine, but withContext
             // waits for the blocking call, so the permit stays held until the
             // process is really gone, as it did on the queue.
-            val result = ExecLanes.laneFor(timeout).withPermit {
+            val result = ExecLanes.named(lane).withPermit {
                 withContext(Dispatchers.IO) {
                     ShellyJNI.execSubprocess(
                         "/system/bin/linker64",

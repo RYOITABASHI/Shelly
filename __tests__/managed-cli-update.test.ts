@@ -93,6 +93,7 @@ describe('the app-start pass', () => {
     await runManagedCliAutoUpdate(true);
     expect(execCommand).toHaveBeenCalledTimes(1);
     expect(String(execCommand.mock.calls[0][0])).toMatch(/require\(p\);' auto$/);
+    expect(execCommand.mock.calls[0][2]).toBe('long');
   });
 });
 

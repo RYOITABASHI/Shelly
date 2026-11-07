@@ -8,6 +8,10 @@
  * JNI class: expo.modules.terminalemulator.ShellyJNI
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1 /* pipe2 */
+#endif
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +37,18 @@
 #define MAX_OUTPUT (4 * 1024 * 1024)
 
 /* Read all data from fd into a malloc'd buffer. Returns length, -1 on error. */
+/* Child side, between fork and exec. dup2() gives the target a clear close-on-exec
+ * flag, but does nothing at all when the two are already the same fd, and then
+ * the flag must be cleared by hand and the fd must not be closed. */
+static void move_fd(int fd, int target) {
+    if (fd == target) {
+        fcntl(fd, F_SETFD, 0);
+        return;
+    }
+    dup2(fd, target);
+    close(fd);
+}
+
 static ssize_t read_all(int fd, char **out) {
     size_t capacity = 4096;
     size_t len = 0;
@@ -84,9 +100,12 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
         return NULL;
     }
 
-    /* Create pipes for stdout and stderr */
+    /* Create pipes for stdout and stderr. Close-on-exec, because execCommand can
+     * now run on two threads and other native code forks too: a child forked
+     * elsewhere while these are open would inherit the write ends, and this
+     * command's reader would see no EOF until that child exited. */
     int stdout_pipe[2], stderr_pipe[2];
-    if (pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0) {
+    if (pipe2(stdout_pipe, O_CLOEXEC) < 0 || pipe2(stderr_pipe, O_CLOEXEC) < 0) {
         LOGE("pipe: %s", strerror(errno));
         jclass ex = (*env)->FindClass(env, "java/lang/RuntimeException");
         (*env)->ThrowNew(env, ex, "pipe() failed");
@@ -181,10 +200,8 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
         /* Redirect stdout/stderr to pipes */
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        close(stdout_pipe[1]);
-        close(stderr_pipe[1]);
+        move_fd(stdout_pipe[1], STDOUT_FILENO);
+        move_fd(stderr_pipe[1], STDERR_FILENO);
 
         /* Close stdin (not interactive) */
         close(STDIN_FILENO);

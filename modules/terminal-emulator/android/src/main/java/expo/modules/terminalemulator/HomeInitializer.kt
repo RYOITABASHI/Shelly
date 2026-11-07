@@ -1635,7 +1635,7 @@ patchCodex(libDir);
         val shellyCsScript = File(shellyCsDir, "shelly-cs.js")
         try {
             context.assets.open("shelly-cs.js").use { input ->
-                shellyCsScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(shellyCsScript)
             }
             shellyCsScript.setExecutable(true, false)
         } catch (e: Exception) {
@@ -1653,7 +1653,7 @@ patchCodex(libDir);
         val shellyCsTunnelScript = File(shellyCsDir, "shelly-cs-tunnel.js")
         try {
             context.assets.open("shelly-cs-tunnel.js").use { input ->
-                shellyCsTunnelScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(shellyCsTunnelScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-cs-tunnel.js extract failed: ${e.message}")
@@ -1677,7 +1677,7 @@ patchCodex(libDir);
         val codexAuthScript = File(home, ".shelly-codex-auth.js")
         try {
             context.assets.open("shelly-codex-auth.js").use { input ->
-                codexAuthScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(codexAuthScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
@@ -1698,7 +1698,7 @@ patchCodex(libDir);
         val gateDecideScript = File(home, ".shelly-gate-decide.js")
         try {
             context.assets.open("shelly-gate-decide.js").use { input ->
-                gateDecideScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(gateDecideScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-gate-decide.js extract failed: ${e.message}")
@@ -1709,7 +1709,7 @@ patchCodex(libDir);
         val agentDriverScript = File(home, ".shelly-agent-driver.js")
         try {
             context.assets.open("shelly-agent-driver.js").use { input ->
-                agentDriverScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(agentDriverScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-agent-driver.js extract failed: ${e.message}")
@@ -1720,7 +1720,7 @@ patchCodex(libDir);
         val capabilityBrokerScript = File(home, ".shelly-capability-broker.js")
         try {
             context.assets.open("shelly-capability-broker.js").use { input ->
-                capabilityBrokerScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(capabilityBrokerScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-capability-broker.js extract failed: ${e.message}")
@@ -1734,7 +1734,7 @@ patchCodex(libDir);
         val geminiLiveClientScript = File(home, ".shelly-gemini-live-client.js")
         try {
             context.assets.open("shelly-gemini-live-client.js").use { input ->
-                geminiLiveClientScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(geminiLiveClientScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-gemini-live-client.js extract failed: ${e.message}")
@@ -1746,7 +1746,7 @@ patchCodex(libDir);
         val a2aServerScript = File(home, ".shelly-a2a-server.js")
         try {
             context.assets.open("shelly-a2a-server.js").use { input ->
-                a2aServerScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(a2aServerScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-a2a-server.js extract failed: ${e.message}")
@@ -1758,7 +1758,7 @@ patchCodex(libDir);
         val mcpServerScript = File(home, ".shelly-mcp-server.js")
         try {
             context.assets.open("shelly-mcp-server.js").use { input ->
-                mcpServerScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(mcpServerScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-mcp-server.js extract failed: ${e.message}")
@@ -1769,7 +1769,7 @@ patchCodex(libDir);
         val planExecutorScript = File(home, ".shelly-plan-executor.js")
         try {
             context.assets.open("shelly-plan-executor.js").use { input ->
-                planExecutorScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(planExecutorScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-plan-executor.js extract failed: ${e.message}")
@@ -1790,7 +1790,7 @@ patchCodex(libDir);
         val localLlmEnsureScript = File(home, ".shelly-local-llm-ensure.sh")
         try {
             context.assets.open("shelly-local-llm-ensure.sh").use { input ->
-                localLlmEnsureScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(localLlmEnsureScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-local-llm-ensure.sh extract failed: ${e.message}")
@@ -1830,7 +1830,7 @@ patchCodex(libDir);
         val runtimeUpdateScript = File(home, ".shelly-runtime-update.js")
         try {
             context.assets.open("shelly-runtime-update.js").use { input ->
-                runtimeUpdateScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(runtimeUpdateScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-runtime-update.js extract failed: ${e.message}")
@@ -1841,7 +1841,7 @@ patchCodex(libDir);
         val cliUpdateScript = File(home, ".shelly-cli-update.js")
         try {
             context.assets.open("shelly-cli-update.js").use { input ->
-                cliUpdateScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(cliUpdateScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-cli-update.js extract failed: ${e.message}")
@@ -1850,7 +1850,7 @@ patchCodex(libDir);
         val doctorScript = File(home, ".shelly-doctor.js")
         try {
             context.assets.open("shelly-doctor.js").use { input ->
-                doctorScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(doctorScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-doctor.js extract failed: ${e.message}")
@@ -1863,7 +1863,7 @@ patchCodex(libDir);
         val deviceScript = File(home, ".shelly-device.js")
         try {
             context.assets.open("shelly-device.js").use { input ->
-                deviceScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(deviceScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-device.js extract failed: ${e.message}")
@@ -1876,7 +1876,7 @@ patchCodex(libDir);
         val claudeProxyScript = File(home, ".shelly-claude-proxy.js")
         try {
             context.assets.open("shelly-claude-proxy.js").use { input ->
-                claudeProxyScript.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(claudeProxyScript)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-claude-proxy.js extract failed: ${e.message}")
@@ -1932,7 +1932,7 @@ patchCodex(libDir);
         val caBundle = File(sslDir, "ca-certificates.crt")
         try {
             context.assets.open("ca-certificates.crt").use { input ->
-                caBundle.outputStream().use { output -> input.copyTo(output) }
+                input.copyToAtomically(caBundle)
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "ca-certificates.crt extract failed: ${e.message}")
@@ -6037,6 +6037,26 @@ patchCodex(libDir);
         sb.appendLine("  __shelly_paste_tui_end")
         sb.appendLine("  return \$__rc")
         sb.appendLine("}")
+    }
+
+    /**
+     * Replaces a helper in one step. These are rewritten on every start while
+     * agents, schedules and shells may be reading them, and a half-written
+     * driver or gate is a security component that parses as something else.
+     * A reader keeps the old inode; the new file is complete before it has the name.
+     */
+    private fun java.io.InputStream.copyToAtomically(target: File) {
+        val tmp = File.createTempFile(".${target.name}.", ".tmp", target.parentFile)
+        try {
+            tmp.outputStream().use { output ->
+                copyTo(output)
+                output.fd.sync()
+            }
+            if (target.exists() && target.canExecute()) tmp.setExecutable(true, true)
+            if (!tmp.renameTo(target)) throw java.io.IOException("rename failed for ${target.name}")
+        } finally {
+            tmp.delete()
+        }
     }
 
     /**
