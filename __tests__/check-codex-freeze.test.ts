@@ -95,7 +95,7 @@ describe('Bump Codex Runtime workflow', () => {
   const stepAt = yml.indexOf('- name: Fail if Codex is frozen behind upstream');
 
   it('runs the check last, on the no-change path too, with the plan limit of 3 days', () => {
-    expect(stepAt).toBeGreaterThan(yml.indexOf('- name: Publish the pinned runtime'));
+    expect(stepAt).toBeGreaterThan(yml.indexOf('- name: Publish the verified runtime'));
     const step = yml.slice(stepAt);
     expect(step).not.toMatch(/^\s+if:/m);
     expect(step).not.toContain('continue-on-error');

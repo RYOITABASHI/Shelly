@@ -63,12 +63,13 @@ function runVersion(file, args = ['--version']) {
   if (!exists(file)) return { ok: false, output: 'missing' };
   const env = {
     ...process.env,
-    LD_LIBRARY_PATH: LIB,
+    // Same recipe as the launchers, so the doctor reports what `codex` would do.
+    LD_LIBRARY_PATH: [path.dirname(file), LIB].filter(Boolean).join(':'),
+    LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so'),
     SHELLY_CODEX_EXEC_PATH: file,
     SHELLY_CODEX_PROC_EXE_SHIM: '1',
     SHELLY_CODEX_PROC_EXE_OPEN_SHIM: '1',
   };
-  delete env.LD_PRELOAD;
   const result = cp.spawnSync('/system/bin/linker64', [file, ...args], {
     encoding: 'utf8',
     timeout: 15000,

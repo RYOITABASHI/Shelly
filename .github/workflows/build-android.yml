@@ -469,9 +469,9 @@ jobs:
         if: steps.android-payload-cache.outputs.cache-hit != 'true'
         # scripts/codex-termux-apt.js checks the signed Termux index, the pinned
         # hash, and that both binaries can load on Android. apt lists only the
-        # newest version, so an older pin may be gone from the pool by now; the
-        # Bump job keeps each .deb on codex-runtime-latest, and the hash decides
-        # either way. Issue #149: Codex looks for its Code Mode host next to its
+        # newest version, so this pin may be gone from the pool by now; the Bump
+        # job keeps its .deb on codex-runtime-latest, and the hash decides either
+        # way. Only a reviewed change moves this pin: agent workers run this build. Issue #149: Codex looks for its Code Mode host next to its
         # own executable, so LibExtractor puts it beside codex_tui.
         run: |
           set -euo pipefail
@@ -1403,7 +1403,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Mirrors the codex-runtime-latest gate above: a single always-on
+          # A single always-on
           # "latest" channel (no dev/stable split like android-latest has),
           # so only publish from an actual main build. workflow_dispatch
           # runs off a feature branch still execute this step (matching the

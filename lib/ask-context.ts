@@ -53,7 +53,7 @@ const CATALOG_SECTION = FEATURE_CATALOG.map(formatFeature).join('\n');
 const CURATED_DOCS = `
 SHIPPING (as of 2026-05):
 - Shelly runs standalone on Android (JNI forkpty; Termux not required).
-- Bundled CLI: codex (via DioNanos/codex-termux Android-native fork).
+- Bundled CLI: codex (the Android build from Termux's official package).
 - Local LLM and cloud API panes are available for non-CLI assistant work.
 - CLI update checks are limited to Codex and run only when explicitly
   requested by the user.

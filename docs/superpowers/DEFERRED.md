@@ -82,8 +82,9 @@
 
 **Codex の取得元の切替 — 実装済み、CI・実機とも未検証（2026-11-07、`feat/codex-termux-official`）**: 設計は CLAUDE.md の「Codex CLI は Termux 公式パッケージ」の行。ローカルで実際の InRelease から .deb まで検証した。ワークフローは GitHub でしか確かめられない。
 - **マージ後すぐ見ること**: Bump ジョブを手動実行し、`codex-runtime-termux.json` の公開と凍結検知の緑を確認。APK ビルドが `libcodex_tui.so` を作ること。
+- **Termux の改訂番号の更新**（`0.167.0-1`）: Builds 画面が更新を出すこと（`codexTermuxVersion` で判定）。`shelly-doctor` は `libexec_wrapper.so` 込みの起動に変えたので、`--version` の結果が `codex` と揃うこと。
 - **実機（切替 APK の更新後）**: (1) `node --version` と `git --version`: `libc++_shared.so` が fork の同梱版からリポジトリの `libcxx_shared.so` に変わる（Codex 自身は要らない）。(2) 同梱版の `--version`、TLS、ログイン。(3) Builds 画面の更新で `current` が移ること、失敗時に動かないこと。(4) `!` コマンド、Code Mode、エージェント実行（T1 に含まれなかった項目）。(5) `shelly codex pair`（下の別項目）。
-- **ワーカーの版**: 更新後もエージェントは APK 同梱版で動く。`agent-current` を作るものは無い。Inc 4（CI 契約テスト）と Inc 5 で作る。それまで **同梱版の pin も Bump で動き、次の APK には契約テストなしで入る**。driver の未知 item 停止と MCP preflight は効くが、`CODEX_WORKER_DISABLED_FEATURES` は拒否リストなので、新しい既定有効の機能はすり抜けうる（計画 §6.2）。
+- **ワーカーの版**: エージェントは APK 同梱版で動く。`agent-current` を作るものは無い（Inc 4 の CI 契約テストと Inc 5）。同梱の pin（`.ci-versions/codex-termux-deb.json`、`codex.txt`）は Bump では動かず、`promote` の差分をレビューして動かす。**契約テストが無い間はそのレビューが唯一の確認**で、`CODEX_WORKER_DISABLED_FEATURES` は拒否リストなので、レビューでは `codex features list` の差分を見ること（計画 §6.2）。チャンネルが先へ進むと TUI とエージェントの版が開く。`~/.codex` の共有に問題が出ないかは実機で見る。
 - **残り**: 古い `versions/` の削除（1 版 344MB、削除処理なし）、`previous` と自動ロールバック、失敗版の保留（Inc 5）。Ed25519 署名（§6.7、オーナーの Secret 登録が必要）。`codex-runtime.json` を読む切替前の APK への案内は無い（APK 更新で解消）。`codex-runtime-latest` の古いアセットの掃除。
 - **署名鍵の交代**: Termux が `termux-autobuilds` の鍵を替えると Bump は赤くなる（意図どおり）。新しい鍵を確かめて `scripts/termux-autobuilds.gpg` と `TERMUX_SIGNING_FINGERPRINTS` を更新する。
 

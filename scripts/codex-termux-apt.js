@@ -6,16 +6,23 @@
 //
 // The keyring is checked in (scripts/termux-autobuilds.gpg) and the signer must
 // also match TERMUX_SIGNING_FINGERPRINTS, so a mirror cannot swap either.
-// apt's index lists only the newest version, so a pin in
-// .ci-versions/codex-termux-deb.json keeps the hash the chain proved. A later
-// build trusts that committed hash once the index has moved on, and can read
-// the .deb from Shelly's own release if the pool has dropped it.
+//
+// There are two pins, and they answer to different people:
+//   .ci-versions/codex-termux-channel.json  what the runtime channel offers. The
+//     Bump job moves it, for people using the TUI, after verifying the candidate.
+//   .ci-versions/codex-termux-deb.json + codex.txt  what the APK bundles, which is
+//     what agent workers run. Only a reviewed change moves these (`promote`).
+//
+// apt's index lists only the newest version, so a pin keeps the hash the chain
+// proved. A later build trusts that committed hash, and can read the .deb from
+// Shelly's own release if the pool has dropped it.
 //
 //   check-pin  --pin P --codex-txt T
-//   bump       --pin P --codex-txt T [--github-output F]
-//   fetch      --pin P --out-dir D [--archive-base URL]
+//   bump       --pin CHANNEL --candidate F [--github-output F]
+//   fetch      --pin P --out-dir D [--archive-base URL] [--keep-deb F]
 //   manifest   --pin P --asset NAME --url URL --sha256 HEX --out F
 //   published  --manifest F --pin P        prints "current" or "behind"
+//   promote    --channel CHANNEL --pin P --codex-txt T
 //
 // Exit 0 = done, 1 = failure. Everything is fail closed: a key, hash, shape or
 // library surprise stops the job instead of shipping.
@@ -46,6 +53,12 @@ const MAX_INDEX_AGE_DAYS = 14;
 const MAX_INDEX_FUTURE_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10 * 60 * 1000;
 
+const DT_VERDEF = 0x6ffffffc;
+const DT_VERDEFNUM = 0x6ffffffd;
+const DT_VERNEED = 0x6ffffffe;
+const DT_VERNEEDNUM = 0x6fffffff;
+const VER_FLG_BASE = 1;
+
 // What the Android linker can resolve on a Shelly device: the bionic system
 // libraries, plus what LibExtractor.kt puts in $SHELLY_LIB_DIR. A package that
 // starts needing anything else would only fail on the device, so stop here.
@@ -59,6 +72,11 @@ const ALLOWED_NEEDED = new Set([
   'libcrypto.so.3',
 ]);
 const ANDROID_LINKER = '/system/bin/linker64';
+// Libraries whose symbol versions we can check, because Shelly ships them. A
+// binary built against a newer OPENSSL_3.x loads fine by name and dies at start,
+// and the APK-bundled route has no device probe in front of it.
+const JNI_LIBS = path.join(__dirname, '..', 'modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a');
+const BUNDLED_VERSIONED_LIBS = { 'libssl.so.3': 'libssl3.so', 'libcrypto.so.3': 'libcrypto3.so' };
 
 // The two binaries, under the names the Shelly launchers and installers expect.
 // `codex_tui` is not a Termux name: every launcher, the APK's libcodex_tui.so
@@ -74,6 +92,9 @@ const PAYLOAD_NOTICES = [
 ];
 
 class TrustError extends Error {}
+// The signature itself failed. Nothing built on that index can be believed, so
+// unlike staleness this stops every command.
+class SignatureError extends TrustError {}
 
 function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
@@ -111,9 +132,9 @@ function verifyInRelease(signedText, { keyring = KEYRING, fingerprints = TERMUX_
       ['--keyring', './keyring.gpg', '--status-fd', '1', '--output', 'clear', 'InRelease'],
       { cwd: dir, encoding: 'utf8' },
     );
-    if (result.error) throw new TrustError(`cannot run gpgv: ${result.error.message}`);
+    if (result.error) throw new SignatureError(`cannot run gpgv: ${result.error.message}`);
     if (result.status !== 0) {
-      throw new TrustError(`InRelease signature did not verify (gpgv exit ${result.status})`);
+      throw new SignatureError(`InRelease signature did not verify (gpgv exit ${result.status})`);
     }
     const signers = [];
     for (const line of String(result.stdout).split('\n')) {
@@ -124,7 +145,7 @@ function verifyInRelease(signedText, { keyring = KEYRING, fingerprints = TERMUX_
       }
     }
     if (!signers.some((fingerprint) => fingerprints.includes(fingerprint))) {
-      throw new TrustError(`InRelease is not signed by a pinned key (saw ${signers.join(', ') || 'none'})`);
+      throw new SignatureError(`InRelease is not signed by a pinned key (saw ${signers.join(', ') || 'none'})`);
     }
     return fs.readFileSync(path.join(dir, 'clear'), 'utf8');
   } finally {
@@ -310,6 +331,10 @@ function readElfInfo(buffer) {
   };
   const neededOffsets = [];
   let strtab = null;
+  let verneed = null;
+  let verneedNum = 0;
+  let verdef = null;
+  let verdefNum = 0;
   if (dynamic) {
     for (let at = dynamic.offset; at < dynamic.offset + dynamic.filesz; at += 16) {
       const tag = Number(buffer.readBigInt64LE(at));
@@ -317,17 +342,53 @@ function readElfInfo(buffer) {
       if (tag === 0) break;
       if (tag === 1) neededOffsets.push(value);
       if (tag === 5) strtab = toOffset(value);
+      if (tag === DT_VERNEED) verneed = toOffset(value);
+      if (tag === DT_VERNEEDNUM) verneedNum = value;
+      if (tag === DT_VERDEF) verdef = toOffset(value);
+      if (tag === DT_VERDEFNUM) verdefNum = value;
     }
   }
-  const needed = neededOffsets.map((offset) => {
-    if (strtab === null) throw new Error('DT_NEEDED without DT_STRTAB');
+  const text = (offset) => {
+    if (strtab === null) throw new Error('dynamic string reference without DT_STRTAB');
     const start = strtab + offset;
     return buffer.toString('latin1', start, buffer.indexOf(0, start));
-  });
-  return { type, machine, interp, needed };
+  };
+  const needed = neededOffsets.map(text);
+
+  // .gnu.version_r: library -> version names this binary asks for.
+  const requiredVersions = {};
+  for (let i = 0, at = verneed; i < verneedNum; i += 1) {
+    const library = text(buffer.readUInt32LE(at + 4));
+    const names = requiredVersions[library] || (requiredVersions[library] = []);
+    let aux = at + buffer.readUInt32LE(at + 8);
+    for (let j = buffer.readUInt16LE(at + 2); j > 0; j -= 1) {
+      names.push(text(buffer.readUInt32LE(aux + 8)));
+      aux += buffer.readUInt32LE(aux + 12);
+    }
+    at += buffer.readUInt32LE(at + 12);
+  }
+  // .gnu.version_d: the version names this library defines. The BASE entry is
+  // the library's own soname, not a version anything can require.
+  const definedVersions = [];
+  for (let i = 0, at = verdef; i < verdefNum; i += 1) {
+    if ((buffer.readUInt16LE(at + 2) & VER_FLG_BASE) === 0) {
+      definedVersions.push(text(buffer.readUInt32LE(at + buffer.readUInt32LE(at + 12))));
+    }
+    at += buffer.readUInt32LE(at + 16);
+  }
+  return { type, machine, interp, needed, requiredVersions, definedVersions };
 }
 
-function checkAndroidBinary(buffer, label) {
+function bundledLibraryVersions(dir = JNI_LIBS) {
+  const versions = {};
+  for (const [soname, file] of Object.entries(BUNDLED_VERSIONED_LIBS)) {
+    versions[soname] = readElfInfo(fs.readFileSync(path.join(dir, file))).definedVersions;
+    if (versions[soname].length === 0) throw new Error(`${file} defines no symbol versions`);
+  }
+  return versions;
+}
+
+function checkAndroidBinary(buffer, label, libraryVersions = bundledLibraryVersions()) {
   const info = readElfInfo(buffer);
   const problems = [];
   if (info.machine !== 183) problems.push(`machine ${info.machine} is not aarch64`);
@@ -336,6 +397,12 @@ function checkAndroidBinary(buffer, label) {
   if (info.interp !== ANDROID_LINKER) problems.push(`interpreter ${info.interp} is not ${ANDROID_LINKER}`);
   const unknown = info.needed.filter((name) => !ALLOWED_NEEDED.has(name));
   if (unknown.length > 0) problems.push(`needs libraries Shelly does not ship: ${unknown.join(', ')}`);
+  for (const [library, defined] of Object.entries(libraryVersions)) {
+    const missing = (info.requiredVersions[library] || []).filter((name) => !defined.includes(name));
+    if (missing.length > 0) {
+      problems.push(`needs ${missing.join(', ')} from ${library}, which Shelly's copy does not define (${defined.join(', ')})`);
+    }
+  }
   if (problems.length > 0) throw new Error(`${label}: ${problems.join('; ')}`);
   return info;
 }
@@ -466,20 +533,20 @@ async function fetchDeb(pin, { mirrors = MIRRORS, archiveBase = '', get = httpGe
   throw lastError || new Error('no .deb source configured');
 }
 
-// The pin came through the chain when it was written. Walk it again when we can:
-// while the index still lists this version the two must agree. If the index has
-// moved on, or Termux is unreachable, the committed hash stands alone. A bad
-// signature is never "unreachable".
+// The pin came through the chain when it was written, and the .deb must match its
+// hash whatever happens here, so this is a second opinion, not a gate. A build
+// must not depend on Termux's index being fresh or still listing this version:
+// only a failed signature stops it. The rest is worth seeing in the log.
 async function confirmPinAgainstIndex(pin, options = {}) {
   let entry;
   try {
     entry = await resolveLatest(options);
+    decideBump(pin, entry);
   } catch (error) {
-    if (error instanceof TrustError) throw error;
-    console.log(`[codex-apt] index unavailable, relying on the committed hash: ${error.message}`);
-    return 'unavailable';
+    if (error instanceof SignatureError) throw error;
+    console.log(`::warning title=Termux Codex::index not confirmed, relying on the committed hash: ${error.message}`);
+    return 'unconfirmed';
   }
-  decideBump(pin, entry);
   if (entry.version === pin.version) {
     console.log(`[codex-apt] pin ${pin.version} confirmed by the signed index`);
     return 'confirmed';
@@ -512,25 +579,28 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function runBump(args, { resolve = resolveLatest, hasNpm = npmHasCodex } = {}) {
+// Moves nothing in the repository. The candidate goes to a file for the job to
+// verify first; only then does it replace the channel pin.
+async function runBump(args, { resolve = resolveLatest } = {}) {
   const pin = validatePin(readJson(args.pin));
-  checkPinMatchesCodexTxt(pin, fs.readFileSync(args['codex-txt'], 'utf8'));
   const entry = await resolve();
-  let changed = decideBump(pin, entry);
-  // The APK bundles the npm dispatcher of the same version. Upstream publishes
-  // both together and Termux follows, so waiting is short; the freeze check
-  // turns red if it never comes.
-  if (changed && !hasNpm(entry.upstreamVersion)) {
-    console.log(`::warning title=Codex bump held::@openai/codex@${entry.upstreamVersion} is not on npm yet`);
-    changed = false;
-  }
-  if (changed) {
-    writeJson(args.pin, { ...entry, verifiedAt: new Date().toISOString() });
-    fs.writeFileSync(args['codex-txt'], `${entry.upstreamVersion}\n`);
-  }
-  const lines = [`changed=${changed}`, `version=${entry.version}`, `codex=${entry.upstreamVersion}`];
+  const changed = decideBump(pin, entry);
+  writeJson(args.candidate, changed ? { ...entry, verifiedAt: new Date().toISOString() } : pin);
+  const lines = [`changed=${changed}`, `version=${entry.version}`];
   console.log(lines.join(' '));
   if (args['github-output']) fs.appendFileSync(args['github-output'], `${lines.join('\n')}\n`);
+}
+
+// The reviewed step that moves what agents run: run it, read the diff, open a PR.
+// The APK also bundles the npm dispatcher of this version, so it must exist.
+function runPromote(args, { hasNpm = npmHasCodex } = {}) {
+  const channel = validatePin(readJson(args.channel));
+  if (!hasNpm(channel.upstreamVersion)) {
+    throw new Error(`@openai/codex@${channel.upstreamVersion} is not on npm yet`);
+  }
+  writeJson(args.pin, channel);
+  fs.writeFileSync(args['codex-txt'], `${channel.upstreamVersion}\n`);
+  console.log(`bundled pin is now ${channel.version}`);
 }
 
 async function runFetch(args, options = {}) {
@@ -554,6 +624,9 @@ async function main() {
       return;
     case 'fetch':
       await runFetch(args);
+      return;
+    case 'promote':
+      runPromote(args);
       return;
     case 'manifest':
       writeJson(args.out, runtimeManifest({
@@ -586,9 +659,11 @@ if (require.main === module) {
 
 module.exports = {
   ALLOWED_NEEDED,
+  SignatureError,
   TERMUX_SIGNING_FINGERPRINTS,
   TrustError,
   arMembers,
+  bundledLibraryVersions,
   checkAndroidBinary,
   checkPinMatchesCodexTxt,
   checkReleaseFields,
@@ -606,6 +681,7 @@ module.exports = {
   resolveLatest,
   runBump,
   runFetch,
+  runPromote,
   runtimeManifest,
   sha256,
   validatePin,

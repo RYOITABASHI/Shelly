@@ -1,9 +1,13 @@
 name: Bump Codex Runtime
 
 # Follows Termux's official `codex` package and delivers it to devices through
-# the codex-runtime-latest release, without an APK build. Every step of the trust
-# chain lives in scripts/codex-termux-apt.js, where it can be tested; a workflow
-# is only verified on GitHub. The next APK build bundles the same pin.
+# the codex-runtime-latest release, without an APK build. This is the channel for
+# people using the TUI. It never touches codex-termux-deb.json or codex.txt: those
+# decide what the APK bundles and agent workers run, and only a reviewed change
+# moves them (scripts/codex-termux-apt.js promote).
+#
+# Every step of the trust chain lives in scripts/codex-termux-apt.js, where it can
+# be tested; a workflow is only verified on GitHub.
 
 on:
   workflow_dispatch:
@@ -18,8 +22,8 @@ permissions:
   contents: write
 
 env:
-  PIN: .ci-versions/codex-termux-deb.json
-  CODEX_TXT: .ci-versions/codex.txt
+  PIN: .ci-versions/codex-termux-channel.json
+  BUNDLED_PIN: .ci-versions/codex-termux-deb.json
   RUNTIME_TAG: codex-runtime-latest
   # Not codex-runtime.json, which stays on the last fork build: that is what APKs
   # older than this source switch read, and they must not move to a Codex their
@@ -42,19 +46,68 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
+          work="$RUNNER_TEMP/codex-publish"
+          mkdir -p "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
           node scripts/codex-termux-apt.js bump \
-            --pin "$PIN" --codex-txt "$CODEX_TXT" --github-output "$GITHUB_OUTPUT"
+            --pin "$PIN" --candidate "$work/candidate.json" --github-output "$GITHUB_OUTPUT"
 
-      - name: Commit the new pin to main
-        if: steps.resolve.outputs.changed == 'true'
+      # Compares the channel with the candidate instead of looking at `changed`,
+      # so a failed or cancelled publish heals on the next run, and the first run
+      # after the source switch publishes the pin that the switch itself committed.
+      - name: Compare the channel with the candidate
+        id: channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$RUNTIME_MANIFEST" --dir "$WORK" --clobber || echo "no $RUNTIME_MANIFEST yet"
+          state="$(node scripts/codex-termux-apt.js published --manifest "$WORK/$RUNTIME_MANIFEST" --pin "$WORK/candidate.json")"
+          echo "channel is ${state}"
+          echo "state=${state}" >> "$GITHUB_OUTPUT"
+
+      # Runs before anything is committed or uploaded: a candidate that fails the
+      # ELF, library-version or secret checks leaves main and the channel as they
+      # were, and the job goes red.
+      - name: Verify the candidate
+        id: verify
+        if: steps.resolve.outputs.changed == 'true' || steps.channel.outputs.state == 'behind'
+        run: |
+          set -euo pipefail
+          candidate="$WORK/candidate.json"
+          deb_version="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).version" "$candidate")"
+          deb_name="$(node -p "require('path').basename(JSON.parse(require('fs').readFileSync(process.argv[1])).filename)" "$candidate")"
+          payload="$WORK/payload"
+          node scripts/codex-termux-apt.js fetch --pin "$candidate" --out-dir "$payload" --keep-deb "$WORK/$deb_name" \
+            --archive-base "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RUNTIME_TAG"
+          tarball="$WORK/codex-runtime.tar.gz"
+          tar -C "$payload" -czf "$tarball" .
+          asset="Shelly-codex-runtime-v${deb_version}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:12}.tar.gz"
+          cp "$tarball" "$WORK/$asset"
+          tar_sha="$(sha256sum "$tarball" | awk '{print $1}')"
+          mkdir -p "$WORK/out"
+          node scripts/codex-termux-apt.js manifest --pin "$candidate" --asset "$asset" --sha256 "$tar_sha" \
+            --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RUNTIME_TAG/$asset" \
+            --out "$WORK/out/$RUNTIME_MANIFEST"
+          node scripts/release-safety-scan.js "$tarball" "$WORK/out/$RUNTIME_MANIFEST"
+          {
+            echo "deb_name=$deb_name"
+            echo "asset=$asset"
+            echo "tar_sha=$tar_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit the new channel pin to main
+        if: steps.resolve.outputs.changed == 'true' && github.ref == 'refs/heads/main'
         env:
           DEB_VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
+          cp "$WORK/candidate.json" "$PIN"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$PIN" "$CODEX_TXT"
-          git commit -m "chore(codex): bump runtime to Termux ${DEB_VERSION}"
+          git add "$PIN"
+          git commit -m "chore(codex): move the runtime channel to Termux ${DEB_VERSION}"
           # Land directly on main: Actions cannot open PRs with GITHUB_TOKEN, and
           # this repo ships everything from main. Rebase and retry if main moved.
           pushed=0
@@ -69,56 +122,50 @@ jobs:
           done
           test "${pushed}" = 1 || { echo "FATAL: could not push codex bump to main" >&2; exit 1; }
 
-      # Compares the channel with the pin instead of looking at `changed`, so a
-      # failed or cancelled publish heals on the next run, and the first run after
-      # the source switch publishes the pin that the switch itself committed.
-      - name: Publish the pinned runtime if the channel is behind
+      - name: Publish the verified runtime
+        if: steps.channel.outputs.state == 'behind' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEB_NAME: ${{ steps.verify.outputs.deb_name }}
+          ASSET: ${{ steps.verify.outputs.asset }}
+          TAR_SHA: ${{ steps.verify.outputs.tar_sha }}
+        run: |
+          set -euo pipefail
+          # The manifest goes last: until it lands, devices keep seeing a complete
+          # older release.
+          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$WORK/$DEB_NAME" --clobber
+          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$WORK/$ASSET"
+          digest="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$ASSET\") | .digest")"
+          if [ -n "$digest" ] && [ "$digest" != "sha256:$TAR_SHA" ]; then
+            echo "FATAL: Codex runtime digest mismatch: $digest" >&2
+            exit 1
+          fi
+          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$WORK/out/$RUNTIME_MANIFEST" --clobber
+
+      # APK builds need the bundled pin's .deb long after Termux has dropped it
+      # from the pool, and that pin can sit behind the channel for a long time.
+      - name: Keep a copy of the bundled .deb
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/codex-publish"
-          mkdir -p "$work"
-          gh release download "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$RUNTIME_MANIFEST" --dir "$work" --clobber || echo "no $RUNTIME_MANIFEST yet"
-          state="$(node scripts/codex-termux-apt.js published --manifest "$work/$RUNTIME_MANIFEST" --pin "$PIN")"
-          echo "channel is ${state}"
-          if [ "$state" = "current" ]; then
+          deb_name="$(node -p "require('path').basename(require('./$BUNDLED_PIN').filename)")"
+          held="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq ".assets[] | select(.name == \"$deb_name\") | .name")"
+          if [ -n "$held" ]; then
+            echo "$deb_name is already on $RUNTIME_TAG"
             exit 0
           fi
-
-          deb_version="$(node -p "require('./$PIN').version")"
-          deb_name="$(node -p "require('path').basename(require('./$PIN').filename)")"
-          payload="$work/payload"
-          node scripts/codex-termux-apt.js fetch --pin "$PIN" --out-dir "$payload" --keep-deb "$work/$deb_name" \
-            --archive-base "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RUNTIME_TAG"
-          tarball="$work/codex-runtime.tar.gz"
-          tar -C "$payload" -czf "$tarball" .
-          asset="Shelly-codex-runtime-v${deb_version}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA:0:12}.tar.gz"
-          cp "$tarball" "$work/$asset"
-          tar_sha="$(sha256sum "$tarball" | awk '{print $1}')"
-          node scripts/codex-termux-apt.js manifest --pin "$PIN" --asset "$asset" --sha256 "$tar_sha" \
-            --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RUNTIME_TAG/$asset" \
-            --out "$work/$RUNTIME_MANIFEST"
-          node scripts/release-safety-scan.js "$tarball" "$work/$RUNTIME_MANIFEST"
-
-          # The manifest goes last: until it lands, devices keep seeing a complete
-          # older release. The .deb stays so APK builds of this pin still work
-          # after Termux drops it from the pool.
-          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$work/$deb_name" --clobber
-          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$work/$asset"
-          digest="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq ".assets[] | select(.name == \"$asset\") | .digest")"
-          if [ -n "$digest" ] && [ "$digest" != "sha256:$tar_sha" ]; then
-            echo "FATAL: Codex runtime digest mismatch: $digest" >&2
-            exit 1
-          fi
-          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$work/$RUNTIME_MANIFEST" --clobber
+          node scripts/codex-termux-apt.js fetch --pin "$BUNDLED_PIN" --out-dir "$WORK/bundled" --keep-deb "$WORK/bundled.deb"
+          cp "$WORK/bundled.deb" "$WORK/$deb_name"
+          gh release upload "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$WORK/$deb_name"
 
       # Runs last and whether or not anything changed: when Termux stops following
       # upstream, or the publish above never lands, every other step can report
       # "no change" and stay green. Reads the version devices can actually get
-      # from the channel, not the pin in the repo.
+      # from the channel, not a pin in the repo.
       - name: Fail if Codex is frozen behind upstream
         env:
           GH_TOKEN: ${{ github.token }}

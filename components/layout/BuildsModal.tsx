@@ -23,6 +23,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { execCommand } from '@/hooks/use-native-exec';
 import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { codexRuntimeUpdateAvailable } from '@/lib/codex-runtime-update';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
 import {
@@ -125,6 +126,9 @@ type CodexVersionInfo = {
   source: 'runtime' | 'bundled' | 'runtime_broken' | 'unknown';
   runtimePresent: boolean;
   runtimeHealthy: boolean;
+  // codexTermuxVersion from the installed runtime's manifest; carries the
+  // packaging revision that `--version` cannot show.
+  termuxVersion?: string;
 };
 
 type DownloadApkStep = 'prepare' | 'download' | 'paused' | 'verify' | 'ready';
@@ -360,16 +364,17 @@ async function fetchInstalledCodexVersion(): Promise<CodexVersionInfo | null> {
     'runtime_healthy=0',
     'base="$lib"',
     'source=bundled',
-    'if [ "${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}" != "1" ] && [ -f "$runtime/.healthy" ] && [ -f "$runtime/manifest.json" ] && [ -x "$runtime/codex_tui" ]; then runtime_healthy=1; base="$runtime"; source=runtime; fi',
-    'if [ "$source" = runtime ]; then bin="$base/codex_tui"; out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" && { printf "%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$out"; exit 0; }; source=runtime_broken; base="$lib"; fi',
+    'termux=""',
+    'if [ "${SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME:-0}" != "1" ] && [ -f "$runtime/.healthy" ] && [ -f "$runtime/manifest.json" ] && [ -x "$runtime/codex_tui" ]; then runtime_healthy=1; base="$runtime"; source=runtime; termux="$(/system/bin/toybox sed -n "s/.*\\"codexTermuxVersion\\": *\\"\\([^\\"]*\\)\\".*/\\1/p" "$runtime/manifest.json" | /system/bin/toybox head -n 1)"; fi',
+    'if [ "$source" = runtime ]; then bin="$base/codex_tui"; out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" && { printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$termux" "$out"; exit 0; }; source=runtime_broken; termux=""; base="$lib"; fi',
     'if [ -x "$base/codex_tui" ]; then bin="$base/codex_tui"; else exit 127; fi',
     'out="$(SHELLY_LIB_DIR="$lib" LD_PRELOAD="$lib/libexec_wrapper.so" SHELLY_CODEX_EXEC_PATH="$bin" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_LIBRARY_PATH="$base:$lib" /system/bin/linker64 "$bin" --version 2>&1)" || exit $?',
-    'printf "%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$out"',
+    'printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$source" "$runtime_present" "$runtime_healthy" "$termux" "$out"',
   ].join('; ');
   const r = await execCommand(command, 15_000);
   if (r.exitCode !== 0) return null;
   const line = r.stdout.trim().split('\n').filter(Boolean).pop() || '';
-  const [rawSource, runtimePresentRaw, runtimeHealthyRaw, ...rest] = line.split('\t');
+  const [rawSource, runtimePresentRaw, runtimeHealthyRaw, termuxVersion, ...rest] = line.split('\t');
   const version = parseCodexVersion(rest.join('\t') || `${r.stdout}\n${r.stderr}`);
   if (!version) return null;
   const source = rawSource === 'runtime' || rawSource === 'bundled' || rawSource === 'runtime_broken'
@@ -380,6 +385,7 @@ async function fetchInstalledCodexVersion(): Promise<CodexVersionInfo | null> {
     source,
     runtimePresent: runtimePresentRaw === '1',
     runtimeHealthy: runtimeHealthyRaw === '1',
+    termuxVersion: termuxVersion || undefined,
   };
 }
 
@@ -1680,9 +1686,9 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     })
     : t('updates.details_unavailable');
   const bundledCodexVersion = codexVersionFromUpdate(latestUpdate);
-  const availableCodexVersion = latestCodexRuntime?.version || bundledCodexVersion;
+  const availableCodexVersion = latestCodexRuntime?.codexTermuxVersion || latestCodexRuntime?.version || bundledCodexVersion;
   const codexRuntimeIsNewer = Boolean(
-    latestCodexRuntime && installedCodexInfo && compareSemver(latestCodexRuntime.version, installedCodexInfo.version) > 0,
+    latestCodexRuntime && installedCodexInfo && codexRuntimeUpdateAvailable(latestCodexRuntime, installedCodexInfo),
   );
   const codexRuntimeNeedsRepair = installedCodexInfo?.source === 'runtime_broken';
   const canInstallCodexRuntime = Boolean(

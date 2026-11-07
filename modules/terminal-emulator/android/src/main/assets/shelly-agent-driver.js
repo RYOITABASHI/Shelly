@@ -400,10 +400,11 @@ function androidLauncherContext() {
 // The worker follows `agent-current`, never `current`. `current` is the newest
 // Codex that passed the device probes, for the TUI; the worker's safety rests on
 // protocol details a probe does not look at (approval requests, item types,
-// features, MCP), so it stays on a version that was checked against this driver
-// (plan 6.2). Nothing creates `agent-current` until the CI contract tests exist
-// (Inc 4/5), so today the worker runs the codex_tui bundled in the same APK as
-// this driver.
+// features, MCP), so no update may move it on its own (plan 6.2). Nothing creates
+// `agent-current` until the CI contract tests exist (Inc 4/5), so today the worker
+// runs the codex_tui bundled in this APK. That version changes only by a reviewed
+// edit of .ci-versions/codex-termux-deb.json. No automated test has run it against
+// this driver yet; that review is the whole check.
 //
 // Resolve the link to its real versioned directory once, before anything else
 // reads it, and run from there. Codex finds codex-code-mode-host next to its own

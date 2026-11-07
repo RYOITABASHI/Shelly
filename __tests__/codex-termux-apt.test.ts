@@ -77,11 +77,11 @@ withGpgv('verifyInRelease with the pinned key', () => {
 
   it('refuses a changed index', () => {
     const tampered = Buffer.from(inRelease.toString('utf8').replace('Suite: stable', 'Suite: stablf'));
-    expect(() => apt.verifyInRelease(tampered)).toThrow(apt.TrustError);
+    expect(() => apt.verifyInRelease(tampered)).toThrow(apt.SignatureError);
   });
 
   it('refuses a file with no signature', () => {
-    expect(() => apt.verifyInRelease(Buffer.from('Suite: stable\n'))).toThrow(apt.TrustError);
+    expect(() => apt.verifyInRelease(Buffer.from('Suite: stable\n'))).toThrow(apt.SignatureError);
   });
 
   it('never returns text placed around the signed block', () => {
@@ -203,6 +203,11 @@ describe('the pin', () => {
     expect(() => apt.validatePin({ ...pin(), upstreamVersion: '0.1.0' })).toThrow();
   });
 
+  it('starts the channel on the bundled package', () => {
+    const channel = JSON.parse(read('.ci-versions/codex-termux-channel.json'));
+    expect(apt.validatePin(channel).sha256).toBe(repoPin.sha256);
+  });
+
   it('left the fork pins behind', () => {
     expect(fs.existsSync(path.join(root, '.ci-versions/codex-termux.txt'))).toBe(false);
     expect(fs.existsSync(path.join(root, '.ci-versions/codex-termux.integrity'))).toBe(false);
@@ -274,9 +279,55 @@ describe('fetching the .deb', () => {
     await expect(apt.fetchDeb(realPin, options)).rejects.toThrow(/does not match the pin/);
   });
 
-  it('lets the signed index contradict the pin, but not stop a build when it is only down or ahead', async () => {
-    const resolve = (entry: unknown) => ({ mirrors: [], get: async () => Buffer.alloc(0), verify: () => '', entry });
-    await expect(apt.confirmPinAgainstIndex(pin(), resolve(null))).resolves.toBe('unavailable');
+});
+
+describe('confirmPinAgainstIndex: an APK build never depends on the live index', () => {
+  const packagesFor = (version: string, hash = HASH) => zlib.gzipSync(entryText(version, { SHA256: hash }));
+  const options = (gz: Buffer, { date = 'Sat, 7 Nov 2026 03:00:30 UTC', now = FIXTURE_NOW } = {}) => ({
+    mirrors: ['https://one.test'],
+    now,
+    get: async (url: string) => (url.endsWith('.gz') ? gz : Buffer.from('signed')),
+    verify: () => [
+      'Origin: termux-main stable', 'Suite: stable', 'Codename: stable', `Date: ${date}`,
+      'SHA256:', ` ${sha256(gz)} ${gz.length} ${PACKAGES_PATH}`, '',
+    ].join('\n'),
+  });
+  let log: jest.SpyInstance;
+  beforeEach(() => { log = jest.spyOn(console, 'log').mockImplementation(() => {}); });
+  afterEach(() => jest.restoreAllMocks());
+  const warned = () => log.mock.calls.some(([line]) => String(line).startsWith('::warning'));
+
+  it('confirms a pin the index still lists', async () => {
+    await expect(apt.confirmPinAgainstIndex(pin(), options(packagesFor('0.167.0')))).resolves.toBe('confirmed');
+    expect(warned()).toBe(false);
+  });
+
+  it('accepts an index that has moved on', async () => {
+    await expect(apt.confirmPinAgainstIndex(pin(), options(packagesFor('0.170.0')))).resolves.toBe('moved');
+  });
+
+  it('only warns when the index is stale', async () => {
+    const stale = options(packagesFor('0.167.0'), { now: FIXTURE_NOW + 30 * 86400000 });
+    await expect(apt.confirmPinAgainstIndex(pin(), stale)).resolves.toBe('unconfirmed');
+    expect(warned()).toBe(true);
+  });
+
+  it('only warns when the index is older than the pin', async () => {
+    await expect(apt.confirmPinAgainstIndex(pin('0.170.0'), options(packagesFor('0.167.0')))).resolves.toBe('unconfirmed');
+    expect(warned()).toBe(true);
+  });
+
+  it('only warns when Termux is down', async () => {
+    const down = { mirrors: ['https://one.test'], get: async () => { throw new Error('HTTP 503'); } };
+    await expect(apt.confirmPinAgainstIndex(pin(), down)).resolves.toBe('unconfirmed');
+  });
+
+  it('stops on a failed signature', async () => {
+    const forged = {
+      ...options(packagesFor('0.167.0')),
+      verify: () => { throw new apt.SignatureError('bad signature'); },
+    };
+    await expect(apt.confirmPinAgainstIndex(pin(), forged)).rejects.toBeInstanceOf(apt.SignatureError);
   });
 });
 
@@ -306,9 +357,12 @@ describe('runtimeManifest', () => {
   });
 });
 
-/** A minimal ELF64: one PT_LOAD over the file, PT_INTERP, PT_DYNAMIC. */
-function elf({ type = 3, machine = 183, interp = '/system/bin/linker64', needed = ['libc.so'] } = {}) {
-  const buf = Buffer.alloc(1024);
+/** A minimal ELF64: one PT_LOAD over the file, PT_INTERP, PT_DYNAMIC, version tables. */
+function elf({
+  type = 3, machine = 183, interp = '/system/bin/linker64', needed = ['libc.so'],
+  requires = {} as Record<string, string[]>, defines = [] as string[],
+} = {}) {
+  const buf = Buffer.alloc(4096);
   buf.writeUInt32BE(0x7f454c46, 0);
   buf[4] = 2;
   buf[5] = 1;
@@ -323,41 +377,81 @@ function elf({ type = 3, machine = 183, interp = '/system/bin/linker64', needed 
     buf.writeBigUInt64LE(BigInt(offset), at + 16);
     buf.writeBigUInt64LE(BigInt(filesz), at + 32);
   };
-  header(64, 1, 0, 1024);
+  header(64, 1, 0, buf.length);
   const interpAt = 300;
   buf.write(`${interp}\0`, interpAt, 'latin1');
   header(120, 3, interpAt, interp.length + 1);
   const strtab = 400;
-  const dynamic = 700;
   let cursor = 1;
-  let entry = dynamic;
-  for (const name of needed) {
-    buf.write(`${name}\0`, strtab + cursor, 'latin1');
-    buf.writeBigInt64LE(1n, entry);
-    buf.writeBigUInt64LE(BigInt(cursor), entry + 8);
-    entry += 16;
+  const str = (name: string) => {
+    const at = cursor;
+    buf.write(`${name}\0`, strtab + at, 'latin1');
     cursor += name.length + 1;
+    return at;
+  };
+  const dynamic = 1200;
+  let entry = dynamic;
+  const tag = (kind: bigint, value: number) => {
+    buf.writeBigInt64LE(kind, entry);
+    buf.writeBigUInt64LE(BigInt(value), entry + 8);
+    entry += 16;
+  };
+  for (const name of needed) tag(1n, str(name));
+  tag(5n, strtab);
+  const libraries = Object.entries(requires);
+  let table = 2000;
+  if (libraries.length > 0) {
+    tag(0x6ffffffen, table);
+    tag(0x6fffffffn, libraries.length);
+    libraries.forEach(([library, names], i) => {
+      buf.writeUInt16LE(1, table);
+      buf.writeUInt16LE(names.length, table + 2);
+      buf.writeUInt32LE(str(library), table + 4);
+      buf.writeUInt32LE(16, table + 8);
+      const size = 16 + names.length * 16;
+      buf.writeUInt32LE(i === libraries.length - 1 ? 0 : size, table + 12);
+      names.forEach((name, j) => {
+        const aux = table + 16 + j * 16;
+        buf.writeUInt32LE(str(name), aux + 8);
+        buf.writeUInt32LE(j === names.length - 1 ? 0 : 16, aux + 12);
+      });
+      table += size;
+    });
   }
-  buf.writeBigInt64LE(5n, entry);
-  buf.writeBigUInt64LE(BigInt(strtab), entry + 8);
-  entry += 16;
-  header(176, 2, dynamic, entry + 16 - dynamic);
+  if (defines.length > 0) {
+    // The BASE entry first, as a real library has it.
+    const all = ['libthing.so', ...defines];
+    tag(0x6ffffffcn, table);
+    tag(0x6ffffffdn, all.length);
+    all.forEach((name, i) => {
+      buf.writeUInt16LE(1, table);
+      buf.writeUInt16LE(i === 0 ? 1 : 0, table + 2);
+      buf.writeUInt32LE(20, table + 12);
+      buf.writeUInt32LE(i === all.length - 1 ? 0 : 28, table + 16);
+      buf.writeUInt32LE(str(name), table + 20);
+      table += 28;
+    });
+  }
+  tag(0n, 0);
+  header(176, 2, dynamic, entry - dynamic);
   return buf;
 }
 
 describe('checkAndroidBinary', () => {
+  const bundled = { 'libssl.so.3': ['OPENSSL_3.0.0'], 'libcrypto.so.3': ['OPENSSL_3.0.0', 'OPENSSL_3.2.0'] };
+
   it('reads the loader and libraries the way the Termux binaries declare them', () => {
-    const info = apt.checkAndroidBinary(elf({ needed: ['libssl.so.3', 'libcrypto.so.3', 'libdl.so', 'libm.so', 'libc.so'] }), 'codex');
+    const info = apt.checkAndroidBinary(elf({ needed: ['libssl.so.3', 'libcrypto.so.3', 'libdl.so', 'libm.so', 'libc.so'] }), 'codex', bundled);
     expect(info.interp).toBe('/system/bin/linker64');
     expect(info.needed).toEqual(['libssl.so.3', 'libcrypto.so.3', 'libdl.so', 'libm.so', 'libc.so']);
   });
 
   it('refuses what cannot run under Shelly', () => {
-    expect(() => apt.checkAndroidBinary(elf({ type: 2 }), 'x')).toThrow(/not PIE/);
-    expect(() => apt.checkAndroidBinary(elf({ machine: 62 }), 'x')).toThrow(/aarch64/);
-    expect(() => apt.checkAndroidBinary(elf({ interp: '/lib/ld-musl-aarch64.so.1' }), 'x')).toThrow(/interpreter/);
-    expect(() => apt.checkAndroidBinary(elf({ needed: ['libsqlite3.so'] }), 'x')).toThrow(/libsqlite3/);
-    expect(() => apt.checkAndroidBinary(Buffer.from('#!/bin/sh'), 'x')).toThrow();
+    expect(() => apt.checkAndroidBinary(elf({ type: 2 }), 'x', bundled)).toThrow(/not PIE/);
+    expect(() => apt.checkAndroidBinary(elf({ machine: 62 }), 'x', bundled)).toThrow(/aarch64/);
+    expect(() => apt.checkAndroidBinary(elf({ interp: '/lib/ld-musl-aarch64.so.1' }), 'x', bundled)).toThrow(/interpreter/);
+    expect(() => apt.checkAndroidBinary(elf({ needed: ['libsqlite3.so'] }), 'x', bundled)).toThrow(/libsqlite3/);
+    expect(() => apt.checkAndroidBinary(Buffer.from('#!/bin/sh'), 'x', bundled)).toThrow();
   });
 
   it('allows only libraries that exist on a device', () => {
@@ -366,6 +460,29 @@ describe('checkAndroidBinary', () => {
     for (const name of apt.ALLOWED_NEEDED) {
       if (!bionic.has(name)) expect(extractor).toContain(`to "${name}"`);
     }
+  });
+
+  it('accepts required versions the bundled OpenSSL defines', () => {
+    const binary = elf({
+      needed: ['libssl.so.3', 'libcrypto.so.3', 'libc.so'],
+      requires: { 'libssl.so.3': ['OPENSSL_3.0.0'], 'libcrypto.so.3': ['OPENSSL_3.0.0', 'OPENSSL_3.2.0'], 'libc.so': ['LIBC'] },
+    });
+    expect(apt.checkAndroidBinary(binary, 'codex', bundled).requiredVersions['libcrypto.so.3']).toEqual(['OPENSSL_3.0.0', 'OPENSSL_3.2.0']);
+  });
+
+  it('refuses a newer OPENSSL_3.x than the bundled copy, though the name loads', () => {
+    const binary = elf({ needed: ['libcrypto.so.3', 'libc.so'], requires: { 'libcrypto.so.3': ['OPENSSL_3.0.0', 'OPENSSL_3.5.0'] } });
+    expect(() => apt.checkAndroidBinary(binary, 'codex', bundled)).toThrow(/OPENSSL_3\.5\.0 from libcrypto\.so\.3/);
+  });
+
+  it('reads verdefs and leaves out the BASE entry', () => {
+    expect(apt.readElfInfo(elf({ defines: ['OPENSSL_3.0.0', 'OPENSSL_3.3.0'] })).definedVersions).toEqual(['OPENSSL_3.0.0', 'OPENSSL_3.3.0']);
+  });
+
+  it('reads the real bundled libraries, which provide what Codex 0.167.0 asks for', () => {
+    const versions = apt.bundledLibraryVersions();
+    expect(versions['libssl.so.3']).toContain('OPENSSL_3.0.0');
+    expect(versions['libcrypto.so.3']).toContain('OPENSSL_3.0.0');
   });
 });
 
@@ -400,10 +517,46 @@ describe('arMembers', () => {
 describe('runBump', () => {
   let dir: string;
   let args: Record<string, string>;
+  const candidate = () => JSON.parse(fs.readFileSync(args.candidate, 'utf8'));
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bump-'));
-    args = { pin: path.join(dir, 'pin.json'), 'codex-txt': path.join(dir, 'codex.txt'), 'github-output': path.join(dir, 'out') };
+    args = { pin: path.join(dir, 'pin.json'), candidate: path.join(dir, 'candidate.json'), 'github-output': path.join(dir, 'out') };
+    fs.writeFileSync(args.pin, JSON.stringify(pin('0.167.0')));
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('writes a candidate and leaves the pin for after verification', async () => {
+    const before = fs.readFileSync(args.pin, 'utf8');
+    await apt.runBump(args, { resolve: async () => pin('0.168.0-1') });
+    expect(candidate().version).toBe('0.168.0-1');
+    expect(fs.readFileSync(args.pin, 'utf8')).toBe(before);
+    expect(fs.readFileSync(args['github-output'], 'utf8')).toContain('changed=true');
+  });
+
+  it('hands on the pin itself when nothing moved, so a behind channel can still publish', async () => {
+    await apt.runBump(args, { resolve: async () => pin('0.167.0') });
+    expect(candidate().version).toBe('0.167.0');
+    expect(fs.readFileSync(args['github-output'], 'utf8')).toContain('changed=false');
+  });
+
+  it('stops on a downgrade, and on a stale index, since nothing is pinned to fall back on', async () => {
+    await expect(apt.runBump(args, { resolve: async () => pin('0.166.0') })).rejects.toBeInstanceOf(apt.TrustError);
+    expect(fs.existsSync(args.candidate)).toBe(false);
+  });
+});
+
+describe('runPromote', () => {
+  let dir: string;
+  let args: Record<string, string>;
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-promote-'));
+    args = { channel: path.join(dir, 'c.json'), pin: path.join(dir, 'p.json'), 'codex-txt': path.join(dir, 't') };
+    fs.writeFileSync(args.channel, JSON.stringify(pin('0.168.0-1')));
     fs.writeFileSync(args.pin, JSON.stringify(pin('0.167.0')));
     fs.writeFileSync(args['codex-txt'], '0.167.0\n');
   });
@@ -412,28 +565,14 @@ describe('runBump', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('writes the pin and codex.txt together on a new version', async () => {
-    await apt.runBump(args, { resolve: async () => pin('0.168.0-1'), hasNpm: () => true });
-    expect(JSON.parse(fs.readFileSync(args.pin, 'utf8')).version).toBe('0.168.0-1');
+  it('moves the bundled pin and codex.txt together', () => {
+    apt.runPromote(args, { hasNpm: () => true });
+    expect(() => apt.checkPinMatchesCodexTxt(JSON.parse(fs.readFileSync(args.pin, 'utf8')), fs.readFileSync(args['codex-txt'], 'utf8'))).not.toThrow();
     expect(fs.readFileSync(args['codex-txt'], 'utf8')).toBe('0.168.0\n');
-    expect(fs.readFileSync(args['github-output'], 'utf8')).toContain('changed=true');
   });
 
-  it('leaves the files alone when nothing moved', async () => {
-    const before = fs.readFileSync(args.pin, 'utf8');
-    await apt.runBump(args, { resolve: async () => pin('0.167.0'), hasNpm: () => true });
-    expect(fs.readFileSync(args.pin, 'utf8')).toBe(before);
-    expect(fs.readFileSync(args['github-output'], 'utf8')).toContain('changed=false');
-  });
-
-  it('holds the bump until the npm dispatcher of that version exists', async () => {
-    await apt.runBump(args, { resolve: async () => pin('0.168.0'), hasNpm: () => false });
-    expect(JSON.parse(fs.readFileSync(args.pin, 'utf8')).version).toBe('0.167.0');
-    expect(fs.readFileSync(args['github-output'], 'utf8')).toContain('changed=false');
-  });
-
-  it('stops on a downgrade instead of writing it', async () => {
-    await expect(apt.runBump(args, { resolve: async () => pin('0.166.0'), hasNpm: () => true })).rejects.toBeInstanceOf(apt.TrustError);
+  it('refuses a version whose npm dispatcher the APK build could not install', () => {
+    expect(() => apt.runPromote(args, { hasNpm: () => false })).toThrow(/npm/);
     expect(JSON.parse(fs.readFileSync(args.pin, 'utf8')).version).toBe('0.167.0');
   });
 });
@@ -468,28 +607,96 @@ describe('workflows', () => {
     expect(android).not.toContain('codex-runtime.tar.gz');
   });
 
-  it('publishes without an APK build, safety-scanned, manifest last', () => {
+  const stepOf = (name: string) => {
+    const at = bump.indexOf(`- name: ${name}`);
+    expect(at).toBeGreaterThan(0);
+    const next = bump.indexOf('\n      - name:', at + 1);
+    return bump.slice(at, next < 0 ? undefined : next);
+  };
+
+  it('never moves what the APK bundles and agents run', () => {
+    expect(bump).toContain('PIN: .ci-versions/codex-termux-channel.json');
+    expect(bump).not.toContain('CODEX_TXT');
+    const commit = stepOf('Commit the new channel pin to main');
+    expect(commit).toContain('git add "$PIN"\n');
+    expect(commit).not.toContain('BUNDLED_PIN');
+    expect(commit).not.toContain('codex.txt');
+    expect(android).not.toContain('codex-termux-channel');
+  });
+
+  it('verifies and scans the candidate before any commit or upload', () => {
+    const verify = bump.indexOf('- name: Verify the candidate');
+    const commit = bump.indexOf('- name: Commit the new channel pin to main');
+    const publish = bump.indexOf('- name: Publish the verified runtime');
+    expect(verify).toBeGreaterThan(0);
+    expect(verify).toBeLessThan(commit);
+    expect(commit).toBeLessThan(publish);
+    const step = stepOf('Verify the candidate');
+    expect(step).toContain('codex-termux-apt.js fetch --pin "$candidate"');
+    expect(step).toContain('release-safety-scan.js');
+    expect(step).not.toContain('git ');
+    expect(step).not.toContain('gh release');
+    expect(bump.slice(0, verify)).not.toContain('git commit');
+    expect(bump.slice(0, verify)).not.toContain('gh release upload');
+  });
+
+  it('commits and publishes only from main', () => {
+    for (const name of ['Commit the new channel pin to main', 'Publish the verified runtime', 'Keep a copy of the bundled .deb']) {
+      expect(stepOf(name)).toContain("github.ref == 'refs/heads/main'");
+    }
+  });
+
+  it('publishes without an APK build, manifest last', () => {
     expect(bump).not.toContain('gh workflow run');
-    const scan = bump.indexOf('release-safety-scan.js');
-    const deb = bump.indexOf('"$work/$deb_name" --clobber');
-    const tarball = bump.indexOf('"$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" "$work/$asset"');
-    const manifest = bump.indexOf('"$work/$RUNTIME_MANIFEST" --clobber');
-    expect(scan).toBeGreaterThan(0);
-    expect(scan).toBeLessThan(deb);
+    const step = stepOf('Publish the verified runtime');
+    const deb = step.indexOf('"$WORK/$DEB_NAME" --clobber');
+    const tarball = step.indexOf('"$WORK/$ASSET"');
+    const manifest = step.indexOf('"$WORK/out/$RUNTIME_MANIFEST" --clobber');
+    expect(deb).toBeGreaterThan(0);
     expect(deb).toBeLessThan(tarball);
     expect(tarball).toBeLessThan(manifest);
   });
 
-  it('publishes by comparing the channel with the pin, so a failed run heals', () => {
-    const step = bump.slice(bump.indexOf('- name: Publish the pinned runtime'));
-    expect(step.slice(0, step.indexOf('run: |'))).not.toContain('if:');
-    expect(step).toContain('codex-termux-apt.js published');
+  it('decides on the channel, so a failed run heals, and verifies whenever it will commit or publish', () => {
+    expect(stepOf('Compare the channel with the candidate')).toContain('codex-termux-apt.js published');
+    expect(stepOf('Verify the candidate')).toContain("steps.resolve.outputs.changed == 'true' || steps.channel.outputs.state == 'behind'");
+  });
+
+  it('keeps the .deb of the bundled pin, which can sit behind the channel', () => {
+    const step = stepOf('Keep a copy of the bundled .deb');
+    expect(step).toContain('--pin "$BUNDLED_PIN"');
+    expect(bump).not.toContain('gh release delete-asset');
   });
 
   it('leaves codex-runtime.json alone, which old APKs read', () => {
     expect(bump).toContain('RUNTIME_MANIFEST: codex-runtime-termux.json');
     expect(read('components/layout/BuildsModal.tsx')).toContain("CODEX_RUNTIME_MANIFEST_ASSET = 'codex-runtime-termux.json'");
     expect(android).not.toContain('codex-runtime.json');
+  });
+});
+
+describe('reading the installed Termux revision on the Builds screen', () => {
+  const hasBash = spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' }).stdout?.trim() === 'ok';
+  (hasBash ? it : it.skip)('gets codexTermuxVersion out of a real manifest through the shell string', () => {
+    const line = read('components/layout/BuildsModal.tsx').split(/\r?\n/).find((l) => l.includes('termux="$(/system/bin/toybox sed'));
+    const shell: string = eval(line!.trim().replace(/,$/, ''));
+    const command = shell.match(/termux="(\$\(.*\))"; fi$/)![1].split('/system/bin/toybox ').join('');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-manifest-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ version: '0.167.0', codexTermuxVersion: '0.167.0-1' }, null, 2));
+      const out = spawnSync('bash', ['-c', `runtime=.; echo ${command}`], { cwd: dir, encoding: 'utf8' });
+      expect(out.stdout.trim()).toBe('0.167.0-1');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('stale fork text', () => {
+  it('is gone from the in-app assistant and the READMEs', () => {
+    expect(read('lib/ask-context.ts')).not.toContain('DioNanos');
+    expect(read('README.md')).not.toContain('does not use Termux\n  packages');
+    expect(read('README.ja.md')).not.toContain('Termux のパッケージも、');
   });
 });
 
@@ -517,5 +724,39 @@ describe('device install', () => {
     }
     expect(read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt'))
       .toContain('"lib/arm64-v8a/libcodex_tui.so" to "codex_tui"');
+  });
+});
+
+describe('doctor', () => {
+  it('probes Codex with the launchers\' environment', () => {
+    const doctor = read('modules/terminal-emulator/android/src/main/assets/shelly-doctor.js');
+    expect(doctor).toContain("LD_PRELOAD: path.join(LIB, 'libexec_wrapper.so')");
+    const probe = doctor.slice(doctor.indexOf('function runVersion'), doctor.indexOf('function securityReport'));
+    expect(probe).not.toContain('delete env.LD_PRELOAD');
+  });
+});
+
+describe('codexRuntimeUpdateAvailable', () => {
+  const { codexRuntimeUpdateAvailable: available } = require('../lib/codex-runtime-update');
+  const channel = (version: string, codexTermuxVersion = version) => ({ version, codexTermuxVersion });
+
+  it('offers a newer upstream version and never an older one', () => {
+    expect(available(channel('0.168.0'), { version: '0.167.0', source: 'runtime' })).toBe(true);
+    expect(available(channel('0.166.0-3'), { version: '0.167.0', source: 'runtime' })).toBe(false);
+  });
+
+  it('offers a Termux revision although --version is unchanged', () => {
+    expect(available(channel('0.167.0', '0.167.0-1'), { version: '0.167.0', source: 'runtime', termuxVersion: '0.167.0' })).toBe(true);
+    expect(available(channel('0.167.0', '0.167.0-10'), { version: '0.167.0', source: 'runtime', termuxVersion: '0.167.0-9' })).toBe(true);
+  });
+
+  it('stays quiet on the same revision', () => {
+    expect(available(channel('0.167.0', '0.167.0-1'), { version: '0.167.0', source: 'runtime', termuxVersion: '0.167.0-1' })).toBe(false);
+    expect(available(channel('0.167.0'), { version: '0.167.0', source: 'bundled' })).toBe(false);
+  });
+
+  it('treats a bundled Codex as revision 0, and ignores a broken runtime manifest', () => {
+    expect(available(channel('0.167.0', '0.167.0-1'), { version: '0.167.0', source: 'bundled' })).toBe(true);
+    expect(available(channel('0.167.0', '0.167.0-1'), { version: '0.167.0', source: 'runtime_broken', termuxVersion: '0.167.0-1' })).toBe(true);
   });
 });
