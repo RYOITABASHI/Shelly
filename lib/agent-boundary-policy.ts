@@ -365,54 +365,25 @@ const CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)
 /**
  * logcat: a worker runs as the app's uid, so it reads the app's whole log, which
  * holds whatever the app or a library ever printed. As the clipboard, it takes a
- * human. Only as a command, so `grep logcat notes.txt` and `cat logcat.txt` stay
- * reads; anything else that names it (`adb shell logcat`, `timeout 5 logcat`,
- * `bash -lc logcat`) counts. The commands that may name it are the ones that
- * cannot run it: find, awk, sed, less and more can, so they are not listed, and
- * git only without `-c`, which can define an alias. A substitution inside `echo`
- * is indirect-exec.
+ * human.
+ *
+ * Fail-closed on purpose. Telling a mention from a run needs a shell parser, and
+ * two rounds of adversarial review broke every shape of this check by comment,
+ * brace, NUL and git flag. So any command that names it counts, unless it is
+ * nothing but plain readers with no shell syntax at all. The cost is a question,
+ * or a refusal at L3, when a worker writes the word in a commit message or a
+ * heredoc. That is rare, and the worker can reword. A name assembled at run time
+ * is not seen, the same limit as every string match here.
  */
-const LOGCAT_WORD_RE = /(?:^|[\s/=(<>!])logcat(?=$|[\s;&|)<>])/;
-const LOGCAT_TEXT_ONLY_COMMAND_RE =
-  /^\s*(?:(?:cat|head|tail|grep|egrep|fgrep|rg|ls|stat|file|wc|diff|echo|printf|tee|cp|mv|rm|mkdir|touch)(?=\s|$)|git(?=\s)(?!.*\s(?:-c|--config-env|--exec-path)(?:[\s=]|$)))/;
-const LOOSE_COMMAND_SEPARATOR_RE = /\|\||&&|[|;&\n(`]/;
-
-/**
- * Cuts a command line at what starts a new command, leaving quoted text whole, so
- * `grep -E "a|logcat" notes` is one command and `cat <(logcat)` is two. Classification
- * only, not a parser. An unbalanced quote falls back to cutting everywhere.
- */
-function shellCommandSegments(command: string): string[] {
-  const segments: string[] = [];
-  let current = '';
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (ch === '\\') {
-      current += ch + (command[i + 1] ?? '');
-      i++;
-    } else if (ch === "'" || ch === '"') {
-      const escapes = ch === '"' || command[i - 1] === '$';
-      let end = i + 1;
-      while (end < command.length && command[end] !== ch) end += escapes && command[end] === '\\' ? 2 : 1;
-      if (end >= command.length) return command.split(LOOSE_COMMAND_SEPARATOR_RE);
-      current += command.slice(i, end + 1);
-      i = end;
-    } else if (';&|\n(`'.includes(ch)) {
-      segments.push(current);
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  segments.push(current);
-  return segments;
-}
-
+const LOGCAT_NAME_RE = /logcat/;
+const LOGCAT_PLAIN_READER_RE = /^\s*(?:cat|head|tail|grep|egrep|fgrep|ls|stat|wc|file|diff)\s/;
+const LOGCAT_SHELL_SYNTAX_RE = /[\n\r\0#$`\\{}()<>;&'"]/;
 function readsLogcat(command: string): boolean {
-  return shellCommandSegments(command).some((segment) => {
-    const words = dequoteShellWords(dequoteShellWords(segment));
-    return LOGCAT_WORD_RE.test(words) && !LOGCAT_TEXT_ONLY_COMMAND_RE.test(words);
-  });
+  const words = dequoteShellWords(command);
+  const named = [command.replace(/[\0'"\\]/g, ''), words, dequoteShellWords(words)].some((c) => LOGCAT_NAME_RE.test(c));
+  if (!named) return false;
+  if (LOGCAT_SHELL_SYNTAX_RE.test(command)) return true;
+  return command.split('|').some((segment) => LOGCAT_NAME_RE.test(segment) && !LOGCAT_PLAIN_READER_RE.test(segment));
 }
 // `device <w1> [<w2>]`: the subcommand words, skipping options.
 const DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;

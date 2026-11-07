@@ -339,13 +339,22 @@
     "expectedAnswer": "escalate"
   },
   {
-    "name": "quoted pipe naming logcat stays a read -> allow at L2",
-    "command": "grep -E \"foo|logcat\" notes.txt",
+    "name": "comment shifts the quotes, logcat runs -> escalate at L1 (secret-read)",
+    "command": "cat notes.txt # don't\nlogcat -d\n# don't",
+    "policy": {
+      "level": "L1",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "brace expansion logcat -> escalate at L2 (secret-read)",
+    "command": "{logcat,-d}",
     "policy": {
       "level": "L2",
       "workspaceRoot": "/root/app"
     },
-    "expectedAnswer": "y"
+    "expectedAnswer": "escalate"
   },
   {
     "name": "grep for the word logcat stays a read -> allow at L1",

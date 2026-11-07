@@ -1073,39 +1073,15 @@ function hasUnsafeCd(command, root) {
   return false;
 }
 var CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)<>])/;
-var LOGCAT_WORD_RE = /(?:^|[\s/=(<>!])logcat(?=$|[\s;&|)<>])/;
-var LOGCAT_TEXT_ONLY_COMMAND_RE = /^\s*(?:(?:cat|head|tail|grep|egrep|fgrep|rg|ls|stat|file|wc|diff|echo|printf|tee|cp|mv|rm|mkdir|touch)(?=\s|$)|git(?=\s)(?!.*\s(?:-c|--config-env|--exec-path)(?:[\s=]|$)))/;
-var LOOSE_COMMAND_SEPARATOR_RE = /\|\||&&|[|;&\n(`]/;
-function shellCommandSegments(command) {
-  const segments = [];
-  let current = "";
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (ch === "\\") {
-      current += ch + (command[i + 1] ?? "");
-      i++;
-    } else if (ch === "'" || ch === '"') {
-      const escapes = ch === '"' || command[i - 1] === "$";
-      let end = i + 1;
-      while (end < command.length && command[end] !== ch) end += escapes && command[end] === "\\" ? 2 : 1;
-      if (end >= command.length) return command.split(LOOSE_COMMAND_SEPARATOR_RE);
-      current += command.slice(i, end + 1);
-      i = end;
-    } else if (";&|\n(`".includes(ch)) {
-      segments.push(current);
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  segments.push(current);
-  return segments;
-}
+var LOGCAT_NAME_RE = /logcat/;
+var LOGCAT_PLAIN_READER_RE = /^\s*(?:cat|head|tail|grep|egrep|fgrep|ls|stat|wc|file|diff)\s/;
+var LOGCAT_SHELL_SYNTAX_RE = /[\n\r\0#$`\\{}()<>;&'"]/;
 function readsLogcat(command) {
-  return shellCommandSegments(command).some((segment) => {
-    const words = dequoteShellWords(dequoteShellWords(segment));
-    return LOGCAT_WORD_RE.test(words) && !LOGCAT_TEXT_ONLY_COMMAND_RE.test(words);
-  });
+  const words = dequoteShellWords(command);
+  const named = [command.replace(/[\0'"\\]/g, ""), words, dequoteShellWords(words)].some((c) => LOGCAT_NAME_RE.test(c));
+  if (!named) return false;
+  if (LOGCAT_SHELL_SYNTAX_RE.test(command)) return true;
+  return command.split("|").some((segment) => LOGCAT_NAME_RE.test(segment) && !LOGCAT_PLAIN_READER_RE.test(segment));
 }
 var DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
 var UNRESOLVED_WORD_RE = /[$`*?[{]/;

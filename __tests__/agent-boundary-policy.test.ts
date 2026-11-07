@@ -74,6 +74,22 @@ describe('logcat', () => {
     ["git -c alias.x='!logcat -d' x"],
     ['cat-foo logcat'],
     ["cat $'\\'' ; logcat -d ; echo $'\\'' ' '"],
+    ["cat notes.txt # don't\nlogcat -d\n# don't"],
+    ['grep a notes.txt # "\nlogcat -d\n# "'],
+    ["echo \\$'a\\'; logcat; echo \\$'b\\'"],
+    ["logcat$'\\0'"],
+    ["logcat$'\\x00' -d"],
+    ['{logcat,-d}'],
+    ['logcat{,}'],
+    ['git grep -Ologcat foo'],
+    ['git rebase -x logcat HEAD~1'],
+    ['git difftool --extcmd=logcat -y HEAD'],
+    ["git config alias.x '!logcat' && git x"],
+    ['git --namespace "a\nb" -c alias.z=\'!logcat\' z'],
+    ['bash -c "bash -c \'l\\"o\\"gcat\'"'],
+    ['echo logcat > s; bash s'],
+    ['rg --pre logcat foo .'],
+    ['rg --hostname-bin=logcat foo'],
   ])('reading it takes a human: %s', (command) => {
     for (const level of ['L1', 'L2'] as const) {
       const v = classifyProposedCommand(command, ctx(level));
@@ -91,14 +107,10 @@ describe('logcat', () => {
   it.each([
     ['grep logcat notes.txt'],
     ['cat logcat.txt'],
-    ['rg logcat src'],
     ['ls logcat-dumps'],
     ['git log'],
     ['git log | grep logcat'],
-    ['grep -E "foo|logcat" notes.txt'],
-    ["git commit -m 'capture; logcat output'"],
-    ["rg 'a|logcat' src"],
-    ['echo "a; logcat b"'],
+    ['grep logcat notes.txt | head -5'],
   ])('naming the word is not reading it: %s', (command) => {
     expect(classifyProposedCommand(command, ctx('L2')).signals).not.toContain('secret-read');
   });
