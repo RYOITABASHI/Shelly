@@ -48,6 +48,12 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
+import {
+  disableDraftPreapproval,
+  draftDestinationLabel,
+  getDraftPreapprovalEntries,
+  type DraftPreapprovalEntry,
+} from '@/lib/closepaw-draft-preapproval';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { useAgentStore } from '@/store/agent-store';
@@ -191,6 +197,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <VoiceInputSection />
             <FrontAgentSection />
             <AgentsSection visible={visible} />
+            <DraftPreapprovalSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
             <SocialConnectorsSection />
@@ -2475,6 +2482,82 @@ const SocialConnectorsSection = React.memo(function SocialConnectorsSection() {
 // pane opens via the shelly://browser deep link, and ~/.codex/auth.json
 // (mode 0600) is written on success. Verification is delegated to
 // shelly-doctor (which already reports `codex auth: <exists|missing>`).
+
+// "Save drafts without approval" (lib/closepaw-draft-preapproval.ts). The
+// native state (ClosePawDraftPreapproval.kt) is the truth and is re-read every
+// time Settings opens. This toggle only turns it OFF: ON is set per
+// destination by typing in the chat, never here.
+const DraftPreapprovalSection = React.memo(function DraftPreapprovalSection({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  const [entries, setEntries] = React.useState<DraftPreapprovalEntry[]>([]);
+  const [busy, setBusy] = React.useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    getDraftPreapprovalEntries()
+      .then((list) => { if (!cancelled) setEntries(list); })
+      .catch((e) => logError('SettingsDropdown', 'Failed to load draft pre-approval', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  const on = entries.length > 0;
+  const toggle = React.useCallback(async () => {
+    if (!on) {
+      Alert.alert(t('draft_preapproval.settings_toggle'), t('draft_preapproval.settings_hint_off'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const left = await disableDraftPreapproval([]);
+      setEntries(left);
+      ToastAndroid.show(t('draft_preapproval.settings_off_toast'), ToastAndroid.SHORT);
+    } catch (e: any) {
+      Alert.alert(t('draft_preapproval.settings_toggle'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to turn off draft pre-approval', e);
+    } finally {
+      setBusy(false);
+    }
+  }, [on, t]);
+
+  return (
+    <Section title={t('draft_preapproval.settings_title')}>
+      <Row label={t('draft_preapproval.settings_toggle')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: on ? withAlpha(C.accent, 0.36) : C.border },
+            busy && styles.integrationRowDisabled,
+          ]}
+          onPress={() => void toggle()}
+          disabled={busy}
+          hitSlop={4}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: on, disabled: busy }}
+          accessibilityLabel={t('draft_preapproval.settings_toggle')}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: on ? C.accent : C.text2 },
+              on && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      {entries.map((e) => (
+        <Text key={e.dest} style={[styles.apiKeyHint, { marginTop: 2, color: C.text1 }]}>
+          {t('draft_preapproval.settings_entry', { dest: draftDestinationLabel(e.dest), used: e.usedToday, cap: e.cap })}
+        </Text>
+      ))}
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t(on ? 'draft_preapproval.settings_hint_on' : 'draft_preapproval.settings_hint_off')}
+      </Text>
+    </Section>
+  );
+});
 
 const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();

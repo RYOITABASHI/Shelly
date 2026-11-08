@@ -3,6 +3,7 @@ package expo.modules.terminalemulator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import androidx.core.content.FileProvider
+import expo.modules.terminalemulator.scouter.redactForScouter
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -49,10 +51,14 @@ import org.json.JSONObject
  * the gate and this check: a process that writes it directly can list a host, and
  * only the host shown in the approval reveals that.
  *
- * Unattended sending is not implemented: it needs an authorization a same-uid
- * process cannot mint (DEFERRED.md, "ClosePaw save-draft"). [requestApproval] is
- * the one place that would change, and [ApprovedDraft] already names the
- * destination a per-destination seal would bind to.
+ * Without the tap (owner decision 2026-11-08): a destination the owner turned on
+ * by typing in the chat ([ClosePawDraftPreapproval], Keystore-MAC'd, native only)
+ * skips step 1 for up to its daily cap. [unlockStep] splits the queue: those drafts
+ * go as an "auto" batch, the rest are asked for as usual when it ends. The
+ * destinations file check, the re-hash before sending and the save-draft broadcast
+ * are the same, so nothing here can publish. The owner gets a notice afterwards
+ * with what was saved and links to the drafts ([autoNotice]). A queue item can
+ * only name a destination; it cannot turn one on or raise the cap.
  *
  * At most once: the item is renamed to `.sending` before the broadcast, and a
  * `.sending` file is never sent again, so a crash loses a draft instead of doubling
@@ -108,6 +114,9 @@ object ClosePawDrafts {
     /** One approval covers retries at later unlocks for this long. */
     private const val APPROVAL_MAX_AGE_MS = 6L * 60L * 60L * 1000L
     private const val NOTICE_ID = 0x37C1A030
+    private const val AUTO_NOTICE_ID = 0x37C1A031
+    private const val REQUEST_CODE_OPEN_DRAFTS = 0x37C1A032
+    private const val MAX_NOTICE_LINES = 10
     private const val NOTICE_TIMEOUT_MS = 30L * 60L * 1000L
 
     /**
@@ -134,10 +143,21 @@ object ClosePawDrafts {
     /** WAIT: the destinations file is missing or broken, which may be passing. */
     private enum class Fit { OK, WAIT, REFUSED }
 
-    private class Batch(val drafts: ArrayDeque<ApprovedDraft>, val approvedAt: Long) {
+    /**
+     * [auto]: sent without the tap under [ClosePawDraftPreapproval]. [labels] and
+     * [outcomes] are for its notice afterwards: "[where] title", cleaned.
+     */
+    private class Batch(
+        val drafts: ArrayDeque<ApprovedDraft>,
+        val approvedAt: Long,
+        val auto: Boolean = false,
+        val labels: HashMap<String, String> = HashMap(),
+    ) {
         var saved = 0
         var check = 0
         var failed = 0
+        val outcomes = ArrayList<String>()
+        val destinations = LinkedHashSet<String>()
     }
 
     enum class SendResult { STARTED, MAYBE_STARTED, NOT_STARTED, TOO_SLOW, REFUSED }
@@ -215,7 +235,7 @@ object ClosePawDrafts {
     private fun finishRun(app: Context, reqId: String, status: String, summary: String?) {
         runningReqId = null
         cleanUp(app, reqId)
-        batch?.let { tally(it, status, summary) }
+        batch?.let { tally(it, reqId, status, summary) }
         sendNext(app)
     }
 
@@ -241,13 +261,43 @@ object ClosePawDrafts {
                 sendNext(app)
                 return
             }
-            finishBatch(app, open)
+            finishBatch(app, open, resume = false)
         }
         if (ClosePawShellApprovals.hasPendingDrafts()) return
         if (!ClosePawHandoff.isTrustedVariantInstalled(app)) return
         sweepLeftovers(app)
         val items = readQueue(app)
-        if (items.isNotEmpty()) requestApproval(app, items)
+        if (items.isEmpty()) return
+        val auto = preapproved(app, items)
+        if (auto.isNotEmpty()) startAutoBatch(app, auto) else requestApproval(app, items)
+    }
+
+    fun destinationKey(draft: ApprovedDraft): String? = ClosePawDraftPreapproval.destinationKey(draft.platform, draft.subdomain)
+
+    /**
+     * The drafts whose destination the owner turned on, within today's cap. The
+     * count is stored before anything goes, so a crash can only use the cap up.
+     */
+    private fun preapproved(app: Context, items: List<Item>): List<Item> {
+        // A draft with image hosts always asks: the editor fetches those with the
+        // owner's cookies, and the hosts come from a file any process of this uid
+        // can edit, so only the approval line shows them to the owner.
+        val keys = items.map { if (it.imageHosts.isEmpty()) destinationKey(it.draft) else null }
+        if (keys.none { ClosePawDraftPreapproval.isOn(app, it) }) return emptyList()
+        val mask = ClosePawDraftPreapproval.reserve(app, keys)
+        return items.filterIndexed { i, _ -> mask[i] }
+    }
+
+    /** No tap: the same send path as an approved batch. */
+    private fun startAutoBatch(app: Context, items: List<Item>) {
+        val labels = HashMap<String, String>()
+        for (item in items) labels[item.draft.reqId] = noticeLabel(item)
+        Log.i(TAG, "sending ${items.size} pre-approved draft(s) without a tap")
+        for (item in items) {
+            ClosePawRunResults.writeState(app, item.draft.reqId, ClosePawRunResults.STATUS_QUEUED, "Pre-approved destination; sending without a tap")
+        }
+        batch = Batch(ArrayDeque(items.map { it.draft }), System.currentTimeMillis(), auto = true, labels = labels)
+        sendNext(app)
     }
 
     /** Every batch asks the owner. Its answer arrives in [onBatchDecided]. */
@@ -268,6 +318,12 @@ object ClosePawDrafts {
             // A later unlock resumes from here.
             if (isHalted(app) || !ClosePawDecisionReceiver.isUnlocked(app)) return
             if (!ClosePawHandoff.isTrustedVariantInstalled(app)) return
+            if (open.auto && !ClosePawDraftPreapproval.isOn(app, destinationKey(draft))) {
+                // Turned off since: the item stays queued and is asked for as usual.
+                open.drafts.removeFirst()
+                open.labels.remove(draft.reqId)
+                continue
+            }
             val settled = try {
                 send(app, open, draft)
             } catch (e: Throwable) {
@@ -355,6 +411,7 @@ object ClosePawDrafts {
                     ClosePawRunResults.forget(draft.reqId)
                     ClosePawRunResults.writeAfterLaunch(app, draft.reqId, ClosePawRunResults.STATUS_UNTRACKED, ClosePawHandoff.MSG_BACKGROUND)
                     open.check++
+                    record(open, draft, "?")
                     true
                 }
             }
@@ -404,6 +461,7 @@ object ClosePawDrafts {
         removeEntry(sending)
         ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_FAILED, "ClosePaw ran out of time and nothing started; retrying as request $reqId")
         val next = draft.copy(reqId = reqId)
+        open.labels.remove(draft.reqId)?.let { open.labels[reqId] = it }
         open.drafts[0] = next
         hold(app, next, "ClosePaw ran out of time reading the draft and nothing started; Shelly tries again at the next unlock")
     }
@@ -422,23 +480,129 @@ object ClosePawDrafts {
     private fun refuse(app: Context, open: Batch, draft: ApprovedDraft, message: String) {
         open.drafts.removeFirst()
         open.failed++
+        record(open, draft, "x")
         ClosePawRunResults.writeState(app, draft.reqId, ClosePawRunResults.STATUS_FAILED, message)
     }
 
-    private fun tally(open: Batch, status: String, summary: String?) {
-        when (status) {
-            ClosePawRunResults.STATUS_COMPLETED -> if (imagesMissing(summary)) open.check++ else open.saved++
-            ClosePawRunResults.STATUS_UNCERTAIN, ClosePawRunResults.STATUS_TIMEOUT, ClosePawRunResults.STATUS_LOST -> open.check++
+    private fun tally(open: Batch, reqId: String, status: String, summary: String?) {
+        val mark = when (status) {
+            ClosePawRunResults.STATUS_COMPLETED -> if (imagesMissing(summary)) "?" else "ok"
+            ClosePawRunResults.STATUS_UNCERTAIN, ClosePawRunResults.STATUS_TIMEOUT, ClosePawRunResults.STATUS_LOST -> "?"
+            else -> "x"
+        }
+        when (mark) {
+            "ok" -> open.saved++
+            "?" -> open.check++
             else -> open.failed++
+        }
+        recordLabel(open, reqId, mark)
+    }
+
+    /** Auto batches only: one cleaned line per draft for the notice afterwards. */
+    private fun record(open: Batch, draft: ApprovedDraft, mark: String) {
+        if (!open.auto) return
+        destinationKey(draft)?.let { open.destinations.add(it) }
+        recordLabel(open, draft.reqId, mark)
+    }
+
+    private fun recordLabel(open: Batch, reqId: String, mark: String) {
+        if (!open.auto) return
+        val label = open.labels.remove(reqId) ?: return
+        open.outcomes.add("$mark $label")
+        if (label.startsWith("[note]")) {
+            open.destinations.add("note")
+        } else {
+            LABEL_SUBSTACK_RE.find(label)?.let { open.destinations.add("substack:" + it.groupValues[1]) }
         }
     }
 
-    private fun finishBatch(app: Context, open: Batch) {
+    private val LABEL_SUBSTACK_RE = Regex("^\\[substack ([a-z0-9-]{1,63})]")
+
+    /**
+     * [resume]: after an auto batch, drafts that were not pre-approved (or over the
+     * cap) are asked for right away instead of at the next unlock.
+     */
+    private fun finishBatch(app: Context, open: Batch, resume: Boolean = true) {
         batch = null
-        if (open.saved + open.check + open.failed > 0) {
+        if (open.auto) {
+            autoNotice(app, open)
+            if (resume) post { unlockStep(app) }
+        } else if (open.saved + open.check + open.failed > 0) {
             notice(app, app.getString(R.string.closepaw_drafts_done, open.saved, open.check, open.failed))
         }
         queueChanged(app)
+    }
+
+    /** Fixed URLs only; the subdomain is one the destinations file allowed. */
+    fun draftsUrl(dest: String): String? = when {
+        dest == "note" -> "https://note.com/notes"
+        dest.startsWith("substack:") && ClosePawDraftPreapproval.isValidDest(dest) ->
+            "https://${dest.removePrefix("substack:")}.substack.com/publish/posts/drafts"
+        else -> null
+    }
+
+    private fun noticeLabel(item: Item): String {
+        val d = item.draft
+        val where = if (d.platform == "substack") "substack ${d.subdomain}" else d.platform
+        return "[$where] ${displayText(item.title, MAX_SHOWN_TITLE_CHARS)}"
+    }
+
+    /**
+     * What was saved without a tap, with links to the drafts. Titles are the queue's
+     * text, cleaned like the approval lines. A link only opens the drafts list.
+     */
+    private fun autoNotice(app: Context, open: Batch) {
+        if (open.saved + open.check + open.failed == 0) return
+        try {
+            val nm = app.getSystemService(NotificationManager::class.java) ?: return
+            if (!nm.areNotificationsEnabled()) return
+            val urls = open.destinations.mapNotNull { draftsUrl(it) }
+            val summary = app.getString(R.string.closepaw_drafts_auto_done, open.saved, open.check, open.failed)
+            val body = buildString {
+                append(summary)
+                for (line in open.outcomes.take(MAX_NOTICE_LINES)) append('\n').append(line.redactForScouter())
+                for (url in urls) append('\n').append(url)
+                append('\n').append(app.getString(R.string.closepaw_drafts_auto_off_hint))
+            }
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        ClosePawHandoff.CHANNEL_ID,
+                        app.getString(R.string.closepaw_channel_name),
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ).apply { description = app.getString(R.string.closepaw_channel_description) }
+                )
+                Notification.Builder(app, ClosePawHandoff.CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(app)
+            }
+            builder
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setContentTitle(app.getString(R.string.closepaw_drafts_auto_title))
+                .setContentText(summary)
+                .setStyle(Notification.BigTextStyle().bigText(body))
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+            for ((i, url) in urls.take(2).withIndex()) {
+                val pi = PendingIntent.getActivity(
+                    app,
+                    REQUEST_CODE_OPEN_DRAFTS + i,
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+                if (i == 0) builder.setContentIntent(pi)
+                val label = app.getString(
+                    if (url.contains(".substack.com/")) R.string.closepaw_drafts_open_substack else R.string.closepaw_drafts_open_note,
+                )
+                @Suppress("DEPRECATION")
+                builder.addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, label, pi).build())
+            }
+            nm.notify(AUTO_NOTICE_ID, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "auto draft notice failed type=${e.javaClass.simpleName}")
+        }
     }
 
     /** Lets the service stop if it was held only by the queue. */
@@ -611,6 +775,9 @@ object ClosePawDrafts {
 
     private fun withDestination(draft: ApprovedDraft, allowed: List<String>): ApprovedDraft =
         draft.copy(subdomain = if (draft.platform == "substack") resolveSubdomain(draft.selector, allowed) else null)
+
+    /** For [ClosePawDraftPreapproval.enableFromChat]: null when the destinations file is missing or broken. */
+    fun allowedSubdomains(context: Context): List<String>? = loadDestinations(context.applicationContext)?.subdomains
 
     /** The list decides; a selector only names an entry. Null: not allowed. */
     fun resolveSubdomain(selector: String?, allowed: List<String>): String? =

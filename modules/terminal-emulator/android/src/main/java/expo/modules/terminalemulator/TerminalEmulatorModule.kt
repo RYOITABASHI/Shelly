@@ -1655,6 +1655,27 @@ class TerminalEmulatorModule : Module() {
             ClosePawShellApprovals.resolve(context, reqId, decision, via, secret).toJson()
         }
 
+        // "Save drafts without approval" per destination (ClosePawDraftPreapproval.kt).
+        // ON only from RN's handler for words the owner typed in the AI pane
+        // composer (lib/closepaw-draft-preapproval.ts); nothing in the shell,
+        // the queue or a file reaches this. OFF is safe from anywhere.
+        AsyncFunction("setDraftPreapproval") { destinations: List<String>, dailyCap: Int ->
+            val context = requireReactContext()
+            ClosePawDraftPreapproval.enableFromChat(context, destinations, dailyCap)
+        }
+
+        AsyncFunction("disableDraftPreapproval") { destinations: List<String> ->
+            val context = requireReactContext()
+            // An empty list turns every destination off.
+            ClosePawDraftPreapproval.disable(context, destinations.takeIf { it.isNotEmpty() })
+            ClosePawDraftPreapproval.statusJson(context)
+        }
+
+        AsyncFunction("getDraftPreapproval") {
+            val context = requireReactContext()
+            ClosePawDraftPreapproval.statusJson(context)
+        }
+
         AsyncFunction("cancelAgentAddNotification") {
             val context = requireReactContext()
             AgentAddHandoff.cancelNotification(context)
