@@ -721,6 +721,13 @@ describe('Codex image-only turn', () => {
     expect(bad.stderr).toContain('takes no prompt');
   }, 60_000);
 
+  it('canary: accepts a model name (device run needs one)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'img-canary-model-'));
+    const r = childProcess.spawnSync(process.execPath, [driverPath, '--image-canary', '--cwd', tmp, '--text-only-model', 'gpt-5.5', '--codex-bin', path.join(tmp, 'missing')], { encoding: 'utf8' });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    expect(r.stderr).not.toContain('invalid --text-only-model');
+  }, 60_000);
+
   it('image flags without --image-only are refused', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'img-flag-'));
     const r = childProcess.spawnSync(process.execPath, [driverPath, '--cwd', tmp, '--prompt', 'x', '--image-style', 'abstract-geometric'], { encoding: 'utf8' });

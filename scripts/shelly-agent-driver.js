@@ -781,7 +781,7 @@ function ensureConfig(args) {
   if (!['codex', 'claude'].includes(args.engine)) {
     throw new Error('invalid --engine: expected "codex" or "claude"');
   }
-  if (args.textOnlyModel !== null && ((!args.textOnly && !args.imageOnly) || !TEXT_ONLY_MODEL_RE.test(args.textOnlyModel))) {
+  if (args.textOnlyModel !== null && ((!args.textOnly && !args.imageOnly && !args.imageCanary) || !TEXT_ONLY_MODEL_RE.test(args.textOnlyModel))) {
     throw new Error('invalid --text-only-model');
   }
   const imageArgsGiven = args.imageStyle !== null || args.imageSubject !== null || args.imageOut !== null;
