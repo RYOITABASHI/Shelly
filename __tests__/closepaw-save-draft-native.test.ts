@@ -311,7 +311,7 @@ describe('the shell command', () => {
   it('is extracted and reachable from the helper', () => {
     expect(home).toContain('context.assets.open("shelly-save-draft.js")');
     expect(home).toContain("if (args[0] === 'save-draft') {");
-    expect(home).toContain('# SHELLY_HELPER_SHIM v25');
+    expect(home).toMatch(/# SHELLY_HELPER_SHIM v(2[5-9]|[3-9][0-9])/);
     expect(Number(home.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(290);
   });
 });

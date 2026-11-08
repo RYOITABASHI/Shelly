@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-08: CC（feat/image-only-worker、未push）が汎用のヘッダー画像生成を実装（driver `--image-only`、`shelly image`、vendored jpeg-js 0.4.4、BASHRC_VERSION 291 / シム v26）。PC ではスタンドインの app-server と単体テストのみ。本物の Codex で画像が出るかは未確認（下記 P1「`shelly image`」）。
 - 2026-11-08: CC（feat/save-draft-preapproval、未push）が ClosePaw 下書き保存の「宛先ごとの承認なし」（オーナー決定の案 2）を実装（`ClosePawDraftPreapproval.kt`、`lib/closepaw-draft-preapproval.ts`、設定の「下書き（ClosePaw）」）。Kotlin は kotlinc で型検査のみ、Gradle ビルドと実機は未実施（下記 P1「ClosePaw save-draft」）。
 - 2026-11-07: CC（feat/closepaw-save-draft、未push）が ClosePaw の下書き保存ハンドオフの Shelly 側を実装（`shelly save-draft`、`ClosePawDrafts.kt`、BASHRC_VERSION 290 / シム v25）。対応する ClosePaw は feat/save-draft-routine の 6014df94。HTML 許可リストは ClosePaw の実物の `ArticleHtmlPolicy.kt` をコンパイルして突き合わせ済み（`__tests__/fixtures/closepaw-html-policy-cases.json`）。Shelly の Kotlin は変更した ClosePaw 系ファイルをスタブ付きで型検査しただけで、Gradle ビルドは未実施、実機未検証。無人送信はオーナー判断待ち（下記 P1「ClosePaw save-draft」）。
 - 2026-11-07: CC（fix/disable-seeded-content-agents、未push）が旧ビルドのサンプルエージェントを更新時に一度だけオフにするマイグレーションを追加（`lib/agent-seeded-sample-migration.ts`）。id と定義全体のフィンガープリントで判定し、編集済みは触らない。実機は未検証（次回のオンデバイス QA で、サンプルが残る端末で一度だけオフになること・オンに戻したら維持されること・通知 1 行を確認）。
@@ -82,6 +83,9 @@
 ### `tar xf` と `git clone` で symlink を作ると境界チェックを迂回できる (P1、セキュリティ、未修正)
 
 2026-11-07 のレビューで指摘（`feat/claude-install` とは別件、ここでは直さない）。「すべて」レベルなどの境界チェックは**実行時点で存在する symlink** とコマンド中の語を見ているので、`tar xf` や `git clone` が展開時に作る symlink は判定をすり抜ける。例: アーカイブから `l -> $HOME` を作ったあとの `tee -- l/.bashrc` は、ワークスペース内のパスとして通る。`ln`・`cp -s`・`git apply`・`patch` は既に人に回しているが（CLAUDE.md「承認なしで実行」、`allLevelLinkProbe`）、リンクを作れるコマンドの一覧が足りていない。**修正の方向**: `tar`・`unzip`・`git clone`・`git checkout` 等を同じ扱いにするか、書き込み判定で全構成要素の realpath をワークスペースと比較する。
+
+### `shelly image`（driver `--image-only`）— 実機未検証 (P1)
+ブランチ `feat/image-only-worker`（2026-11-08、未push）。`shelly image --style <enum> --subject <text> --out <$TMPDIR/x.jpg>` が Codex の画像生成 1 枚を 1600×1067 の JPEG（品質 80、メタデータなし）にして JSON を出す。プロンプトは driver がスタイル（列挙）と 80 字までの無害化した題材から組み立て、記事本文は入らない。ターンは text-only の封じ込めのまま `image_generation` だけ ON。許すアイテムは `imageGeneration`・メッセージ・reasoning のみ。上流の確認は rust-v0.167.0 のソース（`ext/image-generation`、`core/src/tools/spec_plan.rs` の `image_generation_available`）を読んだだけで、本物の codex_tui では動かしていない。**実機で確認すること**: (1) 有料プランの ChatGPT ログインで、read-only sandbox・空の HOME・text-only 用のモデルカタログ（`input_modalities` 付き）のまま画像ツールが出るか（出なければ「Codex produced no image」で失敗する）。(2) `savedPath`（`$CODEX_HOME/generated_images/…`）と base64 のどちらで届くか、`fileId` だけになる場合があるか。(3) 正規化の速さ（PC では 1536×1024 で約 0.3 秒）。(4) `locks/text-only-codex.slot` と `locks/image-<pid>.pid` が executor の text-only ステップ・STOP-ALL と噛み合うか。**残るリスク**: 画像ツールの `referenced_image_paths` は承認なしで端末の画像を読んで送れる。指示で禁じ、完了アイテムに `inputImages` があれば止めるが、その時点で送信は済んでいる（プロンプトは固定なので誘導の余地は小さい）。Codex の版を動かすときは画像ツールの引数と item の形も契約確認に含める。
 
 ### 3 つの CLI を常に最新に保つ（2026-11-07 オーナー要望）(P0)
 
