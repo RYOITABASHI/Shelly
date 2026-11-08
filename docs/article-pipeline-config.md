@@ -38,7 +38,7 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 - **`outputFolder`** must be inside your Obsidian vault (Settings, default `/sdcard/Documents/ObsidianVault`) or your custom output folder (default `~/agent-output`). A pipeline with `queue` and the digest must be inside the vault, because those are read only from there. Use plain folder names: letters, digits, `_`, `-` and `.`, no spaces.
 - **Instructions** hold 500 characters each. A longer one is refused, not cut. A research instruction that mentions the web gets source capture.
 - **`queue`** takes each run's topic from `_queue.md` in the output folder, as `- [ ] topic` lines. `instructions.topics` also refills that queue through Gemini when it runs low.
-- **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool.
+- **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool. `voice` adds a ghostwritten author view (see below).
 - **Digest**: an optional top-level `digest` lists each day's drafts in one note, with `name`, `prompt`, `lang`, `schedule`, `outputFolder`, `footer`, `engine` and `streams` (`[{ "folder": "Garden", "label": "Garden" }]`, folders next to the digest's own). Ask for it with the id `digest`.
 
 The agent only ever saves a draft. It never publishes and is never autonomous, and its runs are scheduled only: Run now is refused, so set a time a few minutes ahead to test one.
@@ -60,6 +60,26 @@ The agent only ever saves a draft. It never publishes and is never autonomous, a
 - **What it needs**: the build agents run (`claude-install --agent` for Claude Code, the bundled build for Codex). Claude Code signs in as it does for any agent: your Anthropic API key if one is set, otherwise your subscription, and with the setting "Claude subscription for unattended runs" off a scheduled run is refused. Codex uses your ChatGPT login.
 - **When a step fails**, nothing falls back to another engine. A failed write fails the run. A failed review or revision keeps the last good version and marks the draft unresolved.
 - **Time**: one run has 30 minutes, the CLI steps included. When less than 2 minutes remain, or a call runs into the last minute, the review loop stops and the last good version is saved as unresolved. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
+
+## Ghostwritten author view
+
+A draft can keep one section for your own view, holding the marker `【本人の材料: 未記入】` until you write it. With `voice`, a text-only CLI ghostwrites that section from a profile you wrote and reviewed, after the last revision. Without the key nothing changes.
+
+```json
+"voice": {
+  "profile": "Drafts/_voice-profile.md",
+  "author": "Your Name",
+  "review": { "type": "gemini-api" }
+}
+```
+
+- **`profile`** is a `.md` file inside your vault, given relative to it, in plain folder names. It must be a regular file, not a link, with no link in its folders, and 8,000 characters at most. The digest does not list it.
+- **The profile** is yours to write. Its frontmatter needs `reviewed: <date>` (for example `reviewed: 2026-11-08`), which you set after reading every line; without it the step does not run. Write your values, positioning, tone and what you would never say. Put what you have actually done under a heading with "Experience" (or 経験) in it, one item a line, and personal facts the section may use under "Allowed private facts" (or 公開してよい). The whole profile goes to the model vendors in the prompt, so leave out anything you would not send them.
+- **`engine`** is optional: Claude Code by default, or `{ "type": "cli", "cli": "codex", "textOnly": true, "model": "..." }`. It runs text-only, as above. **`review`** is an HTTP engine (`gemini-api`, `cerebras`, `groq` or `perplexity`), so the reviewer is never the writer's family. **`author`** is the name in the footer.
+- **What it does**: the CLI gets the final article and the profile as data and writes the section only: views stated as views, at most 400 characters in Japanese or 80 words in English, no events, numbers, products, people, dates or experiences that the profile or the article does not hold, no private fact the profile does not allow. The reviewer checks it with the `VERDICT:` contract, with one rewrite at most. Then Shelly checks it itself: every number must appear in the profile or the article, a claim like "I tried" or 試した stands only where an Experience line says the same thing, and the section must be plain paragraphs (no heading, list, link or code).
+- **When it passes**, the section replaces the marker, the draft gets `material: ghostwritten` and `voice_sha` (the profile's SHA-256), and the footer becomes a fixed disclosure that names `author` and says the section was ghostwritten by AI. The model never writes the footer, and text in the article cannot set `material`. The digest marks the draft 代筆.
+- **When anything fails** (no reviewed profile, a failed turn, a review that does not pass, a local check, too little time), the marker stays, the draft is saved with `material: missing`, your own footer, and the reason in `review_note` after `代筆なし:`. The run itself does not fail.
+- **Limits**: the number check reads digits only, not numbers written in words or kanji. The first-hand check is a fixed list of phrases; the review and your own read cover the rest.
 
 ## Saving a draft through ClosePaw
 

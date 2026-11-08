@@ -174,6 +174,49 @@ function normalizeListDraftsLocal(r: Record<string, unknown>): AgentLocalStepCon
   return { kind: 'list-drafts', streams };
 }
 
+// The voice step (executor v38). Mirrored in scripts/shelly-plan-executor.js
+// (normalizeVoiceLocal); the executor also checks `of` against its own index.
+// Relative to the vault, plain names only.
+const VOICE_PROFILE_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\.md$/;
+const VOICE_PROFILE_PATH_MAX_CHARS = 240;
+const VOICE_AUTHOR_MAX_CHARS = 64;
+const VOICE_MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
+const VOICE_WRITER_CLIS: readonly string[] = ['claude', 'codex'];
+/** STEP_TOOL_DISPATCHABLE_TYPES in the executor. */
+const VOICE_REVIEW_TYPES: readonly string[] = ['local', 'gemini-api', 'perplexity', 'cerebras', 'groq'];
+/** ENGINE_FAMILIES in the executor, for the engines a voice step can name. */
+const VOICE_ENGINE_FAMILIES: Record<string, string> = { 'gemini-api': 'gemini', perplexity: 'perplexity', cerebras: 'open-weights', groq: 'open-weights', 'cli:claude': 'claude', 'cli:codex': 'codex' };
+
+function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig | undefined {
+  if (!Array.isArray(r.of) || r.of.length === 0 || r.of.length > HARD_MAX_STEPS) return undefined;
+  const of: number[] = [];
+  for (const k of r.of) {
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+    if (of.length && k <= of[of.length - 1]) return undefined;
+    of.push(k);
+  }
+  if (typeof r.profile !== 'string' || r.profile.length > VOICE_PROFILE_PATH_MAX_CHARS || !VOICE_PROFILE_PATH_RE.test(r.profile)) return undefined;
+  if (r.lang !== 'ja' && r.lang !== 'en') return undefined;
+  const w = r.writer as Record<string, unknown> | null | undefined;
+  if (!w || typeof w !== 'object' || Array.isArray(w) || w.type !== 'cli' || typeof w.cli !== 'string' || !VOICE_WRITER_CLIS.includes(w.cli) || w.textOnly !== true) return undefined;
+  if (w.model !== undefined && (typeof w.model !== 'string' || !VOICE_MODEL_RE.test(w.model))) return undefined;
+  const v = r.review as Record<string, unknown> | null | undefined;
+  if (!v || typeof v !== 'object' || Array.isArray(v) || typeof v.type !== 'string' || !VOICE_REVIEW_TYPES.includes(v.type)) return undefined;
+  if (v.model !== undefined && (typeof v.model !== 'string' || !VOICE_MODEL_RE.test(v.model))) return undefined;
+  if (VOICE_ENGINE_FAMILIES[v.type] && VOICE_ENGINE_FAMILIES[v.type] === VOICE_ENGINE_FAMILIES[`cli:${w.cli}`]) return undefined;
+  const a = r.author;
+  if (typeof a !== 'string' || !a.trim() || a !== a.trim() || Array.from(a).length > VOICE_AUTHOR_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(a) || a.includes('\n')) return undefined;
+  return {
+    kind: 'voice',
+    of,
+    profile: r.profile,
+    lang: r.lang,
+    writer: { type: 'cli', cli: w.cli as 'claude' | 'codex', textOnly: true, ...(w.model !== undefined ? { model: w.model as string } : {}) },
+    review: { type: v.type, ...(v.model !== undefined ? { model: v.model as string } : {}) },
+    author: a,
+  };
+}
+
 /**
  * Re-validate a step's local config (it lives in the agent JSON / plan file,
  * which a run can rewrite). A fresh object from the known fields, or undefined
@@ -187,6 +230,7 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
   if (r.kind === 'queue-pop') return { kind: 'queue-pop' };
   if (r.kind === 'queue-refill') return { kind: 'queue-refill' };
   if (r.kind === 'list-drafts') return normalizeListDraftsLocal(r);
+  if (r.kind === 'voice') return normalizeVoiceLocal(r);
   if (r.kind !== 'assemble') return undefined;
   if (!Array.isArray(r.parts) || r.parts.length === 0 || r.parts.length > LOCAL_STEP_MAX_PARTS) return undefined;
   const parts: number[][] = [];
@@ -525,7 +569,7 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
   return kept.map((s, i) => {
     // Article pipeline: same rule for a local step's `parts` indexes.
     if (s.local) {
-      const parts = s.local.kind === 'assemble' ? s.local.parts : [];
+      const parts = s.local.kind === 'assemble' ? s.local.parts : s.local.kind === 'voice' ? [s.local.of] : [];
       if (!shifted && parts.every((list) => list.every((k) => k < i))) return s;
       if (longform) return invalidLocal(s);
       const { local: _dropLocal, ...restLocal } = s;

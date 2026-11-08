@@ -558,7 +558,8 @@ object AgentRuntime {
     // v36: optional user hook after a long-form draft is saved. JS-only.
     // v37: text-only CLI steps in long-form chains (no tools, may run unattended).
     // The driver asset gains --text-only in the same build. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 37
+    // v38: optional ghostwritten author view step in article pipelines. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 38
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
