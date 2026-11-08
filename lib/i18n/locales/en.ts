@@ -362,6 +362,8 @@ const en: Record<string, string> = {
   'closepaw.refused_no_credentials': 'ClosePaw has no AI credentials. Sign in or add an API key in ClosePaw, then retry.',
   'closepaw.refused_busy': 'ClosePaw is busy with another task. Wait for it to finish, then retry.',
   'closepaw.refused_vd_unavailable': 'The ClosePaw virtual display is unavailable. Start Shizuku, then retry.',
+  'closepaw.refused_device_locked': 'The phone was locked. Shelly tries again at the next unlock.',
+  'closepaw.refused_chrome_in_use': 'Chrome is on screen and ClosePaw needs it. Shelly tries again at the next unlock.',
   'agents.terminal_request_origin': 'Requested from the terminal (e.g. Codex / ChatGPT) — not typed by you. Shelly will draft the agent below; nothing is registered unless you confirm it here.',
   'agents.terminal_request_approvable_note': 'You can approve this here (reply OK), from the notification (device unlock required), or ChatGPT can confirm it for you with definition {{hash}}. Every ChatGPT approval is announced with a notification that can disable the agent in one tap.',
   'agents.terminal_request_approvable_note_device': 'This agent includes a ClosePaw step and your Shelly-trusted ClosePaw build runs it without asking again, so it can only be approved on this phone: reply OK here, or tap Approve on the notification (device unlock required). It cannot be approved from ChatGPT. Approving it also approves that ClosePaw step for its future runs until you edit the agent.',

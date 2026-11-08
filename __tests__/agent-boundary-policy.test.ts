@@ -542,6 +542,32 @@ describe('classifyProposedCommand', () => {
       }
     });
 
+    it.each([
+      ['rg --pre ./x foo'],
+      ['rg --pre=./x foo'],
+      ['rg -n --pre ./x foo .'],
+      ['rg --pre-glob "*.md" foo'],
+      ['rg --hostname-bin ./x foo'],
+      ['/usr/bin/rg --pre ./x foo'],
+      ['cat list | rg --pre ./x foo'],
+      ['rg "--pre" ./x foo'],
+      ["bash -lc 'rg --pre ./x foo'"],
+      ['RIPGREP_CONFIG_PATH=./c rg foo'],
+      ['export RIPGREP_CONFIG_PATH=./c; rg foo'],
+    ])('rg that can launch a program is not a read: %s', (command) => {
+      for (const level of ['L1', 'L2'] as const) {
+        const v = classifyProposedCommand(command, ctx(level));
+        expect(v.signals).toContain('indirect-exec');
+        expect(v.decision).toBe('gray');
+      }
+    });
+
+    it.each([['rg foo'], ['rg -n foo src'], ['rg --glob "*.md" foo'], ['rg --pretty foo']])('plain rg stays a read: %s', (command) => {
+      const v = classifyProposedCommand(command, ctx('L1'));
+      expect(v.signals).not.toContain('indirect-exec');
+      expect(v.decision).toBe('allow');
+    });
+
     it('bare `env` (listing variables, a read-only idiom) is NOT flagged indirect-exec', () => {
       expect(classifyProposedCommand('env', ctx('L1')).signals).not.toContain('indirect-exec');
     });

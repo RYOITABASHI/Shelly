@@ -1186,6 +1186,11 @@ var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|p
 var SHELL_SCRIPT_FILE_RE = /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
 var PIPED_INTERPRETER_RE = /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
 var INDIRECT_EXEC_RE = /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
+var RG_RUNS_PROGRAM_RE = /(?:^|[\s;&|(])(?:[^\s;&|]*\/)?rg\b[^;&|]*\s--(?:pre|pre-glob|hostname-bin)(?:[=\s]|$)|\bRIPGREP_CONFIG_PATH\b/;
+function rgRunsProgram(command) {
+  const words = dequoteShellWords(command);
+  return [command, words, dequoteShellWords(words)].some((c) => RG_RUNS_PROGRAM_RE.test(c));
+}
 var HEREDOC_OWNER_COMMANDS = /* @__PURE__ */ new Set(["cat", "tee"]);
 var HEREDOC_PLAIN_COMMANDS = /* @__PURE__ */ new Set([
   "cat",
@@ -1575,7 +1580,7 @@ function classifyProposedCommand(command, ctx) {
   if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
     signals.push("opaque-script-exec");
   }
-  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command)) || rgRunsProgram(command)) {
     signals.push("indirect-exec");
   }
   const isPureRead = isPureReadCommand(command) && !signals.includes("network-send") && !signals.includes("opaque-script-exec");
@@ -1626,6 +1631,10 @@ var ROLES_BASENAME_RE = /(?:^|[\s/'"=])roles\.json\b/;
 var REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
 var ARTICLE_PIPELINES_BASENAME_RE = /(?:^|[\s/'"=])article-pipelines\.json\b/;
 var REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?article-pipelines\.json\b/;
+var DRAFT_DESTINATIONS_BASENAME_RE = /(?:^|[\s/'"=])draft-destinations\.json\b/;
+var REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?draft-destinations\.json\b/;
+var AFTER_DRAFT_HOOK_RE = /after-draft-hook\b/;
+var AFTER_DRAFT_HOOK_PLAIN_READ_RE = /^\s*(?:cat|head|tail|ls|stat|wc|file|grep|rg)\s[^|;&<>`$\n]*$/;
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
@@ -1636,6 +1645,9 @@ function touchesProtectedPolicyFiles(command) {
   if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const articleBasename = ARTICLE_PIPELINES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (articleBasename && (REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  const destinationsBasename = DRAFT_DESTINATIONS_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (destinationsBasename && (REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  if (AFTER_DRAFT_HOOK_RE.test(c) && !AFTER_DRAFT_HOOK_PLAIN_READ_RE.test(c)) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

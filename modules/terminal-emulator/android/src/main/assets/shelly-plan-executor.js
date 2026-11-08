@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=35
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=37
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -158,7 +158,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // into appended queue items and never carried, and it cannot fail the run. Other
 // plans run exactly as before. Bumped so a stale v34 copy, which refuses the step,
 // is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 35;
+// v36 (2026-11-07, after-draft hook): after a longform chain other than a digest
+// saved its draft, the run ended and its queue item is ticked, run the user's own
+// ~/.shelly/agents/after-draft-hook.js if it exists. Without the file nothing
+// changes. Bumped so every copy on a device agrees with native.
+const EXECUTOR_SCRIPT_VERSION = 37;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -901,6 +905,7 @@ const ARTICLE_ECHO_MIN_CHARS = 12;
 // two device runs a Gemini overload outlasted 4 s, so the wait is 15 s.
 const LONGFORM_RETRY_WAIT_MS = 15000;
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
+const LONGFORM_OUT_OF_TIME_MESSAGE = 'Not enough run time left before the 30-minute run limit.';
 // Flagged, never rewritten: a draft writing about its own sources of work.
 const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', '出典不明', '出典なし', '要出典', 'search results', 'research notes', 'source unknown', 'source not found', 'citation needed'];
 // A bracketed note a reviser left in the prose. Bare 未確認 stays legal: a dev
@@ -913,7 +918,7 @@ const ARTICLE_REDIRECT_URL_RE = /^https?:\/\/vertexaisearch\.cloud\.google\.com\
 // Cerebras and Groq serve the same open models by default, so a reviewer on one
 // is not independent of a writer on the other. Only these cloud engines are
 // compared; the local LLM is never on a longform ladder.
-const ENGINE_FAMILIES = { 'gemini-api': 'gemini', perplexity: 'perplexity', cerebras: 'open-weights', groq: 'open-weights' };
+const ENGINE_FAMILIES = { 'gemini-api': 'gemini', perplexity: 'perplexity', cerebras: 'open-weights', groq: 'open-weights', 'cli:claude': 'claude', 'cli:codex': 'codex' };
 const STEP_PREVIEW_MAX_CHARS = 500;
 // Mirrors lib/agent-orchestration.ts's MAX_STEP_INSTRUCTION_CHARS (module-local
 // there too — not exported, so this is its own numerically-in-sync copy, same
@@ -3202,8 +3207,170 @@ function longformPlanRefusal(plan) {
   if (Array.isArray(plan.actions) && plan.actions.length >= 2) return LONGFORM_DRAFT_ONLY_MESSAGE;
   if (plan.agent && plan.agent.autonomous === true) return LONGFORM_DRAFT_ONLY_MESSAGE;
   const list = plan.steps && Array.isArray(plan.steps.list) ? plan.steps.list : [];
-  if (list.some((s) => !!s && (!!s.apiCall || isCliStep(s)))) return LONGFORM_DRAFT_ONLY_MESSAGE;
+  if (list.some((s, i) => !!s && (!!s.apiCall || (isCliStep(s) && !isTextOnlyCliStep(plan, i))))) return LONGFORM_DRAFT_ONLY_MESSAGE;
   return '';
+}
+
+// ── Text-only CLI steps (v37) ───────────────────────────────────────────────
+// A write / review / revise step of a long-form chain may name Codex or Claude
+// Code with tool.textOnly. The driver then runs a turn with no tools at all
+// (--text-only), so such a step can take web-derived text and can run unattended,
+// which no other CLI step may do. There is no seal on the plan file, so this
+// check on what was read from disk is what counts: lib/agent-pipeline-presets.ts
+// only writes well-formed steps, and a flag anywhere else refuses the whole run
+// before any step. The flag can only remove capabilities, and every exception
+// below asks isTextOnlyCliStep, never the flag alone.
+const TEXT_ONLY_MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
+const TEXT_ONLY_REFUSED_MESSAGE = 'This agent has a malformed text-only CLI step. Text-only is for the write, review and revise steps of a long-form chain, after an HTTP research step. Open Shelly to regenerate the plan.';
+
+function hasTextOnlyMark(value) {
+  return !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'textOnly');
+}
+
+function isTextOnlyCliStep(plan, i) {
+  const steps = plan && plan.steps;
+  if (!steps || steps.longform !== true || !Array.isArray(steps.list) || isDigestPlan(plan)) return false;
+  const step = steps.list[i];
+  if (!step || !isCliStep(step) || step.tool.textOnly !== true || hasTextOnlyMark(step)) return false;
+  if (!CLI_STEP_ENGINES.has(step.tool.cli)) return false;
+  if (step.tool.model !== undefined && (typeof step.tool.model !== 'string' || !TEXT_ONLY_MODEL_RE.test(step.tool.model))) return false;
+  if (step.local !== undefined || step.apiCall || step.parallelGroup !== undefined || step.role !== undefined) return false;
+  if (i === steps.list.length - 1) return false;
+  if (step.handoff !== undefined) {
+    const h = handoffOf(steps.list, i);
+    if (!h || (h.kind !== 'review' && h.kind !== 'revise')) return false;
+  }
+  // Research stays on an HTTP engine: the first model step comes before this one
+  // and is not a CLI step. A cloud research step is the whole point of the chain.
+  const first = steps.list.findIndex((s) => !!s && s.local === undefined);
+  return first !== -1 && first < i && !isCliStep(steps.list[first]);
+}
+
+// '' when every textOnly mark in the plan sits on a step that qualifies.
+function textOnlyPlanRefusal(plan) {
+  const steps = plan && plan.steps;
+  const list = steps && Array.isArray(steps.list) ? steps.list : [];
+  const ladder = Array.isArray(plan.toolLadder) ? plan.toolLadder : [];
+  if (hasTextOnlyMark(plan.tool) || ladder.some(hasTextOnlyMark)) return TEXT_ONLY_REFUSED_MESSAGE;
+  const bad = list.some((s, i) => !!s && (hasTextOnlyMark(s) || hasTextOnlyMark(s.tool)) && !isTextOnlyCliStep(plan, i));
+  return bad ? TEXT_ONLY_REFUSED_MESSAGE : '';
+}
+
+// Across runs: two scheduled agents can land on one minute, and each engine's
+// login is single. In-process, cliSlots already holds one per engine. The name
+// does not end in .pid, so the .sh ACTIVE_COUNT does not see it. A holder that
+// died leaves the file, and the next run takes it over.
+const TEXT_ONLY_ENGINE_POLL_MS = 2000;
+
+function textOnlyEngineLockFile(paths, engine) {
+  return path.join(paths.locksDir, `text-only-${engine}.slot`);
+}
+
+// A file with no valid record is dead only once it is old: on the fallback below a
+// reader can land between the create and the write.
+const TEXT_ONLY_ENGINE_LOCK_UNREADABLE_GRACE_MS = 10 * 1000;
+
+function textOnlyEngineLockHolderAlive(file, fsImpl = fs) {
+  const unreadableIsYoung = () => {
+    try {
+      return Date.now() - fsImpl.lstatSync(file).mtimeMs < TEXT_ONLY_ENGINE_LOCK_UNREADABLE_GRACE_MS;
+    } catch (_) {
+      return false;
+    }
+  };
+  let holder;
+  try {
+    holder = JSON.parse(fsImpl.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return unreadableIsYoung();
+  }
+  if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 1) return unreadableIsYoung();
+  try {
+    process.kill(holder.pid, 0);
+  } catch (_) {
+    return false;
+  }
+  const start = procStartTime(holder.pid);
+  return !start || !holder.start || start === holder.start;
+}
+
+// Publish a complete record in one step: write a temp file and link it to the
+// name, which fails if the name exists. Android refuses hard links to app files on
+// many builds, so EPERM / EACCES falls back to an exclusive create.
+function publishTextOnlyEngineLock(file, record, fsImpl) {
+  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  fsImpl.writeFileSync(temp, record, { flag: 'wx', mode: 0o600 });
+  try {
+    fsImpl.linkSync(temp, file);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'EEXIST') return false;
+    if (!error || (error.code !== 'EPERM' && error.code !== 'EACCES' && error.code !== 'ENOTSUP' && error.code !== 'ENOSYS')) throw error;
+  } finally {
+    try {
+      fsImpl.unlinkSync(temp);
+    } catch (_) {}
+  }
+  try {
+    fsImpl.writeFileSync(file, record, { flag: 'wx', mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (error && error.code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
+// Unlinking a dead holder's file could remove the lock another run has just taken.
+// Rename moves it aside for one run only, and that run looks at what it got: if
+// that is a live holder it lost a race, and the file goes back. The window that
+// remains is a third run taking the name before it goes back.
+function removeDeadTextOnlyEngineLock(file, fsImpl) {
+  const aside = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.stale`;
+  try {
+    fsImpl.renameSync(file, aside);
+  } catch (_) {
+    return; // Another run moved it, or its holder released it.
+  }
+  if (textOnlyEngineLockHolderAlive(aside, fsImpl)) {
+    try {
+      fsImpl.renameSync(aside, file);
+      return;
+    } catch (_) {}
+  }
+  try {
+    fsImpl.unlinkSync(aside);
+  } catch (_) {}
+}
+
+function takeTextOnlyEngineLock(paths, engine, fsImpl = fs) {
+  const file = textOnlyEngineLockFile(paths, engine);
+  ensureDir(paths.locksDir);
+  const record = JSON.stringify({ pid: process.pid, start: procStartTime(process.pid) || '' });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (publishTextOnlyEngineLock(file, record, fsImpl)) return true;
+    if (textOnlyEngineLockHolderAlive(file, fsImpl)) return false;
+    removeDeadTextOnlyEngineLock(file, fsImpl);
+  }
+  return false;
+}
+
+function releaseTextOnlyEngineLock(paths, engine) {
+  const file = textOnlyEngineLockFile(paths, engine);
+  try {
+    if (JSON.parse(readFile(file)).pid === process.pid) fs.unlinkSync(file);
+  } catch (_) {}
+}
+
+// Resolves false (at once), true (waited) or 'expired'. Throws RunHalted.
+async function waitTextOnlyEngineLock(paths, engine, giveUpAtMs, onWait) {
+  if (takeTextOnlyEngineLock(paths, engine)) return false;
+  onWait();
+  for (;;) {
+    if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
+    if (Date.now() >= giveUpAtMs) return 'expired';
+    await new Promise((resolve) => setTimeout(resolve, Math.min(TEXT_ONLY_ENGINE_POLL_MS, Math.max(1, giveUpAtMs - Date.now()))));
+    if (takeTextOnlyEngineLock(paths, engine)) return true;
+  }
 }
 
 // The draft file name holds only the date, so a second run the same day would
@@ -4409,6 +4576,14 @@ async function brokerHttp(paths, opts, plan, request) {
 }
 
 async function brokerHttpBodyFile(paths, opts, plan, request) {
+  // A long-form run keeps time to assemble what it has before native's kill. The
+  // broker's own timeout is 10 minutes, and each ladder rung gets a new one.
+  if (opts && Number.isFinite(opts.longformDeadlineMs)) {
+    const leftSeconds = Math.floor((opts.longformDeadlineMs - Date.now()) / 1000);
+    if (leftSeconds < 1) throw new PlanFailure(LONGFORM_OUT_OF_TIME_MESSAGE, { handled: true });
+    const asked = Number(request.timeoutSeconds || (plan.limits && plan.limits.timeoutSeconds) || 600);
+    request = Object.assign({}, request, { timeoutSeconds: Math.min(asked, leftSeconds) });
+  }
   const stepSuffix = brokerStepSuffix(opts);
   const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
   const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.err`);
@@ -6647,6 +6822,146 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   return { status: 'success', preview };
 }
 
+// Optional extension point (v36). A longform run that saved its draft, other than
+// a digest, runs the user's own script, if it exists, with the saved path as its only argument.
+// run() calls this after the run is recorded, so the hook has no say in the run:
+// every outcome is one audit line holding a status, and nothing here notifies or
+// throws. The gate refuses worker commands naming the file
+// (lib/agent-boundary-policy.ts), which is a string match, so the checks here do
+// not rely on it. The environment is a short allowlist, so NODE_OPTIONS and
+// friends (WORKER_ENV_DROP in the driver) and API keys do not reach the hook.
+const AFTER_DRAFT_HOOK_REL_PATH = '.shelly/agents/after-draft-hook.js';
+const AFTER_DRAFT_HOOK_TIMEOUT_MS = 120 * 1000;
+// Native ends a run at 30 minutes (DEFAULT_TIMEOUT_MS in AgentRuntime.kt) and
+// records that as a failure, so the hook never runs past this point of a run.
+const AFTER_DRAFT_HOOK_RUN_DEADLINE_MS = 28 * 60 * 1000;
+const AFTER_DRAFT_HOOK_HALT_POLL_MS = 500;
+const AFTER_DRAFT_HOOK_ENV = ['PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'OPENSSL_CONF', 'SHELLY_LIB_DIR', 'LD_LIBRARY_PATH'];
+let liveAfterDraftHook = null;
+
+// The time the hook may take, 0 or less when the run is too old for it. Test seam,
+// same rule as longformRetryWaitMs: read from the process environment only, and
+// it can only shorten the limit.
+function afterDraftHookTimeoutMs(startedAt, now) {
+  const raw = Number(process.env.SHELLY_TEST_AFTER_DRAFT_HOOK_TIMEOUT_MS);
+  const limit = Number.isFinite(raw) && raw >= 0 ? Math.min(raw, AFTER_DRAFT_HOOK_TIMEOUT_MS) : AFTER_DRAFT_HOOK_TIMEOUT_MS;
+  return Math.min(limit, startedAt + AFTER_DRAFT_HOOK_RUN_DEADLINE_MS - now);
+}
+
+// From lstat, so a symlink is not a file here. A second hard link would let a
+// write under another name change the hook. uid is null on a host with no POSIX
+// ownership, where the mode bits mean nothing either.
+function afterDraftHookUsable(st, uid) {
+  if (!st.isFile() || st.nlink !== 1) return false;
+  if (uid === null) return true;
+  return st.uid === uid && (st.mode & 0o022) === 0;
+}
+
+// The hook has its own process group, so what it started goes with it.
+function killAfterDraftHook() {
+  const child = liveAfterDraftHook;
+  if (!child) return false;
+  liveAfterDraftHook = null;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch (_) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {}
+  }
+  return true;
+}
+
+function auditAfterDraftHook(paths, plan, status) {
+  try {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'after_draft_hook',
+      agentId: plan.agent.id,
+      status,
+    });
+  } catch (_) {}
+}
+
+function spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs) {
+  return new Promise((resolve) => {
+    const invocation = nodeInvocation(hook, [savedPath], paths, opts);
+    const base = childEnv(paths, opts);
+    const env = { HOME: paths.home };
+    for (const name of AFTER_DRAFT_HOOK_ENV) {
+      if (base[name]) env[name] = base[name];
+    }
+    let child;
+    try {
+      // stdio 'ignore': the output goes nowhere, so its size cannot matter.
+      child = spawn(invocation.file, invocation.args, { cwd: paths.home, env, stdio: 'ignore', detached: true });
+    } catch (_) {
+      resolve('spawn-error');
+      return;
+    }
+    liveAfterDraftHook = child;
+    let timer = null;
+    let halt = null;
+    const finish = (status) => {
+      clearTimeout(timer);
+      clearInterval(halt);
+      resolve(status);
+    };
+    timer = setTimeout(() => {
+      killAfterDraftHook();
+      finish('timeout');
+    }, timeoutMs);
+    halt = setInterval(() => {
+      if (!isHalted(paths)) return;
+      killAfterDraftHook();
+      finish('halted');
+    }, AFTER_DRAFT_HOOK_HALT_POLL_MS);
+    child.once('error', () => {
+      liveAfterDraftHook = null;
+      finish('spawn-error');
+    });
+    child.once('close', (code) => {
+      // Its group may outlive it: a hook leaves nothing running.
+      killAfterDraftHook();
+      finish(code === 0 ? 'ok' : 'failed');
+    });
+  });
+}
+
+async function runAfterDraftHook(paths, opts, plan, savedPath, startedAt) {
+  try {
+    const hook = path.join(paths.home, AFTER_DRAFT_HOOK_REL_PATH);
+    let st;
+    try {
+      st = fs.lstatSync(hook);
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return;
+      auditAfterDraftHook(paths, plan, 'refused');
+      return;
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    // lstat sees only the last component: a linked folder must not lead elsewhere.
+    const inPlace = fs.realpathSync(path.dirname(hook)) === path.dirname(path.join(fs.realpathSync(paths.home), AFTER_DRAFT_HOOK_REL_PATH));
+    if (!inPlace || !afterDraftHookUsable(st, uid)) {
+      auditAfterDraftHook(paths, plan, 'refused');
+      return;
+    }
+    if (isHalted(paths)) {
+      auditAfterDraftHook(paths, plan, 'halted');
+      return;
+    }
+    const timeoutMs = afterDraftHookTimeoutMs(startedAt, Date.now());
+    if (timeoutMs <= 0) {
+      auditAfterDraftHook(paths, plan, 'too-late');
+      return;
+    }
+    auditAfterDraftHook(paths, plan, await spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs));
+  } catch (_) {
+    auditAfterDraftHook(paths, plan, 'error');
+  }
+}
+
 // Multi-action fan-out (2026-07-23, mirrors lib/agent-executor.ts's
 // generateRunScript `useMultiActions` bash loop): plan.actions (>= 2 entries
 // — see AgentPlanSpecV1's own doc comment) is dispatched as N INDEPENDENT
@@ -7199,7 +7514,7 @@ const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude C
 function cliStepNeedingAttended(plan, args) {
   if (cliStepAttended(args)) return -1;
   const list = plan && plan.steps && Array.isArray(plan.steps.list) ? plan.steps.list : [];
-  return list.findIndex((step) => isCliStep(step));
+  return list.findIndex((step, i) => isCliStep(step) && !isTextOnlyCliStep(plan, i));
 }
 
 // v21 review H1: refusal text of a CLI step that would get web research
@@ -7321,7 +7636,8 @@ function cliStepAudit(paths, plan, event, fields) {
 // when the driver is done. The branch timeout starts once the slot is held.
 async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step, prompt) {
   const engine = step && step.tool ? String(step.tool.cli || '') : '';
-  if (!cliStepAttended(args) || !CLI_STEP_ENGINES.has(engine)) {
+  const textOnly = isTextOnlyCliStep(plan, stepIndex);
+  if ((!textOnly && !cliStepAttended(args)) || !CLI_STEP_ENGINES.has(engine)) {
     return runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt); // refuses
   }
   const limits = cliRunLimits();
@@ -7333,6 +7649,21 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
   };
   if (limits.deadlineMs - Date.now() < limits.minRunMs) throw exhausted(0);
   const waitStartedMs = Date.now();
+  if (textOnly) {
+    const held = await waitTextOnlyEngineLock(paths, engine, limits.deadlineMs - limits.minRunMs, () => {
+      progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`Waiting for ${CLI_STEP_LABELS[engine]}: another agent's text-only step is using it.`) });
+      cliStepAudit(paths, plan, 'cli_slot_wait', { stepIndex, engine, reason: 'text-only-engine' });
+    });
+    if (held === 'expired') throw exhausted(Date.now() - waitStartedMs);
+  }
+  try {
+    return await holdCliSlot(paths, opts, plan, config, args, stepIndex, step, prompt, engine, limits, exhausted, waitStartedMs);
+  } finally {
+    if (textOnly) releaseTextOnlyEngineLock(paths, engine);
+  }
+}
+
+async function holdCliSlot(paths, opts, plan, config, args, stepIndex, step, prompt, engine, limits, exhausted, waitStartedMs) {
   const waited = await acquireCliSlot(paths, engine, (reason) => {
     const why = CLI_SLOT_WAIT_REASONS[reason] || reason;
     progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`Waiting for CLI slot: ${why}.`) });
@@ -7354,7 +7685,8 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   const driverTimeoutMs = timeouts ? timeouts.driverMs : CLI_DRIVER_TIMEOUT_MS;
   const engine = step && step.tool ? String(step.tool.cli || '') : '';
   const attended = cliStepAttended(args);
-  if (!attended) {
+  const textOnly = isTextOnlyCliStep(plan, stepIndex);
+  if (!attended && !textOnly) {
     cliStepAudit(paths, plan, 'cli_branch_refused', {
       stepIndex,
       engine,
@@ -7385,6 +7717,11 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   } catch (_) {
     cwd = paths.home;
   }
+  // The driver makes its own empty cwd for a text-only turn. Never the workspace.
+  if (textOnly) {
+    ensureDir(paths.tmpDir);
+    cwd = paths.tmpDir;
+  }
   // Distinct per branch: the driver keys escalation files, the native
   // notification and the nonce ledger by (runId, reqId) — invariant 4.
   const branchRunId = crypto.randomUUID();
@@ -7412,6 +7749,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // v22: every engine reports usage (Claude: stream-json result; Codex:
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
+    ...(textOnly ? ['--text-only', ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
   ];
 
   unlinkQuiet(answerFile);
@@ -7430,7 +7768,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     provider: { kind: 'CLI', name: `cli:${engine}` },
   });
   const startedMs = Date.now();
-  cliStepAudit(paths, plan, 'cli_branch_start', { stepIndex, engine, runId: branchRunId, attended, cwd });
+  cliStepAudit(paths, plan, 'cli_branch_start', { stepIndex, engine, runId: branchRunId, attended, cwd, textOnly });
   const invocation = nodeInvocation(driver, driverArgs, paths, opts);
   let outcome;
   try {
@@ -7575,11 +7913,22 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step timed out after ${Math.max(1, Math.round(branchTimeoutMs / 60000))} minutes`);
     }
     if (outcome.status !== 0) {
-      const lastLine = String(outcome.stdoutTail || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
+      const tailLines = String(outcome.stdoutTail || '').trim().split('\n').filter(Boolean);
+      // A text-only stop ends in audit lines; the reason is the driver's own line.
+      const stated = textOnly ? tailLines.filter((l) => /^(?:CODEX|CLAUDE)_ERROR /.test(l)).slice(-1)[0] : undefined;
+      const lastLine = stated || tailLines.slice(-1)[0] || '';
       throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step failed (exit ${outcome.status == null ? outcome.signal || 'unknown' : outcome.status})${lastLine ? `: ${redact(lastLine).slice(0, 300)}` : ''}`);
     }
     const resultText = redact(answer).trim();
     if (!resultText) throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned no answer`);
+    if (textOnly) {
+      // The same checks as a long-form HTTP answer (requestModelContentWithLadder),
+      // without the ladder: there is no fallback to another engine.
+      const preview = previewText(resultText);
+      if (isLowQualityCompletion(preview)) throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned a low-quality answer`);
+      if (isDuplicateOfPriorStep(preview, opts.priorStepContent)) throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step repeated the prior step`);
+      return { resultText: enforcePlanCharLimit(plan, resultText), usedTool: cliStepTool(step), response: '' };
+    }
     if (isLowQualityCompletion(resultText)) {
       throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned a low-quality answer`);
     }
@@ -7599,6 +7948,13 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // branch still sees only the pre-group snapshot (contextResults below).
   const parallelPlan = planParallelGroups(plan.steps.list);
   runCliUsage = null;
+  // v37: before the longform checks, so a text-only mark on any other plan stops it.
+  const textOnlyRefusal = textOnlyPlanRefusal(plan);
+  if (textOnlyRefusal) {
+    appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'text_only_refused', agentId: plan.agent.id });
+    writeNotification(paths, plan, 'error', textOnlyRefusal);
+    return { status: 'error', preview: textOnlyRefusal, errorMessage: textOnlyRefusal, steps: [] };
+  }
   // Article pipeline (v30): both checks come before queue-pop and any model
   // call. The digest may run again the same day: its file is rebuilt from what
   // is on disk, and it must still run when the streams were skipped.
@@ -7701,6 +8057,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // (it would drop a review's `VERDICT:` line and strip the article), no item
   // count taken from the prose, and no fallback briefing.
   const longform = plan.steps.longform === true;
+  const longformDeadlineMs = cliRunLimits().deadlineMs;
   const researchFlags = plan.steps.list.map((step, i) =>
     i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && step.local === undefined && !(longform && step.handoff !== undefined) && isResearchStep(step.instruction, effectiveStepTool(step).type));
   const sourcingActive = researchFlags.some(Boolean);
@@ -8090,6 +8447,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         handoffStopped: true,
       };
     }
+    // v37: the review loop gives way to the draft. Native kills the run at 30 minutes
+    // and assemble is what saves it, so a hand-off step with too little time left
+    // ends the loop like a failed one: the last good version, marked unresolved.
+    if (longform && step.handoff !== undefined && longformDeadlineMs - Date.now() < cliRunLimits().minRunMs) {
+      reviewNotes.add(ARTICLE_REVIEW_FAILED_NOTE);
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'handoff_out_of_time', agentId: plan.agent.id, stepIndex: i });
+      return {
+        record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: 0, outputPreview: previewText(`${LONGFORM_HANDOFF_STOPPED_MESSAGE} ${LONGFORM_OUT_OF_TIME_MESSAGE}`) },
+        handoffStopped: true,
+      };
+    }
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     // v19: a CLI-pinned step dispatches through the agent driver (attended
     // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
@@ -8109,7 +8477,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
     const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
-    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin, chainStartedAt: startedAt }, branchCtl ? { branchCtl } : {});
+    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin, chainStartedAt: startedAt }, branchCtl ? { branchCtl } : {}, longform ? { longformDeadlineMs } : {});
     if (branchCtl) branchCtl.currentKey = overrideToolKey(stepTool);
     const stepStart = Date.now();
 
@@ -8208,7 +8576,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
           };
         }
         attempt = { resultText: localResult.text, usedTool: stepTool, response: '' };
-      } else if (cliStep && (synthesis || (sourcingActive && researchStepsDone > 0))) {
+      } else if (cliStep && !isTextOnlyCliStep(plan, i) && (synthesis || (sourcingActive && researchStepsDone > 0))) {
         // v21 review H1 (defense in depth; lib/agent-attended-route.ts already
         // keeps such a chain on the serial chain, which runs this step
         // text-only on local): a step after web research of a sourced chain
@@ -8223,7 +8591,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       } else if (cliStep) {
         // v19: never marked inModel, so a provider-override restart never
         // SIGKILLs a driver mid-turn (overrides cannot target a CLI step).
-        attempt = await dispatchCliStep(paths, stepOpts, stepPlan, config, args, i, step, stepPrompt);
+        attempt = await dispatchCliStep(paths, Object.assign({}, stepOpts, { priorStepContent }), stepPlan, config, args, i, step, stepPrompt);
       } else {
         if (branchCtl) branchCtl.inModel = true;
         try {
@@ -8237,7 +8605,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // carried / post-processed / delivered (the final step's block is kept
       // as this iteration's checkpoint input).
       resultText = attempt.resultText;
-      if (longform && step.local === undefined && attempt.usedTool) usedEnginesByStep[i] = attempt.usedTool.type;
+      if (longform && step.local === undefined && attempt.usedTool) usedEnginesByStep[i] = attempt.usedTool.type === 'cli' ? `cli:${attempt.usedTool.cli}` : attempt.usedTool.type;
       if (isFinal && activeContinuous) activeContinuous.control = attempt.control || null;
       if (research) researchCapture = { text: resultText, parsed: parseResearchSources(attempt.response) };
       // 3rd-pass Codex review finding (see run()'s own comment above its
@@ -8779,6 +9147,7 @@ async function run(args) {
   // not add a second (skipped) log or a halted run_end for a finished run.
   let runLogWritten = false;
   const onSigterm = () => {
+    if (killAfterDraftHook()) auditAfterDraftHook(paths, plan, 'halted');
     killLiveBrokerChildren();
     // v19: CLI drivers get TERM -> <=3s grace -> KILL (they stop their own
     // codex/claude child on TERM), and their temp files are removed.
@@ -8863,6 +9232,8 @@ async function run(args) {
   // generation having genuinely succeeded. `usedTool` is threaded into writeRunLog
   // explicitly below instead, for `toolUsed` reporting only.
   let usedTool;
+  // v36: set only when a longform chain ended in success with its draft on disk.
+  let afterDraftPath = '';
   try {
     let action;
     if (hasChain) {
@@ -8905,6 +9276,9 @@ async function run(args) {
       status: action.status,
       durationMs,
     });
+    if (hasChain && plan.steps.longform === true && !isDigestPlan(plan) && action.status === 'success' && !action.halted && paths.savedOutput) {
+      afterDraftPath = paths.savedOutput.savedPath;
+    }
     return EXIT.OK;
   } catch (e) {
     const durationMs = Date.now() - startedAt;
@@ -8946,14 +9320,17 @@ async function run(args) {
     if (e instanceof PlanFailure && e.handled) return EXIT.OK;
     return e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL;
   } finally {
-    process.removeListener('SIGTERM', onSigterm);
-    process.removeListener('exit', onExitRemoveFanout);
     // 'halted' (STOP-ALL) is recorded as an ordinary skipped iteration.
     continuousRecord(activeContinuous, progressStatus === 'halted' ? 'skipped' : progressStatus, progress && progress.runId);
     activeContinuous = null;
     progressFinish(progress, progressStatus, progressRecords, progressReason);
     activeProgress = null;
     mirrorBrokerAudit(paths, plan);
+    // Last, with the run already recorded and finished for MONITOR. The lock and
+    // the SIGTERM handler stay until it ends, so STOP-ALL still finds this pid.
+    if (afterDraftPath) await runAfterDraftHook(paths, opts, plan, afterDraftPath, startedAt);
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('exit', onExitRemoveFanout);
     releaseLock(paths);
   }
 }
@@ -9487,6 +9864,11 @@ module.exports = {
   cliStepAttended,
   CLI_STEP_ATTENDED_ONLY_MESSAGE,
   cliStepNeedingAttended,
+  isTextOnlyCliStep,
+  textOnlyPlanRefusal,
+  takeTextOnlyEngineLock,
+  releaseTextOnlyEngineLock,
+  textOnlyEngineLockFile,
   // v24 CLI heartbeat — host unit tests only.
   CLI_HEARTBEAT_MS,
   cliActivityFromDriverLine,
@@ -9631,6 +10013,8 @@ module.exports = {
   scanDraftFolders,
   renderDraftDigest,
   isDigestPlan,
+  afterDraftHookUsable,
+  afterDraftHookTimeoutMs,
   quietDraftNotification,
   modelResponseTruncated,
   stepToolCandidates,

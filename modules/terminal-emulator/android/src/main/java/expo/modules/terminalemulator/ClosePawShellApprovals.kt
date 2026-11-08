@@ -48,6 +48,8 @@ object ClosePawShellApprovals {
     const val MIN_ATTEMPT_INTERVAL_MS = 2_000L
     private const val MAX_PENDING = 5
     const val NOTIFICATION_ID = 0x37C1A020
+    /** Its own id: a later `shelly closepaw` must not replace a draft approval. */
+    const val DRAFTS_NOTIFICATION_ID = 0x37C1A024
     private const val REQUEST_CODE_APPROVE = 0x37C1A021
     private const val REQUEST_CODE_REJECT = 0x37C1A022
     private const val REQUEST_CODE_REVIEW = 0x37C1A023
@@ -62,6 +64,10 @@ object ClosePawShellApprovals {
         val expiresAt: Long,
         val approveNonce: String,
         val rejectNonce: String,
+        /** Set for a batch of queued drafts: approving sends these, not a goal. */
+        val drafts: List<ClosePawDrafts.ApprovedDraft>? = null,
+        /** One cleaned line per draft, for the notification. */
+        val lines: List<String> = emptyList(),
     ) {
         @Volatile var attempts = 0
         @Volatile var lastAttemptAt = Long.MIN_VALUE / 2
@@ -91,7 +97,14 @@ object ClosePawShellApprovals {
     }
 
     @Synchronized
-    fun create(context: Context, reqId: String, goal: String, now: Long = System.currentTimeMillis()): Pending {
+    fun create(
+        context: Context,
+        reqId: String,
+        goal: String,
+        now: Long = System.currentTimeMillis(),
+        drafts: List<ClosePawDrafts.ApprovedDraft>? = null,
+        lines: List<String> = emptyList(),
+    ): Pending {
         sweep(now)
         while (pending.size >= MAX_PENDING) {
             val oldest = pending.values.minByOrNull { it.createdAt } ?: break
@@ -102,7 +115,7 @@ object ClosePawShellApprovals {
             )
         }
         val clean = ClosePawHandoff.sanitizeGoal(goal)
-        val p = Pending(reqId, clean, hash8(clean), now, now + TTL_MS, randomHex(16), randomHex(16))
+        val p = Pending(reqId, clean, hash8(clean), now, now + TTL_MS, randomHex(16), randomHex(16), drafts, lines)
         pending[reqId] = p
         // Lifecycle for `shelly closepaw wait` (ClosePawRunResults).
         ClosePawRunResults.writeState(
@@ -112,6 +125,13 @@ object ClosePawShellApprovals {
         postNotification(context, p)
         Log.i(TAG, "closepaw approval required: $reqId goalLen=${clean.length}")
         return p
+    }
+
+    /** True while the owner has an open, unexpired draft approval. */
+    @Synchronized
+    fun hasPendingDrafts(now: Long = System.currentTimeMillis()): Boolean {
+        sweep(now)
+        return pending.values.any { it.drafts != null }
     }
 
     const val MSG_DEVICE_APPROVAL_REQUIRED =
@@ -179,9 +199,22 @@ object ClosePawShellApprovals {
         pending.remove(reqId)
         // Only this request's own notification: a newer pending approval may
         // have replaced it under the shared id.
-        if (shownReqId == reqId) {
+        if (p.drafts != null) {
+            runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(DRAFTS_NOTIFICATION_ID) }
+        } else if (shownReqId == reqId) {
             runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID) }
             shownReqId = null
+        }
+        p.drafts?.let { drafts ->
+            ClosePawDrafts.onBatchDecided(context.applicationContext, drafts, decision == "approve")
+            val status = if (decision == "approve") ClosePawRunResults.STATUS_UNTRACKED else ClosePawRunResults.STATUS_REJECTED
+            ClosePawRunResults.writeState(context, reqId, status, "Each draft reports under its own request id")
+            Log.i(TAG, "draft batch $reqId decided via $via: $decision")
+            return if (decision == "approve") {
+                Outcome(true, "drafts-approved", "Approved ($via) - ClosePaw saves the drafts in the background")
+            } else {
+                Outcome(true, "rejected", "Rejected - the drafts were removed from the queue")
+            }
         }
         if (decision == "reject") {
             Log.i(TAG, "closepaw request $reqId rejected via $via")
@@ -330,8 +363,9 @@ object ClosePawShellApprovals {
                 if (requireAuth && Build.VERSION.SDK_INT >= 31) b.setAuthenticationRequired(true)
                 return b.build()
             }
+            val draftBatch = p.drafts != null
             val shown = p.goal.redactForScouter().let { if (it.length > 300) it.take(299) + "…" else it }
-            val body = context.getString(R.string.closepaw_approval_body, shown, p.hash8)
+            val titleText = context.getString(if (draftBatch) R.string.closepaw_drafts_approval_title else R.string.closepaw_approval_title)
             val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(context, ClosePawHandoff.CHANNEL_ID).setTimeoutAfter(TTL_MS)
             } else {
@@ -345,15 +379,25 @@ object ClosePawShellApprovals {
                 Notification.Builder(context)
             }
             val publicVersion = publicBuilder
-                .setContentTitle(context.getString(R.string.closepaw_approval_title))
+                .setContentTitle(titleText)
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .build()
             builder
                 .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setPublicVersion(publicVersion)
-                .setContentTitle(context.getString(R.string.closepaw_approval_title))
-                .setContentText(shown)
-                .setStyle(Notification.BigTextStyle().bigText(body))
+                .setContentTitle(titleText)
+                .setContentText(if (draftBatch) context.getString(R.string.closepaw_drafts_approval_count, p.lines.size) else shown)
+                .setStyle(
+                    if (draftBatch) {
+                        // One line per draft: a title cannot run into the next entry.
+                        Notification.InboxStyle()
+                            .setBigContentTitle(titleText)
+                            .setSummaryText(context.getString(R.string.closepaw_drafts_approval_summary, p.hash8))
+                            .also { style -> p.lines.forEach { style.addLine(it.redactForScouter()) } }
+                    } else {
+                        Notification.BigTextStyle().bigText(context.getString(R.string.closepaw_approval_body, shown, p.hash8))
+                    },
+                )
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .setContentIntent(review)
                 .setAutoCancel(true)
@@ -368,8 +412,12 @@ object ClosePawShellApprovals {
             builder.addAction(
                 action(context.getString(R.string.agent_add_action_reject), decisionIntent("reject", p.rejectNonce, REQUEST_CODE_REJECT), true)
             )
-            nm.notify(NOTIFICATION_ID, builder.build())
-            shownReqId = p.reqId
+            if (draftBatch) {
+                nm.notify(DRAFTS_NOTIFICATION_ID, builder.build())
+            } else {
+                nm.notify(NOTIFICATION_ID, builder.build())
+                shownReqId = p.reqId
+            }
         } catch (e: Exception) {
             Log.w(TAG, "closepaw approval notification failed type=${e.javaClass.simpleName}")
         }

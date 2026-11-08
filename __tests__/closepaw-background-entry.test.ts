@@ -119,10 +119,12 @@ describe('result-code mapping', () => {
     expect(mapClosePawBroadcastResultCode(2)).toEqual({ kind: 'started', outcome: 'main-display' });
     expect(mapClosePawBroadcastResultCode(16)).toEqual({ kind: 'refused', refusal: 'vd-unavailable' });
     expect(mapClosePawBroadcastResultCode(15)).toEqual({ kind: 'refused', refusal: 'busy' });
-    for (const code of [0, 3, 9, 17, -1]) expect(mapClosePawBroadcastResultCode(code)).toEqual({ kind: 'fallback' });
+    expect(mapClosePawBroadcastResultCode(17)).toEqual({ kind: 'refused', refusal: 'device-locked' });
+    expect(mapClosePawBroadcastResultCode(18)).toEqual({ kind: 'refused', refusal: 'chrome-in-use' });
+    for (const code of [0, 3, 9, 19, -1]) expect(mapClosePawBroadcastResultCode(code)).toEqual({ kind: 'fallback' });
   });
 
-  it('Kotlin mapVariantResultCode matches: 1/2 started, 10-16 refused, anything else (incl. 0) -> NoResponse', () => {
+  it('Kotlin mapVariantResultCode matches: 1/2 started, 10-18 refused, anything else (incl. 0) -> NoResponse', () => {
     const map = fn(handoff, 'fun mapVariantResultCode(code: Int): VariantResult');
     expect(map).toContain('RC_STARTED_VIRTUAL_DISPLAY -> VariantResult.Started(Outcome.BACKGROUND)');
     expect(map).toContain('RC_STARTED_MAIN_DISPLAY -> VariantResult.Started(Outcome.MAIN_DISPLAY)');
@@ -134,7 +136,7 @@ describe('result-code mapping', () => {
   it('Kotlin Refusal table == TS CLOSEPAW_REFUSAL_CODES', () => {
     const rows = [...handoff.matchAll(/^\s+[A-Z_]+\((\d+), "([a-z-]+)", "/gm)].map((m) => [Number(m[1]), m[2]] as const);
     expect(Object.fromEntries(rows)).toEqual(CLOSEPAW_REFUSAL_CODES);
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(9);
   });
 
   it('actionable messages: 16 says start Shizuku, 15 says busy', () => {

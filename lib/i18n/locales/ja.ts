@@ -357,6 +357,8 @@ const ja: Record<string, string> = {
   'closepaw.refused_no_credentials': 'ClosePaw に AI の認証情報がありません。ClosePaw でサインインするか API キーを追加してから再試行してください。',
   'closepaw.refused_busy': 'ClosePaw は別の作業を実行中です。終わってから再試行してください。',
   'closepaw.refused_vd_unavailable': 'ClosePaw の仮想ディスプレイが使えません。Shizuku を起動してから再試行してください。',
+  'closepaw.refused_device_locked': '端末がロックされていました。次のロック解除時にもう一度試します。',
+  'closepaw.refused_chrome_in_use': 'Chrome が画面に表示されていて ClosePaw が使えません。次のロック解除時にもう一度試します。',
   'agents.terminal_request_origin': 'ターミナル（Codex / ChatGPT など）からの依頼です。あなたが入力したものではありません。下にエージェント案を作成します。ここであなたが確認しない限り登録されません。',
   'agents.terminal_request_approvable_note': 'ここで「OK」と返信するか、通知から（端末のロック解除が必要）承認できます。ChatGPT からも定義 {{hash}} を指定して承認できます。ChatGPT から承認された場合は、ワンタップで無効化できる通知が必ず届きます。',
   'agents.terminal_request_approvable_note_device': 'このエージェントには ClosePaw のステップがあり、Shelly 用 ClosePaw ビルドは再確認せずに実行するため、このスマホ上でのみ承認できます。ここで「OK」と返信するか、通知の［承認］（ロック解除が必要）を押してください。ChatGPT からは承認できません。承認すると、エージェントを編集するまで以後の実行でもこの ClosePaw ステップは承認済みになります。',

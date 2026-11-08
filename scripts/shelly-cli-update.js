@@ -48,6 +48,8 @@ const zlib = require('zlib');
 // reviewed commit, in lockstep with the same constant in shelly-agent-driver.js
 // (a test holds them equal). `claude-install --agent` is the only thing that
 // points agent-current anywhere, and only ever at this build: no update moves it.
+// A move also needs the `@path` check at CLAUDE_TEXT_ONLY_DENIED_TOOLS in
+// shelly-agent-driver.js.
 const REVIEWED_CLAUDE = {
   version: '2.1.314',
   sha256: 'a66c0a8f5d0c87a439953d797985192bbcbaefbce2e0d7b2eaa8df30ef0f3ef2',

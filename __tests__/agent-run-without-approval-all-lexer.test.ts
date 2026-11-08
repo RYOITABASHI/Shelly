@@ -679,12 +679,13 @@ describe('worker prompt hint (driver)', () => {
     const asset = fs.readFileSync(path.join(ROOT, 'modules/terminal-emulator/android/src/main/assets/shelly-agent-driver.js'), 'utf8');
     expect(asset).toBe(driver);
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { workerPrompt, WORKER_PROMPT_HINT } = require(path.join(ROOT, 'scripts/shelly-agent-driver.js'));
+    const { turnPrompt, workerPrompt, WORKER_PROMPT_HINT } = require(path.join(ROOT, 'scripts/shelly-agent-driver.js'));
     expect(WORKER_PROMPT_HINT).toMatch(/node --check/);
     expect(WORKER_PROMPT_HINT).toMatch(/node -e/);
     expect(WORKER_PROMPT_HINT).toMatch(/\$TMPDIR/);
     expect(workerPrompt('build a game')).toBe(`build a game\n\n${WORKER_PROMPT_HINT}`);
-    expect(driver).toMatch(/text: workerPrompt\(config\.prompt\), text_elements/);
-    expect(driver).toMatch(/content: \[\{ type: 'text', text: workerPrompt\(config\.prompt\) \}\]/);
+    expect(turnPrompt({ prompt: 'build a game' })).toBe(workerPrompt('build a game'));
+    expect(driver).toMatch(/text: turnPrompt\(config\), text_elements/);
+    expect(driver).toMatch(/content: \[\{ type: 'text', text: turnPrompt\(config\) \}\]/);
   });
 });

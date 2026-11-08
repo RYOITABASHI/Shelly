@@ -752,7 +752,10 @@ export type AppSettings = {
 export type AgentCliId = 'codex' | 'claude';
 
 export type ToolChoice =
-  | { type: 'cli'; cli: AgentCliId }
+  /** textOnly (executor v37): a long-form step that runs with no tools at all,
+   *  and `model` for that turn. Only an article pipeline config sets these, and
+   *  the executor refuses them anywhere else (textOnlyPlanRefusal). */
+  | { type: 'cli'; cli: AgentCliId; textOnly?: true; model?: string }
   | { type: 'gemini-api'; model?: string }
   | { type: 'cerebras'; model?: string }
   | { type: 'groq'; model?: string }

@@ -9,7 +9,8 @@
  * virtual display without coming to the front. ClosePaw's result code maps to:
  *   1  → 'background'   (running on the virtual display)
  *   2  → 'main-display' (ClosePaw is controlling the screen)
- *   10–16 → a refusal, thrown natively as `CLOSEPAW_REFUSED:<wire>`
+ *   10–18 → a refusal, thrown natively as `CLOSEPAW_REFUSED:<wire>`
+ *        (17 and 18 come from the draft routine, ClosePawDrafts.kt)
  *   0 / no answer within 5s → fall back to the activity launch
  *        ('launched' / 'notified', unchanged behavior).
  * Shelly never sends allow_main_display.
@@ -32,7 +33,9 @@ export type ClosePawRefusal =
   | 'overlay-missing'
   | 'no-credentials'
   | 'busy'
-  | 'vd-unavailable';
+  | 'vd-unavailable'
+  | 'device-locked'
+  | 'chrome-in-use';
 
 /** ClosePaw ShellyGoalReceiver result code → refusal (mirrors ClosePawHandoff.Refusal). */
 export const CLOSEPAW_REFUSAL_CODES: Readonly<Record<number, ClosePawRefusal>> = {
@@ -43,6 +46,8 @@ export const CLOSEPAW_REFUSAL_CODES: Readonly<Record<number, ClosePawRefusal>> =
   14: 'no-credentials',
   15: 'busy',
   16: 'vd-unavailable',
+  17: 'device-locked',
+  18: 'chrome-in-use',
 };
 
 export type ClosePawBroadcastResult =

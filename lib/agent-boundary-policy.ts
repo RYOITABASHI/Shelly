@@ -595,6 +595,20 @@ const INDIRECT_EXEC_RE =
   /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
 
 /**
+ * `rg` reads as a read-only tool, but these make it launch a program of the
+ * caller's choosing, so they take the indirect-exec signal: `--pre` and its
+ * `--pre-glob`, `--hostname-bin`, and a config file, which can hold any of them.
+ * Without the signal the command was an auto-allow even at L1.
+ */
+const RG_RUNS_PROGRAM_RE =
+  /(?:^|[\s;&|(])(?:[^\s;&|]*\/)?rg\b[^;&|]*\s--(?:pre|pre-glob|hostname-bin)(?:[=\s]|$)|\bRIPGREP_CONFIG_PATH\b/;
+
+function rgRunsProgram(command: string): boolean {
+  const words = dequoteShellWords(command);
+  return [command, words, dequoteShellWords(words)].some((c) => RG_RUNS_PROGRAM_RE.test(c));
+}
+
+/**
  * Quoted heredocs (DEFERRED.md 2026-11-02 rehearsal, item (m)).
  *
  * Codex writes files as `cat > f.html <<'EOF' … EOF`. With a QUOTED delimiter
@@ -1048,7 +1062,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   }
   // Quoted heredoc bodies are literal data: judged without them, but only
   // ever narrowing — the full command must match too (indirectExecView).
-  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+  if ((INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) || rgRunsProgram(command)) {
     signals.push('indirect-exec');
   }
   const isPureRead =
@@ -1131,6 +1145,19 @@ const REDIRECT_TO_ROLES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?roles\.json\b/;
 // ~/.shelly/agents/article-pipelines.json, which only the user writes.
 const ARTICLE_PIPELINES_BASENAME_RE = /(?:^|[\s/'"=])article-pipelines\.json\b/;
 const REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?article-pipelines\.json\b/;
+// Draft destinations (ClosePawDrafts.kt): same basename form for
+// ~/.shelly/agents/draft-destinations.json, which only the user writes.
+const DRAFT_DESTINATIONS_BASENAME_RE = /(?:^|[\s/'"=])draft-destinations\.json\b/;
+const REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?draft-destinations\.json\b/;
+// ~/.shelly/agents/after-draft-hook.js is code that runs with no one watching
+// (shelly-plan-executor.js runAfterDraftHook), so this one is refused wider than
+// the data files above: any command naming it, unless it is a plain read. No
+// mutator list, because a writer such as `curl -o`, `tar` or `git` is not on the
+// one above, and no `.shelly` test, because Claude's Bash tool keeps its `cd`
+// between commands and the worker's next command names only the file. The name
+// stops short of `.js` so `after-draft-hook.j*` is caught too.
+const AFTER_DRAFT_HOOK_RE = /after-draft-hook\b/;
+const AFTER_DRAFT_HOOK_PLAIN_READ_RE = /^\s*(?:cat|head|tail|ls|stat|wc|file|grep|rg)\s[^|;&<>`$\n]*$/;
 
 /**
  * NARROW form (always on, flag OFF too): only mutations aimed at the files
@@ -1152,6 +1179,9 @@ export function touchesProtectedPolicyFiles(command: string): boolean {
   if (rolesBasename && (REDIRECT_TO_ROLES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   const articleBasename = ARTICLE_PIPELINES_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (articleBasename && (REDIRECT_TO_ARTICLE_PIPELINES_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  const destinationsBasename = DRAFT_DESTINATIONS_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  if (destinationsBasename && (REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
+  if (AFTER_DRAFT_HOOK_RE.test(c) && !AFTER_DRAFT_HOOK_PLAIN_READ_RE.test(c)) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

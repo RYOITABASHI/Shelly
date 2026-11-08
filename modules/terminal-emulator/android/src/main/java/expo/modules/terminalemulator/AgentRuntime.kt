@@ -555,7 +555,10 @@ object AgentRuntime {
     // title line, and flags cited index pages and bracketed notes. JS-only.
     // v35 (topic refill): a `queue-refill` step tops up a low article queue
     // before `queue-pop`, and cannot fail the run. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 35
+    // v36: optional user hook after a long-form draft is saved. JS-only.
+    // v37: text-only CLI steps in long-form chains (no tools, may run unattended).
+    // The driver asset gains --text-only in the same build. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 37
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

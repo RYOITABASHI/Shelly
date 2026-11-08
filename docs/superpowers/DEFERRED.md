@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-07: CC（feat/closepaw-save-draft、未push）が ClosePaw の下書き保存ハンドオフの Shelly 側を実装（`shelly save-draft`、`ClosePawDrafts.kt`、BASHRC_VERSION 290 / シム v25）。対応する ClosePaw は feat/save-draft-routine の 6014df94。HTML 許可リストは ClosePaw の実物の `ArticleHtmlPolicy.kt` をコンパイルして突き合わせ済み（`__tests__/fixtures/closepaw-html-policy-cases.json`）。Shelly の Kotlin は変更した ClosePaw 系ファイルをスタブ付きで型検査しただけで、Gradle ビルドは未実施、実機未検証。無人送信はオーナー判断待ち（下記 P1「ClosePaw save-draft」）。
 - 2026-11-07: CC（fix/disable-seeded-content-agents、未push）が旧ビルドのサンプルエージェントを更新時に一度だけオフにするマイグレーションを追加（`lib/agent-seeded-sample-migration.ts`）。id と定義全体のフィンガープリントで判定し、編集済みは触らない。実機は未検証（次回のオンデバイス QA で、サンプルが残る端末で一度だけオフになること・オンに戻したら維持されること・通知 1 行を確認）。
 - 2026-11-07: CC（feat/codex-termux-official、未push）が Codex の取得元を Termux 公式パッケージへ切り替えた（CLI 常時最新計画の Inc 3 の取得元部分）。CI の検証、Bump ジョブからの APK なし配信、ワーカーの `agent-current` 分離。実機未検証。
 - 2026-11-07: CC（fix/cli-update-groundwork、未push）が CLI 常時最新計画の土台を実装。Bump ジョブの凍結検知、Codex の未知 item と Claude の `system/init` tools で停止、Codex の起動パスを実パスへ解決（BASHRC_VERSION 286）。Codex の Web 検索は承認なしで通し監査行を残すことをオーナーが決定。T1 の結果を受けて exec-wrapper v227 と BASHRC_VERSION 287 で公式 Termux 版の remote control に対応（実機未検証）。
@@ -107,6 +108,29 @@
 
 ### 入力以外の文字列がログに残る箇所 — 未対応 (P2)
 打った・貼った文字列はログから除いた（`__tests__/no-input-in-logs.test.ts`）。残り: `app/_layout.tsx` の deep-link / コマンドキューの拒否行（`line.slice(0, 96)` / `url.slice(0, 96)` / `line.slice(0, 64)`）、`lib/teach-controller.ts` の不正行、`lib/skill-offer-chat.ts` の未投稿文、`lib/managed-cli-update.ts` の stdout/stderr、`TerminalEmulator.shellyPasteProcProbe` の shell の cmdline。キューの行は shell が書くので、URL にトークンが含まれる場合がある。Why not now: 打鍵の内容ではなく、拒否の診断に使っている。
+### 記事パイプラインのテキスト専用 CLI ステップ（executor v37）— 実機未検証 (P1)
+形式は `docs/article-pipeline-config.md`。PC で確認済み: Claude Code 2.1.314 と Codex 0.167.0 の実バイナリ＋ローカルの mock API で、要求の tools が [] になること、偽の tool 呼び出しが実行されないこと。実機で確認する: (1) スケジュール実行で Claude の `system/init` が tools [] になり、サブスクの認証で通る。(2) bionic の Codex が `read-only` と `tools: []` で ChatGPT のバックエンドに受け付けられる（`tools: []` と 1 モデルのカタログは本物の API では未確認）。(3) `~/.codex/config.toml` に model が無い端末では `model` を指定するまで失敗する。(4) 1 本 30 分の上限に 5 回の CLI ターンが収まるか。(5) `~/.agents/skills` に置いた skill が `$名前` で読まれない。Windows の Codex はホームを OS から取るので PC では祖先の経路しか確かめておらず、`$HOME` を空にする方はソース（`dirs::home_dir`）のみ。(6) ロック作成の `link()` が Knox で拒否される場合の代替（排他作成）に落ちる。限界: Claude の `system/init` は最初のメッセージを送った後にしか出ないので、ツール 0 件の確認より先にプロンプトは claude に渡る（`--tools ""` が効かなかった場合でも、確認で即 SIGKILL）。Codex にツール一覧の報告はないので、確認は `features list` と要求前の設定まで。出力は文章なので、Web 由来の文が下書きに混ざることまでは防げない。エンジンのロックはテキスト専用ステップどうしだけで、Run now の通常 CLI ステップとは取り合わない。Claude のサブスク実行では turn に `# userEmail`（`~/.claude.json` の oauthAccount）が入る。2.1.314 に消す設定は無い（`--bare` は認証ごと外れ、`--exclude-dynamic-system-prompt-sections` は効かない。API キー実行では入らない）。Why not now: 実機確認は次のビルドで行う。
+
+### テキスト専用 CLI の契約確認（ピンを動かすたび）(P1)
+**Codex の pin（`.ci-versions/codex-termux-deb.json`）を動かすとき**: 新しい版の実バイナリで `SHELLY_TEST_REAL_CODEX=<codex> npx jest agent-driver-text-only` を流す。要求の tools が [] のまま、`$skill` が何も読まず、`features list` の形式が変わっていないことを見る。`features list` の preflight が必ず止めるのは `shell_tool` だけで、他の機能名が変わっても通ってしまうので、この確認が代わりになる。Agent が動かす版を変えるレビューの必須項目にする。
+**Claude の `CLAUDE_AGENT_REVIEWED` を動かすとき**: `--tools ""` は `@path` を止めない。止めているのは `Read` の deny で、2.1.314 では deny を外すと読み込み、2.1.220 では deny があっても読み込む。新しい版で `@<ファイル>` が要求に載らないことを mock API で確かめてから動かす。`__tests__/agent-driver-text-only.test.ts` が版を固定しているので、版を動かすとテストが落ちる。
+
+### ClosePaw save-draft — 無人送信はオーナー判断待ち、実機未検証 (P1)
+実装済みは「最初のロック解除で 1 タップ承認 → 送信」まで（`docs/article-pipeline-config.md`）。ロック解除だけで送る経路は作っていない。キューと設定ファイルは同一 uid の全プロセスが書けるので、そこに「自動」の印を置くのは承認の自動化と同じ意味になる。ゲートは文字列照合で、実行時にパスを組み立てるワーカーは止められない。**判断が要るのは次のどれにするか:**
+1. **今のまま（毎回 1 タップ）**。無人にはならないが、権限は広がらない。
+2. **有人チャットでオーナーが ON にする「宛先ごとの事前承認」**: 宛先と上限（1 日あたり件数）を Keystore 裏付けの封印に置く（差し込み口は `ClosePawDrafts.requestApproval`。`ApprovedDraft` が platform と subdomain を持つので宛先に束縛できる。オーナーの決定までは実装しない）。ファイルからは ON にできないが、ON の間はワーカーが積んだ内容もそのまま下書きに入る。公開はされない。ネイティブから封印を読む口が要る（今は RN の SecureStore のみ）。
+3. **2 に加えて出所を縛る**: アプリ自身の AgentRuntime が実行中の、登録時に承認されたエージェントが積んだ項目だけ（`closePawRunProvenanceOk` と同じ考え方、`NativeAgentRunRegistry`）。一番狭いが、after-draft フックのような私的スクリプトからの投入は対象外になる。実行中に転用される残余リスクは既存の事前承認と同じ。
+
+**実機確認**: ClosePaw 変種と両方入れて 1 件（note）で通しを確認。承認通知に 5 件すべて表示されるか、ClosePaw から `resolveContentProvider` が Shelly の非公開 FileProvider を解決できるか（`isShellyFile`。grant 後の可視性に依存）、エージェント実行後もサービスが残り `ACTION_USER_PRESENT` を受けるか、再起動後（サービスなし）は次回アプリ起動まで動かないこと、結果コード 17/18 の後に次のロック解除で再試行されること。6 時間以内の再試行で ClosePaw の ReplayGuard に当たらないこと（拒否では reqId を消費しない作りのはず）。 ClosePaw は前面アプリ不明を Chrome 扱いにするので（8d094985）、18 が想定より多くないかも見る。InboxStyle の行が機種で切れたときに宛先・ハッシュ・画像ホストが読めるか、`RECEIVER_EXPORTED` で実機でも USER_PRESENT が届くか、`shelly_request_sha256` を要求する ClosePaw と組み合わせて通るかも確認する。
+
+### after-draft フック（executor v36）— 実機未検証 (P1)
+`~/.shelly/agents/after-draft-hook.js`。形式は `docs/article-pipeline-config.md`。Windows の Jest ではプロセスグループの kill・SIGTERM・パーミッションの経路が skip になるので、実機で確認する: (1) スケジュール実行で引数に保存先が渡る。(2) `chmod 666` と symlink が `refused` になる。(3) 終わらないフックが 120 秒で孫プロセスごと止まり、run は success のまま。(4) STOP ALL で止まる。ゲートは文字列照合なので、名前を組み立てるコマンドやワークスペース内 symlink 経由の書き込み（`tar xf` / `git clone` の件）は防げない。ファイルの内容は封印していない。Why not now: 封印には登録の手順が要り、今回の範囲を超える。
+
+### after-draft フックの内容を封印する — 未対応 (P1)
+今はゲートの文字列照合だけで守っている。ワークスペースで任意のコードを動かせるワーカーは実行時にパスを組み立てられ、フックが読み込む補助ファイルも守られない。フックが何らかの鍵に依存するようになる前に、`roles.json` と同じく Keystore 裏付けの SecureStore にハッシュを封印し、executor が起動前に検証する。Why not now: 登録の手順と UI が要り、フックが鍵を持たない間は急がない。
+
+### gate が読み取りとして通すが、書き込みや実行ができるフラグ — 未対応 (P2)
+`READ_ONLY_RE` は先頭のコマンド名だけを見るので、次は L1 でも auto-allow（2026-11-07、gate の helper で観測）: `find -exec` / `-delete` / `-fprint`、`git diff --ext-diff`、`git log/diff --output=`、`git show --textconv`、`less -o`。`rg --pre` / `--pre-glob` / `--hostname-bin` と `RIPGREP_CONFIG_PATH` は `indirect-exec` にして解消済み。`find -okdir`・`-execdir`・`-ok`・`-fprintf`・`-fls` も同じ形と見込むが未観測。Why not now: 変更の範囲を hook に絞ったため。
 
 ### `queue-refill` のエンジンが executor に固定 — 未対応 (P2)
 `scripts/shelly-plan-executor.js` の `QUEUE_REFILL_TOOL_TYPE` は `gemini-api` 固定で、設定の `engines` に従わない（Gemini のキーがなければ補充は失敗し、run は失敗にならない）。直すなら計画に engine を載せ、executor を版上げする。同じ箇所のコメントが消えた定数名を指しているので一緒に直す。

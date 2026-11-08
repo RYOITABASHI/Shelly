@@ -18,7 +18,8 @@ import org.json.JSONObject
  * hand-off ack `$HOME/.shelly-closepaw-result-<reqId>.json`, which the shim reads and deletes
  * within seconds (reusing that name would let the ack poll consume a lifecycle update). Status:
  *   pending-approval -> rejected | expired | running | untracked | failed
- *   running          -> completed | failed | cancelled | timeout   (ClosePaw's result callback)
+ *   running          -> completed | failed | cancelled | timeout | uncertain   (ClosePaw's result callback)
+ *   queued           -> approved | failed | rejected | expired   (a draft, see ClosePawDrafts)
  * `untracked` = handed off on a path that has no result callback (official ClosePaw, an older
  * variant, or the activity fallback).
  *
@@ -69,8 +70,12 @@ object ClosePawRunResults {
     const val STATUS_FAILED = "failed"
     const val STATUS_CANCELLED = "cancelled"
     const val STATUS_TIMEOUT = "timeout"
+    /** Draft routine: it stopped after writing, or timed out; the draft may or may not exist. */
+    const val STATUS_UNCERTAIN = "uncertain"
+    /** A queued draft that was not started; ClosePawDrafts retries it at the next unlock. */
+    const val STATUS_QUEUED = "queued"
     /** Final statuses ClosePaw may report. */
-    val CALLBACK_STATUSES = setOf(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_TIMEOUT)
+    val CALLBACK_STATUSES = setOf(STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_TIMEOUT, STATUS_UNCERTAIN)
 
     const val SUMMARY_MAX_CODE_POINTS = 2000
     private val REQ_ID_RE = Regex("^[0-9]{10,16}-[0-9a-f]{8}$")
@@ -176,6 +181,7 @@ object ClosePawRunResults {
         }
         // Never log the summary (free text): status and length only.
         Log.i(TAG, "ClosePaw result recorded: $reqId -> $status summaryLen=${clean.length}")
+        ClosePawDrafts.onRunFinished(context, reqId!!, st, clean)
         return true
     }
 
@@ -183,6 +189,7 @@ object ClosePawRunResults {
         STATUS_COMPLETED -> "ClosePaw finished the task"
         STATUS_CANCELLED -> "ClosePaw's task was stopped before it finished"
         STATUS_TIMEOUT -> "ClosePaw's task timed out"
+        STATUS_UNCERTAIN -> "ClosePaw could not confirm the result - the draft may or may not exist, so check your drafts"
         STATUS_LOST -> "The result was lost - check ClosePaw on the phone"
         else -> "ClosePaw could not finish the task"
     }
@@ -284,6 +291,7 @@ object ClosePawRunResults {
                     "shelly closepaw: no result from ClosePaw within ${MAX_RUN_MS / 60_000L} minutes - check ClosePaw on the phone"
                 }
                 writeState(context, reqId, next, msg)
+                ClosePawDrafts.onRunFinished(context, reqId, next, null)
             }
         }
     }
