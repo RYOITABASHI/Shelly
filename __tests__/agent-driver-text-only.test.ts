@@ -433,7 +433,13 @@ describe('Codex text-only turn', () => {
     expect(r.status).toBe(1);
     expect(r.answer).toBeNull();
     expect(auditOf(r.audit, 'codex_text_only_request_blocked')).toMatchObject({ method });
-    const reply = r.seen.find((m: any) => m.id === 'srv-1');
+    // What the driver sent, from its own wire log (C->S lines). The fake's record
+    // of what it read is not used: the driver sends the error and then SIGTERMs
+    // the fake at once, so on Linux the fake was often killed before it read the
+    // reply (CI: `seen` had no srv-1 entry).
+    const sent = r.out.split('\n').filter((l: string) => l.startsWith('C->S ')).map((l: string) => JSON.parse(l.slice(5)));
+    const reply = sent.find((m: any) => m.id === 'srv-1');
+    expect(reply).toBeDefined();
     expect(reply.error).toBeDefined();
     expect(reply.result).toBeUndefined();
     // Never reached the gate.

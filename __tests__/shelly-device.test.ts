@@ -506,13 +506,29 @@ describe('agent boundary policy: clipboard get is a secret read', () => {
     'shelly device clipboard "$op"',
     'cat ~/.shelly-device-result-1760500000000-0123abcd.json',
     'cat .shelly-device-result-1760500000000-0123abcd.json',
-    `echo '{}' > "$HOME/.shelly-device-req-1760500000000-0123abcd"`,
-    `node -e "require(process.env.HOME + '/.shelly-device.js').main(['battery'])"`,
   ])('%s -> secret-read (human at L1/L2, denied at L3)', (cmd) => {
     expect(classifyProposedCommand(cmd, ctx('L2')).signals).toContain('secret-read');
     expect(classifyProposedCommand(cmd, ctx('L1')).decision).toBe('gray');
     expect(classifyProposedCommand(cmd, ctx('L2')).decision).toBe('gray');
     expect(classifyProposedCommand(cmd, ctx('L3')).decision).toBe('deny');
+  });
+
+  // Since the protected-files gate change (b2d9ea1d3) these are refused outright,
+  // which is stricter than the human prompt above. Writing the native request
+  // file with a `$` word next to a `.shelly…` name, and an interpreter whose
+  // code names `.shelly-device.js` (after quote joining, `['battery']` reads as a
+  // glob), both hit touchesProtectedPolicyFiles: a run-time word or glob near
+  // Shelly's own files could become a protected name, so the gate does not
+  // guess. An agent asks for device features with `shelly device`, never these.
+  it.each([
+    `echo '{}' > "$HOME/.shelly-device-req-1760500000000-0123abcd"`,
+    `node -e "require(process.env.HOME + '/.shelly-device.js').main(['battery'])"`,
+  ])('%s -> policy-write (denied at every level)', (cmd) => {
+    for (const level of ['L1', 'L2', 'L3'] as const) {
+      const r = classifyProposedCommand(cmd, ctx(level));
+      expect(r.signals).toContain('policy-write');
+      expect(r.decision).toBe('deny');
+    }
   });
 
   it.each([
