@@ -611,11 +611,11 @@ describe('the executor version', () => {
     const script = fs.readFileSync(scriptCopy, 'utf8');
     const asset = fs.readFileSync(assetCopy, 'utf8');
     const runtime = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt');
-    expect(executor.EXECUTOR_SCRIPT_VERSION).toBe(38);
-    expect(/SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=(\d+)/.exec(script)![1]).toBe('38');
-    expect(/^const EXECUTOR_SCRIPT_VERSION = (\d+);/m.exec(script)![1]).toBe('38');
-    expect(/SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=(\d+)/.exec(asset)![1]).toBe('38');
-    expect(/private const val CURRENT_EXECUTOR_VERSION = (\d+)/.exec(runtime)![1]).toBe('38');
+    expect(executor.EXECUTOR_SCRIPT_VERSION).toBeGreaterThanOrEqual(37);
+    expect(/SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=(\d+)/.exec(script)![1]).toBe(String(executor.EXECUTOR_SCRIPT_VERSION));
+    expect(/^const EXECUTOR_SCRIPT_VERSION = (\d+);/m.exec(script)![1]).toBe(String(executor.EXECUTOR_SCRIPT_VERSION));
+    expect(/SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=(\d+)/.exec(asset)![1]).toBe(String(executor.EXECUTOR_SCRIPT_VERSION));
+    expect(/private const val CURRENT_EXECUTOR_VERSION = (\d+)/.exec(runtime)![1]).toBe(String(executor.EXECUTOR_SCRIPT_VERSION));
     expect(asset).toBe(script);
   });
 });

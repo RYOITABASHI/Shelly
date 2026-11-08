@@ -3058,15 +3058,21 @@ patchCodex(libDir);
             sb.appendLine("  require(saveDraftJs).main(args.slice(1));")
             sb.appendLine("  process.exit(1);")
             sb.appendLine("}")
-            // v291 (shim v26): `shelly image`. Synchronous; its main() always exits.
+            // v291 (shim v26): `shelly image`. Run as its own node process with the
+            // script path on its command line, so STOP-ALL (haltInflightRunsCommand
+            // is_run) finds it by name even when /proc gives no starttime. Same
+            // launch recipe as the executor's nodeInvocation.
             sb.appendLine("if (args[0] === 'image') {")
             sb.appendLine("  const imageJs = path.join(home, '.shelly-image.js');")
             sb.appendLine("  if (!fs.existsSync(imageJs)) {")
             sb.appendLine("    console.error('shelly image: ' + imageJs + ' is missing; restart Shelly to reinstall it');")
             sb.appendLine("    process.exit(1);")
             sb.appendLine("  }")
-            sb.appendLine("  require(imageJs).main(args.slice(1));")
-            sb.appendLine("  process.exit(1);")
+            sb.appendLine("  const imageLib = process.env.SHELLY_LIB_DIR || '';")
+            sb.appendLine("  const imageNode = imageLib ? path.join(imageLib, 'node') : '';")
+            sb.appendLine("  const imageLinker = imageNode && fs.existsSync(imageNode) && fs.existsSync('/system/bin/linker64');")
+            sb.appendLine("  const imageRun = require('child_process').spawnSync(imageLinker ? '/system/bin/linker64' : process.execPath, (imageLinker ? [imageNode] : []).concat([imageJs], args.slice(1)), { stdio: ['ignore', 'inherit', 'inherit'] });")
+            sb.appendLine("  process.exit(typeof imageRun.status === 'number' ? imageRun.status : 1);")
             sb.appendLine("}")
             sb.appendLine("if (args[0] === 'device') {")
             sb.appendLine("  const deviceJs = path.join(home, '.shelly-device.js');")

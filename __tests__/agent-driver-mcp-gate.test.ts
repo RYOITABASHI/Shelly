@@ -827,7 +827,6 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       completed({ ...command, status: 'completed', aggregatedOutput: '/tmp\n', exitCode: 0, durationMs: 4 }),
       started({ type: 'webSearch', id: 'ws1', query: '', action: { type: 'other' } }),
       completed({ type: 'webSearch', id: 'ws1', query: 'prices', action: { type: 'search', query: 'prices', queries: ['prices'] } }),
-      completed({ type: 'imageGeneration', id: 'ig1', status: 'completed', revisedPrompt: null, result: '' }),
       started({ type: 'sleep', id: 's1', durationMs: 1000 }),
       completed({ type: 'sleep', id: 's1', durationMs: 1000 }),
       started({ type: 'contextCompaction', id: 'c1' }),
@@ -858,10 +857,14 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(line({ id: 'a', query: '', action: { type: 'other' } }).query).toBe('');
   });
 
-  it('webSearch and imageGeneration stay allowed', () => {
+  it('webSearch stays allowed; image generation is off for the worker and its item stops it', () => {
     expect(driver.codexItemDisposition({ type: 'webSearch' })).toBe('harmless');
-    expect(driver.codexItemDisposition({ type: 'imageGeneration' })).toBe('harmless');
-    expect(driver.CODEX_WORKER_DISABLED_FEATURES).not.toContain('image_generation');
+    // The image tool reads local images with no approval (only --image-only, under
+    // its own permission profile, turns it back on).
+    expect(driver.codexItemDisposition({ type: 'imageGeneration' })).toBe('blocked');
+    expect(driver.CODEX_WORKER_DISABLED_FEATURES).toContain('image_generation');
+    expect(driver.codexWorkerConfigToml()).toMatch(/^image_generation = false$/m);
+    expect(driver.codexMcpDisableArgs([])).toContain('features.image_generation=false');
   });
 
   it('the worker config sets indexed web search at the top level, and driver_start records it', () => {

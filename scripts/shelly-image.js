@@ -13,17 +13,22 @@
  * in the driver from a fixed style and a sanitized subject of at most 80
  * characters; nothing else reaches it, and there is no way to add prompt text.
  *
+ * The turn runs under a permission profile whose only readable root is an empty
+ * private directory, and only on a Codex version whose canary passed on the
+ * phone (`shelly image --canary`, see CODEX_IMAGE_CANARY_VERIFIED in the driver).
+ *
  * The bytes from Codex are not trusted: magic bytes are checked, the image is
- * decoded with size limits (8000 px a side) in plain JS, cropped to 3:2, resized
- * to 1600 px wide and encoded again as JPEG (quality 80). Only pixels survive, so
- * any metadata is gone.
+ * decoded with size limits (8000 px a side, 16 MP, 8-bit only) in plain JS,
+ * cropped to 3:2, resized to 1600 px wide and encoded again as JPEG (quality 80).
+ * Only pixels survive, so any metadata is gone.
  *
  * Unattended use is allowed (owner decision). It runs the Codex the agent worker
  * runs (the reviewed one, never SHELLY_CODEX_TUI_PATH), one Codex text-only or
  * image turn at a time across runs (locks/text-only-codex.slot, the executor's
  * own per-engine lock), and it holds a locks/image-<pid>.pid while it runs so the
- * agents' concurrency limit and the executor's CLI slot check count it, and
- * STOP-ALL stops it.
+ * agents' concurrency limit and the executor's Codex CLI slot (executor v39)
+ * count it, and STOP-ALL stops it (by the starttime record, or by this file's
+ * name on the command line: the `shelly` helper runs it as a child for that).
  */
 const fs = require('fs');
 const path = require('path');
@@ -33,6 +38,7 @@ const { spawnSync } = require('child_process');
 
 const USAGE = `Usage: shelly image --style <name> --subject <text> --out <path.jpg under $TMPDIR>
                     [--model <codex model>] [--timeout-ms <ms>] [--wait-ms <ms>]
+       shelly image --canary [--model <codex model>]
 
 Generates one header image with Codex (needs Codex signed in with a paid ChatGPT
 plan) and saves it as a 1600 px wide 3:2 JPEG. Prints JSON:
@@ -40,13 +46,18 @@ plan) and saves it as a 1600 px wide 3:2 JPEG. Prints JSON:
 
 Styles: STYLES
 The subject is a short theme (at most 80 characters after URLs, markup and
-control characters are removed). It never carries article text.`;
+control characters are removed). It never carries article text.
+
+--canary checks this Codex version once on the phone: Codex must be unable to
+read an image outside its empty working directory, and still able to generate
+one. Prints IMAGE_CANARY PASS|FAIL codex=<version>. Image generation stays off
+until that version is added to the driver's verified list.`;
 
 const OUT_WIDTH = 1600;
 const OUT_HEIGHT = Math.round((OUT_WIDTH * 2) / 3); // 1067
 const JPEG_QUALITY = 80;
 const MAX_DIMENSION = 8000;
-const MAX_PIXELS = 36 * 1000 * 1000;
+const MAX_PIXELS = 16 * 1000 * 1000;
 const MIN_DIMENSION = 64;
 const MAX_INPUT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 300 * 1000;
@@ -54,7 +65,9 @@ const MAX_TIMEOUT_MS = 600 * 1000;
 const DEFAULT_WAIT_MS = 10 * 60 * 1000;
 const LOCK_POLL_MS = 2000;
 const WORK_PREFIX = 'shelly-image-';
-const WORK_STALE_MS = 24 * 60 * 60 * 1000;
+// Longer than a run can last (wait ≤ 1 h + timeout ≤ 10 min).
+const WORK_STALE_MS = 2 * 60 * 60 * 1000;
+const TEMP_FILE_RE = /^\.shelly-image-\d+-[0-9a-f]{8}\.tmp$/;
 const MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
 const EXIT_BUSY = 75;
 
@@ -81,7 +94,7 @@ function jpeg() {
 
 // ─── Arguments ────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const options = { style: null, subject: null, out: null, model: null, timeoutMs: DEFAULT_TIMEOUT_MS, waitMs: DEFAULT_WAIT_MS, help: false };
+  const options = { style: null, subject: null, out: null, model: null, timeoutMs: DEFAULT_TIMEOUT_MS, waitMs: DEFAULT_WAIT_MS, help: false, canary: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => {
@@ -93,16 +106,21 @@ function parseArgs(argv) {
     else if (arg === '--style') options.style = next();
     else if (arg === '--subject') options.subject = next();
     else if (arg === '--out') options.out = next();
+    else if (arg === '--canary') options.canary = true;
     else if (arg === '--model') options.model = next();
     else if (arg === '--timeout-ms') options.timeoutMs = boundedInt(next(), arg, 10 * 1000, MAX_TIMEOUT_MS);
     else if (arg === '--wait-ms') options.waitMs = boundedInt(next(), arg, 0, 60 * 60 * 1000);
     else throw new UsageError(`unknown argument: ${String(arg).slice(0, 40)}`);
   }
   if (options.help) return options;
+  if (options.model !== null && !MODEL_RE.test(options.model)) throw new UsageError('invalid --model');
+  if (options.canary) {
+    if (options.style || options.subject !== null || options.out) throw new UsageError('--canary takes no --style, --subject or --out');
+    return options;
+  }
   if (!options.style) throw new UsageError('missing --style');
   if (options.subject === null) throw new UsageError('missing --subject');
   if (!options.out) throw new UsageError('missing --out');
-  if (options.model !== null && !MODEL_RE.test(options.model)) throw new UsageError('invalid --model');
   return options;
 }
 
@@ -242,7 +260,8 @@ function crc32(buf, start, end) {
 }
 
 const PNG_CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
-const PNG_DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+// 8-bit (and smaller) only: a 16-bit image is refused, not converted.
+const PNG_DEPTHS = { 0: [1, 2, 4, 8], 2: [8], 3: [1, 2, 4, 8], 4: [8], 6: [8] };
 
 function pngHeader(buf) {
   if (buf.length < 33) throw new Error('PNG: truncated');
@@ -279,6 +298,7 @@ function decodePng(buf) {
         interlace: data[12],
       };
       checkDimensions(ihdr.width, ihdr.height);
+      if (ihdr.depth === 16) throw new Error('PNG: 16-bit images are not supported');
       if (!PNG_DEPTHS[ihdr.colorType] || !PNG_DEPTHS[ihdr.colorType].includes(ihdr.depth)) throw new Error('PNG: unsupported colour type or depth');
       if (ihdr.compression !== 0 || ihdr.filter !== 0) throw new Error('PNG: unknown compression or filter method');
       if (ihdr.interlace !== 0) throw new Error('PNG: interlaced images are not supported');
@@ -345,16 +365,15 @@ function pngToRgba(raw, ihdr, stride, palette, trns) {
   const { width, height, depth, colorType } = ihdr;
   const out = new Uint8Array(width * height * 4);
   const channels = PNG_CHANNELS[colorType];
-  const maxSample = (1 << Math.min(depth, 8)) - 1;
+  const maxSample = (1 << depth) - 1;
   const sample = (row, index) => {
     // index-th sample in the row, scaled to 0..255; raw value for palettes.
     if (depth === 8) return raw[row + index];
-    if (depth === 16) return raw[row + index * 2];
     const bitPos = index * depth;
     const byte = raw[row + (bitPos >> 3)];
     return (byte >> (8 - depth - (bitPos & 7))) & maxSample;
   };
-  const rawSample = (row, index) => (depth === 16 ? raw.readUInt16BE(row + index * 2) : sample(row, index));
+  const rawSample = sample;
   const scale = (v) => (depth >= 8 ? v : Math.round((v * 255) / maxSample));
   for (let y = 0; y < height; y += 1) {
     const row = y * (stride + 1) + 1;
@@ -639,9 +658,22 @@ function makeWorkDir(tmpRoot) {
       if (st.isDirectory() && !st.isSymbolicLink() && Date.now() - st.mtimeMs > WORK_STALE_MS) fs.rmSync(dir, { recursive: true, force: true });
     }
   } catch (_) {}
+  sweepTempFiles(tmpRoot);
   const dir = fs.mkdtempSync(path.join(tmpRoot, WORK_PREFIX));
   fs.chmodSync(dir, 0o700);
   return fs.realpathSync(dir);
+}
+
+/** Removes our own `.shelly-image-<pid>-<hex>.tmp` files left by a killed run. */
+function sweepTempFiles(dir) {
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!TEMP_FILE_RE.test(name)) continue;
+      const file = path.join(dir, name);
+      const st = fs.lstatSync(file);
+      if (st.isFile() && !st.isSymbolicLink() && Date.now() - st.mtimeMs > WORK_STALE_MS) fs.unlinkSync(file);
+    }
+  } catch (_) {}
 }
 
 // ─── Running the driver ───────────────────────────────────────────────────
@@ -663,14 +695,11 @@ function driverEnv(env) {
   return out;
 }
 
-function runImageDriver({ style, subject, model, timeoutMs, rawPath, workDir, env }) {
+function runImageDriver({ style, subject, model, timeoutMs, rawPath, workDir, env, canary = false }) {
   const driverPath = sibling('shelly-agent-driver.js');
   if (!fs.existsSync(driverPath)) throw new Error(`${driverPath} is missing; restart Shelly to reinstall it`);
   const args = [
-    '--image-only',
-    '--image-style', style,
-    '--image-subject', subject,
-    '--image-out', rawPath,
+    ...(canary ? ['--image-canary'] : ['--image-only', '--image-style', style, '--image-subject', subject, '--image-out', rawPath]),
     '--cwd', workDir,
     '--agent-id', 'shelly-image',
     '--run-id', crypto.randomUUID(),
@@ -689,9 +718,30 @@ function runImageDriver({ style, subject, model, timeoutMs, rawPath, workDir, en
     killSignal: 'SIGTERM',
     maxBuffer: 16 * 1024 * 1024,
   });
-  const errors = String(r.stdout || '').split('\n').filter((l) => l.startsWith('CODEX_ERROR ')).map((l) => l.slice(12).slice(0, 300)).slice(0, 5);
+  const lines = String(r.stdout || '').split('\n');
+  const errors = lines.filter((l) => l.startsWith('CODEX_ERROR ')).map((l) => l.slice(12).slice(0, 300)).slice(0, 5);
+  const canaryLine = lines.filter((l) => l.startsWith('IMAGE_CANARY ')).map((l) => l.slice(0, 300)).pop() || null;
   const stderr = String(r.stderr || '').trim().split('\n').filter(Boolean).slice(-3).map((l) => l.slice(0, 300));
-  return { status: r.status, signal: r.signal, error: r.error, errors, stderr };
+  return { status: r.status, signal: r.signal, error: r.error, errors, stderr, canaryLine };
+}
+
+/** The canary run: → the driver's IMAGE_CANARY line (PASS or FAIL). */
+function canary(options, env = process.env) {
+  const home = env.HOME;
+  if (!home) throw new Error('HOME is not set');
+  if (!env.TMPDIR) throw new UsageError('$TMPDIR is not set');
+  const release = acquireLocks(home, options.waitMs);
+  const workDir = makeWorkDir(fs.realpathSync(env.TMPDIR));
+  try {
+    const run = runImageDriver({ model: options.model, timeoutMs: options.timeoutMs, workDir, env, canary: true });
+    const line = run.canaryLine || `IMAGE_CANARY FAIL ${run.errors.join(' / ') || run.stderr.join(' / ') || `driver exit ${run.status}`}`;
+    return { pass: run.status === 0 && line.startsWith('IMAGE_CANARY PASS'), line };
+  } finally {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch (_) {}
+    release();
+  }
 }
 
 function generate(options, env = process.env) {
@@ -702,6 +752,7 @@ function generate(options, env = process.env) {
   const subject = driver.sanitizeImageSubject(options.subject);
   if (!subject) throw new UsageError('--subject is empty after removing URLs, markup and control characters');
   const out = resolveOutPath(options.out, env);
+  sweepTempFiles(out.dir);
   const home = env.HOME;
   if (!home) throw new Error('HOME is not set');
   const release = acquireLocks(home, options.waitMs);
@@ -746,6 +797,11 @@ function main(argv, env = process.env) {
       console.log(USAGE.replace('STYLES', Object.keys(loadDriver().IMAGE_STYLES).join(', ')));
       process.exit(0);
     }
+    if (options.canary) {
+      const result = canary(options, env);
+      process.stdout.write(`${result.line}\n`);
+      process.exit(result.pass ? 0 : 1);
+    }
     const result = generate(options, env);
     process.stdout.write(`${JSON.stringify(result)}\n`);
     process.exit(0);
@@ -774,6 +830,7 @@ module.exports = {
   acquireLocks,
   driverEnv,
   generate,
+  canary,
   main,
 };
 

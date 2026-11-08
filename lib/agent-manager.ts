@@ -4103,7 +4103,9 @@ export function haltInflightRunsCommand(): string {
     '  [ -d "/proc/$1" ] || return 1',
     '  st=""; { read -r st < "$2.lockdir/starttime"; } 2>/dev/null',
     '  case "$st" in ""|*[!0-9]*) ;; *) [ "$st" = "$(stat_field "$1" 20)" ] && return 0;; esac',
-    '  case "$(cmdline_of "$1")" in *shelly-plan-executor*) return 0;; esac',
+    // `shelly image` (scripts/shelly-image.js) holds locks/image-<pid>.pid; its
+    // command line names the script (the shelly helper runs it as a child).
+    '  case "$(cmdline_of "$1")" in *shelly-plan-executor*|*shelly-image.js*) return 0;; esac',
     '  return 1',
     '}',
     'victims=""',

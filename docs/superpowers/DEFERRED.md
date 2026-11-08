@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-08: セキュリティレビューで `referenced_image_paths` が read-only sandbox（`:root` 読み取り可）を素通りしてローカル画像を読んで送れると指摘。画像専用ターンを per-run 権限プロファイルに閉じ込め、canary 合格の版だけで動かすよう修正、通常ワーカーの画像生成は無効化（下記 P1「`shelly image`」）。
 - 2026-11-08: CC（feat/image-only-worker、未push）が汎用のヘッダー画像生成を実装（driver `--image-only`、`shelly image`、vendored jpeg-js 0.4.4、BASHRC_VERSION 291 / シム v26）。PC ではスタンドインの app-server と単体テストのみ。本物の Codex で画像が出るかは未確認（下記 P1「`shelly image`」）。
 - 2026-11-08: CC（feat/save-draft-preapproval、未push）が ClosePaw 下書き保存の「宛先ごとの承認なし」（オーナー決定の案 2）を実装（`ClosePawDraftPreapproval.kt`、`lib/closepaw-draft-preapproval.ts`、設定の「下書き（ClosePaw）」）。Kotlin は kotlinc で型検査のみ、Gradle ビルドと実機は未実施（下記 P1「ClosePaw save-draft」）。
 - 2026-11-07: CC（feat/closepaw-save-draft、未push）が ClosePaw の下書き保存ハンドオフの Shelly 側を実装（`shelly save-draft`、`ClosePawDrafts.kt`、BASHRC_VERSION 290 / シム v25）。対応する ClosePaw は feat/save-draft-routine の 6014df94。HTML 許可リストは ClosePaw の実物の `ArticleHtmlPolicy.kt` をコンパイルして突き合わせ済み（`__tests__/fixtures/closepaw-html-policy-cases.json`）。Shelly の Kotlin は変更した ClosePaw 系ファイルをスタブ付きで型検査しただけで、Gradle ビルドは未実施、実機未検証。無人送信はオーナー判断待ち（下記 P1「ClosePaw save-draft」）。
@@ -84,8 +85,21 @@
 
 2026-11-07 のレビューで指摘（`feat/claude-install` とは別件、ここでは直さない）。「すべて」レベルなどの境界チェックは**実行時点で存在する symlink** とコマンド中の語を見ているので、`tar xf` や `git clone` が展開時に作る symlink は判定をすり抜ける。例: アーカイブから `l -> $HOME` を作ったあとの `tee -- l/.bashrc` は、ワークスペース内のパスとして通る。`ln`・`cp -s`・`git apply`・`patch` は既に人に回しているが（CLAUDE.md「承認なしで実行」、`allLevelLinkProbe`）、リンクを作れるコマンドの一覧が足りていない。**修正の方向**: `tar`・`unzip`・`git clone`・`git checkout` 等を同じ扱いにするか、書き込み判定で全構成要素の realpath をワークスペースと比較する。
 
-### `shelly image`（driver `--image-only`）— 実機未検証 (P1)
-ブランチ `feat/image-only-worker`（2026-11-08、未push）。`shelly image --style <enum> --subject <text> --out <$TMPDIR/x.jpg>` が Codex の画像生成 1 枚を 1600×1067 の JPEG（品質 80、メタデータなし）にして JSON を出す。プロンプトは driver がスタイル（列挙）と 80 字までの無害化した題材から組み立て、記事本文は入らない。ターンは text-only の封じ込めのまま `image_generation` だけ ON。許すアイテムは `imageGeneration`・メッセージ・reasoning のみ。上流の確認は rust-v0.167.0 のソース（`ext/image-generation`、`core/src/tools/spec_plan.rs` の `image_generation_available`）を読んだだけで、本物の codex_tui では動かしていない。**実機で確認すること**: (1) 有料プランの ChatGPT ログインで、read-only sandbox・空の HOME・text-only 用のモデルカタログ（`input_modalities` 付き）のまま画像ツールが出るか（出なければ「Codex produced no image」で失敗する）。(2) `savedPath`（`$CODEX_HOME/generated_images/…`）と base64 のどちらで届くか、`fileId` だけになる場合があるか。(3) 正規化の速さ（PC では 1536×1024 で約 0.3 秒）。(4) `locks/text-only-codex.slot` と `locks/image-<pid>.pid` が executor の text-only ステップ・STOP-ALL と噛み合うか。**残るリスク**: 画像ツールの `referenced_image_paths` は承認なしで端末の画像を読んで送れる。指示で禁じ、完了アイテムに `inputImages` があれば止めるが、その時点で送信は済んでいる（プロンプトは固定なので誘導の余地は小さい）。Codex の版を動かすときは画像ツールの引数と item の形も契約確認に含める。
+### `shelly image`（driver `--image-only`）— 実機未検証、canary 未合格のため現状は動かない (P1)
+ブランチ `feat/image-only-worker`（2026-11-08、未push）。`shelly image --style <enum> --subject <text> --out <$TMPDIR/x.jpg>` が Codex の画像生成 1 枚を 1600×1067 の JPEG（品質 80、メタデータなし）にして JSON を出す。設計と強制内容は CLAUDE.md の Architecture Decisions「ヘッダー画像は `shelly image`」。
+
+**レビュー指摘（2026-11-08）と対応**: Codex 0.167 の画像ツールは `referenced_image_paths` の絶対パスを item が出る前に自プロセスで読み、`sandbox: read-only` は `:root` 読み取り可なので止まらない（rust-v0.167.0 `ext/image-generation/src/tool.rs`、`protocol/src/permissions.rs` の `read_only_file_system_entries`）。読み取り失敗は item を出さず、アップロード後のバックエンド失敗は `inputImages` を残さない。
+- 対応済み（コード）: 画像専用ターンは per-run 権限プロファイル `shelly_image_only`（`:root` deny、空の private cwd だけ read、network off）で起動し、`activePermissionProfile` を確認する。turn/start に `sandboxPolicy` を付けない。通常ワーカーは画像生成を無効化し、`imageGeneration` の item で止める（通常ワーカーは danger-full-access で、ファイルアクセスを狭めると本来の作業が壊れるため、閉じ込めではなく無効化を選んだ）。failed の item・`inputImages` 付きの item・2 枚目は止める。`inputImages` の path と sha256 を監査に残す。
+- 拡張ツールの読み取りがターンの権限プロファイルに従うことは上流のテスト（`core/tests/suite/extension_sandbox.rs` `extension_tool_respects_restrictions`）で確認しただけ。Android の Termux 版でサンドボックス付き読み取りがどう動くか（拒否されるのか、そもそも失敗するのか、素通りするのか）は未確認。**そのため `CODEX_IMAGE_CANARY_VERIFIED` は空で、今は画像生成が一切動かない。**
+- hooks の第 2 層は入れない: PreToolUse フックのエラー・タイムアウト・2 以外の終了コードは should_block=false（fail-open、`hooks/src/events/pre_tool_use.rs`）で、hooks を ON にするとゲート外でコマンドが走る。
+
+**実機でやること（順に）**:
+1. 有料プランの ChatGPT でログインした端末で `shelly image --canary` を実行し、`IMAGE_CANARY PASS codex=<版>` が出ることを確認する。PASS の条件は 3 つ: カナリア画像の読み取りが拒否される、そのエラー文がモデルの返答に出る、通常の生成は成功する。FAIL なら理由を記録して版は登録しない。
+2. PASS した版を `scripts/shelly-agent-driver.js` の `CODEX_IMAGE_CANARY_VERIFIED` と `.ci-versions/codex-image-canary.json` の両方に足す（テストが一致を確認）。Codex の同梱 pin を動かすたびにやり直す。
+3. その版で `shelly image --style abstract-light --subject "calm morning" --out $TMPDIR/h.jpg` を実行し、`savedPath`／base64／`fileId` のどれで届くか、速さ（PC では 1536×1024 の正規化に約 0.3 秒）を確認する。
+4. 実行中に executor の Codex CLI ステップが「`shelly image` が Codex を使用中」で待つこと、STOP-ALL で止まり `locks/image-*.pid` が消えることを確認する。
+
+**残るリスク**: canary が見るのは 1 回の読み取り拒否とモデルの報告だけ。プロンプトは固定なので、モデルが自分から参照を付ける余地は小さい。`shelly image` 側から executor の有人 Codex ステップは見えない（executor 側が image run を待つ片方向のみ）。
 
 ### 3 つの CLI を常に最新に保つ（2026-11-07 オーナー要望）(P0)
 
@@ -179,7 +193,7 @@ U+200B〜U+200D と U+2060 は消さないので、タイトルに入ってい�
 `enforceSourcedIntermediate`（`scripts/shelly-plan-executor.js`、`lib/agent-manager.ts`）は引用のない行を落とすので、調査の後ろにある review ステップの 1 行目 `VERDICT:` が消える。`parseReviewVerdict` が null を返し、`shouldSkipHandoffStep` は修正ステップを飛ばさない。記事パイプライン（`orchestration.longform`）はこの処理を通らないので影響なし。ロールのループは残る。直すなら、handoff ステップの結果を `enforceSourcedIntermediate` の対象から外す。
 
 ### Codex ワーカーの Web 検索は承認なしで通す — オーナー決定 (P1)
-2026-11-07 オーナー決定。Web 検索に承認は要らないので、`webSearch` と `imageGeneration` は許可リストに残し、無効化もしない（`scripts/shelly-agent-driver.js` の `CODEX_HARMLESS_ITEM_TYPES`）。検索が完了するたびに監査行 `codex_web_search` を残す（短く切った redact 済みのクエリまたは URL、アクション種別、item id）。**残るリスク**: 信頼できない文章を読んだワーカーは検索クエリにデータを載せられる。その記録が監査行である。
+2026-11-07 オーナー決定。Web 検索に承認は要らないので、`webSearch` は許可リストに残し、無効化もしない（`scripts/shelly-agent-driver.js` の `CODEX_HARMLESS_ITEM_TYPES`）。`imageGeneration` は 2026-11-08 に外した（ワーカーでは無効、item で停止。上記 P1「`shelly image`」）。検索が完了するたびに監査行 `codex_web_search` を残す（短く切った redact 済みのクエリまたは URL、アクション種別、item id）。**残るリスク**: 信頼できない文章を読んだワーカーは検索クエリにデータを載せられる。その記録が監査行である。
 **軽減策（同日、`fix/cli-update-groundwork`、実機未検証）**: worker の config に `web_search = "indexed"`（`cached` は danger-full-access で live に変わる）。完了した検索の `action.queries` 全件・`action.query`・`action.url`・`action.pattern` を `codexWebSearchLeakCheck` が調べ、既知の値（auth.json のトークン、秘密名の env で 16 文字以上、URL エンコードと base64 も）か形式（`sk-`、`ghp_` など、`gsk_`、`AIza`、JWT、PEM 秘密鍵）に当たればターンを止めて失敗にする。監査と wire ログには検出器名だけを残す。Codex ワーカーの env から KEY / TOKEN / SECRET を含む名前を落とした（ツールコマンドが `GH_TOKEN` などに頼っていた場合は使えなくなる）。
 **それでも通るもの**: (1) 最初の送信。検査は完了後なので、そのクエリは既に外へ出ている。(2) 言い換え、要約、独自の符号化、値の一部だけ（途中で切ったトークンや、前後に文字を足して base64 にしたもの）。(3) クエリが空の `Other` アクション。(4) 実行中に更新されたトークンのうち JWT でないもの。
 **実機で確認すること**: 出荷中の fork v0.163.0-termux.3 が `indexed` を受け付けて従うか（タグのソースには同じ処理があるが、バイナリでは未確認。`driver_start` の `codexWebSearchMode` は設定値であり実効値ではない）、0.167.0 も同様か。

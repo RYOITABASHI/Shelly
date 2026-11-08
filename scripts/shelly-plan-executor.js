@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=38
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=39
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -170,7 +170,10 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // `voice_sha`, and use the fixed ghostwritten footer. Plans without the step
 // run exactly as before. Bumped so a stale v37 copy, which refuses the step,
 // is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 38;
+// v39 (2026-11-08, `shelly image`): a live `shelly image` run (its
+// locks/image-<pid>.pid) holds the Codex CLI slot of this executor too, and a
+// Codex branch held back by it re-checks every few seconds.
+const EXECUTOR_SCRIPT_VERSION = 39;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -4998,10 +5001,38 @@ function removeFanoutLock(paths) {
   } catch (_) {}
 }
 
+// v38: live `shelly image` runs (scripts/shelly-image.js). Each holds
+// locks/image-<pid>.pid while its Codex image turn runs, outside this process.
+const IMAGE_RUN_LOCK_RE = /^image-(\d+)\.pid$/;
+const IMAGE_RUN_POLL_MS = 2000;
+
+function liveImageRuns(paths) {
+  let names;
+  try {
+    names = fs.readdirSync(paths.locksDir);
+  } catch (_) {
+    return 0;
+  }
+  let count = 0;
+  for (const name of names) {
+    const m = IMAGE_RUN_LOCK_RE.exec(name);
+    if (!m) continue;
+    const pid = Number(readFile(path.join(paths.locksDir, name)).trim());
+    if (!Number.isInteger(pid) || pid <= 1 || String(pid) !== m[1]) continue;
+    try {
+      process.kill(pid, 0);
+      count += 1;
+    } catch (_) {}
+  }
+  return count;
+}
+
 // '' when a CLI branch of `engine` may start now, else why it must wait.
 function cliSlotBlocker(paths, engine) {
   if (cliSlots.total >= CLI_SLOTS_TOTAL) return 'total';
   if ((cliSlots.perEngine.get(engine) || 0) >= CLI_SLOTS_PER_ENGINE) return 'engine';
+  // A `shelly image` run is a Codex turn in another process: same per-engine slot.
+  if (engine === 'codex' && liveImageRuns(paths) > 0) return 'image-run';
   if (cliSlots.total >= 1) {
     if (otherLiveAgentLocks(paths) >= 1) return 'other-agents';
     if (countOwnUidProcesses(phantomProcRoot()) + CLI_BRANCH_PROCESS_COST > PHANTOM_PROCESS_CEILING) return 'phantom';
@@ -5032,19 +5063,38 @@ function acquireCliSlot(paths, engine, onWait, giveUpAtMs) {
   if (typeof onWait === 'function') onWait(blocker);
   return new Promise((resolve) => {
     let timer = null;
+    let poll = null;
     const waiter = {
       engine,
       resolve: (value) => {
         if (timer) clearTimeout(timer);
+        if (poll) clearInterval(poll);
         resolve(value);
       },
     };
     cliSlots.waiters.push(waiter);
+    // An image run ends in another process, so no releaseCliSlot here wakes this
+    // waiter: it looks again every few seconds.
+    if (engine === 'codex') {
+      poll = setInterval(() => {
+        const k = cliSlots.waiters.indexOf(waiter);
+        if (k === -1) {
+          clearInterval(poll);
+          return;
+        }
+        if (cliSlotBlocker(paths, engine)) return;
+        cliSlots.waiters.splice(k, 1);
+        takeCliSlot(paths, engine);
+        waiter.resolve(true);
+      }, IMAGE_RUN_POLL_MS);
+      if (typeof poll.unref === 'function') poll.unref();
+    }
     if (Number.isFinite(giveUpAtMs)) {
       timer = setTimeout(() => {
         const k = cliSlots.waiters.indexOf(waiter);
         if (k === -1) return; // already handed a slot
         cliSlots.waiters.splice(k, 1);
+        if (poll) clearInterval(poll);
         resolve('expired');
       }, Math.max(0, giveUpAtMs - Date.now()));
     }
@@ -5074,6 +5124,7 @@ const CLI_SLOT_WAIT_REASONS = {
   engine: 'another step of the same CLI is running',
   'other-agents': 'another agent is running',
   phantom: 'too many background processes are running',
+  'image-run': 'a `shelly image` run is using Codex',
 };
 
 // Synchronous (called from the SIGTERM handler right before process.exit):
@@ -10681,6 +10732,8 @@ if (require.main === module) {
 module.exports = {
   PLAN_SPEC_SCHEMA_VERSION,
   EXECUTOR_SCRIPT_VERSION,
+  liveImageRuns,
+  cliSlotBlocker,
   PLAN_SPEC_KIND,
   validatePlan,
   runtimePaths,
