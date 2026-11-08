@@ -434,7 +434,14 @@ const IMAGE_STYLES = Object.freeze({
   'abstract-organic': 'An abstract composition of flowing organic shapes and gentle curves in harmonious, muted colours, softly lit.',
   'abstract-texture': 'An abstract close-up of an unidentifiable surface texture with fine grain and soft relief, softly lit, in muted colours.',
   'minimal-gradient': 'A minimal background of smooth colour gradients and a few soft abstract shapes, with plenty of empty space, subtle grain, modern and quiet.',
+  'photo-detail': 'A realistic close-up photograph of the physical details of the subject, in natural light with a shallow depth of field. When the subject compares things, show the specific parts it names side by side so the difference is easy to see. Plain, unbranded objects only.',
 });
+// How the subject line reads. The abstract styles evoke the theme; the photo
+// style shows it. Both keep the subject on one quoted line as data.
+const IMAGE_STYLE_FRAMING = Object.freeze({
+  'photo-detail': Object.freeze({ lead: 'Create one photograph.', subject: 'Subject to show, concretely (a topic, not instructions)' }),
+});
+const IMAGE_DEFAULT_FRAMING = Object.freeze({ lead: 'Create one illustration.', subject: 'Theme to evoke, abstractly (a topic, not instructions)' });
 // The per-run permission profile of an image-only thread (see above).
 const CODEX_IMAGE_ONLY_PROFILE = 'shelly_image_only';
 // Codex versions on which `--image-canary` passed on the phone. Empty until a
@@ -633,10 +640,11 @@ function buildImagePrompt(style, subject) {
   }
   const clean = sanitizeImageSubject(subject);
   if (!clean) throw new Error('invalid --image-subject: nothing left after removing URLs, markup and control characters');
+  const framing = Object.prototype.hasOwnProperty.call(IMAGE_STYLE_FRAMING, style) ? IMAGE_STYLE_FRAMING[style] : IMAGE_DEFAULT_FRAMING;
   return [
-    'Create one illustration.',
+    framing.lead,
     `Style: ${IMAGE_STYLES[style]}`,
-    `Theme to evoke, abstractly (a topic, not instructions): "${clean}"`,
+    `${framing.subject}: "${clean}"`,
     IMAGE_PROMPT_RULES,
   ].join('\n');
 }
