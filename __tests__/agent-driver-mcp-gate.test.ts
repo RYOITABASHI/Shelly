@@ -20,7 +20,7 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FAKE_CODEX_MCP_LIST } from './fixtures/fake-codex-mcp-list';
+import { FAKE_CODEX_MCP_LIST, FAKE_CODEX_FEATURES_LIST } from './fixtures/fake-codex-mcp-list';
 
 const root = path.resolve(__dirname, '..');
 const driverPath = path.join(root, 'scripts/shelly-agent-driver.js');
@@ -547,6 +547,7 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     fs.mkdirSync(ws);
     fs.writeFileSync(path.join(ws, 'app-server'), FAKE_APP_SERVER);
     fs.writeFileSync(path.join(ws, 'mcp'), FAKE_CODEX_MCP_LIST);
+    fs.writeFileSync(path.join(ws, 'features'), FAKE_CODEX_FEATURES_LIST);
     // The user's real Codex home: config with an MCP server + login.
     const realHome = path.join(home, 'real-codex');
     fs.mkdirSync(realHome);
@@ -772,6 +773,15 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     expect(failing.appServerArgv).toBeNull();
     expect(failing.audit).toContain('codex_mcp_preflight_failed');
   }, 90_000);
+
+  it('the worker never starts unless image generation is reported off', () => {
+    const on = run([], { FAKE_FEATURES_IMAGEGEN: 'true' });
+    expect(on.status).toBe(1);
+    expect(on.appServerArgv).toBeNull();
+    expect(auditKinds(on.audit)).toContain('codex_worker_preflight_failed');
+    expect(on.out).toContain('image generation could not be shown to be off');
+    expect(on.leftover).toEqual([]);
+  }, 60_000);
 
   it('an mcpToolCall item aborts the turn, fails the run, and audits names only', () => {
     const r = run([

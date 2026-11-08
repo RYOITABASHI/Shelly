@@ -13,7 +13,7 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FAKE_CODEX_MCP_LIST } from './fixtures/fake-codex-mcp-list';
+import { FAKE_CODEX_MCP_LIST, FAKE_CODEX_FEATURES_LIST } from './fixtures/fake-codex-mcp-list';
 
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
@@ -123,6 +123,7 @@ describe('driver E2E: a Codex turn writes the usage file', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-usage-e2e-'));
     fs.writeFileSync(path.join(dir, 'app-server'), FAKE_APP_SERVER);
     fs.writeFileSync(path.join(dir, 'mcp'), FAKE_CODEX_MCP_LIST);
+    fs.writeFileSync(path.join(dir, 'features'), FAKE_CODEX_FEATURES_LIST);
   });
   afterAll(() => {
     fs.rmSync(dir, { recursive: true, force: true });

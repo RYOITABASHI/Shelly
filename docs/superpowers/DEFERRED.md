@@ -89,12 +89,12 @@
 ブランチ `feat/image-only-worker`（2026-11-08、未push）。`shelly image --style <enum> --subject <text> --out <$TMPDIR/x.jpg>` が Codex の画像生成 1 枚を 1600×1067 の JPEG（品質 80、メタデータなし）にして JSON を出す。設計と強制内容は CLAUDE.md の Architecture Decisions「ヘッダー画像は `shelly image`」。
 
 **レビュー指摘（2026-11-08）と対応**: Codex 0.167 の画像ツールは `referenced_image_paths` の絶対パスを item が出る前に自プロセスで読み、`sandbox: read-only` は `:root` 読み取り可なので止まらない（rust-v0.167.0 `ext/image-generation/src/tool.rs`、`protocol/src/permissions.rs` の `read_only_file_system_entries`）。読み取り失敗は item を出さず、アップロード後のバックエンド失敗は `inputImages` を残さない。
-- 対応済み（コード）: 画像専用ターンは per-run 権限プロファイル `shelly_image_only`（`:root` deny、空の private cwd だけ read、network off）で起動し、`activePermissionProfile` を確認する。turn/start に `sandboxPolicy` を付けない。通常ワーカーは画像生成を無効化し、`imageGeneration` の item で止める（通常ワーカーは danger-full-access で、ファイルアクセスを狭めると本来の作業が壊れるため、閉じ込めではなく無効化を選んだ）。failed の item・`inputImages` 付きの item・2 枚目は止める。`inputImages` の path と sha256 を監査に残す。
+- 対応済み（コード）: 画像専用ターンは per-run 権限プロファイル `shelly_image_only`（`:root` deny、空の private cwd だけ read、network off）で起動し、`activePermissionProfile` を確認する。turn/start に `sandboxPolicy` を付けない。通常ワーカーは画像生成を無効化し（起動前に `features list` で off と報告されなければ起動しない）、`imageGeneration` の item で止める（通常ワーカーは danger-full-access で、ファイルアクセスを狭めると本来の作業が壊れるため、閉じ込めではなく無効化を選んだ）。failed の item・`inputImages` 付きの item・2 枚目は止める。`inputImages` の path と sha256 を監査に残す。
 - 拡張ツールの読み取りがターンの権限プロファイルに従うことは上流のテスト（`core/tests/suite/extension_sandbox.rs` `extension_tool_respects_restrictions`）で確認しただけ。Android の Termux 版でサンドボックス付き読み取りがどう動くか（拒否されるのか、そもそも失敗するのか、素通りするのか）は未確認。**そのため `CODEX_IMAGE_CANARY_VERIFIED` は空で、今は画像生成が一切動かない。**
 - hooks の第 2 層は入れない: PreToolUse フックのエラー・タイムアウト・2 以外の終了コードは should_block=false（fail-open、`hooks/src/events/pre_tool_use.rs`）で、hooks を ON にするとゲート外でコマンドが走る。
 
 **実機でやること（順に）**:
-1. 有料プランの ChatGPT でログインした端末で `shelly image --canary` を実行し、`IMAGE_CANARY PASS codex=<版>` が出ることを確認する。PASS の条件は 3 つ: カナリア画像の読み取りが拒否される、そのエラー文がモデルの返答に出る、通常の生成は成功する。FAIL なら理由を記録して版は登録しない。
+1. 有料プランの ChatGPT でログインした端末で `shelly image --canary` を実行し、`IMAGE_CANARY PASS codex=<版>` が出ることを確認する。PASS の条件は 3 つ: (a) 読める範囲の外の `$HOME/.c/x.png`（実行が作って消す）の読み取りが拒否され、そのパスを含む正確なエラー文 `unable to read referenced image at \`…/.c/x.png\`:` がモデルの返答に出る、(b) 陽性対照として、読める範囲の中の画像が `inputImages`（パスと sha256 が一致）で届く、(c) 通常の生成が成功する。FAIL なら理由を記録して版は登録しない。端末に Shelly 以外が作った `$HOME/.c` があると FAIL するので、その場合はどかしてから実行する。
 2. PASS した版を `scripts/shelly-agent-driver.js` の `CODEX_IMAGE_CANARY_VERIFIED` と `.ci-versions/codex-image-canary.json` の両方に足す（テストが一致を確認）。Codex の同梱 pin を動かすたびにやり直す。
 3. その版で `shelly image --style abstract-light --subject "calm morning" --out $TMPDIR/h.jpg` を実行し、`savedPath`／base64／`fileId` のどれで届くか、速さ（PC では 1536×1024 の正規化に約 0.3 秒）を確認する。
 4. 実行中に executor の Codex CLI ステップが「`shelly image` が Codex を使用中」で待つこと、STOP-ALL で止まり `locks/image-*.pid` が消えることを確認する。

@@ -48,10 +48,13 @@ Styles: STYLES
 The subject is a short theme (at most 80 characters after URLs, markup and
 control characters are removed). It never carries article text.
 
---canary checks this Codex version once on the phone: Codex must be unable to
-read an image outside its empty working directory, and still able to generate
-one. Prints IMAGE_CANARY PASS|FAIL codex=<version>. Image generation stays off
-until that version is added to the driver's verified list.`;
+--canary checks this Codex version once on the phone. Codex is asked to edit
+$HOME/.c/x.png (outside its only readable directory; made and removed by the
+run), then an image inside that directory, then to generate one image. PASS
+needs the exact refusal for $HOME/.c/x.png, the inside image read with its
+sha256, and the plain image. Prints IMAGE_CANARY PASS|FAIL codex=<version>.
+Image generation stays off until that version is added to the driver's
+verified list. A $HOME/.c that Shelly did not make is left alone (the run fails).`;
 
 const OUT_WIDTH = 1600;
 const OUT_HEIGHT = Math.round((OUT_WIDTH * 2) / 3); // 1067

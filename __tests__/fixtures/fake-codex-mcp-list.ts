@@ -25,3 +25,17 @@ process.stdout.write(JSON.stringify(names.map((name) => ({
   transport: { type: 'stdio', command: 'x', env: { SECRET_TOKEN: 'do-not-log' } },
 }))));
 `;
+
+/**
+ * A fake `codex features list` for driver E2E tests of the normal worker (the
+ * driver refuses to start it unless image_generation is reported off). Like
+ * real Codex, a feature is listed off when `-c features.<name>=false` is on
+ * the command line. FAKE_FEATURES_IMAGEGEN forces the reported value.
+ */
+export const FAKE_CODEX_FEATURES_LIST = `
+const argv = process.argv.slice(2);
+const off = (name) => argv.includes('features.' + name + '=false');
+const ig = process.env.FAKE_FEATURES_IMAGEGEN || (off('image_generation') ? 'false' : 'true');
+process.stdout.write('shell_tool                               stable             true\\n');
+process.stdout.write('image_generation                         stable             ' + ig + '\\n');
+`;

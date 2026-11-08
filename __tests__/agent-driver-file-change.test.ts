@@ -9,7 +9,7 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FAKE_CODEX_MCP_LIST } from './fixtures/fake-codex-mcp-list';
+import { FAKE_CODEX_MCP_LIST, FAKE_CODEX_FEATURES_LIST } from './fixtures/fake-codex-mcp-list';
 
 const root = path.resolve(__dirname, '..');
 const driverPath = path.join(root, 'scripts/shelly-agent-driver.js');
@@ -120,6 +120,7 @@ describe('driver E2E: Codex file-change approvals through the real gate', () => 
     fs.mkdirSync(ws);
     fs.writeFileSync(path.join(ws, 'app-server'), FAKE_APP_SERVER);
     fs.writeFileSync(path.join(ws, 'mcp'), FAKE_CODEX_MCP_LIST);
+    fs.writeFileSync(path.join(ws, 'features'), FAKE_CODEX_FEATURES_LIST);
     const rec = path.join(home, 'rec.json');
     const r = childProcess.spawnSync(process.execPath, [
       driverPath,

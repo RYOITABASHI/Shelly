@@ -241,6 +241,27 @@ describe('image-only driver pieces', () => {
     expect(driver.imageCanaryVerifiedVersions({ SHELLY_TEST_IMAGE_CANARY_VERIFIED: '9.9.9' })).toEqual(fs.existsSync('/system/bin/linker64') ? [] : ['9.9.9']);
   });
 
+  it('the canary refusal is the exact Codex error for the exact path', () => {
+    expect(driver.imageCanaryRefusal('/h/.c/x.png')).toBe('unable to read referenced image at `/h/.c/x.png`:');
+  });
+
+  it('the normal worker refuses to start unless image_generation is reported off', () => {
+    const spec = { prefixArgs: [] };
+    const config = { codexBin: 'codex', cwd: os.tmpdir() };
+    const runner = (out: string) => () => out;
+    const line = (v: string) => `image_generation                         stable             ${v}\n`;
+    expect(driver.codexWorkerFeaturePreflight(config, [], runner(line('false')))).toEqual({ ok: true });
+    expect(driver.codexWorkerFeaturePreflight(config, [], runner(line('true'))).ok).toBe(false);
+    expect(driver.codexWorkerFeaturePreflight(config, [], runner('shell_tool  stable  true\n')).ok).toBe(false);
+    expect(driver.codexWorkerFeaturePreflight(config, [], () => { throw new Error('boom'); }).reason).toMatch(/features list failed/);
+    let args: string[] = [];
+    driver.codexWorkerFeaturePreflight(config, ['srv'], (_s: unknown, a: string[]) => { args = a; return line('false'); });
+    expect(args.slice(-args.length + args.indexOf('features'))[0]).toBe('features');
+    expect(args).toContain('features.image_generation=false');
+    expect(args).toContain('mcp_servers.srv.enabled=false');
+    void spec;
+  });
+
   it('records the path and sha256 of each input image', () => {
     expect(driver.imageInputRecords({ inputImages: [{ path: '/sdcard/DCIM/a.jpg', sha256: 'ab'.repeat(32) }, { path: 'x'.repeat(400) }] })).toEqual([
       { path: '/sdcard/DCIM/a.jpg', sha256: 'ab'.repeat(32) },
@@ -355,7 +376,25 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   else if (m.method === 'turn/start') {
     out({ id: m.id, result: { turn: { id: 't1', status: 'inProgress' } } });
     for (const s of JSON.parse(process.env.FAKE_SCRIPT || '[]')) out(s);
-    if (mode !== 'none') {
+    let answer = process.env.FAKE_ANSWER || 'done';
+    if (mode.startsWith('canary-')) {
+      // Step 1 (outside) is refused with no item in the real Codex; step 2 reads the
+      // inside image; step 3 generates.
+      const text = seen.find((x) => x.method === 'turn/start').params.input[0].text;
+      const paths = [...text.matchAll(/\\["([^"]+)"\\]/g)].map((x) => x[1]);
+      const [outside, inside] = paths;
+      const sha = (f) => require('crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+      answer = answer.split('{OUTSIDE}').join(outside);
+      const base = { type: 'imageGeneration', status: 'completed', revisedPrompt: 'p', generationId: null, failure: null, result: png.toString('base64') };
+      const emit = (item) => out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item } });
+      if (mode === 'canary-leak') emit({ ...base, id: 'c1', inputImages: [{ path: outside, sha256: sha(outside) }] });
+      if (mode !== 'canary-noinside') {
+        const insideSha = mode === 'canary-badsha' ? 'cd'.repeat(32) : sha(inside);
+        emit({ ...base, id: 'c2', inputImages: [{ path: inside, sha256: insideSha }] });
+      }
+      if (mode !== 'canary-nogen') emit({ ...base, id: 'c3' });
+      if (mode === 'canary-failed') emit({ ...base, id: 'c4', status: 'failed', result: '' });
+    } else if (mode !== 'none') {
       const item = { type: 'imageGeneration', id: 'call1', status: 'completed', revisedPrompt: 'p', generationId: null, failure: null };
       out({ method: 'item/started', params: { threadId: 'th1', turnId: 't1', item: { ...item, status: 'in_progress', result: '' } } });
       const dir = path.join(h, 'generated_images', 'th1');
@@ -367,19 +406,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       if (mode === 'saved' || mode === 'b64' || mode === 'twice') item.result = png.toString('base64');
       if (mode === 'fileid') item.fileId = 'file_123';
       if (mode === 'input') { item.result = png.toString('base64'); item.inputImages = [{ path: '/sdcard/DCIM/a.jpg', sha256: 'ab'.repeat(32) }]; }
-      if (mode === 'canary-leak') {
-        const text = seen.find((x) => x.method === 'turn/start').params.input[0].text;
-        const canaryPath = /\\["([^"]+)"\\]/.exec(text)[1];
-        const sha = require('crypto').createHash('sha256').update(fs.readFileSync(canaryPath)).digest('hex');
-        item.result = png.toString('base64');
-        item.inputImages = [{ path: canaryPath, sha256: sha }];
-      }
-      if (mode === 'canary-refused') item.result = png.toString('base64');
       if (mode === 'failed') { item.status = 'failed'; item.result = ''; item.failure = { type: 'usageLimitExceeded', limitId: 'image_gen', resetsAt: null }; }
       out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item } });
       if (mode === 'twice') out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item: { ...item, id: 'call2' } } });
     }
-    out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item: { type: 'agentMessage', id: 'msg', text: process.env.FAKE_ANSWER || 'done' } } });
+    out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item: { type: 'agentMessage', id: 'msg', text: answer } } });
     out({ method: 'turn/completed', params: { threadId: 'th1', turn: { id: 't1', status: 'completed' } } });
   }
 });
@@ -596,8 +627,9 @@ describe('Codex image-only turn', () => {
     expect(run({}, [], { subject: 'https://a.example/b' }).calls).toEqual([]);
   }, 60_000);
 
-  function canaryRun(env: Record<string, string>) {
+  function canaryRun(env: Record<string, string>, prep?: (home: string) => void) {
     const s = setupHome();
+    if (prep) prep(s.home);
     const work = path.join(s.tmp, 'work');
     fs.mkdirSync(work);
     const auditLog = path.join(s.home, 'audit.jsonl');
@@ -611,39 +643,74 @@ describe('Codex image-only turn', () => {
       audit: fs.existsSync(auditLog) ? fs.readFileSync(auditLog, 'utf8') : '',
       leftover: fs.existsSync(parent) ? fs.readdirSync(parent) : [],
       workEntries: fs.readdirSync(work),
+      home0: s.home,
+      homeEntries: fs.readdirSync(s.home),
+      keptFile: fs.existsSync(path.join(s.home, '.c', 'mine.txt')) ? fs.readFileSync(path.join(s.home, '.c', 'mine.txt'), 'utf8') : null,
       ...s.collect(),
     };
     fs.rmSync(s.home, { recursive: true, force: true });
     return result;
   }
 
-  it('canary: passes when the read is refused and a plain generation works, on an unlisted version', () => {
-    const r = canaryRun({ FAKE_IMAGE_MODE: 'canary-refused', FAKE_ANSWER: 'unable to read referenced image at `/x/canary.png`: permission denied' });
+  const REFUSAL = 'Error: unable to read referenced image at `{OUTSIDE}`: permission denied';
+
+  it('canary: passes only with the exact refusal, the inside read and a plain generation, on an unlisted version', () => {
+    const r = canaryRun({ FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: REFUSAL });
     expect(r.out).toContain('IMAGE_CANARY PASS codex=0.167.0');
     expect(r.status).toBe(0);
     const text = r.seen.find((m: any) => m.method === 'turn/start').params.input[0].text;
-    const canaryPath = /\["([^"]+)"\]/.exec(text)![1];
-    // Outside the only readable root, and gone afterwards.
+    const [outside, inside] = [...text.matchAll(/\["([^"]+)"\]/g)].map((m: RegExpMatchArray) => m[1]);
     const thread = r.seen.find((m: any) => m.method === 'thread/start').params;
-    expect(path.relative(thread.cwd, canaryPath).startsWith('..')).toBe(true);
-    expect(fs.existsSync(canaryPath)).toBe(false);
+    // Outside: the fixed short path under $HOME, out of the readable root. Inside: in it.
+    expect(outside).toBe(path.join(r.home0, '.c', 'x.png'));
+    expect(path.relative(thread.cwd, outside).startsWith('..')).toBe(true);
+    expect(path.dirname(inside)).toBe(thread.cwd);
+    // Both gone afterwards.
+    expect(r.homeEntries).not.toContain('.c');
+    expect(fs.existsSync(inside)).toBe(false);
+    expect(auditOf(r.audit, 'codex_image_canary')).toMatchObject({ pass: true, refused: true, insideRead: true, generated: 1 });
     expect(thread.baseInstructions).toContain('safety check');
     expect(r.leftover).toEqual([]);
     expect(r.workEntries).toEqual([]);
   }, 60_000);
 
   it.each([
-    ['the canary was read', { FAKE_IMAGE_MODE: 'canary-leak', FAKE_ANSWER: 'none' }, /read the canary image/],
-    ['no refusal reported', { FAKE_IMAGE_MODE: 'canary-refused', FAKE_ANSWER: 'none' }, /refused read was not reported/],
-    ['no image tool', { FAKE_IMAGE_MODE: 'none', FAKE_ANSWER: 'unable to read referenced image' }, /no image was generated/],
-    ['a failed generation', { FAKE_IMAGE_MODE: 'failed', FAKE_ANSWER: 'unable to read referenced image' }, /generation failed/],
-    ['no profile', { FAKE_PROFILE: 'none', FAKE_IMAGE_MODE: 'canary-refused' }, /permission profile/],
+    ['the outside canary was read', { FAKE_IMAGE_MODE: 'canary-leak', FAKE_ANSWER: REFUSAL }, /read the outside canary image/],
+    ['the refusal names another path', { FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: 'unable to read referenced image at `/home/x/.c/y.png`: not found' }, /not reported exactly/],
+    ['the model only writes the phrase', { FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: 'unable to read referenced image' }, /not reported exactly/],
+    ['no inside read (positive control)', { FAKE_IMAGE_MODE: 'canary-noinside', FAKE_ANSWER: REFUSAL }, /positive control failed/],
+    ['the inside read has the wrong sha256', { FAKE_IMAGE_MODE: 'canary-badsha', FAKE_ANSWER: REFUSAL }, /unexpected local image/],
+    ['no plain image', { FAKE_IMAGE_MODE: 'canary-nogen', FAKE_ANSWER: REFUSAL }, /no plain image was generated/],
+    ['a failed generation', { FAKE_IMAGE_MODE: 'canary-failed', FAKE_ANSWER: REFUSAL }, /generation failed/],
+    ['no profile', { FAKE_PROFILE: 'none', FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: REFUSAL }, /permission profile/],
   ])('canary: fails when %s', (_name, env, msg) => {
     const r = canaryRun(env as Record<string, string>);
     expect(r.status).toBe(1);
     expect(r.out).toMatch(/IMAGE_CANARY FAIL/);
     expect(r.out).toMatch(msg);
     expect(r.out).not.toContain('IMAGE_CANARY PASS');
+    expect(r.homeEntries).not.toContain('.c');
+  }, 60_000);
+
+  it('canary: a $HOME/.c that is not ours is left alone and the run fails', () => {
+    const r = canaryRun({ FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: REFUSAL }, (home) => {
+      fs.mkdirSync(path.join(home, '.c'));
+      fs.writeFileSync(path.join(home, '.c', 'mine.txt'), 'keep');
+    });
+    expect(r.status).toBe(1);
+    expect(r.out).toMatch(/IMAGE_CANARY FAIL could not write the canary images .*not a canary left by Shelly/);
+    expect(r.keptFile).toBe('keep');
+    expect(r.calls.map((c: string[]) => c[0])).not.toContain('app-server');
+  }, 60_000);
+
+  it('canary: a leftover canary of ours is replaced', () => {
+    const r = canaryRun({ FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: REFUSAL }, (home) => {
+      fs.mkdirSync(path.join(home, '.c'));
+      fs.writeFileSync(path.join(home, '.c', '.shelly-image-canary'), '');
+      fs.writeFileSync(path.join(home, '.c', 'x.png'), 'old');
+    });
+    expect(r.status).toBe(0);
+    expect(r.homeEntries).not.toContain('.c');
   }, 60_000);
 
   it('canary: refuses image arguments', () => {
@@ -964,7 +1031,7 @@ describe('shelly image', () => {
   }, 60_000);
 
   it('--canary prints the driver verdict and its exit code', () => {
-    const { result: r, cleanup } = cli(['--canary'], { SHELLY_TEST_IMAGE_CANARY_VERIFIED: '', FAKE_IMAGE_MODE: 'canary-refused', FAKE_ANSWER: 'unable to read referenced image at x: denied' });
+    const { result: r, cleanup } = cli(['--canary'], { SHELLY_TEST_IMAGE_CANARY_VERIFIED: '', FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: 'unable to read referenced image at `{OUTSIDE}`: denied' });
     try {
       expect(r.status).toBe(0);
       expect(r.stdout.trim()).toBe('IMAGE_CANARY PASS codex=0.167.0');
