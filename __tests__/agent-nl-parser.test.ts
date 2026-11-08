@@ -181,7 +181,7 @@ describe('parseAgentNL — weekly', () => {
   });
 
   it('月曜と金曜の朝8時 → 0 8 * * 1,5 (multi-day, no 毎週 needed)', () => {
-    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    const d = parseAgentNL('月曜と金曜の朝8時に宇宙×AIの論文を集めて');
     expect(d.schedule).toBe('0 8 * * 1,5');
     expect(d.scheduleConfident).toBe(true);
     expect(d.scheduleLabel).toContain('月・金');
@@ -208,7 +208,7 @@ describe('parseAgentNL — weekly', () => {
   });
 
   it('multi-day schedule clause is stripped from the agent prompt', () => {
-    const d = parseAgentNL('月曜と金曜の朝8時にSTEAM×AIの論文を集めて');
+    const d = parseAgentNL('月曜と金曜の朝8時に宇宙×AIの論文を集めて');
     expect(d.schedule).toBe('0 8 * * 1,5');
     expect(d.prompt).not.toContain('月曜');
     expect(d.prompt).not.toContain('8時');

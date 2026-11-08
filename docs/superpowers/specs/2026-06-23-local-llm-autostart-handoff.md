@@ -32,7 +32,7 @@ Replace the `local_context_fallback` dead-end (`lib/agent-executor.ts:1901`/`191
 - Escalate on: model-not-found / API-key-missing / 429 (upfront AND mid-work) / ctx-overflow / server-can't-start / run error. Codex last (quota-preserving), never fake success on a Codex usage limit ("unlocks in N h"). Surface the route + why-escalated in the engine line + run history (existing `12647fd` pattern).
 
 ### Roadmap after C (to the acceptance North Star)
-The North Star ("Mon/Fri STEAM×AI papers via Perplexity → primary source + summary into a dated Obsidian folder → re-summarize within X's limit, fully unattended") still needs, beyond C:
+The North Star ("Mon/Fri SPACE×AI papers via Perplexity → primary source + summary into a dated Obsidian folder → re-summarize within X's limit, fully unattended") still needs, beyond C:
 - **autonomous-cloud opt-in** (the crux): the North Star requires Perplexity web search, but autonomous is local→Codex-only. Need a per-agent, pre-approved, secret-guard-preserving opt-in to let a specific autonomous agent use cloud search.
 - **auto-approval for in-Vault writes** (so an unattended run saves to the Vault without the approval gate).
 - **multi-step orchestration (G6)** for the search→fetch→summarize→re-summarize chain.
@@ -89,7 +89,7 @@ Rough distance: ~72-75% — the on-device brain works; the unattended end-to-end
 
 - **③b-2 auto-escalation ladder:** scorer picks local(0.8→2→4) → Cerebras → Groq → Codex(terminal). Escalate on ctx-overflow / unreachable / 429 (upfront or mid-run). Codex last (quota-preserving); Cerebras/Groq only within free tier (429→next). Codex terminal limit must NOT fake success — notify "unlocks in N h". Escalation reason shows in the engine line.
 - **③c:** inline `[ローカル]`/`[Codex]`/`[Perplexity]` pins (manual-pin guard; autonomous still rejects key-class even when pinned) + domain routing (academic→Perplexity, image→Gemini, non-autonomous only) + small fixes (raw-id in failure notices / fake-success on fallback).
-- **Acceptance north star:** "Every Mon/Fri, search the latest STEAM×AI papers via Perplexity → primary source + summary into a dated Obsidian folder → re-summarize within X's char limit" completes fully unattended. Remaining unlocks: autostart (T1-T3) + autonomous-cloud opt-in + auto-approve for in-Vault writes + multi-day/dated-folder output templates.
+- **Acceptance north star:** "Every Mon/Fri, search the latest SPACE×AI papers via Perplexity → primary source + summary into a dated Obsidian folder → re-summarize within X's char limit" completes fully unattended. Remaining unlocks: autostart (T1-T3) + autonomous-cloud opt-in + auto-approve for in-Vault writes + multi-day/dated-folder output templates.
 
 ---
 

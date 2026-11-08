@@ -69,7 +69,7 @@ claude
 ```
 Claude Code v2.1.112
 Welcome back りょう!
-Opus 4.7 (1M context) · Claude Max · info@rebuildfactoryz.com's Organization
+Opus 4.7 (1M context) · Claude Max
 /data/data/dev.shelly.terminal/files/home/.claude
 
 > こんにちは

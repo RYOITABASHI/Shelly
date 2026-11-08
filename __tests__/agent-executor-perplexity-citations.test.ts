@@ -42,7 +42,7 @@ function extractHeredoc(script: string, marker: string, needle: string): string 
 }
 
 const SAMPLE = JSON.stringify({
-  choices: [{ message: { content: '最新の STEAM×AI 研究の要約です[1][2]。' } }],
+  choices: [{ message: { content: '最新の 宇宙×AI 研究の要約です[1][2]。' } }],
   search_results: [
     { title: 'AI in STEAM Education', url: 'https://arxiv.org/abs/2401.12345', date: '2026-06-20' },
     { title: 'Gen AI in K-12', url: 'https://example.edu/paper.pdf' },
@@ -60,7 +60,7 @@ describe('extract_ai_content — appends Perplexity sidecar sources (regression)
     fs.writeFileSync(path.join(dir, 'extract.js'), nodeCode);
     const out = execFileSync('node', [path.join(dir, 'extract.js'), path.join(dir, 'resp.json')]).toString();
 
-    expect(out).toContain('最新の STEAM×AI 研究の要約です');
+    expect(out).toContain('最新の 宇宙×AI 研究の要約です');
     expect(out).toContain('## Sources');
     expect(out).toContain('[1] AI in STEAM Education — https://arxiv.org/abs/2401.12345');
     expect(out).toContain('[2] Gen AI in K-12 — https://example.edu/paper.pdf');

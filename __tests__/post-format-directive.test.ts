@@ -19,7 +19,7 @@ describe('detectPostFormatDirective — platform-aware summary intent (B)', () =
   });
 
   it('is a no-op for ordinary chat (no post-format intent)', () => {
-    for (const t of ['STEAM×AIの最新ニュースを教えて', 'このコードをレビューして', 'まとめて', 'hello']) {
+    for (const t of ['宇宙×AIの最新ニュースを教えて', 'このコードをレビューして', 'まとめて', 'hello']) {
       expect(detectPostFormatDirective(t)).toBe('');
     }
   });

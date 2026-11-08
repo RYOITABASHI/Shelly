@@ -55,7 +55,7 @@ describe('output language is the TASK language, never the injected context', () 
   it('review M-C: only ASCII letters are English; accented Latin mirrors the task; smart quotes do not matter', () => {
     expect(detectTaskLanguage('Résume les derniers articles sur l’IA')).toBe('other');
     expect(detectTaskLanguage('Fasse die neuesten Artikel über KI zusammen')).toBe('other');
-    expect(detectTaskLanguage('Summarize this week’s “AI” news — STEAM×AI')).toBe('en');
+    expect(detectTaskLanguage('Summarize this week’s “AI” news — SPACE×AI')).toBe('en');
     expect(outputLanguageDirective('Résume les derniers articles')).toContain('same language as the Task text');
   });
 

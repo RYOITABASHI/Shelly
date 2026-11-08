@@ -2806,7 +2806,7 @@ TS/Kotlin単一ソース化（案の後段）は今回スコープ外——2フ�
 ### bug #153 — agent-mrlg9tukのgateスクリプト staleness疑い → **調査完了・コード修正なし（原因は別）**
 
 **優先度**: ~~P1~~ → クローズ（コード側の問題ではないと判明。次回スケジュール発火での実機再確認のみ残タスク）
-**発見**: 2026-07-16、`Xの自動投稿はテスト不要？`という質問をきっかけに、実在するHermes-parity北極星エージェント(agent-mrlg9tuk、パープレ+STEAM×AI+ローカルLLM+X投稿)の直近失敗(7/15 19:12頃、Step3/3が約49分でタイムアウト)を実ログで調査して発見。
+**発見**: 2026-07-16、`Xの自動投稿はテスト不要？`という質問をきっかけに、実在するHermes-parity北極星エージェント(agent-mrlg9tuk、パープレ+宇宙×AI+ローカルLLM+X投稿)の直近失敗(7/15 19:12頃、Step3/3が約49分でタイムアウト)を実ログで調査して発見。
 
 **元の仮説（再現/根拠）**: `agent-driver-audit.jsonl`で`curl -sS --max-time 5 http://127.0.0.1:8080/v1/models`というループバックのみの呼び出しが`network-send`扱いでエスカレーションされ、無人スケジュール発火中で誰も応答できず120秒タイムアウト→自動declineでStep3が失敗。しかし現在の`lib/agent-boundary-policy.ts`には`isLoopbackOnlyNetworkCommand()`による除外ロジックが既にあり、この矛盾から「agent-mrlg9tukに焼き込まれたgateスクリプト(`.shelly-gate-decide.js`)が古いバージョンのまま」というper-agent staleness仮説を立てた。
 
@@ -3004,7 +3004,7 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 - ③a ✅: ローカル ctx 1024→8192/4096 + 注入文脈の tier-aware cap（commit 0202380）。
 - ③b: Cerebras/Groq を agent backend 追加（無料枠内）+ 429/不通の escalation + 終端通知。
 - ③c: ① インライン `[ローカル]`/`[Codex]` ピン（manual-pin guard 接続）+ ドメインルート + 小キズ（失敗通知の生 ID / fallback の success 偽装）。
-- ゴール例（受け入れテストの北極星）: 「毎週月/金、STEAM×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
+- ゴール例（受け入れテストの北極星）: 「毎週月/金、宇宙×AI の最新論文を Perplexity で検索 → 1 次ソース+要約を Obsidian の日付フォルダへ → X 文字数制限内に再要約」が**完全無人で回る**。**残る解錠は全て実装着地（2026-06-24, branch claude/work-handoff-2qb1xd）**: 自律クラウド opt-in=N1(105fda3) / Vault 内保存の自動承認=N2(b08a608) / 複数曜日スケジュール=N4(c80bb04) / 日付フォルダ出力テンプレ=N4(fa10617) / web-mandatory routing(203428c) / orchestration 昇格=N3(8fb8926)。**残るは実機 end-to-end 検証（web quota 明け待ち）と N1 スケジュール .sh のクラウド完全無人化 follow-up のみ**。
 
 ### 🧭 Capability broker Phase 0 — flag-gated foundation
 
