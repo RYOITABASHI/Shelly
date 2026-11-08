@@ -25,7 +25,7 @@ export const VOICE_FIXTURE_PROFILE = [
   '',
   '## Private',
   '- Lives with a large family in a quiet suburb.',
-  '- 長男は小学校で不登校気味だった。',
+  '- 週末は古い自転車の修理をしている。',
   '',
   '## Never say',
   '- That any tool is perfect.',
