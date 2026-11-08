@@ -230,15 +230,15 @@ describe('image-only driver pieces', () => {
     expect(driver.codexWorkerConfigToml({}, { model: 'm', catalogPath: '/c.json' })).not.toContain('default_permissions');
   });
 
-  it('the canary list starts empty and matches the record next to the pin', () => {
-    expect(driver.CODEX_IMAGE_CANARY_VERIFIED).toEqual([]);
+  it('the canary list holds only device-verified versions and matches the record next to the pin', () => {
+    expect(driver.CODEX_IMAGE_CANARY_VERIFIED).toEqual(['0.167.0']);
     const record = JSON.parse(fs.readFileSync(path.join(root, '.ci-versions/codex-image-canary.json'), 'utf8'));
     expect(record.verified).toEqual([...driver.CODEX_IMAGE_CANARY_VERIFIED]);
     expect(driver.parseCodexVersion('codex-cli 0.167.0\n')).toBe('0.167.0');
     expect(driver.parseCodexVersion('codex-cli 0.168.0-alpha.2')).toBe('0.168.0-alpha.2');
     expect(driver.parseCodexVersion('nothing')).toBeNull();
     // The host-only test override never applies on the phone.
-    expect(driver.imageCanaryVerifiedVersions({ SHELLY_TEST_IMAGE_CANARY_VERIFIED: '9.9.9' })).toEqual(fs.existsSync('/system/bin/linker64') ? [] : ['9.9.9']);
+    expect(driver.imageCanaryVerifiedVersions({ SHELLY_TEST_IMAGE_CANARY_VERIFIED: '9.9.9' })).toEqual(fs.existsSync('/system/bin/linker64') ? ['0.167.0'] : ['0.167.0', '9.9.9']);
   });
 
   it('the canary refusal is the exact Codex error for the exact path', () => {
@@ -384,7 +384,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       const paths = [...text.matchAll(/\\["([^"]+)"\\]/g)].map((x) => x[1]);
       const [outside, inside] = paths;
       const sha = (f) => require('crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-      answer = answer.split('{OUTSIDE}').join(outside);
+      answer = answer.split('{OUTSIDE}').join(outside).split('{INSIDE}').join(inside);
       const base = { type: 'imageGeneration', status: 'completed', revisedPrompt: 'p', generationId: null, failure: null, result: png.toString('base64') };
       const emit = (item) => out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item } });
       if (mode === 'canary-leak') emit({ ...base, id: 'c1', inputImages: [{ path: outside, sha256: sha(outside) }] });
@@ -595,10 +595,10 @@ describe('Codex image-only turn', () => {
   }, 60_000);
 
   it('a Codex version without a passed canary never starts the app-server', () => {
-    const r = run({ SHELLY_TEST_IMAGE_CANARY_VERIFIED: '', FAKE_VERSION: '0.167.0' });
+    const r = run({ SHELLY_TEST_IMAGE_CANARY_VERIFIED: '', FAKE_VERSION: '0.166.0' });
     expect(r.status).toBe(1);
     expect(r.calls.map((c: string[]) => c[0])).toEqual(['mcp', 'features', '--version']);
-    expect(auditOf(r.audit, 'codex_image_version_refused').reason).toMatch(/0\.167\.0 has not passed the image canary/);
+    expect(auditOf(r.audit, 'codex_image_version_refused').reason).toMatch(/0\.166\.0 has not passed the image canary/);
     expect(r.out).toContain('shelly image --canary');
     const other = run({ FAKE_VERSION: '0.168.0' });
     expect(other.status).toBe(1);
@@ -678,7 +678,8 @@ describe('Codex image-only turn', () => {
     ['the outside canary was read', { FAKE_IMAGE_MODE: 'canary-leak', FAKE_ANSWER: REFUSAL }, /read the outside canary image/],
     ['the refusal names another path', { FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: 'unable to read referenced image at `/home/x/.c/y.png`: not found' }, /not reported exactly/],
     ['the model only writes the phrase', { FAKE_IMAGE_MODE: 'canary-ok', FAKE_ANSWER: 'unable to read referenced image' }, /not reported exactly/],
-    ['no inside read (positive control)', { FAKE_IMAGE_MODE: 'canary-noinside', FAKE_ANSWER: REFUSAL }, /positive control failed/],
+    ['no inside read and no sandbox refusal', { FAKE_IMAGE_MODE: 'canary-noinside', FAKE_ANSWER: REFUSAL }, /neither arrived/],
+    ['the inside refusal is a different error', { FAKE_IMAGE_MODE: 'canary-noinside', FAKE_ANSWER: REFUSAL + '\nError: unable to read referenced image at `{INSIDE}`: not found' }, /neither arrived/],
     ['the inside read has the wrong sha256', { FAKE_IMAGE_MODE: 'canary-badsha', FAKE_ANSWER: REFUSAL }, /unexpected local image/],
     ['no plain image', { FAKE_IMAGE_MODE: 'canary-nogen', FAKE_ANSWER: REFUSAL }, /no plain image was generated/],
     ['a failed generation', { FAKE_IMAGE_MODE: 'canary-failed', FAKE_ANSWER: REFUSAL }, /generation failed/],
@@ -690,6 +691,13 @@ describe('Codex image-only turn', () => {
     expect(r.out).toMatch(msg);
     expect(r.out).not.toContain('IMAGE_CANARY PASS');
     expect(r.homeEntries).not.toContain('.c');
+  }, 60_000);
+
+  it('canary: passes when no sandbox can be enforced and every read is refused (Android)', () => {
+    const NO_SANDBOX = 'Error: unable to read referenced image at `{OUTSIDE}`: filesystem sandbox cannot be enforced on this executor\nError: unable to read referenced image at `{INSIDE}`: filesystem sandbox cannot be enforced on this executor';
+    const r = canaryRun({ FAKE_IMAGE_MODE: 'canary-noinside', FAKE_ANSWER: NO_SANDBOX });
+    expect(r.out).toContain('IMAGE_CANARY PASS codex=0.167.0');
+    expect(auditOf(r.audit, 'codex_image_canary')).toMatchObject({ pass: true, refused: true, insideRead: false, allReadsRefused: true, generated: 1 });
   }, 60_000);
 
   it('canary: a $HOME/.c that is not ours is left alone and the run fails', () => {

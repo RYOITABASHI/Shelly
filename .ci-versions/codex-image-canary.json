@@ -1,4 +1,4 @@
 {
   "note": "Codex versions on which `shelly image --canary` passed on the phone (an edit of an image outside the turn's only readable root was refused, and a plain generation worked). Must equal CODEX_IMAGE_CANARY_VERIFIED in scripts/shelly-agent-driver.js (a test checks). Add a version only after a device run of that exact version; the agent worker runs the version pinned in codex-termux-deb.json.",
-  "verified": []
+  "verified": ["0.167.0"]
 }

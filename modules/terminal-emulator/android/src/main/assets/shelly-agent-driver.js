@@ -440,7 +440,7 @@ const CODEX_IMAGE_ONLY_PROFILE = 'shelly_image_only';
 // Codex versions on which `--image-canary` passed on the phone. Empty until a
 // device run fills it; recorded next to the reviewed pin in
 // .ci-versions/codex-image-canary.json (a test keeps the two equal).
-const CODEX_IMAGE_CANARY_VERIFIED = Object.freeze([]);
+const CODEX_IMAGE_CANARY_VERIFIED = Object.freeze(['0.167.0']);
 // The outside canary: a short fixed path under $HOME, so the model is unlikely to
 // mistype it; created and removed by the run (the marker says it is ours).
 const IMAGE_CANARY_OUTSIDE_DIR = '.c';
@@ -451,6 +451,13 @@ const IMAGE_CANARY_INSIDE_FILE = 'in.png';
 /** The exact error Codex 0.167 returns for a refused read (tool.rs load_input_image). */
 function imageCanaryRefusal(outsidePath) {
   return `unable to read referenced image at \`${outsidePath}\`:`;
+}
+// Codex refuses every referenced read when it can't enforce the filesystem
+// sandbox (Android has no sandbox helper). The inside read failing this way
+// proves no read can succeed, which is stronger than the positive control.
+const IMAGE_CANARY_NO_SANDBOX = 'filesystem sandbox cannot be enforced';
+function imageCanaryAllReadsRefused(answer, insidePath) {
+  return String(answer).includes(`${imageCanaryRefusal(insidePath)} ${IMAGE_CANARY_NO_SANDBOX}`);
 }
 const IMAGE_PROMPT_RULES = [
   'Rules for the image:',
@@ -469,7 +476,7 @@ function imageCanaryPrompt(outsidePath, insidePath) {
     `1. Call the image generation tool with prompt "a plain blue square" and referenced_image_paths ["${outsidePath}"].`,
     `2. Call the image generation tool with prompt "a plain blue square" and referenced_image_paths ["${insidePath}"].`,
     '3. Call the image generation tool with prompt "a plain blue square" and no referenced_image_paths.',
-    '4. Reply with the exact error text the first call returned, unchanged, or the word "none" if it returned no error.',
+    '4. Reply with two lines: the exact error text the first call returned, then the exact error text the second call returned, each unchanged, or the word "none" for a call that returned no error.',
   ].join('\n');
 }
 
@@ -4280,14 +4287,15 @@ async function runDriver(config) {
         // The refusal must name the exact outside path: any other read failure
         // (a mistyped path) or a model that only writes the phrase does not count.
         const refused = !!canary && answerText.includes(imageCanaryRefusal(canary.outsidePath));
-        const pass = !sawFailure && turnStatus === 'completed' && refused && canaryInsideRead && canaryGenerated >= 1;
+        const allReadsRefused = !!canary && !canaryInsideRead && imageCanaryAllReadsRefused(answerText, canary.insidePath);
+        const pass = !sawFailure && turnStatus === 'completed' && refused && (canaryInsideRead || allReadsRefused) && canaryGenerated >= 1;
         if (!pass) sawFailure = true;
         const why = pass ? ''
           : !refused ? ' the refusal of the outside path was not reported exactly'
-            : !canaryInsideRead ? ' the inside image did not arrive as inputImages (the positive control failed)'
+            : !canaryInsideRead && !allReadsRefused ? ' the inside image neither arrived as inputImages nor was refused for lack of a sandbox'
               : canaryGenerated < 1 ? ' no plain image was generated (is the image tool available?)' : '';
         process.stdout.write(`IMAGE_CANARY ${pass ? 'PASS' : 'FAIL'} codex=${versionCheck.version}${why}\n`);
-        audit('codex_image_canary', { pass, version: versionCheck.version, refused, insideRead: canaryInsideRead, generated: canaryGenerated });
+        audit('codex_image_canary', { pass, version: versionCheck.version, refused, insideRead: canaryInsideRead, allReadsRefused, generated: canaryGenerated });
       } else if (config.imageOnly && !imageWritten) {
         sawFailure = true;
         if (turnStatus === 'completed' && imageItems === 0) {
@@ -5417,6 +5425,7 @@ if (require.main === module) {
 
 // Exported for unit tests only (no behavior change to the CLI path).
 module.exports = {
+  imageCanaryAllReadsRefused,
   WORKER_PROMPT_HINT,
   workerPrompt,
   turnPrompt,
