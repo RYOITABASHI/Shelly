@@ -470,6 +470,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** Resolve one (via 'notification' + nonce | 'chatgpt' + hash8 | 'chat' +
    *  hash8). Returns JSON {ok, code, message}. Approve launches ClosePaw. */
   resolveClosePawShellApproval?(reqId: string, decision: 'approve' | 'reject', via: 'notification' | 'chatgpt' | 'chat', secret: string): Promise<string>;
+  /** "Save drafts without approval" (ClosePawDraftPreapproval.kt). Call ONLY
+   *  for words the owner typed in the AI pane composer
+   *  (lib/closepaw-draft-preapproval.ts). destinations: 'note' | 'substack' |
+   *  'substack:<subdomain>'. Returns JSON {ok, code, entries, enabled?, subdomains?}. */
+  setDraftPreapproval?(destinations: string[], dailyCap: number): Promise<string>;
+  /** OFF for these destinations ('note' | 'substack:<sub>'); [] = all. Returns status JSON. */
+  disableDraftPreapproval?(destinations: string[]): Promise<string>;
+  /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
+  getDraftPreapproval?(): Promise<string>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

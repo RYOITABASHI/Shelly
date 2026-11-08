@@ -122,9 +122,11 @@ describe('uncertain', () => {
   });
 
   it('counts as check-by-hand, like timeout and lost', () => {
-    expect(fn(drafts, 'private fun tally(')).toContain(
-      'ClosePawRunResults.STATUS_UNCERTAIN, ClosePawRunResults.STATUS_TIMEOUT, ClosePawRunResults.STATUS_LOST -> open.check++',
+    const tally = fn(drafts, 'private fun tally(');
+    expect(tally).toContain(
+      'ClosePawRunResults.STATUS_UNCERTAIN, ClosePawRunResults.STATUS_TIMEOUT, ClosePawRunResults.STATUS_LOST -> "?"',
     );
+    expect(tally).toContain('"?" -> open.check++');
   });
 
   it('every final path reaches the queue', () => {
@@ -189,9 +191,13 @@ describe('authorization', () => {
       .toBeLessThan(resolve.indexOf('ClosePawDrafts.onBatchDecided'));
   });
 
-  it('nothing in the approval path is auto-accepted', () => {
-    expect(drafts).not.toMatch(/autoApprove|autoAccept|preapprov/i);
+  it('nothing in the approval path is auto-accepted; the only way past the tap is the owner pre-approval', () => {
+    expect(drafts).not.toMatch(/autoApprove|autoAccept/i);
     expect(drafts).not.toContain('onBatchDecided(app');
+    // 2026-11-08: a destination the owner turned on by typing in the chat
+    // (ClosePawDraftPreapproval, covered by closepaw-draft-preapproval.test.ts).
+    expect(drafts.split('ClosePawDraftPreapproval.reserve(').length - 1).toBe(1);
+    expect(drafts).not.toMatch(/ClosePawDraftPreapproval\.(enable|enableFromChat)\(/);
   });
 
   it('the approval shows one cleaned line per draft: destination, hash and hosts before the title', () => {

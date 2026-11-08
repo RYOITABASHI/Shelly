@@ -20,4 +20,9 @@
   <string name="closepaw_drafts_notice_title">Shelly: drafts</string>
   <string name="closepaw_drafts_held">Drafts are still waiting. %1$s</string>
   <string name="closepaw_drafts_done">Saved: %1$d. Check by hand: %2$d. Not saved: %3$d.</string>
+  <string name="closepaw_drafts_auto_title">Shelly: drafts saved without approval</string>
+  <string name="closepaw_drafts_auto_done">Saved: %1$d. Check by hand: %2$d. Not saved: %3$d. Nothing was published.</string>
+  <string name="closepaw_drafts_auto_off_hint">To ask again before each batch, type \"stop saving drafts without approval\" in the Shelly chat or turn it off in Settings.</string>
+  <string name="closepaw_drafts_open_note">Open note drafts</string>
+  <string name="closepaw_drafts_open_substack">Open Substack drafts</string>
 </resources>
