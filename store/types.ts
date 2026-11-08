@@ -1520,9 +1520,12 @@ export interface AgentVoiceStepConfig {
   of: number[];
   /** The profile (`.md`), relative to the vault. */
   profile: string;
+  /** The profile's SHA-256 the owner pinned after reviewing it. The executor
+   *  also re-reads it from the pipeline config file at run time. */
+  profileSha256: string;
   lang: 'ja' | 'en';
   writer: { type: 'cli'; cli: 'claude' | 'codex'; textOnly: true; model?: string };
-  /** An engine of another family than the writer. */
+  /** An HTTP engine (never the local LLM), so another family than the writer. */
   review: { type: string; model?: string };
   /** The name in the fixed ghostwritten footer. */
   author: string;

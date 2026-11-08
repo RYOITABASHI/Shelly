@@ -136,6 +136,10 @@ export interface ArticleVoiceConfig {
    *  (`Drafts/_voice-profile.md`). Its frontmatter needs `reviewed: <date>`,
    *  or the step does not run. */
   profile: string;
+  /** The profile's SHA-256 (lower-case hex), set by the owner after reviewing
+   *  it. The step runs only while the profile still has this hash; this file
+   *  is the pin because agent workers cannot write it. */
+  profileSha256: string;
   /** The name in the fixed ghostwritten footer. */
   author: string;
   /** Default: Claude Code, text-only. */
@@ -268,12 +272,13 @@ const ARTICLE_VOICE_PROFILE_MAX_CHARS = 240;
 const DEFAULT_VOICE_ENGINE: ArticleTextOnlyEngine = { type: 'cli', cli: 'claude', textOnly: true };
 
 function articleVoiceError(v: unknown, where: string): string | null {
-  if (!isPlainObject(v)) return `${where}: needs { "profile", "author", "review" }`;
-  const keyError = unknownKeyError(v, ['profile', 'author', 'engine', 'review'], where);
+  if (!isPlainObject(v)) return `${where}: needs { "profile", "profileSha256", "author", "review" }`;
+  const keyError = unknownKeyError(v, ['profile', 'profileSha256', 'author', 'engine', 'review'], where);
   if (keyError) return keyError;
   if (typeof v.profile !== 'string' || v.profile.length > ARTICLE_VOICE_PROFILE_MAX_CHARS || !ARTICLE_VOICE_PROFILE_RE.test(v.profile)) {
     return `${where}.profile: needs a .md file inside the vault, as a path of plain names relative to it`;
   }
+  if (typeof v.profileSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.profileSha256)) return `${where}.profileSha256: needs the profile's SHA-256 in lower-case hex`;
   const authorError = articleTextError(v.author, ARTICLE_LINE_MAX_CHARS, `${where}.author`);
   if (authorError) return authorError;
   if (v.engine !== undefined) {
@@ -426,7 +431,7 @@ const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice
 
 function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepConfig {
   const voice = config.voice as ArticleVoiceConfig;
-  return { kind: 'voice', of, profile: voice.profile, lang: config.lang, writer: voice.engine ?? DEFAULT_VOICE_ENGINE, review: voice.review, author: voice.author };
+  return { kind: 'voice', of, profile: voice.profile, profileSha256: voice.profileSha256, lang: config.lang, writer: voice.engine ?? DEFAULT_VOICE_ENGINE, review: voice.review, author: voice.author };
 }
 
 /**

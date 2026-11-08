@@ -182,8 +182,8 @@ const VOICE_PROFILE_PATH_MAX_CHARS = 240;
 const VOICE_AUTHOR_MAX_CHARS = 64;
 const VOICE_MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
 const VOICE_WRITER_CLIS: readonly string[] = ['claude', 'codex'];
-/** STEP_TOOL_DISPATCHABLE_TYPES in the executor. */
-const VOICE_REVIEW_TYPES: readonly string[] = ['local', 'gemini-api', 'perplexity', 'cerebras', 'groq'];
+/** VOICE_REVIEW_TYPES in the executor: HTTP engines, never the local LLM. */
+const VOICE_REVIEW_TYPES: readonly string[] = ['gemini-api', 'perplexity', 'cerebras', 'groq'];
 /** ENGINE_FAMILIES in the executor, for the engines a voice step can name. */
 const VOICE_ENGINE_FAMILIES: Record<string, string> = { 'gemini-api': 'gemini', perplexity: 'perplexity', cerebras: 'open-weights', groq: 'open-weights', 'cli:claude': 'claude', 'cli:codex': 'codex' };
 
@@ -206,10 +206,12 @@ function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig |
   if (VOICE_ENGINE_FAMILIES[v.type] && VOICE_ENGINE_FAMILIES[v.type] === VOICE_ENGINE_FAMILIES[`cli:${w.cli}`]) return undefined;
   const a = r.author;
   if (typeof a !== 'string' || !a.trim() || a !== a.trim() || Array.from(a).length > VOICE_AUTHOR_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(a) || a.includes('\n')) return undefined;
+  if (typeof r.profileSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(r.profileSha256)) return undefined;
   return {
     kind: 'voice',
     of,
     profile: r.profile,
+    profileSha256: r.profileSha256,
     lang: r.lang,
     writer: { type: 'cli', cli: w.cli as 'claude' | 'codex', textOnly: true, ...(w.model !== undefined ? { model: w.model as string } : {}) },
     review: { type: v.type, ...(v.model !== undefined ? { model: v.model as string } : {}) },
