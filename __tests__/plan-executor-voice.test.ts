@@ -1008,3 +1008,124 @@ process.exit(0);
     expect(frontmatter(readResult(s.home))).toContain('material: missing');
   }, 30000);
 });
+
+// v41: numbers the article's title and headings name, and list renumbering.
+// A made-up article; its body has figures of its own that stay refused.
+const NUMBERED_ARTICLE = [
+  '# 散歩道を楽しむ三つの見方と5本の小道',
+  '',
+  'サンプル市の調査では、散歩する人の割合が42%に増えた。',
+  '',
+  '## 1. 景色を見る',
+  '',
+  '季節で見え方が変わる。',
+  '',
+  '### Two quiet benches',
+  '',
+  '【本人の材料: 未記入】',
+  '',
+  '```',
+  '# 7 lines in a code block are not a heading',
+  '```',
+  '',
+  '# A second title with 9 views is not read',
+  '',
+  '## Notes',
+].join('\n');
+
+describe('author view: numbers from the title and headings (v41)', () => {
+  it('reads the first title and the ##/### headings outside code', () => {
+    expect(executor.voiceArticleHeadings(NUMBERED_ARTICLE).split('\n')).toEqual([
+      '散歩道を楽しむ三つの見方と5本の小道',
+      '1. 景色を見る',
+      'Two quiet benches',
+      'Notes',
+    ]);
+  });
+
+  it('values: digits, kanji, 大字 and English words', () => {
+    expect(executor.voiceNumberValue('3')).toBe(3);
+    expect(executor.voiceNumberValue('三')).toBe(3);
+    expect(executor.voiceNumberValue('参')).toBe(3);
+    expect(executor.voiceNumberValue('three')).toBe(3);
+    expect(executor.voiceNumberValue('三十五')).toBe(35);
+    expect(executor.voiceNumberValue('二万三千')).toBe(23000);
+    expect(executor.voiceNumberValue('二〇二六')).toBe(2026);
+    expect(executor.voiceNumberValue('3rd')).toBe(3);
+    expect(executor.voiceNumberValue('半')).toBeUndefined();
+    expect(executor.voiceNumberValue('XII')).toBeUndefined();
+  });
+
+  it.each([
+    ['the same form', 'この三つの見方は、どれも素直で良いと感じます。'],
+    ['a digit for a kanji title number', '3つの見方のうち、景色の話が好きです。'],
+    ['a kanji for a digit title number', '五本の小道という切り口が面白いです。'],
+    ['a ## heading number', '1の景色の話がいちばん好きです。'],
+    ['an English word for a title number', 'I like the three views.'],
+    ['the same English word as a ### heading', 'Two benches are enough, I think.'],
+    ['a digit for an English ### heading word', 'I think 2 benches are enough.'],
+  ])('passes %s', (_name, section) => {
+    expect(executor.voiceNumbersProblem(section, PARSED, NUMBERED_ARTICLE)).toBe('');
+  });
+
+  it.each([
+    ['a number only in the body', 'この記事の42%という数字は印象的です。', '42'],
+    ['a number in a code block', '7行という短さが良いです。', '7'],
+    ['a number in a second title', 'I like the 9 views.', '9'],
+    ['a number in no heading', '四つ目の見方もあると思います。', '四'],
+  ])('refuses %s', (_name, section, n) => {
+    expect(executor.voiceNumbersProblem(section, PARSED, NUMBERED_ARTICLE)).toContain(n);
+  });
+
+  it('without an article, only the profile counts (as before)', () => {
+    expect(executor.voiceNumbersProblem('三つの見方が好きです。', PARSED)).toContain('三');
+    expect(executor.voiceNumbersProblem('三つの見方が好きです。', PARSED, '')).toContain('三');
+  });
+
+  it('the whole local check passes a section naming the title number', () => {
+    const problem = executor.voiceLocalProblem('この記事の三つの見方は、どれも素直で良いと感じます。', {
+      lang: 'ja',
+      nonce: 'n0nce1234',
+      profile: PARSED,
+      author: AUTHOR,
+      article: NUMBERED_ARTICLE,
+    });
+    expect(problem).toBe('');
+  });
+});
+
+describe('author view: list renumbering (v41)', () => {
+  it.each([
+    ['a circled list from ②', '理由です。\n②古いから\n③高いから\nそれが悩ましいところです…', '理由です。\n①古いから\n②高いから\nそれが悩ましいところです…', 'ja'],
+    ['a dotted list from 0', 'Reasons:\n0. old\n1. simple\nThat is all.', 'Reasons:\n1. old\n2. simple\nThat is all.', 'en'],
+    ['a list with a gap', '理由です。\n①古いから\n③高いから', '理由です。\n①古いから\n②高いから', 'ja'],
+    ['items apart by blank lines', '理由です。\n\n①古いから\n\n②高いから\n\nそれだけです。', '理由です。\n\n①古いから\n②高いから\n\nそれだけです。', 'ja'],
+  ])('renumbers %s', (_name, section, expected, lang) => {
+    expect(executor.voiceSectionProblem(section, lang, {})).toContain('番号');
+    const fixed = executor.voiceRenumberList(section);
+    expect(fixed).toBe(expected);
+    expect(executor.voiceSectionProblem(fixed, lang, {})).toBe('');
+  });
+
+  it.each([
+    ['a correct list', '理由です。\n①古いから\n②高いから'],
+    ['no list', 'これは良いと感じます。'],
+    ['a reference to an item', '理由です。\n②古いから\n③高いから\nそして③のせいで悩ましいです。'],
+    ['a reference at the line start', '理由です。\n①古いから\n②高いから\n\n②のせいで悩ましいです。'],
+    ['a line that reads on from its number', '理由です。\n②古いから\n③高いから\n\n④のせいで悩ましいです。'],
+    ['a repeated number', '理由です。\n②古いから\n②高いから'],
+    ['an item that holds a number', '理由です。\n②三回目だから\n③高いから'],
+    ['a number elsewhere in the section', '十二の理由のうち:\n②古いから\n③高いから'],
+    ['two lists', '理由です。\n②古いから\nそして\n②高いから'],
+    ['mixed styles', '理由です。\n②古いから\n3. 高いから'],
+  ])('leaves %s unchanged', (_name, section) => {
+    expect(executor.voiceRenumberList(section)).toBe(section);
+  });
+
+  it('the writer prompt shows the list shape and the heading-number rule', () => {
+    const prompt = executor.buildVoiceWritePrompt({ profile: 'p', article: 'a', lang: 'ja', nonce: 'n0nce1234' });
+    expect(prompt).toContain('never 「③のせいで」 at the start of a line');
+    expect(prompt).toContain('no blank line between them');
+    expect(prompt).toContain('"##" / "###" headings');
+  });
+});
