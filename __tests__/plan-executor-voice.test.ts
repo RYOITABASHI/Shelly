@@ -11,7 +11,7 @@ import { normalizeStepLocal, normalizeSteps } from '@/lib/agent-orchestration';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from '@/lib/agent-plan-spec';
 import { articlePipelineConfigError, buildArticlePipeline, type ArticlePipelineConfig } from '@/lib/agent-pipeline-presets';
 import { touchesProtectedPolicyFiles } from '@/lib/agent-boundary-policy';
-import { VOICE_FIXTURE_PROFILE, VOICE_FIXTURE_SECTIONS_EN, VOICE_FIXTURE_SECTIONS_JA } from './fixtures/voice-sections';
+import { VOICE_FIXTURE_ARTICLE_EN, VOICE_FIXTURE_ARTICLE_JA, VOICE_FIXTURE_PROFILE, VOICE_FIXTURE_SECTIONS_EN, VOICE_FIXTURE_SECTIONS_JA } from './fixtures/voice-sections';
 
 // The ghostwritten author view (executor v38): the voice step's refusals, the
 // profile jail and pin, the allow-list checks, and runs through the real
@@ -134,7 +134,10 @@ function trySymlink(target: string, link: string, type?: 'dir' | 'junction'): bo
 }
 
 const PARSED = { ...executor.parseVoiceProfile(PROFILE), text: PROFILE };
-const local = (section: string, lang: 'ja' | 'en' = 'en', nonce = 'n0nce1234') => executor.voiceLocalProblem(section, { lang, nonce, profile: PARSED, author: AUTHOR });
+// The article the checked sections answer: people and names may come from it.
+const CHECK_ARTICLE = `${ARTICLE}\n\n研究によると、子どもは遊びの中で学ぶ。学校と親の関わり方も変わりつつある。`;
+const local = (section: string, lang: 'ja' | 'en' = 'en', nonce = 'n0nce1234', article = CHECK_ARTICLE) =>
+  executor.voiceLocalProblem(section, { lang, nonce, profile: PARSED, author: AUTHOR, article });
 
 describe('voice step config', () => {
   it('the builder puts the step after the last revise and before assemble', () => {
@@ -339,6 +342,11 @@ describe('local checks (sentence-level allow-lists)', () => {
     ['a past opinion verb after a te-form', 'この結果を読んで、私は希望を感じた。'],
     ['数年', '私は数年かかると思う。'],
     ['参考', 'この取り組みは参考になると思う。'],
+    ['a は topic carried to the next comma clause', '記事の結果は、その方向を支えていると思う。'],
+    ['a dictionary-form use verb', '新しい技術を使うかどうかより、何を学ぶかが大事だと思う。'],
+    ['a potential form', '子どもが自分で試せる環境は大切だと思う。'],
+    ['a passive progressive of the article\'s subject', 'この研究は、遊びと学びの関係を丁寧に示していると思う。'],
+    ['a relation word the article holds', '親の関わり方が大切だと思う。'],
   ])('passes %s', (_name, section) => {
     expect(local(section, 'ja')).toBe('');
   });
@@ -370,7 +378,40 @@ describe('local checks (sentence-level allow-lists)', () => {
     ['a having-participle', 'Having used this tool for years, I think it works.', 'en'],
     ['a trailing participle', 'I think so, having spent years running it in production.', 'en'],
     ['after years of', 'I think, after years of practice, that it works.', 'en'],
+    // Use and building verbs (third review).
+    ['an attributive past of use', '長年使い込んだ道具は手になじむと思う。', 'ja'],
+    ['a perfect of use before a noun', '長く使ってきたユーザーの目線は大事だと思う。', 'ja'],
+    ['a temporal clause of use', '毎日使い込む中で、この道具は手になじむと思う。', 'ja'],
+    ['うちに with a use verb', '本番で動かし続けるうちに、この設計の良さが分かると思う。', 'ja'],
+    ['a te-form of use and a past', '導入して効果があった現場は多いと思う。', 'ja'],
+    ['an attributive past of 導入', '先月導入した仕組みは良いと思う。', 'ja'],
+    ['a progressive of 導入', '昨年から導入している仕組みは良いと思う。', 'ja'],
+    ['an attributive past of 書く', 'このツールで書いた記事は読まれると思う。', 'ja'],
+    ['a conditional of 試す', '試してみると良さが分かると思う。', 'ja'],
+    ['an attributive past whose subject the article does not name', '多くの読者が見落としてきた点だと感じる。', 'ja'],
+    ['a past participle in the frame sentence', 'I think this tool, used daily for years, works.', 'en'],
+    ['running since launch', 'In my view, running it in production since launch proved it works.', 'en'],
+    ['spent years', 'I believe in it; spent years running it in production.', 'en'],
+    ['a past of build', 'I think the team built something good.', 'en'],
+    // People and relations (third review).
+    ['a relation word not in the article', 'Shellyを開発している友人が勧めた道具は良いと思う。', 'ja'],
+    ['a spouse', '妻が勧めた本は良いと思う。', 'ja'],
+    ['a role self-description', '学校に通えない時期がある子どもの親として、居場所は大切だと思う。', 'ja'],
+    ['a job self-description', '都内の研究職として、この効き目は確かだと思う。', 'ja'],
+    ['an English relation word', 'I think my wife would agree.', 'en'],
+    ['a colleague', 'I think a colleague would agree.', 'en'],
+    ['as a parent', 'As a parent, I think play matters.', 'en'],
+    ['a Latin name', 'I think Taro has a point.', 'en'],
+    ['a katakana name', 'タナカさんの考えは正しいと思う。', 'ja'],
     // Numbers: only the profile's.
+    ['半年', '半年で効果が出ると思う。', 'ja'],
+    ['数十', '数十の学校が変わると思う。', 'ja'],
+    ['an ordinal', 'I think the first release was better.', 'en'],
+    ['a 第 ordinal', '私は第2の段階が大切だと思う。', 'ja'],
+    ['一番目', '一番目の理由が大切だと思う。', 'ja'],
+    ['a couple of', 'I think a couple of teams agree.', 'en'],
+    ['a few with a unit', 'I think a few years is enough.', 'en'],
+    ['a range', '私は二、三年で変わると思う。', 'ja'],
     ['a kanji numeral', '私は導入で費用が三割減ったと考える。', 'ja'],
     ['a formal numeral (大字)', '私は弐倍速いと思う。', 'ja'],
     ['a Roman numeral symbol', `私は${String.fromCharCode(0x2162)}倍速いと思う。`, 'ja'],
@@ -440,8 +481,8 @@ describe('local checks (sentence-level allow-lists)', () => {
   it('at least 18 of 20 natural opinion sections pass', () => {
     const profile = { ...executor.parseVoiceProfile(VOICE_FIXTURE_PROFILE), text: VOICE_FIXTURE_PROFILE };
     const results = [
-      ...VOICE_FIXTURE_SECTIONS_JA.map((s) => executor.voiceLocalProblem(s, { lang: 'ja', nonce: 'n0nce1234', profile, author: AUTHOR })),
-      ...VOICE_FIXTURE_SECTIONS_EN.map((s) => executor.voiceLocalProblem(s, { lang: 'en', nonce: 'n0nce1234', profile, author: AUTHOR })),
+      ...VOICE_FIXTURE_SECTIONS_JA.map((s) => executor.voiceLocalProblem(s, { lang: 'ja', nonce: 'n0nce1234', profile, author: AUTHOR, article: VOICE_FIXTURE_ARTICLE_JA })),
+      ...VOICE_FIXTURE_SECTIONS_EN.map((s) => executor.voiceLocalProblem(s, { lang: 'en', nonce: 'n0nce1234', profile, author: AUTHOR, article: VOICE_FIXTURE_ARTICLE_EN })),
     ];
     expect(results).toHaveLength(20);
     expect(results.filter((r: string) => r === '').length).toBeGreaterThanOrEqual(18);
@@ -473,6 +514,30 @@ describe('local checks (sentence-level allow-lists)', () => {
 });
 
 describe('gate: globs and partial names under ~/.shelly/agents', () => {
+  it.each([
+    'f=article-pipe; cp /tmp/x ~/.shelly/agents/$f"lines.json"',
+    'cd ~/.shelly/agents && cp /tmp/x article-pipelines.jso"n"',
+    'cd ~/.shelly/agents && cp /tmp/x article-pipelines.js\\on',
+    "cd ~/.she''lly/age''nts && cp /tmp/x article-pipelines.json",
+    "cp /tmp/x ~/.she''lly/age''nts/article-pipelines.json",
+    "cp /tmp/x age''nts/article-pipelines.json",
+    'cp /tmp/x "$HOME/.she"lly/agents/article-pipelines.json',
+    'cp /tmp/x ~/.sh""elly/agents/article-pipelines.json',
+    "cp /tmp/x ~/.shelly/agents/pol''icy.json",
+    'cp /tmp/x ~/.shelly/agents/$(echo roles).json',
+    'cp /tmp/x ~/.shelly/agents/`echo draft-destinations`.json',
+    'cp /tmp/x ~/.shelly/agents/article-pipelines.json.tmp && mv ~/.shelly/agents/article-pipelines.json{.tmp,}',
+  ])('refuses the split or expanded name %s', (command) => {
+    expect(touchesProtectedPolicyFiles(command)).toBe(true);
+  });
+
+  it.each([
+    'cat "$HOME/.shelly/agents/article-pipelines.json"',
+    'echo "$HOME" > /tmp/home.txt',
+  ])('still allows the read or unrelated write %s', (command) => {
+    expect(touchesProtectedPolicyFiles(command)).toBe(false);
+  });
+
   it.each([
     'cp /tmp/x ~/.shelly/agents/article-pipelines.js?n',
     'cp /tmp/x ~/.shelly/agents/article-pipelines.j*',
@@ -730,7 +795,7 @@ process.exit(0);
     await run(s);
     const result = readResult(s.home);
     expect(frontmatter(result)).toContain('material: missing');
-    expect(frontmatter(result)).toContain('the writer or a team acting');
+    expect(frontmatter(result)).toContain('an action or time phrase');
     expect(result).toContain(MARKER);
     // Refused before the review.
     expect(reviewPrompts(s)).toHaveLength(0);

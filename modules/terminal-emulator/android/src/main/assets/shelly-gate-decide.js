@@ -1656,6 +1656,13 @@ function touchesAgentsDirGlob(c) {
 }
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
+  const joined = c.replace(/['"\\]/g, "");
+  if (protectedPolicyMatch(c) || joined !== c && protectedPolicyMatch(joined)) return true;
+  const canWrite = NARROW_MUTATOR_RE.test(joined) || NARROW_INTERPRETER_RE.test(joined) || AGENTS_WRITER_RE.test(joined);
+  if (canWrite && /[$`]/.test(c) && /\.shelly\b|\bagents\b/.test(joined)) return true;
+  return false;
+}
+function protectedPolicyMatch(c) {
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);

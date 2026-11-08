@@ -57,3 +57,16 @@ export const VOICE_FIXTURE_SECTIONS_EN: string[] = [
   'I expect these ideas to spread slowly, and I think that is fine.',
   'I think the point about simple tools is the most useful part of the piece. I hope more projects keep their scope small.',
 ];
+
+/** The made-up articles the sections answer: names and people come from here. */
+export const VOICE_FIXTURE_ARTICLE_JA = [
+  '# 遊びと学びの関係',
+  '',
+  '研究によると、子どもは遊びの中で多くを学ぶ。学校や教師の関わり方も変わりつつある。',
+  '新しいテクノロジーやツールは道具にすぎないという指摘もある。',
+].join('\n');
+export const VOICE_FIXTURE_ARTICLE_EN = [
+  '# Play and learning',
+  '',
+  'A study suggests that children learn a great deal through play. Schools and teachers are changing how they work with students.',
+].join('\n');

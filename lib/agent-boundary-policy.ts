@@ -1200,6 +1200,20 @@ function touchesAgentsDirGlob(c: string): boolean {
  */
 export function touchesProtectedPolicyFiles(command: string): boolean {
   const c = String(command || '');
+  // Quotes and backslashes split a name the shell joins again: `.she''lly`,
+  // `article-pipelines.jso"n"`, `.js\on`. Each check runs on the command as
+  // written and on the command with them removed.
+  const joined = c.replace(/['"\\]/g, '');
+  if (protectedPolicyMatch(c) || (joined !== c && protectedPolicyMatch(joined))) return true;
+  // A word the shell expands at run time ($f, $(…), `…`) can become any of the
+  // protected names, so under a command that can write, near ~/.shelly or an
+  // `agents` folder, it is refused rather than guessed.
+  const canWrite = NARROW_MUTATOR_RE.test(joined) || NARROW_INTERPRETER_RE.test(joined) || AGENTS_WRITER_RE.test(joined);
+  if (canWrite && /[$`]/.test(c) && /\.shelly\b|\bagents\b/.test(joined)) return true;
+  return false;
+}
+
+function protectedPolicyMatch(c: string): boolean {
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
