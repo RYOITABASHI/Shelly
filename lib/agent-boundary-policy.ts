@@ -1159,6 +1159,38 @@ const REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?draft
 const AFTER_DRAFT_HOOK_RE = /after-draft-hook\b/;
 const AFTER_DRAFT_HOOK_PLAIN_READ_RE = /^\s*(?:cat|head|tail|ls|stat|wc|file|grep|rg)\s[^|;&<>`$\n]*$/;
 
+// Globs and partial names (review 2026-11-08): `article-pipelines.js?n`,
+// `article-pipe*.json` or, after a `cd`, `article-pipeline*` expand into a
+// protected file, and the name checks above only see literal names. A command
+// that can write is refused when it names a glob under ~/.shelly/agents, a glob
+// in a folder part of a path (`~/.s*/a*/policy.json`), a `cd` into a glob, or
+// any glob at all while it names `.shelly` or `agents` (the `cd` form). Quoted
+// text is not expanded by the shell, but an interpreter or `find -name` expands
+// it itself, so a quoted glob counts too while the command names the folder.
+// Like the rest of this function: a match on the command text, defense in depth.
+const AGENTS_GLOB_CHAR_RE = /[*?[\]{}]/;
+// Writers the mutator list above leaves out, `find` that runs or writes, and a
+// redirect to anything but /dev/null or another descriptor.
+const AGENTS_WRITER_RE = /\b(?:curl|wget|tar|unzip|zip|git|cpio|busybox|toybox)\b|\bfind\b[^|;&]*\s-(?:exec|execdir|ok|okdir|fprint\w*|fls)\b|>{1,2}\s*(?!\/dev\/null\b|&)\S/;
+const QUOTED_TEXT_RE = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+
+function touchesAgentsDirGlob(c: string): boolean {
+  if (!(NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c) || AGENTS_WRITER_RE.test(c))) return false;
+  const mentionsAgents = /\.shelly\b|\bagents\b/.test(c);
+  const unquoted = c.replace(QUOTED_TEXT_RE, ' ');
+  if (/\bcd\s+[^;&|\n]*[*?[\]{}]/.test(unquoted)) return true;
+  for (const token of unquoted.split(/[\s;&|<>()=]+/)) {
+    if (!AGENTS_GLOB_CHAR_RE.test(token)) continue;
+    if (mentionsAgents || /\.shelly|agents/.test(token)) return true;
+    const parts = token.split('/');
+    if (parts.slice(0, -1).some((p) => AGENTS_GLOB_CHAR_RE.test(p))) return true;
+  }
+  if (mentionsAgents) {
+    for (const quoted of c.match(QUOTED_TEXT_RE) || []) if (/[*?]/.test(quoted)) return true;
+  }
+  return false;
+}
+
 /**
  * NARROW form (always on, flag OFF too): only mutations aimed at the files
  * whose loss loosens policy — policy.json, top-level agent definitions
@@ -1168,6 +1200,20 @@ const AFTER_DRAFT_HOOK_PLAIN_READ_RE = /^\s*(?:cat|head|tail|ls|stat|wc|file|gre
  */
 export function touchesProtectedPolicyFiles(command: string): boolean {
   const c = String(command || '');
+  // Quotes and backslashes split a name the shell joins again: `.she''lly`,
+  // `article-pipelines.jso"n"`, `.js\on`. Each check runs on the command as
+  // written and on the command with them removed.
+  const joined = c.replace(/['"\\]/g, '');
+  if (protectedPolicyMatch(c) || (joined !== c && protectedPolicyMatch(joined))) return true;
+  // A word the shell expands at run time ($f, $(…), `…`) can become any of the
+  // protected names, so under a command that can write, near ~/.shelly or an
+  // `agents` folder, it is refused rather than guessed.
+  const canWrite = NARROW_MUTATOR_RE.test(joined) || NARROW_INTERPRETER_RE.test(joined) || AGENTS_WRITER_RE.test(joined);
+  if (canWrite && /[$`]/.test(c) && /\.shelly\b|\bagents\b/.test(joined)) return true;
+  return false;
+}
+
+function protectedPolicyMatch(c: string): boolean {
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
@@ -1182,6 +1228,7 @@ export function touchesProtectedPolicyFiles(command: string): boolean {
   const destinationsBasename = DRAFT_DESTINATIONS_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (destinationsBasename && (REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (AFTER_DRAFT_HOOK_RE.test(c) && !AFTER_DRAFT_HOOK_PLAIN_READ_RE.test(c)) return true;
+  if (touchesAgentsDirGlob(c)) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

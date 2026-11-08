@@ -422,7 +422,8 @@ export function buildAgentPlanSpec(
   const effectiveSteps: NormalizedStep[] = resolvedStepList.map((step) =>
     step.tool && (PLAN_EXECUTOR_STEP_TOOL_TYPES.has(step.tool.type) || step.tool.type === 'cli') ? step : { ...step, tool },
   );
-  const hasCliStep = resolvedStepList.some((step) => step.tool?.type === 'cli');
+  // A voice step (executor v38) runs its writer on a text-only CLI worker.
+  const hasCliStep = resolvedStepList.some((step) => step.tool?.type === 'cli' || step.local?.kind === 'voice');
   const safeWorkspaceRoot =
     agent.workspaceRoot &&
     validateWorkspaceRoot(agent.workspaceRoot, [

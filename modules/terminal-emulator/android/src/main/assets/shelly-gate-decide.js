@@ -1635,8 +1635,34 @@ var DRAFT_DESTINATIONS_BASENAME_RE = /(?:^|[\s/'"=])draft-destinations\.json\b/;
 var REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?draft-destinations\.json\b/;
 var AFTER_DRAFT_HOOK_RE = /after-draft-hook\b/;
 var AFTER_DRAFT_HOOK_PLAIN_READ_RE = /^\s*(?:cat|head|tail|ls|stat|wc|file|grep|rg)\s[^|;&<>`$\n]*$/;
+var AGENTS_GLOB_CHAR_RE = /[*?[\]{}]/;
+var AGENTS_WRITER_RE = /\b(?:curl|wget|tar|unzip|zip|git|cpio|busybox|toybox)\b|\bfind\b[^|;&]*\s-(?:exec|execdir|ok|okdir|fprint\w*|fls)\b|>{1,2}\s*(?!\/dev\/null\b|&)\S/;
+var QUOTED_TEXT_RE = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+function touchesAgentsDirGlob(c) {
+  if (!(NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c) || AGENTS_WRITER_RE.test(c))) return false;
+  const mentionsAgents = /\.shelly\b|\bagents\b/.test(c);
+  const unquoted = c.replace(QUOTED_TEXT_RE, " ");
+  if (/\bcd\s+[^;&|\n]*[*?[\]{}]/.test(unquoted)) return true;
+  for (const token of unquoted.split(/[\s;&|<>()=]+/)) {
+    if (!AGENTS_GLOB_CHAR_RE.test(token)) continue;
+    if (mentionsAgents || /\.shelly|agents/.test(token)) return true;
+    const parts = token.split("/");
+    if (parts.slice(0, -1).some((p) => AGENTS_GLOB_CHAR_RE.test(p))) return true;
+  }
+  if (mentionsAgents) {
+    for (const quoted of c.match(QUOTED_TEXT_RE) || []) if (/[*?]/.test(quoted)) return true;
+  }
+  return false;
+}
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
+  const joined = c.replace(/['"\\]/g, "");
+  if (protectedPolicyMatch(c) || joined !== c && protectedPolicyMatch(joined)) return true;
+  const canWrite = NARROW_MUTATOR_RE.test(joined) || NARROW_INTERPRETER_RE.test(joined) || AGENTS_WRITER_RE.test(joined);
+  if (canWrite && /[$`]/.test(c) && /\.shelly\b|\bagents\b/.test(joined)) return true;
+  return false;
+}
+function protectedPolicyMatch(c) {
   if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
@@ -1648,6 +1674,7 @@ function touchesProtectedPolicyFiles(command) {
   const destinationsBasename = DRAFT_DESTINATIONS_BASENAME_RE.test(c) && /\.shelly\b|\bagents\b/.test(c);
   if (destinationsBasename && (REDIRECT_TO_DRAFT_DESTINATIONS_BASENAME_RE.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (AFTER_DRAFT_HOOK_RE.test(c) && !AFTER_DRAFT_HOOK_PLAIN_READ_RE.test(c)) return true;
+  if (touchesAgentsDirGlob(c)) return true;
   const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
   if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;

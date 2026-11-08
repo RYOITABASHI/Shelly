@@ -1426,7 +1426,7 @@ export interface AgentOrchestrationStep {
   local?: AgentLocalStepConfig;
 }
 
-export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentQueueRefillStepConfig | AgentInvalidLocalStepConfig;
+export type AgentLocalStepConfig = AgentAssembleStepConfig | AgentListDraftsStepConfig | AgentQueuePopStepConfig | AgentQueueRefillStepConfig | AgentVoiceStepConfig | AgentInvalidLocalStepConfig;
 
 /**
  * A longform step whose local config failed validation. It stays a local step
@@ -1504,6 +1504,31 @@ export interface AgentQueuePopStepConfig {
  */
 export interface AgentQueueRefillStepConfig {
   kind: 'queue-refill';
+}
+
+/**
+ * `voice` (executor v38): the ghostwritten author view. After the last revise
+ * and before assemble, a text-only CLI writes a short section of views from the
+ * owner's voice profile, an engine of another family reviews it (one rewrite at
+ * most) and the executor checks it. Only this step's own state lets assemble put
+ * the section in place of the marker and write `material: ghostwritten`. It
+ * leaves no result to carry and cannot fail the run.
+ */
+export interface AgentVoiceStepConfig {
+  kind: 'voice';
+  /** The article's versions, as in assemble's `parts[0]`. */
+  of: number[];
+  /** The profile (`.md`), relative to the vault. */
+  profile: string;
+  /** The profile's SHA-256 the owner pinned after reviewing it. The executor
+   *  also re-reads it from the pipeline config file at run time. */
+  profileSha256: string;
+  lang: 'ja' | 'en';
+  writer: { type: 'cli'; cli: 'claude' | 'codex'; textOnly: true; model?: string };
+  /** An HTTP engine (never the local LLM), so another family than the writer. */
+  review: { type: string; model?: string };
+  /** The name in the fixed ghostwritten footer. */
+  author: string;
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */

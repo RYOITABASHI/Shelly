@@ -130,6 +130,24 @@ export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model
 export const ARTICLE_TEXT_ONLY_CLIS = ['claude', 'codex'] as const;
 export type ArticleTextOnlyEngine = { type: 'cli'; cli: (typeof ARTICLE_TEXT_ONLY_CLIS)[number]; textOnly: true; model?: string };
 
+/** The ghostwritten author view (executor v38). Off without this key. */
+export interface ArticleVoiceConfig {
+  /** The voice profile, a `.md` file given relative to the vault
+   *  (`Drafts/_voice-profile.md`). Its frontmatter needs `reviewed: <date>`,
+   *  or the step does not run. */
+  profile: string;
+  /** The profile's SHA-256 (lower-case hex), set by the owner after reviewing
+   *  it. The step runs only while the profile still has this hash; this file
+   *  is the pin because agent workers cannot write it. */
+  profileSha256: string;
+  /** The name in the fixed ghostwritten footer. */
+  author: string;
+  /** Default: Claude Code, text-only. */
+  engine?: ArticleTextOnlyEngine;
+  /** An HTTP engine, so always another family than the CLI writer. */
+  review: ArticleEngine;
+}
+
 export interface ArticlePipelineConfig {
   /** Frontmatter `stream`, the draft's file name, and the name to ask for. */
   id: string;
@@ -160,6 +178,8 @@ export interface ArticlePipelineConfig {
   /** Also lint the chain's source titles and URLs. */
   lintSources?: boolean;
   quality?: { minChars?: number; minWords?: number; minSources?: number };
+  /** A ghostwritten section in place of the marker, after the last revise. */
+  voice?: ArticleVoiceConfig;
 }
 
 export interface ArticleDigestConfig {
@@ -243,7 +263,31 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice'] as const;
+
+// A `.md` file relative to the vault, of plain names, so `.obsidian`, `..`,
+// `~`, `$HOME` and an absolute path all fail.
+const ARTICLE_VOICE_PROFILE_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\.md$/;
+const ARTICLE_VOICE_PROFILE_MAX_CHARS = 240;
+const DEFAULT_VOICE_ENGINE: ArticleTextOnlyEngine = { type: 'cli', cli: 'claude', textOnly: true };
+
+function articleVoiceError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "profile", "profileSha256", "author", "review" }`;
+  const keyError = unknownKeyError(v, ['profile', 'profileSha256', 'author', 'engine', 'review'], where);
+  if (keyError) return keyError;
+  if (typeof v.profile !== 'string' || v.profile.length > ARTICLE_VOICE_PROFILE_MAX_CHARS || !ARTICLE_VOICE_PROFILE_RE.test(v.profile)) {
+    return `${where}.profile: needs a .md file inside the vault, as a path of plain names relative to it`;
+  }
+  if (typeof v.profileSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.profileSha256)) return `${where}.profileSha256: needs the profile's SHA-256 in lower-case hex`;
+  const authorError = articleTextError(v.author, ARTICLE_LINE_MAX_CHARS, `${where}.author`);
+  if (authorError) return authorError;
+  if (v.engine !== undefined) {
+    if (!isPlainObject(v.engine) || v.engine.type !== 'cli') return `${where}.engine: the section is written by a text-only CLI`;
+    const engineError = articleEngineError(v.engine, `${where}.engine`, true);
+    if (engineError) return engineError;
+  }
+  return articleEngineError(v.review, `${where}.review`);
+}
 
 /** Why `raw` is not a usable pipeline config, or null. Pure. */
 export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): string | null {
@@ -255,6 +299,10 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (commonError) return commonError;
   if (raw.queue !== undefined && typeof raw.queue !== 'boolean') return `${where}.queue: needs true or false`;
   if (raw.lintSources !== undefined && typeof raw.lintSources !== 'boolean') return `${where}.lintSources: needs true or false`;
+  if (raw.voice !== undefined) {
+    const voiceError = articleVoiceError(raw.voice, `${where}.voice`);
+    if (voiceError) return voiceError;
+  }
 
   const ins = raw.instructions;
   if (!isPlainObject(ins)) return `${where}.instructions: needs research, write, review and revise`;
@@ -381,9 +429,14 @@ export function articleOutputFolderError(folder: string, roots: ArticleOutputRoo
 const withFolderSlash = (folder: string): string => (folder.endsWith('/') ? folder : `${folder}/`);
 const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
 
+function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepConfig {
+  const voice = config.voice as ArticleVoiceConfig;
+  return { kind: 'voice', of, profile: voice.profile, profileSha256: voice.profileSha256, lang: config.lang, writer: voice.engine ?? DEFAULT_VOICE_ENGINE, review: voice.review, author: voice.author };
+}
+
 /**
  * One config's draft agent: [research, write, review1, revise1, review2,
- * revise2, assemble], with `queue-pop` first on a queued config and
+ * revise2, assemble] (with `voice` before assemble when configured), with `queue-pop` first on a queued config and
  * `queue-refill` before that when it has a topics instruction. Run by the
  * PlanSpec executor on the cron (Run now is refused). It ends in the draft
  * action: it saves a file and publishes nothing. autonomous:false keeps the
@@ -419,6 +472,7 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },
     { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
     { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
+    ...(config.voice ? [{ instruction: lang === 'en' ? 'Ghostwrite the author view from the voice profile (text-only CLI, then a review)' : '本人の見解をプロフィールから代筆する（テキストのみの CLI、査読つき）', local: voiceStep(config, [at(1), at(3), at(5)]) }] : []),
     { instruction: lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）', local: assemble },
   ];
   return {

@@ -805,5 +805,185 @@
       "workspaceRoot": "/root/app"
     },
     "expectedAnswer": "y"
+  },
+  {
+    "name": "agents-dir glob: one-character wildcard in the name -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/article-pipelines.js?n",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: star after a partial name -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/article-pipelines.j*",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: bare glob after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && cp /tmp/x article-pipeline*",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: redirect to a glob -> deny (policy-write)",
+    "command": "printf x > ~/.shelly/agents/article-pipe*.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: policy file by wildcard -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/policy.js?n",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: glob in the folder names -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.s*/a*/roles.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: cd into a glob -> deny (policy-write)",
+    "command": "cd ~/.she*/age* && cp /tmp/x draft-destinations.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: find -exec with a quoted pattern -> deny (policy-write)",
+    "command": "find ~/.shelly/agents -name 'article-pipe*' -exec cp /tmp/x {} ;",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents-dir glob: brace expansion -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/article-pipelines.{json,bak}",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "protected name built from a variable -> deny (policy-write)",
+    "command": "f=article-pipe; cp /tmp/x ~/.shelly/agents/$f\"lines.json\"",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "protected name split by double quotes after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && cp /tmp/x article-pipelines.jso\"n\"",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "protected name split by a backslash after cd -> deny (policy-write)",
+    "command": "cd ~/.shelly/agents && cp /tmp/x article-pipelines.js\\on",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "folder names split by empty quotes in cd -> deny (policy-write)",
+    "command": "cd ~/.she''lly/age''nts && cp /tmp/x article-pipelines.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "folder names split by empty quotes -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.she''lly/age''nts/article-pipelines.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "agents folder split by empty quotes -> deny (policy-write)",
+    "command": "cp /tmp/x age''nts/article-pipelines.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "HOME path with a quoted piece -> deny (policy-write)",
+    "command": "cp /tmp/x \"$HOME/.she\"lly/agents/article-pipelines.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "empty double quotes inside .shelly -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.sh\"\"elly/agents/article-pipelines.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "policy file split by quotes -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/pol''icy.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "roles file built by command substitution -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/$(echo roles).json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "draft destinations via backticks -> deny (policy-write)",
+    "command": "cp /tmp/x ~/.shelly/agents/`echo draft-destinations`.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
   }
 ]
