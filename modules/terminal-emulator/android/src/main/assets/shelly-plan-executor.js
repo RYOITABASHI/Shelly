@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=42
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=43
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -188,7 +188,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // (三つ, 3つ, three); a number only in the body stays refused. A list whose
 // only fault is its numbering is renumbered (1..n or ①..) when nothing else in
 // the section holds a number, and the writer prompt shows the list shape.
-const EXECUTOR_SCRIPT_VERSION = 42;
+const EXECUTOR_SCRIPT_VERSION = 43;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2342,9 +2342,11 @@ function articleIndexUrl(url) {
 const GROUNDING_MARKER_OPEN = '\u0001';
 const GROUNDING_MARKER_CLOSE = '\u0002';
 const GROUNDING_REDIRECT_MAX_URLS = 10;
-const GROUNDING_REDIRECT_TIMEOUT_SECONDS = 10;
+// The broker's overall deadline for the whole lookup (its own cap is 20 s).
+const GROUNDING_REDIRECT_TIMEOUT_SECONDS = 20;
 // The resolve call is skipped when less than this is left before the run's limit.
-const GROUNDING_REDIRECT_MIN_LEFT_MS = 60 * 1000;
+// That deadline plus a margin for assemble.
+const GROUNDING_REDIRECT_MIN_LEFT_MS = GROUNDING_REDIRECT_TIMEOUT_SECONDS * 1000 + 60 * 1000;
 
 function parsedProviderResponse(raw) {
   if (raw && typeof raw === 'object') return raw;
@@ -2457,80 +2459,83 @@ function withoutIndexSources(text, parsed) {
   return { text: cleaned, parsed: { sources: keep, indexMap } };
 }
 
-// ── Article pipeline: notes left for an editor (v42) ────────────────────────
+// ── Article pipeline: notes left for an editor (v42, narrowed in v43) ───────
 // A reviser that cannot fix a finding sometimes writes a note to whoever
 // publishes ("（記事外・公開時に削除）…", "Editor's note: remove before
 // publishing"). There is no editor: the owner presses publish. assemble cuts
-// such a note from its label to the end of its line, drops a line left empty,
-// and flags the draft; a note it could not cut is flagged by the quality check.
-// Matched after NFKC, outside code fences. Generic phrases only.
-const ARTICLE_META_NOTE_RE = /編集(?:者へ|者向け|メモ|注[:：）)】]|への(?:メモ|連絡|申し送り))|作業メモ|執筆メモ|(?:本文|記事)外[・、:：）)】]|(?:公開|掲載|投稿)(?:時|前|の際)に(?:は)?(?:削除|消す|消して|差し替え)|(?:この|本)(?:注記|メモ)は(?:削除|消)|\b(?:editor'?s note|notes? (?:to|for) (?:the )?(?:editor|publisher|reviewer)s?|internal note|drafting note|revision note)\s*[:)\]]|\b(?:remove|delete|cut|drop) (?:this )?(?:note |line |paragraph |section )?before (?:publishing|publication|posting|going live)\b|\bnot for publication\b/i;
+// such a note and flags the draft; the quality check flags one still there.
+// v43: only a note that says it is one is cut, never a sentence that merely
+// mentions deleting something before publishing:
+//  - at the line start (after list or ※ marks): a label with a colon
+//    (編集メモ:, Editor's note:, 編集メモ（…）：) or a bracket holding labels only
+//    (（記事外・公開時に削除）, 【編集メモ】, [Note to editor]);
+//  - mid-line: only such a bracket of labels.
+// It runs from the label to the end of its line. Headings and code fences are
+// never touched. Generic phrases only.
+const ARTICLE_META_NOTE_TOKEN = String.raw`(?:編集(?:メモ|注|者へ(?:の(?:メモ|連絡))?|者向け)|作業メモ|執筆メモ|(?:本文|記事)外|(?:公開|掲載|投稿)(?:時|前|の際)に(?:は)?(?:削除|消す|消して)(?:してください|する|のこと)?|editor'?s note|notes? (?:to|for) (?:the )?(?:editor|publisher|reviewer)s?|internal note|drafting note|(?:remove|delete) (?:this )?(?:note |line |paragraph |section )?before (?:publishing|publication|posting)|not for publication)`;
+const ARTICLE_META_NOTE_LABEL = String.raw`(?:編集メモ|編集注|編集者へ|作業メモ|執筆メモ|editor'?s note|notes? (?:to|for) (?:the )?(?:editor|publisher|reviewer)s?|internal note|drafting note)`;
+const ARTICLE_META_NOTE_BRACKET = String.raw`[（(【［\[〔]\s*${ARTICLE_META_NOTE_TOKEN}(?:\s*[・、,/:：]\s*${ARTICLE_META_NOTE_TOKEN})*\s*[.。]?\s*[）)】］\]〕]`;
+const ARTICLE_META_NOTE_LEAD = String.raw`^[ \t>*_\-+•・※]*`;
+// A label with its colon, or a bracket of labels, at the line start.
+const ARTICLE_META_NOTE_START_RE = new RegExp(`${ARTICLE_META_NOTE_LEAD}(?:${ARTICLE_META_NOTE_LABEL}\\s*(?:[（(【［\\[][^）)】］\\]\\n]{0,40}[）)】］\\]])?\\s*[:：]|${ARTICLE_META_NOTE_BRACKET})`, 'i');
+// A bracket of labels anywhere in the line.
+const ARTICLE_META_NOTE_BRACKET_RE = new RegExp(ARTICLE_META_NOTE_BRACKET, 'i');
 const ARTICLE_META_NOTE_CUT_FLAG = '編集メモを本文から削除';
 const ARTICLE_META_NOTE_LEFT_FLAG = '編集メモが本文に残っている';
-const ARTICLE_META_NOTE_LEAD_RE = /^[\s>*_\-+•・※]*$/;
-const ARTICLE_META_NOTE_OPEN = '（(【［[〔';
-const ARTICLE_META_NOTE_CLOSE = '）)】］]〕';
 
-/** { text, cut }: `text` without its notes to an editor, `cut` how many. Pure. */
-function stripArticleMetaNotes(body) {
-  const lines = String(body == null ? '' : body).split('\n');
-  const out = [];
-  let fence = '';
-  let cut = 0;
-  for (const line of lines) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (marker) {
-      if (!fence) fence = marker[1][0];
-      else if (marker[1][0] === fence) fence = '';
-      out.push(line);
-      continue;
-    }
-    if (fence) {
-      out.push(line);
-      continue;
-    }
-    const plain = nfkc(line);
-    const m = ARTICLE_META_NOTE_RE.exec(plain);
-    if (!m || plain.length !== line.length) {
-      // NFKC changed the length: offsets do not carry over, so the whole line goes.
-      if (m) {
-        cut += 1;
-        continue;
-      }
-      out.push(line);
-      continue;
-    }
-    // The note starts at the bracket around its label, or at the label.
-    let start = m.index;
-    for (let k = m.index - 1; k >= 0 && m.index - k <= 24; k -= 1) {
-      const ch = line[k];
-      if (ARTICLE_META_NOTE_CLOSE.includes(ch)) break;
-      if (ARTICLE_META_NOTE_OPEN.includes(ch)) {
-        start = k;
-        break;
-      }
-    }
-    const before = line.slice(0, start);
-    cut += 1;
-    if (ARTICLE_META_NOTE_LEAD_RE.test(before)) continue;
-    out.push(before.replace(/[\s:：]+$/, ''));
-  }
-  return { text: out.join('\n').replace(/\n{3,}/g, '\n\n'), cut };
+/** Where the line's note to an editor starts, or -1. Pure. */
+function articleMetaNoteStart(line) {
+  if (/^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) return -1;
+  if (ARTICLE_META_NOTE_START_RE.test(line)) return 0;
+  const m = ARTICLE_META_NOTE_BRACKET_RE.exec(line);
+  return m ? m.index : -1;
 }
 
-/** True when the body still holds a note to an editor, outside code fences. Pure. */
-function articleHasMetaNote(body) {
+/** Calls `visit(line)` for each line outside code fences and `keep(line)` for the others. */
+function forEachProseLine(body, visit, keep) {
   let fence = '';
   for (const line of String(body == null ? '' : body).split('\n')) {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) {
       if (!fence) fence = marker[1][0];
       else if (marker[1][0] === fence) fence = '';
-      continue;
+      keep(line);
+    } else if (fence) {
+      keep(line);
+    } else {
+      visit(line);
     }
-    if (!fence && ARTICLE_META_NOTE_RE.test(nfkc(line))) return true;
   }
-  return false;
+}
+
+/** { text, cut }: `text` without its notes to an editor, `cut` how many. Pure. */
+function stripArticleMetaNotes(body) {
+  const out = [];
+  let cut = 0;
+  forEachProseLine(
+    body,
+    (line) => {
+      const start = articleMetaNoteStart(line);
+      if (start === -1) {
+        out.push(line);
+        return;
+      }
+      cut += 1;
+      const before = line.slice(0, start).replace(/[\s:：]+$/, '');
+      if (before.trim()) out.push(before);
+    },
+    (line) => out.push(line),
+  );
+  return { text: out.join('\n').replace(/\n{3,}/g, '\n\n'), cut };
+}
+
+/** True when the body still holds a note to an editor, outside code fences. Pure. */
+function articleHasMetaNote(body) {
+  let found = false;
+  forEachProseLine(body, (line) => {
+    if (articleMetaNoteStart(line) !== -1) found = true;
+  }, () => {});
+  return found;
 }
 
 // The first "# " heading outside a code fence: a shell comment is not a title.
@@ -11567,6 +11572,9 @@ module.exports = {
   geminiGroundedResearch,
   groundingRedirectUris,
   usableRedirectTarget,
+  resolveGroundingRedirects,
+  GROUNDING_REDIRECT_MIN_LEFT_MS,
+  articleMetaNoteStart,
   withoutIndexSources,
   stripArticleMetaNotes,
   articleHasMetaNote,

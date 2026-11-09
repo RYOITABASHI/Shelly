@@ -1126,7 +1126,10 @@ function sendRequest(opts, cb) {
 //     characters, without credentials, a port, an IP literal, localhost or the
 //     redirect host itself. The caller validates it again;
 //   - at most GROUNDING_REDIRECT_MAX_URLS links per call, one budget charge per
-//     call, one audit line per link (target host only, never the token).
+//     call, one audit line per link (target host only, never the token);
+//   - one overall deadline for the whole call (--timeout-seconds, at most
+//     GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS): every probe still open then is
+//     aborted and its link stays unresolved.
 const GROUNDING_REDIRECT_HOST = 'vertexaisearch.cloud.google.com';
 const GROUNDING_REDIRECT_URL_RE = /^https:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[A-Za-z0-9_=-]{1,1500}$/;
 const GROUNDING_REDIRECT_MAX_URLS = 10;
@@ -1157,17 +1160,33 @@ function groundingRedirectTarget(status, location) {
   return u.href.length > GROUNDING_REDIRECT_TARGET_MAX_CHARS ? null : u.href;
 }
 
-function probeGroundingRedirect(url, timeoutMs) {
+/**
+ * One GET to the redirect endpoint: { status, target }. Reads the status line
+ * and headers only, never the body, and never follows the redirect. `signal`
+ * (an AbortSignal) ends it at the call's deadline; `request` is https.request,
+ * injectable for tests.
+ */
+function probeGroundingRedirect(url, timeoutMs, signal, request) {
+  const send = request || https.request;
   return new Promise((resolve) => {
     let done = false;
+    let req;
     const finish = (value) => {
       if (done) return;
       done = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
       resolve(value);
     };
-    let req;
+    const onAbort = () => {
+      if (req) req.destroy(new Error('deadline'));
+      finish({ status: 0, target: null });
+    };
+    if (signal) {
+      if (signal.aborted) return finish({ status: 0, target: null });
+      signal.addEventListener('abort', onAbort);
+    }
     try {
-      req = https.request(
+      req = send(
         {
           method: 'GET',
           protocol: 'https:',
@@ -1239,7 +1258,17 @@ async function runResolveRedirects(args, nowIso, nowMs, probe) {
   }
   const asked = Number(args['timeout-seconds']);
   const timeoutMs = Math.round(Math.min(Number.isFinite(asked) && asked > 0 ? asked : 10, GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS) * 1000);
-  const results = await Promise.all(wanted.map((u) => probe(u, timeoutMs)));
+  // One deadline for the whole call, not per socket: what is not in by then
+  // is aborted and stays unresolved.
+  const controller = new AbortController();
+  const results = wanted.map(() => null);
+  let timer;
+  await Promise.race([
+    Promise.all(wanted.map((u, k) => Promise.resolve(probe(u, timeoutMs, controller.signal)).then((r) => { results[k] = r; }, () => {}))),
+    new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+  ]);
+  clearTimeout(timer);
+  controller.abort();
   const out = {};
   wanted.forEach((u, k) => {
     const r = results[k] || { status: 0, target: null };
@@ -2011,5 +2040,7 @@ module.exports = {
   redact,
   isGroundingRedirectUrl,
   groundingRedirectTarget,
+  probeGroundingRedirect,
   runResolveRedirects,
+  GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS,
 };

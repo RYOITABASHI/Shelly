@@ -365,3 +365,174 @@ describe('a longform run with Gemini research (fixture broker)', () => {
     expect(result).toContain('転送リンク');
   }, 30000);
 });
+describe('v43: notes to an editor are cut only where they say they are notes', () => {
+  const cut = (line: string) => executor.stripArticleMetaNotes(line);
+
+  it.each([
+    '不要なファイルは投稿前に削除しておくと安心です。',
+    '公開時には削除される仕組みなので、下書きに残しても問題ありません。',
+    'この設定では、公開前に消すべき情報を自分で選びます。',
+    '作品の説明文で、編集メモという言葉を見かけることがあります。',
+    'Remember to delete drafts before publishing them, the guide says.',
+  ])('leaves prose that mentions deleting alone: %s', (line) => {
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+    expect(executor.articleHasMetaNote(line)).toBe(false);
+  });
+
+  it.each(['## 公開前に削除すべきもの', '# 編集メモ: 見出しの例', '### (記事外) 見出し'])('never touches a heading: %s', (line) => {
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+  });
+
+  it.each([
+    ['【編集メモ】あとで直す', ''],
+    ['- 編集メモ: あとで直す', ''],
+    ['[Note to editor] check the date', ''],
+    ['本文です。【編集メモ】ここは後で', '本文です。'],
+  ])('cuts a labelled note: %s', (line, kept) => {
+    expect(cut(line)).toEqual({ text: kept, cut: 1 });
+  });
+
+  it('a bracket that only mentions publishing in prose is not a label', () => {
+    const line = '手順（公開前に削除するファイルを選ぶ作業）を説明します。';
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+  });
+});
+
+describe('v43: redirect lookup limits', () => {
+  it('a tainted run, or one near its limit, never starts the broker', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-redirect-skip-'));
+    const marker = path.join(home, 'broker-ran');
+    const fake = path.join(home, 'fake-broker.js');
+    fs.writeFileSync(fake, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); const a = process.argv; const o = a[a.indexOf('--out') + 1]; require('fs').writeFileSync(o, '{}');`);
+    const paths = { home, tmpDir: home, brokerAuditFile: path.join(home, 'audit') };
+    const plan = { agent: { id: 'agent-x' } };
+    expect(await executor.resolveGroundingRedirects(paths, { tainted: true, broker: fake }, plan, [REDIRECT_A])).toEqual({});
+    expect(fs.existsSync(marker)).toBe(false);
+    const late = { broker: fake, longformDeadlineMs: Date.now() + executor.GROUNDING_REDIRECT_MIN_LEFT_MS - 5000 };
+    expect(await executor.resolveGroundingRedirects(paths, late, plan, [REDIRECT_A])).toEqual({});
+    expect(fs.existsSync(marker)).toBe(false);
+    // Control: the same call on an untainted run with time left does start it.
+    await executor.resolveGroundingRedirects(paths, { broker: fake }, plan, [REDIRECT_A]);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(executor.GROUNDING_REDIRECT_MIN_LEFT_MS).toBeGreaterThan(broker.GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS * 1000);
+  });
+
+  it('one deadline covers the whole call: a probe still open then is aborted and stays unresolved', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-redirect-'));
+    const urlsFile = path.join(dir, 'urls.json');
+    fs.writeFileSync(urlsFile, JSON.stringify([REDIRECT_A, REDIRECT_B]));
+    let aborted = false;
+    const probe = (url: string, _ms: number, signal: AbortSignal) => {
+      if (url === REDIRECT_A) return Promise.resolve({ status: 302, target: 'https://site.example/a' });
+      return new Promise((resolve) => signal.addEventListener('abort', () => { aborted = true; resolve({ status: 0, target: null }); }));
+    };
+    const args = { 'urls-file': urlsFile, out: path.join(dir, 'out'), err: path.join(dir, 'err'), 'budget-file': path.join(dir, 'budget'), 'timeout-seconds': '0.2' };
+    const started = Date.now();
+    expect(await broker.runResolveRedirects(args, 'now', Date.now(), probe)).toBe(0);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(aborted).toBe(true);
+    expect(JSON.parse(fs.readFileSync(args.out, 'utf8'))).toEqual({ [REDIRECT_A]: 'https://site.example/a' });
+  });
+
+  it('a probe that never answers is cut off at the deadline even if it ignores the signal', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-redirect-'));
+    const urlsFile = path.join(dir, 'urls.json');
+    fs.writeFileSync(urlsFile, JSON.stringify([REDIRECT_A]));
+    const args = { 'urls-file': urlsFile, out: path.join(dir, 'out'), err: path.join(dir, 'err'), 'budget-file': path.join(dir, 'budget'), 'timeout-seconds': '0.2' };
+    expect(await broker.runResolveRedirects(args, 'now', Date.now(), () => new Promise(() => {}))).toBe(0);
+    expect(JSON.parse(fs.readFileSync(args.out, 'utf8'))).toEqual({});
+  });
+});
+
+describe('v43: probeGroundingRedirect', () => {
+  // A stand-in for https.request: records the call and answers with a response
+  // whose body is never meant to be read.
+  function fakeRequest(status: number, location?: string) {
+    const calls: any[] = [];
+    let bodyRead = false;
+    let destroyed = false;
+    const send = (options: any, onResponse: (res: any) => void) => {
+      calls.push(options);
+      const { PassThrough } = require('stream');
+      const res = new PassThrough();
+      res.statusCode = status;
+      res.headers = location === undefined ? {} : { location };
+      res.on('data', () => { bodyRead = true; });
+      const realDestroy = res.destroy.bind(res);
+      res.destroy = (...a: any[]) => { destroyed = true; return realDestroy(...a); };
+      const req = new (require('events').EventEmitter)();
+      req.setTimeout = () => req;
+      req.destroy = () => req;
+      req.end = () => setImmediate(() => { onResponse(res); res.write('<html>body that must not be read</html>'); });
+      return req;
+    };
+    return { send, calls, read: () => bodyRead, destroyed: () => destroyed };
+  }
+
+  it('sends one GET to the fixed host, keeps the target, never reads the body or follows it', async () => {
+    const f = fakeRequest(302, 'https://site.example/a');
+    const out = await broker.probeGroundingRedirect(REDIRECT_A, 1000, undefined, f.send);
+    expect(out).toEqual({ status: 302, target: 'https://site.example/a' });
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]).toMatchObject({ method: 'GET', hostname: 'vertexaisearch.cloud.google.com', port: 443, path: '/grounding-api-redirect/AAA_111-x=', agent: false });
+    expect(Object.keys(f.calls[0].headers).map((h) => h.toLowerCase()).sort()).toEqual(['accept', 'user-agent']);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(f.destroyed()).toBe(true);
+    expect(f.read()).toBe(false);
+  });
+
+  it.each([
+    ['userinfo', 302, 'https://user:pw@site.example/a'],
+    ['a port', 302, 'https://site.example:8443/a'],
+    ['an IPv6 literal', 302, 'https://[2001:db8::1]/a'],
+    ['an IPv4 literal', 302, 'https://192.0.2.1/a'],
+    ['a relative path', 302, '/elsewhere'],
+    ['another redirect', 302, REDIRECT_B],
+    ['a 200', 200, 'https://site.example/a'],
+    ['a 404', 404, 'https://site.example/a'],
+    ['no Location', 302, undefined],
+  ])('hands back nothing for %s', async (_name, status, location) => {
+    const f = fakeRequest(status as number, location as string | undefined);
+    expect((await broker.probeGroundingRedirect(REDIRECT_A, 1000, undefined, f.send)).target).toBeNull();
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it('a %-encoded or otherwise odd token is not a redirect link, so it is never asked', () => {
+    for (const bad of [
+      'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA%2F..%2Fx',
+      'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA/../x',
+      'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA#x',
+      'https://vertexaisearch.cloud.google.com/grounding-api-redirect/',
+    ]) {
+      expect(broker.isGroundingRedirectUrl(bad)).toBe(false);
+    }
+  });
+
+  it('against a local server: one request, the Location is read, the target is not fetched', async () => {
+    const http = require('http');
+    const seen: string[] = [];
+    const server = http.createServer((req: any, res: any) => {
+      seen.push(req.url);
+      res.writeHead(302, { Location: 'https://site.example/landing' });
+      res.end('x'.repeat(100000));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    const viaLocal = (options: any, cb: any) => http.request({ ...options, protocol: 'http:', hostname: '127.0.0.1', port }, cb);
+    try {
+      const out = await broker.probeGroundingRedirect(REDIRECT_A, 2000, undefined, viaLocal);
+      expect(out).toEqual({ status: 302, target: 'https://site.example/landing' });
+      expect(seen).toEqual(['/grounding-api-redirect/AAA_111-x=']);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('an aborted signal ends the probe at once', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const f = fakeRequest(302, 'https://site.example/a');
+    expect(await broker.probeGroundingRedirect(REDIRECT_A, 1000, controller.signal, f.send)).toEqual({ status: 0, target: null });
+    expect(f.calls).toHaveLength(0);
+  });
+});
