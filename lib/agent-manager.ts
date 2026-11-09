@@ -76,7 +76,7 @@ import {
   postAgentHandoffDigest,
   postAgentHandoffLine,
 } from './agent-companion-notice';
-import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route';
+import { decideAttendedRoute, decideExecutorOnlyRoute, effectiveGroupCount, isExecutorOnlyChain } from './agent-attended-route';
 import { AttendedProgressWriter } from './agent-progress-writer';
 import { cliBranchOverlap, parseProgressLine, parseProgressRuns } from './agent-progress';
 import { HandoffNarrator } from './agent-handoff';
@@ -1670,11 +1670,14 @@ async function runAgentNowInner(
     if (hasApiCallStep || orchestrationAgent.action?.type === 'api-call') {
       throw new Error(t('agents.api_call_attended_unsupported'));
     }
-    // Article pipeline: same reason. The serial chain has no `local` step, and
-    // its per-step .sh cannot carry longform text (shelly-plan-executor.js
-    // runOrchestrationChain is the only runner). Test with a near-future cron.
-    if (orchestrationAgent.orchestration?.longform === true || normalizeSteps(orchestrationAgent.orchestration).some((s) => !!s.local)) {
-      throw new Error(t('agents.longform_attended_unsupported'));
+    // Article pipeline (2026-11-09): the serial chain has no `local` step and
+    // its per-step .sh cannot carry longform text, so shelly-plan-executor.js
+    // runOrchestrationChain is the only runner. Run now launches that SAME
+    // executor on the SAME on-disk plan a schedule fire uses (native
+    // runPlanAgent, origin "user", unattended=false) — never the serial chain.
+    if (isExecutorOnlyChain(orchestrationAgent)) {
+      await runExecutorOnlyChainNow(orchestrationAgent, runCommand, options);
+      return;
     }
   }
   const orchestrated = isOrchestrated(orchestrationAgent?.orchestration);
@@ -2739,6 +2742,41 @@ async function waitForAttendedExecutorRun(
  * progress.jsonl is written by the executor itself. The chat story is the
  * existing hand-off digest of the run log the executor writes.
  */
+/**
+ * Article pipeline Run now (2026-11-09): a longform / `local`-step chain runs
+ * only on the PlanSpec executor, so Run now takes the executor route above
+ * (runAgentViaPlanExecutor) — the exact native launch a schedule fire takes,
+ * on the on-disk plan as is. Nothing is widened: origin is "user" (native
+ * TerminalEmulatorModule.runAgent is its only producer), the executor's own
+ * checks (longformPlanRefusal, textOnlyPlanRefusal, normalizeStepLocal,
+ * draft-only, the per-agent pid lock, `.halted`) all apply, and the draft
+ * action keeps the attended approval tap. A scheduled run already holding
+ * the lock makes the executor write a "previous run still active" skip,
+ * which becomes this run's result (no second run). The plan is only checked
+ * to be this chain (decideExecutorOnlyRoute); a missing or foreign plan is
+ * refused before launch.
+ */
+async function runExecutorOnlyChainNow(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const agentId = agent.id;
+  let planText = '';
+  try {
+    planText = await readOnDiskPlanSpecText(agentId, runCommand);
+  } catch {
+    planText = '';
+  }
+  const route = decideExecutorOnlyRoute({ agent, planText });
+  if (route.ok === false) {
+    logInfo('AgentManager', `agent ${agentId}: attended route=refused (executor-only chain) — ${route.reason}`);
+    throw new Error(t('agents.longform_plan_not_ready'));
+  }
+  logInfo('AgentManager', `agent ${agentId}: attended route=plan-executor (executor-only chain) cli=${route.cliSteps}`);
+  await runAgentViaPlanExecutor(agent, runCommand, { ...options, cliSteps: route.cliSteps });
+}
+
 async function runAgentViaPlanExecutor(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,

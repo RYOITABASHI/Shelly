@@ -1422,7 +1422,8 @@ export interface AgentOrchestrationStep {
    *  is `queue-refill`, whose instruction is its model prompt. Mutually
    *  exclusive with `tool` / `apiCall` / `handoff`. Re-validated by
    *  normalizeStepLocal (lib/agent-orchestration.ts). The attended serial chain
-   *  cannot run one, so Run now is refused (lib/agent-manager.ts). */
+   *  cannot run one, so Run now hands the chain to the PlanSpec executor
+   *  (lib/agent-manager.ts runExecutorOnlyChainNow). */
   local?: AgentLocalStepConfig;
 }
 
@@ -1548,7 +1549,8 @@ export interface AgentOrchestrationConfig {
    *  document, not a briefing. The PlanSpec executor carries bigger results
    *  with their newlines, skips briefing post-processing, fails a step whose
    *  model stopped on a token limit, and never falls back to the local LLM.
-   *  Attended Run now is refused. Absent = previous behavior. */
+   *  Attended Run now runs it on the PlanSpec executor too (never the serial
+   *  chain). Absent = previous behavior. */
   longform?: boolean;
 }
 

@@ -436,7 +436,8 @@ const ja: Record<string, string> = {
   'agents.missed_schedule_body_repair_failed': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。自動での再設定にも失敗しました。エージェントを開いてスケジュールを確認してください。',
   // api-call (v1): 手動「今すぐ実行」のガード — この action type はスケジュール実行専用
   'agents.api_call_attended_unsupported': 'このエージェントはAPI呼び出しステップを含むため、現在はスケジュール実行のみサポートされています。今すぐ実行はできません。',
-  'agents.longform_attended_unsupported': 'この記事パイプラインはスケジュール実行のみ対応のため、今すぐ実行はできません。試すときは数分後の時刻にスケジュールしてください。',
+  // 記事パイプラインの今すぐ実行: スケジュールが実行する保存済みプランが無い、またはこのパイプラインのものではない
+  'agents.longform_plan_not_ready': 'この記事パイプラインは開始しませんでした。保存済みのプランが無いか、エージェントと一致しません。パイプラインを作り直してから実行してください。',
   'agents.article_pipeline_no_file': 'Shelly に組み込みの記事パイプラインはありません。{{path}} に自分の連載を書いてから、その id を付けて頼んでください。',
   'agents.article_pipeline_pick': 'どれにしますか。id を付けて頼んでください: {{ids}}',
   'agents.article_pipeline_invalid': '{{path}} を使えませんでした: {{detail}}',

@@ -320,3 +320,63 @@ export function decideAttendedRoute(args: {
     cliSteps,
   };
 }
+
+/**
+ * Article pipeline Run now (2026-11-09). A longform chain, or any chain with
+ * a `local` step, has exactly one runner: the PlanSpec executor
+ * (shelly-plan-executor.js runOrchestrationChain). The serial chain has no
+ * `local` step and its per-step .sh cannot carry longform text, so Run now
+ * hands such an agent to the SAME native launch a schedule fire uses — with
+ * the on-disk plan as is (never rewritten) — instead of refusing it.
+ */
+export function isExecutorOnlyChain(agent: Pick<Agent, 'orchestration'> | undefined): boolean {
+  if (!agent?.orchestration) return false;
+  return agent.orchestration.longform === true || normalizeSteps(agent.orchestration).some((s) => !!s.local);
+}
+
+export type ExecutorOnlyRoute =
+  /** `cliSteps`: steps the executor runs through the agent driver (stats only). */
+  | { ok: true; cliSteps: number }
+  | { ok: false; reason: string };
+
+/**
+ * Whether the on-disk PlanSpec is THIS executor-only chain, so the native
+ * launch runs what the schedule would run and nothing else. No freshness
+ * comparison: a schedule fire reads the same file as is, and the executor
+ * re-validates it (longformPlanRefusal / textOnlyPlanRefusal /
+ * normalizeStepLocal) before any step. This only refuses a plan that is
+ * missing, another agent's, or not this chain's shape (e.g. a plain plan left
+ * behind, which native would otherwise run as a different chain).
+ */
+export function decideExecutorOnlyRoute(args: { agent: Agent; planText: string }): ExecutorOnlyRoute {
+  const { agent, planText } = args;
+  const steps = normalizeSteps(agent.orchestration);
+  let plan: unknown;
+  try {
+    plan = JSON.parse(String(planText || '').trim());
+  } catch {
+    return { ok: false, reason: 'on-disk PlanSpec missing or unreadable' };
+  }
+  if (!isRecord(plan)) return { ok: false, reason: 'on-disk PlanSpec missing or unreadable' };
+  if (plan.kind !== PLAN_SPEC_KIND || plan.schemaVersion !== PLAN_SPEC_SCHEMA_VERSION) {
+    return { ok: false, reason: 'on-disk PlanSpec has a different kind/schema' };
+  }
+  if (!isRecord(plan.agent) || plan.agent.id !== agent.id) return { ok: false, reason: 'on-disk PlanSpec agent id mismatch' };
+  const diskSteps = isRecord(plan.steps) ? plan.steps : null;
+  const list = diskSteps && Array.isArray(diskSteps.list) ? (diskSteps.list as unknown[]) : null;
+  if (!diskSteps || !list || list.length !== steps.length) {
+    return { ok: false, reason: 'on-disk PlanSpec steps do not match the agent' };
+  }
+  if ((agent.orchestration?.longform === true) !== (diskSteps.longform === true)) {
+    return { ok: false, reason: 'on-disk PlanSpec longform flag does not match the agent' };
+  }
+  for (let i = 0; i < steps.length; i++) {
+    const disk = list[i];
+    if (!isRecord(disk)) return { ok: false, reason: `on-disk PlanSpec step ${i + 1} unreadable` };
+    if (!!steps[i].local !== (disk.local !== undefined && disk.local !== null)) {
+      return { ok: false, reason: `on-disk PlanSpec step ${i + 1} local kind does not match the agent` };
+    }
+  }
+  const cliSteps = list.filter((s) => isRecord(s) && EXECUTOR_CLI_TOOL_TYPES.has(typeOf(s.tool) ?? '')).length;
+  return { ok: true, cliSteps };
+}

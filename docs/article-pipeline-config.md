@@ -41,7 +41,7 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 - **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool. `voice` adds a ghostwritten author view (see below).
 - **Digest**: an optional top-level `digest` lists each day's drafts in one note, with `name`, `prompt`, `lang`, `schedule`, `outputFolder`, `footer`, `engine` and `streams` (`[{ "folder": "Garden", "label": "Garden" }]`, folders next to the digest's own). Ask for it with the id `digest`.
 
-The agent only ever saves a draft. It never publishes and is never autonomous, and its runs are scheduled only: Run now is refused, so set a time a few minutes ahead to test one.
+The agent only ever saves a draft. It never publishes and is never autonomous, Its runs always go through the PlanSpec executor. Run now (the sidebar ▶ or `@agent run <name>`) starts that same executor on the same saved plan the schedule uses, so you can test a pipeline right away. A Run now while the scheduled run is still going is refused with "previous run still active" instead of starting a second run.
 
 ## Text-only CLI engines
 

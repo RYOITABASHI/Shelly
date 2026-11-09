@@ -443,7 +443,8 @@ const en: Record<string, string> = {
   // api-call (v1): attended "Run now" guard — this action type is
   // PlanSpec-executor-only (scheduled/unattended runs only).
   'agents.api_call_attended_unsupported': 'This agent includes an API-call step, which currently only supports scheduled execution — it can\'t be run now.',
-  'agents.longform_attended_unsupported': 'This article pipeline only runs on its schedule, so it can\'t be run now. To test it, set the schedule a few minutes ahead.',
+  // Article pipeline Run now: the saved plan the schedule runs is missing or is not this pipeline.
+  'agents.longform_plan_not_ready': 'This article pipeline wasn\'t started: its saved plan is missing or doesn\'t match the agent. Create the pipeline again, then run it.',
   'agents.article_pipeline_no_file': 'Shelly has no built-in article pipeline. Add your own series to {{path}}, then ask again with its id.',
   'agents.article_pipeline_pick': 'Which one? Add its id to your request: {{ids}}',
   'agents.article_pipeline_invalid': 'I could not use {{path}}: {{detail}}',

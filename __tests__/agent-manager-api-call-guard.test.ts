@@ -115,34 +115,21 @@ describe('runAgentNow — api-call (v1) attended-run guard', () => {
     expect(mockTerminalEmulator.runAgent).not.toHaveBeenCalled();
   });
 
-  // Article pipeline: same guard, same reason. The serial chain has no `local`
-  // step and cannot carry longform text.
-  it('refuses cleanly when a step is a local step, or the chain is longform', async () => {
-    const message = t('agents.longform_attended_unsupported');
-    const local = { kind: 'assemble' as const, parts: [[0]], stream: 'example-a', footer: 'footer' };
-    const withLocal: Agent = {
-      ...baseAgent,
-      orchestration: { steps: ['write the article', { instruction: 'assemble it', local }] },
-    };
-    const longform: Agent = {
-      ...baseAgent,
-      orchestration: { steps: ['write the article', 'review it'], longform: true },
-    };
-    for (const agent of [withLocal, longform]) {
-      useAgentStore.getState().setAgents([agent]);
-      const runCommand = jest.fn(async () => '');
-      await expect(runAgentNow(AGENT_ID, runCommand)).rejects.toThrow(message);
-      expect(runCommand).not.toHaveBeenCalled();
-      expect(mockTerminalEmulator.runAgent).not.toHaveBeenCalled();
-    }
-  });
-
-  it('refuses the article preset itself', async () => {
+  // Article pipeline Run now (2026-11-09) goes to the PlanSpec executor
+  // (__tests__/agent-manager-longform-run-now.test.ts), but the api-call
+  // refusal still comes first: a longform chain carrying an apiCall step is
+  // refused here, before any shell command or native launch.
+  it('still refuses a longform chain that carries an apiCall step (api-call guard first)', async () => {
     const preset = examplePipeline('example-a');
-    useAgentStore.getState().setAgents([{ ...baseAgent, orchestration: preset.orchestration }]);
+    const steps = [
+      { instruction: 'search for sources', apiCall: { host: 'api.perplexity.ai', method: 'GET' as const, path: '/v1/search' } },
+      ...preset.orchestration.steps,
+    ];
+    useAgentStore.getState().setAgents([{ ...baseAgent, orchestration: { ...preset.orchestration, steps } }]);
     const runCommand = jest.fn(async () => '');
-    await expect(runAgentNow(AGENT_ID, runCommand)).rejects.toThrow(t('agents.longform_attended_unsupported'));
+    await expect(runAgentNow(AGENT_ID, runCommand)).rejects.toThrow(EXPECTED_MESSAGE);
     expect(runCommand).not.toHaveBeenCalled();
+    expect(mockTerminalEmulator.runAgent).not.toHaveBeenCalled();
   });
 
   it('does NOT refuse a plain orchestrated agent with no apiCall anywhere (no false positive)', async () => {

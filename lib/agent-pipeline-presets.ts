@@ -438,7 +438,8 @@ function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepC
  * One config's draft agent: [research, write, review1, revise1, review2,
  * revise2, assemble] (with `voice` before assemble when configured), with `queue-pop` first on a queued config and
  * `queue-refill` before that when it has a topics instruction. Run by the
- * PlanSpec executor on the cron (Run now is refused). It ends in the draft
+ * PlanSpec executor, on the cron or on Run now (the same executor and plan,
+ * lib/agent-attended-route.ts isExecutorOnlyChain). It ends in the draft
  * action: it saves a file and publishes nothing. autonomous:false keeps the
  * pinned engines and the local steps (an autonomous plan strips pins). Throws
  * on a config articlePipelineConfigError refuses.
