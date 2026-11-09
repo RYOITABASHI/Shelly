@@ -1309,10 +1309,13 @@ async function runResolveRedirects(args, nowIso, nowMs, probe) {
 //     CGNAT, ULA, multicast, documentation, reserved or IPv4-in-IPv6 forms), and
 //     the socket connects to exactly the first of them (the request's `lookup`
 //     returns it), so a second DNS answer cannot move it (rebinding). The peer
-//     address is checked again on the response.
+//     address is checked again on the response. On a DNS64 network, synthesized
+//     64:ff9b::/96 answers are dropped when the name has A records, and the pin
+//     is a checked IPv4 address (fetchTextResolve).
 //   - At most FETCH_TEXT_MAX_REDIRECTS redirects, each hop checked as above.
 //   - At most FETCH_TEXT_MAX_RAW_BYTES of body kept (decoded; a gzip / deflate
-//     / br body a server sends anyway is decoded under the same cap), and one
+//     / br body a server sends anyway is decoded under the same cap, and fails
+//     past FETCH_TEXT_MAX_COMPRESSED_BYTES on the wire), and one
 //     deadline for the whole call (--timeout-seconds, at most
 //     FETCH_TEXT_TIMEOUT_MAX_SECONDS).
 //   - text/html, application/xhtml+xml and text/plain only. PDF and every
@@ -1326,6 +1329,8 @@ async function runResolveRedirects(args, nowIso, nowMs, probe) {
 const FETCH_TEXT_MAX_URLS = 3;
 const FETCH_TEXT_MAX_CHARS = 20000;
 const FETCH_TEXT_MAX_RAW_BYTES = 2 * 1024 * 1024;
+// Bytes on the wire for a compressed body (decoded output keeps the cap above).
+const FETCH_TEXT_MAX_COMPRESSED_BYTES = 4 * 1024 * 1024;
 const FETCH_TEXT_MAX_REDIRECTS = 3;
 const FETCH_TEXT_TIMEOUT_MAX_SECONDS = 20;
 const FETCH_TEXT_URL_MAX_CHARS = 500;
@@ -1444,18 +1449,31 @@ function fetchTextAddressPublic(addr) {
 /**
  * The one address the request connects to: every address the name resolves to
  * must be public (a name that also points inside is refused as a whole), and
- * the first is used. `lookup` is dns.lookup, injectable for tests.
+ * the first is used. One exception: on a DNS64 / NAT64 network (464XLAT
+ * carriers) the resolver adds synthesized AAAA answers in 64:ff9b::/96 next to
+ * the name's real A records. When at least one A record is there, those
+ * synthesized answers are dropped (never connected to) and the rest is checked
+ * as above; the pin is then a checked IPv4 address. `lookup` is dns.lookup,
+ * injectable for tests.
  */
+function fetchTextIsNat64(addr) {
+  const b = typeof addr === 'string' && addr.indexOf(':') !== -1 ? ipv6Bytes(addr) : null;
+  return !!b && b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && b.slice(4, 12).every((x) => x === 0);
+}
+
 function fetchTextResolve(hostname, lookup) {
   const look = lookup || require('dns').lookup;
   return new Promise((resolve, reject) => {
     try {
-      look(hostname, { all: true, verbatim: true }, (err, list) => {
-        if (err || !Array.isArray(list) || !list.length) return reject(new FetchTextRefusal('name not resolved'));
+      look(hostname, { all: true, verbatim: true }, (err, answers) => {
+        if (err || !Array.isArray(answers) || !answers.length) return reject(new FetchTextRefusal('name not resolved'));
+        const hasV4 = answers.some((entry) => entry && ipv4Octets(String(entry.address)));
+        const list = hasV4 ? answers.filter((entry) => !(entry && fetchTextIsNat64(entry.address))) : answers;
         for (const entry of list) {
           if (!entry || !fetchTextAddressPublic(entry.address)) return reject(new FetchTextRefusal('name resolves to a non-public address'));
         }
-        const first = list[0];
+        const droppedNat64 = list.length !== answers.length;
+        const first = (droppedNat64 && list.find((entry) => ipv4Octets(String(entry.address)))) || list[0];
         return resolve({ address: first.address, family: first.address.indexOf(':') !== -1 ? 6 : 4 });
       });
     } catch (_) {
@@ -1547,7 +1565,17 @@ function fetchTextRequest(u, pinned, signal, request) {
           const chunks = [];
           const settle = () => finish(resolve, { status, contentType, body: Buffer.concat(chunks), bytes: raw, truncated });
           const broken = () => (chunks.length ? settle() : fail('body unreadable'));
-          if (stream !== res) res.on('data', (c) => { raw += c.length; });
+          // A compressed body is capped on the wire too: a stream of empty
+          // blocks decodes to nothing and would otherwise run to the deadline.
+          if (stream !== res) {
+            res.on('data', (c) => {
+              raw += c.length;
+              if (raw > FETCH_TEXT_MAX_COMPRESSED_BYTES && !done) {
+                stream.destroy();
+                fail('body too large');
+              }
+            });
+          }
           stream.on('data', (c) => {
             if (done) return;
             if (stream === res) raw += c.length;
@@ -2622,6 +2650,7 @@ module.exports = {
   FETCH_TEXT_MAX_URLS,
   FETCH_TEXT_MAX_CHARS,
   FETCH_TEXT_MAX_RAW_BYTES,
+  FETCH_TEXT_MAX_COMPRESSED_BYTES,
   FETCH_TEXT_MAX_REDIRECTS,
   FETCH_TEXT_TIMEOUT_MAX_SECONDS,
 };

@@ -153,10 +153,36 @@ describe('the source text block (pure)', () => {
     expect(executor.buildEditorPrompt({ article: 'A', notes: '', materials: '', rubric: RUBRIC, lang: 'en', nonce: 'n1' })).not.toContain('Source full text');
   });
 
-  it('asks the broker for nothing on a tainted run or when time is short', async () => {
+  it('M1: tells the steps not to state a disputed claim as fact, and the editor to score it down', () => {
+    const block = executor.renderSourceTextBlock([{ id: 1, title: 'T', url: 'https://s.example/p', text: 'x', truncated: false }], 'n');
+    expect(block).toContain('where a page and the research notes disagree, state as fact only what both support, or say that the sources differ; never state the disputed claim as fact');
+    expect(block).not.toContain('the page wins');
+    const editor = executor.buildEditorPrompt({ article: 'A', notes: 'n', materials: '', sourceText: block, rubric: RUBRIC, lang: 'en', nonce: 'n1' });
+    expect(editor).toContain('- A claim stated as fact that neither the notes nor the source texts support, or that one of them contradicts, lowers substance and overall');
+    expect(executor.buildEditorPrompt({ article: 'A', notes: 'n', materials: '', rubric: RUBRIC, lang: 'en', nonce: 'n1' })).not.toContain('source texts support');
+  });
+
+  it('M4: a tainted call carries --tainted 1, and the real broker refuses it before any request', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-source-text-tainted-'));
+    const plan = { agent: { id: 'x' } };
+    const paths = { tmpDir: dir, home: dir, brokerAuditFile: path.join(dir, 'broker-audit.jsonl') };
+    const recorder = path.join(dir, 'record-broker.js');
+    fs.writeFileSync(recorder, `require('fs').writeFileSync(${JSON.stringify(path.join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2))); process.exit(40);\n`);
+    expect(await executor.fetchSourceTexts(paths, { tainted: true, broker: recorder }, plan, ['https://a.example/'], 1000)).toEqual({});
+    const argv: string[] = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8'));
+    expect(argv[argv.indexOf('--op') + 1]).toBe('http.fetch-text');
+    expect(argv[argv.indexOf('--tainted') + 1]).toBe('1');
+    // The real broker: refused, audited, nothing out.
+    expect(await executor.fetchSourceTexts(paths, { tainted: true, broker: path.join(root, 'scripts', 'shelly-capability-broker.js') }, plan, ['https://a.example/'], 1000)).toEqual({});
+    expect(fs.readFileSync(paths.brokerAuditFile, 'utf8')).toContain('"reason":"tainted run"');
+    // Untainted calls carry no such flag.
+    await executor.fetchSourceTexts(paths, { broker: recorder }, plan, ['https://a.example/'], 1000);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8'))).not.toContain('--tainted');
+  });
+
+  it('asks the broker for nothing when time is short', async () => {
     const plan = { agent: { id: 'x' } };
     const paths = { tmpDir: os.tmpdir(), home: os.tmpdir(), brokerAuditFile: path.join(os.tmpdir(), 'none') };
-    expect(await executor.fetchSourceTexts(paths, { tainted: true, broker: '/nonexistent' }, plan, ['https://a.example/'], 1000)).toEqual({});
     expect(await executor.fetchSourceTexts(paths, { longformDeadlineMs: Date.now() + 1000, broker: '/nonexistent' }, plan, ['https://a.example/'], 1000)).toEqual({});
     // A broker that cannot run at all leaves nothing either.
     expect(await executor.fetchSourceTexts(paths, { broker: '/nonexistent' }, plan, ['https://a.example/'], 1000)).toEqual({});

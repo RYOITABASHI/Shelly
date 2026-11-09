@@ -161,6 +161,34 @@ describe('http.fetch-text: public addresses only', () => {
     expect(broker.fetchTextAddressPublic(addr)).toBe(ok);
   });
 
+  it.each([
+    ['2001:0::1', 'Teredo'],
+    ['2001:0:4136:e378:8000:63bf:3fff:fdd2', 'Teredo'],
+    ['64:ff9b:1::1', 'local-use NAT64 /48'],
+    ['64:ff9b::808:808', 'well-known NAT64'],
+    ['192.0.0.1', 'IETF 192.0.0/24'],
+    ['192.0.0.170', 'IETF 192.0.0/24 (NAT64 discovery)'],
+  ])('regression: %s (%s) is not public', (addr) => {
+    expect(broker.fetchTextAddressPublic(addr)).toBe(false);
+  });
+
+  it('M3: on a DNS64 network drops synthesized 64:ff9b:: answers when A records exist and pins a checked IPv4', async () => {
+    const dns64 = lookupFrom({ 'v4.example': ['64:ff9b::5db8:d822', PUBLIC_A] });
+    await expect(broker.fetchTextResolve('v4.example', dns64)).resolves.toEqual({ address: PUBLIC_A, family: 4 });
+    // A synthesized answer never makes up for a private A record.
+    await expect(broker.fetchTextResolve('in.example', lookupFrom({ 'in.example': ['64:ff9b::a00:1', '10.0.0.1'] }))).rejects.toThrow('non-public');
+    // NAT64 answers alone (an IPv6-only network): nothing checked to connect to.
+    await expect(broker.fetchTextResolve('only.example', lookupFrom({ 'only.example': ['64:ff9b::5db8:d822'] }))).rejects.toThrow('non-public');
+    // The local-use /48 is not dropped: it is refused.
+    await expect(broker.fetchTextResolve('lu.example', lookupFrom({ 'lu.example': ['64:ff9b:1::1', PUBLIC_A] }))).rejects.toThrow('non-public');
+    // And the request connects to the A record, never the 64:ff9b address.
+    const { out, calls } = await fetchWith('https://v4.example/x', {
+      'v4.example/x': { status: 200, headers: { 'content-type': 'text/plain' }, body: 'ok text' },
+    }, { 'v4.example': ['64:ff9b::5db8:d822', PUBLIC_A] });
+    expect(out).toMatchObject({ ok: true, text: 'ok text' });
+    expect(calls[0].connectedTo).toBe(PUBLIC_A);
+  });
+
   it('refuses a name when any of its addresses is not public, and pins the first otherwise', async () => {
     await expect(broker.fetchTextResolve('mixed.example', lookupFrom({ 'mixed.example': [PUBLIC_A, '10.0.0.1'] }))).rejects.toThrow('non-public');
     await expect(broker.fetchTextResolve('gone.example', lookupFrom({}))).rejects.toThrow('not resolved');
@@ -211,7 +239,7 @@ describe('http.fetch-text: one URL', () => {
     expect(inside.out).toMatchObject({ ok: false, reason: 'name resolves to a non-public address' });
     expect(inside.calls).toHaveLength(1);
 
-    for (const location of ['http://b.example/y', 'https://127.0.0.1/', 'https://[::1]/', 'https://b.example:8080/', 'https://localhost/']) {
+    for (const location of ['http://b.example/y', 'https://127.0.0.1/', 'https://[::1]/', 'https://b.example:8080/', 'https://user:pw@b.example/y', 'https://user@b.example/y', 'https://localhost/']) {
       const bad = await fetchWith('https://a.example/x', { 'a.example/x': { status: 307, headers: { location } } }, dns);
       expect(bad.out).toMatchObject({ ok: false, reason: 'redirect to a refused address' });
       expect(bad.calls).toHaveLength(1);
@@ -246,6 +274,23 @@ describe('http.fetch-text: one URL', () => {
     expect(out.bytes).toBeLessThanOrEqual(broker.FETCH_TEXT_MAX_RAW_BYTES + 64 * 1024);
     expect(out.truncated).toBe(true);
     expect(Array.from(out.text as string).length).toBeLessThanOrEqual(1000);
+  });
+
+  it('M2: a compressed stream that decodes to nothing fails at the wire cap, not the deadline', async () => {
+    // gzip header, then empty non-final stored blocks: bytes on the wire, no output.
+    const header = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0x03]);
+    const empty = Buffer.from([0x00, 0x00, 0x00, 0xff, 0xff]);
+    const blocks = Math.ceil((broker.FETCH_TEXT_MAX_COMPRESSED_BYTES + 512 * 1024) / empty.length);
+    const body = Buffer.concat([header, Buffer.alloc(blocks * empty.length)]);
+    for (let k = 0; k < blocks; k += 1) empty.copy(body, header.length + k * empty.length);
+    expect(zlib.gunzipSync(body.subarray(0, header.length + 100 * empty.length), { finishFlush: zlib.constants.Z_SYNC_FLUSH })).toHaveLength(0);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const { out } = await fetchWith('https://a.example/z', {
+      'a.example/z': { status: 200, headers: { 'content-type': 'text/html', 'content-encoding': 'gzip' }, body },
+    }, { 'a.example': [PUBLIC_A] }, 1000, controller.signal);
+    clearTimeout(timer);
+    expect(out).toMatchObject({ ok: false, reason: 'body too large' });
   });
 
   it('stops at the deadline', async () => {
