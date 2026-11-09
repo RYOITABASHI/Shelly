@@ -1110,6 +1110,158 @@ function sendRequest(opts, cb) {
 }
 
 // ---------------------------------------------------------------------------
+// http.resolve-redirect: Gemini grounding links (2026-11-09)
+// ---------------------------------------------------------------------------
+// Gemini's grounded answers name their sources only through Google's redirect
+// service. This op asks that ONE fixed endpoint where each link points and
+// returns the Location header, nothing else:
+//   - the URL must be https://vertexaisearch.cloud.google.com/grounding-api-redirect/<token>
+//     (no query, no fragment, no port, token charset fixed); anything else is
+//     refused without a request. It is a separate op, not an allowlist entry, so
+//     http.request still cannot reach this host;
+//   - no secret, no caller header and no body is sent; the redirect is never
+//     followed, and the response body is never read (the socket is destroyed
+//     once the status line and headers are in);
+//   - a target is kept only when it is an absolute http(s) URL of at most 500
+//     characters, without credentials, a port, an IP literal, localhost or the
+//     redirect host itself. The caller validates it again;
+//   - at most GROUNDING_REDIRECT_MAX_URLS links per call, one budget charge per
+//     call, one audit line per link (target host only, never the token).
+const GROUNDING_REDIRECT_HOST = 'vertexaisearch.cloud.google.com';
+const GROUNDING_REDIRECT_URL_RE = /^https:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[A-Za-z0-9_=-]{1,1500}$/;
+const GROUNDING_REDIRECT_MAX_URLS = 10;
+const GROUNDING_REDIRECT_TARGET_MAX_CHARS = 500;
+const GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS = 20;
+
+function isGroundingRedirectUrl(url) {
+  return typeof url === 'string' && GROUNDING_REDIRECT_URL_RE.test(url);
+}
+
+/** The redirect target when it may be handed back, else null. Pure. */
+function groundingRedirectTarget(status, location) {
+  if ([301, 302, 303, 307, 308].indexOf(status) === -1) return null;
+  if (typeof location !== 'string' || !location || location.length > GROUNDING_REDIRECT_TARGET_MAX_CHARS) return null;
+  if (/[\s<>"'`\\\u0000-\u001f\u007f]/.test(location)) return null;
+  let u;
+  try {
+    u = new URL(location);
+  } catch (_) {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (u.username || u.password || u.port) return null;
+  const host = u.hostname.toLowerCase();
+  if (!host || host.indexOf('.') === -1 || host === GROUNDING_REDIRECT_HOST || host === 'localhost' || /\.localhost$/.test(host)) return null;
+  // IPv4 / IPv6 literals: a page is named by a host name.
+  if (/^[\d.]+$/.test(host) || host.charAt(0) === '[' || host.indexOf(':') !== -1) return null;
+  return u.href.length > GROUNDING_REDIRECT_TARGET_MAX_CHARS ? null : u.href;
+}
+
+function probeGroundingRedirect(url, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    let req;
+    try {
+      req = https.request(
+        {
+          method: 'GET',
+          protocol: 'https:',
+          hostname: GROUNDING_REDIRECT_HOST,
+          port: 443,
+          path: new URL(url).pathname,
+          headers: { 'User-Agent': 'Shelly', Accept: 'text/html' },
+          agent: false,
+        },
+        (res) => {
+          const status = res.statusCode || 0;
+          const target = groundingRedirectTarget(status, res.headers && res.headers.location);
+          // The body is never read.
+          res.destroy();
+          finish({ status: status, target: target });
+        },
+      );
+    } catch (_) {
+      finish({ status: 0, target: null });
+      return;
+    }
+    req.on('error', () => finish({ status: 0, target: null }));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+    req.end();
+  });
+}
+
+/** Resolves to the exit code. `probe(url, timeoutMs)` is injected for tests. */
+async function runResolveRedirects(args, nowIso, nowMs, probe) {
+  const auditFile = args['audit-log'] || '';
+  const budgetFile = args['budget-file'] || '';
+  let fds;
+  try {
+    fds = openOutErr(args.out || '', args.err || '');
+  } catch (e) {
+    process.stderr.write('cannot open out/err files\n');
+    return EXIT.INTERNAL;
+  }
+  const close = (code) => {
+    try { fs.closeSync(fds.outFd); } catch (_) {}
+    try { fs.closeSync(fds.errFd); } catch (_) {}
+    return code;
+  };
+  let urls;
+  try {
+    urls = JSON.parse(fs.readFileSync(args['urls-file'] || '', 'utf8'));
+  } catch (_) {
+    urls = null;
+  }
+  if (!Array.isArray(urls) || urls.length > GROUNDING_REDIRECT_MAX_URLS) {
+    fs.writeSync(fds.errFd, 'http.resolve-redirect: --urls-file must hold a JSON array of at most ' + GROUNDING_REDIRECT_MAX_URLS + ' URLs\n');
+    return close(EXIT.USAGE);
+  }
+  for (const u of urls) {
+    if (!isGroundingRedirectUrl(u)) {
+      appendAudit(auditFile, { ts: nowIso, kind: 'http.resolve-redirect', host: (typeof u === 'string' && hostFromUrl(u)) || '<unparseable>', decision: 'deny', reason: 'not a grounding redirect link' });
+    }
+  }
+  const wanted = urls.filter(isGroundingRedirectUrl).filter((u, k, all) => all.indexOf(u) === k);
+  if (!wanted.length) {
+    fs.writeSync(fds.outFd, '{}');
+    return close(EXIT.OK);
+  }
+  const charge = inspectOrChargeBudget(budgetFile, DEFAULT_BUDGET, nowMs, true);
+  if (!charge.ok) {
+    fs.writeSync(fds.errFd, 'capability broker BUDGET EXCEEDED: ' + formatBudgetExceededMessage(charge.state || loadBudgetState(budgetFile, nowMs), DEFAULT_BUDGET, nowMs) + '\n');
+    appendAudit(auditFile, { ts: nowIso, kind: 'http.resolve-redirect', host: GROUNDING_REDIRECT_HOST, decision: 'deny', reason: redact(charge.reason) });
+    return close(EXIT.BUDGET);
+  }
+  const asked = Number(args['timeout-seconds']);
+  const timeoutMs = Math.round(Math.min(Number.isFinite(asked) && asked > 0 ? asked : 10, GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS) * 1000);
+  const results = await Promise.all(wanted.map((u) => probe(u, timeoutMs)));
+  const out = {};
+  wanted.forEach((u, k) => {
+    const r = results[k] || { status: 0, target: null };
+    // The probe's answer is checked again here, so an injected probe cannot
+    // widen what comes back.
+    const target = r.target ? groundingRedirectTarget(302, r.target) : null;
+    if (target) out[u] = target;
+    appendAudit(auditFile, {
+      ts: nowIso,
+      kind: 'http.resolve-redirect',
+      host: GROUNDING_REDIRECT_HOST,
+      decision: 'allow',
+      status: r.status,
+      ok: !!target,
+      targetHost: target ? hostFromUrl(target) : null,
+    });
+  });
+  fs.writeSync(fds.outFd, JSON.stringify(out));
+  return close(EXIT.OK);
+}
+
+// ---------------------------------------------------------------------------
 // FS-001 scoped.fs operations
 // ---------------------------------------------------------------------------
 
@@ -1550,6 +1702,13 @@ function main() {
   if (op === 'workspace.exec') {
     return runWorkspaceExec(args, nowIso);
   }
+  if (op === 'http.resolve-redirect') {
+    runResolveRedirects(args, nowIso, nowMs, probeGroundingRedirect).then(
+      (code) => process.exit(code),
+      () => process.exit(EXIT.INTERNAL),
+    );
+    return undefined;
+  }
   if (op !== 'http.request') {
     process.stderr.write('unknown capability op: ' + op + '\n');
     process.exit(EXIT.USAGE);
@@ -1850,4 +2009,7 @@ module.exports = {
   describeApproveSignal,
   formatBudgetExceededMessage,
   redact,
+  isGroundingRedirectUrl,
+  groundingRedirectTarget,
+  runResolveRedirects,
 };

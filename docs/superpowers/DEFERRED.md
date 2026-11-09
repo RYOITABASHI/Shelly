@@ -122,6 +122,9 @@
 - **残り**: 古い `versions/` の削除（1 版 344MB、削除処理なし）、`previous` と自動ロールバック、失敗版の保留（Inc 5）。Ed25519 署名（§6.7、オーナーの Secret 登録が必要）。`codex-runtime.json` を読む切替前の APK への案内は無い（APK 更新で解消）。`codex-runtime-latest` の古いアセットの掃除。
 - **署名鍵の交代**: Termux が `termux-autobuilds` の鍵を替えると Bump は赤くなる（意図どおり）。新しい鍵を確かめて `scripts/termux-autobuilds.gpg` と `TERMUX_SIGNING_FINGERPRINTS` を更新する。
 
+### 記事が査読を通らない（2026-11-09 の全 5 本）への対処 — executor v42、実機未検証 (P1)
+原因と対処: (1) Gemini の調査は `[n]` を持たず（どの文がどの出典かは `groundingSupports` にしか無い）、出典名はドメインだけ、URL は転送リンクだった。執筆は `[n]` を推測で付け、査読は主張と出典を結びつけられず、修正では直せなかった。→ 調査メモに Google の対応番号を入れ、転送リンクを解決する（上の項目）。(2) 学術誌の目次・コレクションのページが出典に入っていた → longform の調査から外す（`withoutIndexSources`）。(3) 査読が手元に無い確認（原典を開く等）を求め、修正は「編集メモ」を本文に残した → 査読と修正の指示の後ろに固定の規則（`LONGFORM_REVIEW_RULES` / `LONGFORM_REVISE_RULES`）を足し、`assemble` が編集者宛てのメモを本文から削って `lint` に「編集メモを本文から削除」を出す。(4) 代筆: 文頭の機能語（Another 等）を名前と誤認、空行で離れた 1-2-3 のリストを「1から始まらない」と拒否（参照「③のせいで」があると v41 の振り直しが効かなかった）、局所チェックで落ちた版を直さず即失敗 → 文頭語を追加、正しい番号のリストは空行だけ詰める、拒否理由を付けて最大 2 回書き直す（チェック自体は不変）。**実機で確認する**: 5 本のうち何本が `review: pass`・`material: ghostwritten`・空の `lint` になるか、30 分以内に終わるか（代筆の書き直しで CLI 呼び出しが最大 2 回増える）。
+
 ### 記事パイプライン（longform チェーンと local ステップ）— 実機確認は一部のみ (P1)
 形式は `docs/article-pipeline-config.md`。`@agent 記事パイプライン <id>` の設定ファイル経路は実機未検証。
 
@@ -174,8 +177,8 @@
 ### 記事の査読: `VERDICT: PASS` に指摘が続いても合格になる — 未対応 (P2)
 `REVIEW_OUTPUT_CONTRACT` は 1 行目の判定のあとに指摘を書けるので、`VERDICT: PASS` の下に指摘を並べた応答も `review: pass` になり、修正ステップは飛ばされる。直すなら、PASS は指摘なしと決めて、番号付きの指摘が続く PASS を REVISE として扱う（`parseReviewVerdict` は TS / JS 共通で、ロールのループにも影響する）。
 
-### Gemini grounding の転送リンクを本物の URL に解決できない — 未対応 (P2)
-Gemini の出典 URL は `vertexaisearch.cloud.google.com/grounding-api-redirect/…` の転送リンクで返る。broker の許可リストはこのホストへの通信を許さないので、executor からは転送先を調べられない。今は `assemble` が `lint` に「Sources に転送リンク（公開前に差し替え）」と出すだけで、本人が公開前に手で差し替える。直すなら、許可リストの緩和ではなく、grounding 応答に元 URL が入っていないかを調べるところから。
+### Gemini grounding の転送リンク — executor v42 で解決、実機未検証 (P1)
+broker に専用 op `http.resolve-redirect` を足した（許可リストには足していない）。`https://vertexaisearch.cloud.google.com/grounding-api-redirect/<token>`（query・port なし、token の文字種固定）だけを受け、秘密・呼び出し側のヘッダ・本文を送らず GET して Location ヘッダだけを読み、リダイレクトは辿らず本文も読まない。返すのは http(s) の絶対 URL（500 字まで、認証情報・port・IP リテラル・localhost なし）だけで、executor が `cleanUrl` と同じ条件で再確認する。1 回 10 件まで、予算 1 回分、監査はリンクごとに転送先のホスト名のみ。tainted 実行と残り 60 秒未満では呼ばない。解決できなかったリンクは従来どおり残り、`lint` に「Sources に転送リンク」が出る。**実機で確認する**: Google がこのエンドポイントに 302 と Location を返すこと（HEAD でなく GET、本文を読まずに切る）、所要時間、監査行。
 
 ### Agent Runs にステップごとのエンジンを表示 — 未対応 (P3)
 記事パイプラインでは、ラダーで降格したかどうかが `review_note` の同系統の注記でしか分からない。run log の各ステップに実際に答えたエンジンを載せて Agent Runs に出す。

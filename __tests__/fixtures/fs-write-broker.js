@@ -51,5 +51,28 @@ if (arg('op') === 'http.request' && process.env.SHELLY_TEST_FAKE_HTTP) {
   process.exit(0);
 }
 
+// http.resolve-redirect never reaches the network from a test. With
+// SHELLY_TEST_FAKE_REDIRECTS naming a JSON file { "<redirect url>": "<target>" }
+// it answers from that file through the real broker's own op (an injected
+// probe, so the broker's URL and target checks still run); without it the op
+// fails as a broker outage would. The asked URLs go to "<file>.calls".
+if (arg('op') === 'http.resolve-redirect') {
+  const file = process.env.SHELLY_TEST_FAKE_REDIRECTS;
+  if (!file) {
+    if (arg('err')) fs.writeFileSync(arg('err'), 'no network in tests\n');
+    process.exit(23);
+  }
+  const answers = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const { runResolveRedirects } = require(realBroker);
+  const args = {};
+  for (let k = 0; k < argv.length; k += 2) args[argv[k].replace(/^--/, '')] = argv[k + 1];
+  const probe = (url) => {
+    fs.appendFileSync(`${file}.calls`, `${url}\n`);
+    return Promise.resolve(Object.prototype.hasOwnProperty.call(answers, url) ? { status: 302, target: answers[url] } : { status: 404, target: null });
+  };
+  runResolveRedirects(args, new Date().toISOString(), Date.now(), probe).then((code) => process.exit(code), () => process.exit(127));
+  return;
+}
+
 const result = spawnSync(process.execPath, [realBroker, ...argv], { stdio: 'inherit' });
 process.exit(result.status === null ? 1 : result.status);
