@@ -642,3 +642,18 @@ describe('agent registration is confirmed in plain chat text', () => {
     expect(summarizeAgentDraftAsText(d, undefined, false, { cloudConsent: false })).toMatch(/named in your request|リクエストで指定/);
   });
 });
+
+describe('run without approval on a pipeline agent', () => {
+  it('carries the setting from the request, like any other agent', () => {
+    const en = parseAgentNL('@agent article pipeline example-a run without approval', [], examplePipeline('example-a'));
+    expect(en.runWithoutApproval).toBe(true);
+    expect(en.runWithoutApprovalLevel).toBeUndefined();
+    expect(en.longform).toBe(true);
+    const ja = parseAgentNL('@agent 記事パイプライン example-a 承認なしで実行', [], examplePipeline('example-a'));
+    expect(ja.runWithoutApproval).toBe(true);
+  });
+  it('stays off without the phrase or when it is negated', () => {
+    expect(draftFor().runWithoutApproval).toBeUndefined();
+    expect(parseAgentNL("@agent article pipeline example-a, don't run it without approval", [], examplePipeline('example-a')).runWithoutApproval).toBeUndefined();
+  });
+});

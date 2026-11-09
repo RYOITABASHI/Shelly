@@ -2704,6 +2704,10 @@ export function parseAgentNL(
   const preset = articlePreset ?? detectPipelinePreset(rawText);
   if (preset) {
     const presetSched = parseSchedule(rawText);
+    // 「承認なしで実行」 / "run without approval" is an agent setting here too
+    // (the general branch below), so a preset agent can opt out of the
+    // per-run action tap like any other agent.
+    const presetRunWithoutApprovalLevel = detectRunWithoutApprovalLevel(rawText);
     const presetSuggestion = suggestTool(preset.prompt);
     const detectedAction = detectAction(rawText);
     // A preset that fixes its action (the article pipeline only ever saves a
@@ -2755,6 +2759,8 @@ export function parseAgentNL(
       // store `auto`, see resolveConfirmedToolAndRunOn).
       ...(preset.tool ? { toolExplicit: true } : {}),
       autonomous: preset.autonomous,
+      ...(presetRunWithoutApprovalLevel !== 'off' ? { runWithoutApproval: true } : {}),
+      ...(presetRunWithoutApprovalLevel === 'all' ? { runWithoutApprovalLevel: 'all' as const } : {}),
       memory: preset.memoryOff ? undefined : detectMemory(rawText),
       actionCaveat: presetActionCaveat,
       scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
