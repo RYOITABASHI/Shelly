@@ -111,7 +111,7 @@ describe('journal index pages leave the research (v42)', () => {
       ],
       indexMap: [0, 1, 2, 3],
     };
-    const out = executor.withoutIndexSources('目次 https://www.tandfonline.com/toc/abcd/1/1 と本文', parsed);
+    const out = executor.withoutUnusableSources('目次 https://www.tandfonline.com/toc/abcd/1/1 と本文', parsed);
     expect(out.parsed.sources.map((s: any) => [s.id, s.url])).toEqual([
       [1, 'https://www.tandfonline.com/doi/full/10.0000/x'],
       [2, 'https://blog.example/post'],
@@ -296,7 +296,7 @@ describe('a longform run with Gemini research (fixture broker)', () => {
     { text: '素材Bは輸入品が多い。', chunks: [1] },
   ], [REDIRECT_A, REDIRECT_B]);
 
-  async function run(redirects: Record<string, string> | null) {
+  async function run(redirects: Record<string, string> | null, researchBody: string = research) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-article-pass-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
     fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
@@ -322,7 +322,7 @@ describe('a longform run with Gemini research (fixture broker)', () => {
     fs.writeFileSync(path.join(home, '.shelly/agents/.env'), "GEMINI_API_KEY='x'\nCEREBRAS_API_KEY='x'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n");
     const httpFile = path.join(home, 'fake-http.json');
     fs.writeFileSync(httpFile, JSON.stringify({
-      generativelanguage: [gemini(research), gemini(JSON.stringify({ candidates: [{ content: { parts: [{ text: '# 記事\n\n素材Aは1990年代に広まった [1]。' }] }, finishReason: 'STOP' }] }))],
+      generativelanguage: [gemini(researchBody), gemini(JSON.stringify({ candidates: [{ content: { parts: [{ text: '# 記事\n\n素材Aは1990年代に広まった [1]。' }] }, finishReason: 'STOP' }] }))],
       'api.cerebras.ai': [openAi('VERDICT: PASS')],
     }));
     const env: Record<string, string> = { HOME: home, SHELLY_TEST_FAKE_HTTP: httpFile, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10' };
@@ -339,9 +339,10 @@ describe('a longform run with Gemini research (fixture broker)', () => {
       child.on('close', resolve);
     });
     const bodies = fs.readFileSync(`${httpFile}.bodies`, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    const result = fs.readFileSync(path.join(home, `.shelly/tmp/agent-result-${AGENT_ID}.md`), 'utf8');
+    const resultFile = path.join(home, `.shelly/tmp/agent-result-${AGENT_ID}.md`);
+    const result = fs.existsSync(resultFile) ? fs.readFileSync(resultFile, 'utf8') : '';
     const asked = redirects && fs.existsSync(`${redirectFile}.calls`) ? fs.readFileSync(`${redirectFile}.calls`, 'utf8').trim().split('\n') : [];
-    return { bodies, result, asked };
+    return { bodies, result, asked, home };
   }
 
   it('the writer sees Google\'s markers and real links, and the draft cites them', async () => {
@@ -359,11 +360,68 @@ describe('a longform run with Gemini research (fixture broker)', () => {
     expect(result).not.toContain('転送リンク');
   }, 30000);
 
-  it('with the lookup down, the links stay and are flagged as before', async () => {
-    const { result } = await run(null);
-    expect(result).toContain(REDIRECT_A);
-    expect(result).toContain('転送リンク');
+  it('v46: with the lookup down, no redirect link reaches the notes and the chain takes its no-sources path', async () => {
+    const { bodies, result, home } = await run(null);
+    // Only the research call went out: the chain stopped before the writer.
+    expect(bodies).toHaveLength(1);
+    expect(result).not.toContain('vertexaisearch');
+    const audit = fs.readFileSync(path.join(home, '.shelly/agents/logs', AGENT_ID, 'plan-executor-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(audit.find((e: any) => e.event === 'grounding_research')).toMatchObject({ redirects: 2, resolved: 0, droppedRedirects: 2 });
+    expect(audit.some((e: any) => e.event === 'sourcing_no_sources')).toBe(true);
   }, 30000);
+
+  it('v46: two of three links resolved keeps two sources, renumbered, with no marker left dangling', async () => {
+    const three = groundedResponse('- 素材Aは1990年代に広まった。\n- 素材Bは輸入品が多い。\n- 素材Cは軽い。', [
+      { text: '素材Aは1990年代に広まった。', chunks: [0] },
+      { text: '素材Bは輸入品が多い。', chunks: [1] },
+      { text: '素材Cは軽い。', chunks: [2] },
+    ]);
+    const { bodies, result, home } = await run({ [REDIRECT_A]: 'https://site-a.example/page', [REDIRECT_C]: 'https://site-c.example/page' }, three);
+    const writerPrompt = JSON.parse(bodies[1]).contents[0].parts[0].text as string;
+    expect(writerPrompt).not.toContain('vertexaisearch');
+    expect(writerPrompt).toContain('素材Aは1990年代に広まった。[1]');
+    expect(writerPrompt).toContain('素材Cは軽い。[2]');
+    // The unresolved B lost its marker; nothing points past the two sources.
+    expect(writerPrompt).toContain('素材Bは輸入品が多い。\n');
+    expect(writerPrompt).toContain('[1] site-1.example — https://site-a.example/page');
+    expect(writerPrompt).toContain('[2] site-3.example — https://site-c.example/page');
+    expect(writerPrompt).not.toMatch(/\[3\]/);
+    const sourcesSection = result.slice(result.lastIndexOf('Sources'));
+    expect(sourcesSection).not.toContain('vertexaisearch');
+    expect(result).not.toContain('転送リンク');
+    const audit = fs.readFileSync(path.join(home, '.shelly/agents/logs', AGENT_ID, 'plan-executor-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(audit.find((e: any) => e.event === 'grounding_research')).toMatchObject({ redirects: 3, resolved: 2, droppedRedirects: 1 });
+  }, 30000);
+});
+
+describe('v46: unresolved redirect sources leave the notes (pure)', () => {
+  it('drops a redirect source and its inline link, renumbers the rest and counts the drop', () => {
+    const parsed = {
+      sources: [
+        { id: 1, title: 'A', url: 'https://site-a.example/page' },
+        { id: 2, title: 'B', url: REDIRECT_B },
+        { id: 3, title: 'C', url: 'https://site-c.example/page' },
+      ],
+      indexMap: [0, 1, 2, 3],
+    };
+    const out = executor.withoutUnusableSources(`A です [1]。B です [2] ${REDIRECT_B} 。C です [3]。`, parsed);
+    expect(out.parsed.sources.map((s: any) => [s.id, s.url])).toEqual([
+      [1, 'https://site-a.example/page'],
+      [2, 'https://site-c.example/page'],
+    ]);
+    expect(out.parsed.indexMap).toEqual([0, 1, 0, 2]);
+    expect(out.text).not.toContain('vertexaisearch');
+    expect(out.droppedRedirects).toBe(1);
+    expect(out.droppedIndex).toBe(0);
+  });
+
+  it('with every source a redirect, nothing is left', () => {
+    const parsed = { sources: [{ id: 1, title: 'A', url: REDIRECT_A }, { id: 2, title: 'B', url: REDIRECT_B }], indexMap: [0, 1, 2] };
+    const out = executor.withoutUnusableSources('x [1][2]', parsed);
+    expect(out.parsed.sources).toEqual([]);
+    expect(out.parsed.indexMap).toEqual([0, 0, 0]);
+    expect(out.droppedRedirects).toBe(2);
+  });
 });
 describe('v43: notes to an editor are cut only where they say they are notes', () => {
   const cut = (line: string) => executor.stripArticleMetaNotes(line);

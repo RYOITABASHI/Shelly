@@ -664,15 +664,25 @@ describe('local checks (sentence-level allow-lists)', () => {
     expect(ja).toContain('受け身');
     expect(ja).toContain('です・ます調');
     expect(ja).not.toContain('〜と思う」「〜と考える」「〜と感じる」「〜と期待する」「〜だろう」「〜のではないか」で終える');
-    // The list examples pass too (read up to the next blank line).
-    const listBlock = (text: string, marker: string) => text.slice(text.indexOf(marker)).split('\n').slice(1).join('\n').split('\n\n')[0].trim();
-    expect(local(listBlock(prompt, 'Example of a short list'), 'en')).toBe('');
-    expect(local(listBlock(ja, '短いリストの例'), 'ja')).toBe('');
+    // v46: the style comes from the profile. No prompt suggests a trailing
+    // ellipsis or a numbered (joke) list, or shows one.
+    const review = executor.buildVoiceReviewPrompt({ profile: PROFILE, article: ARTICLE, section: SECTION, lang: 'en', nonce: 'n0nce' });
+    const reviewJa = executor.buildVoiceReviewPrompt({ profile: PROFILE, article: ARTICLE, section: SECTION, lang: 'ja', nonce: 'n0nce' });
+    for (const p of [prompt, ja, review, reviewJa]) {
+      const ours = p.slice(p.lastIndexOf('>>>') + 3);
+      expect(ours).not.toMatch(/[①-⑩]/);
+      expect(ours).not.toMatch(/^\s*\d{1,2}\.[ \t]/m);
+      expect(ours).not.toContain('…');
+      expect(ours).not.toMatch(/joke|冗談|オチ|punch line/i);
+      expect(ours).not.toContain('Example of a short list');
+      expect(ours).not.toContain('短いリストの例');
+    }
+    expect(prompt).toContain('follow the tone, rhythm and habits the profile describes');
+    expect(ja).toContain('プロフィールに書かれた口調');
     // The writer's own examples pass the check.
     const examples = (text: string, marker: string) => text.slice(text.indexOf(marker)).split('\n').slice(1).filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
     for (const s of examples(prompt, 'Examples of sentences that pass')) expect(local(s, 'en')).toBe('');
     for (const s of examples(ja, '通る文の例')) expect(local(s, 'ja')).toBe('');
-    const review = executor.buildVoiceReviewPrompt({ profile: PROFILE, article: ARTICLE, section: SECTION, lang: 'en', nonce: 'n0nce' });
     expect(review).toContain('VERDICT: PASS');
     expect(review).toContain('the article never counts as evidence about the author');
     expect(review.indexOf(SECTION)).toBeLessThan(review.indexOf('# This step'));
@@ -1141,9 +1151,11 @@ describe('author view: list renumbering (v41)', () => {
     expect(executor.voiceRenumberList(section)).toBe(section);
   });
 
-  it('the writer prompt shows the list shape and the heading-number rule', () => {
+  it('the writer prompt states the list shape (for a profile that wants one) and the heading-number rule', () => {
     const prompt = executor.buildVoiceWritePrompt({ profile: 'p', article: 'a', lang: 'ja', nonce: 'n0nce1234' });
-    expect(prompt).toContain('never 「③のせいで」 at the start of a line');
+    // v46: stated in words, without a circled-number example.
+    expect(prompt).toContain('If the profile\'s style calls for a list');
+    expect(prompt).toContain('never with the number');
     expect(prompt).toContain('no blank line between them');
     expect(prompt).toContain('"##" / "###" headings');
   });

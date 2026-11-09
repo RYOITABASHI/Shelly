@@ -565,7 +565,10 @@ object AgentRuntime {
     // JS-only.
     // v44: optional editor quality gate (frontmatter `quality`) and local
     // materials read under a queue item in article pipelines. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 45
+    // v46: unresolved grounding redirect links leave the research notes, the
+    // sources lint shows web + material counts, and the author view prompt no
+    // longer suggests an ellipsis or a numbered joke list. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 46
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

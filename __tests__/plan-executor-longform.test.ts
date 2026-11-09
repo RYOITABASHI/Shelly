@@ -171,7 +171,7 @@ describe('shelly-plan-executor.js longform chain', () => {
     expect(result).toContain('review: pass');
     expect(result).toContain('material: missing');
     // A one-line fixture body with one source: the preset's quality flags.
-    expect(/^lint: (.*)$/m.exec(result)![1]).toContain('sources: 1 or fewer');
+    expect(/^lint: (.*)$/m.exec(result)![1]).toContain('sources: web 1 + material 0 (need 2)');
     expect(/^lint: (.*)$/m.exec(result)![1]).toContain('本文が短い');
     expect(result).toContain(article);
     expect(result).toContain(article);
@@ -881,8 +881,8 @@ describe('assembleArticle', () => {
 
     it('flags one source or none, not two', () => {
       const two = [source('https://a.example/1'), source('https://b.example/2')];
-      expect(lintOf(withQuality({ minSources: 2 }, '# 記事'))).toEqual(['sources: 1 or fewer']);
-      expect(lintOf(withQuality({ minSources: 2 }, '# 記事', [two[0]]))).toEqual(['sources: 1 or fewer']);
+      expect(lintOf(withQuality({ minSources: 2 }, '# 記事'))).toEqual(['sources: web 0 + material 0 (need 2)']);
+      expect(lintOf(withQuality({ minSources: 2 }, '# 記事', [two[0]]))).toEqual(['sources: web 1 + material 0 (need 2)']);
       expect(lintOf(withQuality({ minSources: 2 }, '# 記事', two))).toEqual([]);
     });
 

@@ -256,12 +256,17 @@ describe('assemble with the editor and materials', () => {
 
   it('materials are listed in Sources by path and count toward minSources', () => {
     const alone = executor.assembleArticle(LOCAL_ASSEMBLE, ctx());
-    expect(fm(alone)).toContain('sources: 1 or fewer');
+    expect(fm(alone)).toContain('sources: web 1 + material 0 (need 2)');
     const text = executor.assembleArticle(LOCAL_ASSEMBLE, ctx({ materials: [{ id: 'M1', label: 'notes/design.md', lang: 'ja' }] }));
     expect(text).toContain('- [1] [A](https://example.org/a)\n- [M1] `notes/design.md`（筆者の資料）');
-    expect(fm(text)).not.toContain('sources: 1 or fewer');
+    expect(fm(text)).not.toContain('sources: web');
     const onlyMaterial = executor.assembleArticle(LOCAL_ASSEMBLE, ctx({ sources: [], materials: [{ id: 'M1', label: 'a.md', lang: 'en' }] }));
     expect(onlyMaterial).toContain("## Sources\n\n- [M1] `a.md` (author's own material)");
+    // v46: the lint says what it counted.
+    expect(fm(onlyMaterial)).toContain('sources: web 0 + material 1 (need 2)');
+    expect(fm(onlyMaterial)).not.toContain('or fewer');
+    const twoMaterials = executor.assembleArticle(LOCAL_ASSEMBLE, ctx({ sources: [], materials: [{ id: 'M1', label: 'a.md', lang: 'en' }, { id: 'M2', label: 'b.md', lang: 'en' }] }));
+    expect(fm(twoMaterials)).not.toContain('sources: web');
   });
 });
 
