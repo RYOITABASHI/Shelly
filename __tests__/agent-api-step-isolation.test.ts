@@ -138,7 +138,9 @@ describe('PlanSpec (unattended executor) carries the same isolation', () => {
     const asset = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-plan-executor.js'), 'utf8');
     expect(asset).toBe(src);
     expect(src).toContain("const isolation = Array.isArray(plan.steps.isolation) ? plan.steps.isolation[i] : null;");
-    expect(src).toContain("composeStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : []");
+    expect(src).toContain("composeStepPrompt(isolation.base, promptInstruction, isolation.carry === true ? contextResults : []");
+    // Non-longform steps still send the step's own instruction.
+    expect(src).toContain("const promptInstruction = longform ? longformHandoffInstruction(step) : step.instruction;");
   });
 
   it('no isolation field for non-autonomous plans', () => {
