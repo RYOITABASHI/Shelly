@@ -773,7 +773,8 @@ describe('assemble with a voice step', () => {
     expect(frontmatter(text)).toContain(`voice_sha: ${'a'.repeat(64)}`);
     expect(text).toContain(`## My take\n\n${SECTION}`);
     expect(text).not.toContain(MARKER);
-    expect(text).toContain(`Final check: ${AUTHOR}`);
+    expect(text).toContain(`Author: ${AUTHOR}.`);
+    expect(text).not.toMatch(/read and verified|本人が内容を確認/);
     expect(text).not.toContain('Configured footer.');
   });
 

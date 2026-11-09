@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=44
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=45
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -196,7 +196,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // `材料:` / `Material:` lines of the popped item, read-only inside a root the
 // owner's config file pins, and gives them to the model steps as `[M1]` data.
 // Plans without either run exactly as before.
-const EXECUTOR_SCRIPT_VERSION = 44;
+const EXECUTOR_SCRIPT_VERSION = 45;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -3971,11 +3971,11 @@ function cleanVoiceSection(text) {
   return stripReasoning(String(text == null ? '' : text)).replace(/\r\n?/g, '\n').trim();
 }
 
-/** The footer of a ghostwritten draft (stage 1: the owner reads it and publishes). */
+/** The footer of a ghostwritten draft. It never claims the author read it: drafts that pass the checks can go out unread. */
 function voiceFooter(lang, author) {
   return lang === 'en'
-    ? `AI disclosure: AI tools were used for research, drafting and review. The "My view" section was ghostwritten by AI from the author's stated views.\nFinal check: ${author} (the author read and verified it before it went out).`
-    : `AI 利用: 調査・下書き・査読に AI を使い、「本人の見解」は AI が本人の考えをもとに代筆しました。\n最終確認者: ${author}（本人が内容を確認してから公開します）`;
+    ? `AI disclosure: AI tools were used for research, drafting and review. The "My view" section was ghostwritten by AI from the author's stated views.\nAuthor: ${author}. Posts that pass automated checks may go out before the author reads them.`
+    : `AI 利用: 調査・下書き・査読に AI を使い、「本人の見解」は AI が本人の考えをもとに代筆しました。\n著者: ${author}（自動チェックを通った記事は、本人が読む前に公開されることがあります）`;
 }
 
 function voiceRules(lang) {
