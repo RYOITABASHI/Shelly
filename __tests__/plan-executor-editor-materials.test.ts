@@ -562,6 +562,10 @@ describe('materials', () => {
     expect(read({ fstatSync: () => ({ ...fileStat, isFile: () => false }) })).toBe('refused: 読む間にファイルが替わった');
     expect(read({ readlinkSync: () => path.resolve('/elsewhere/secret.md') })).toBe('refused: 読む間にファイルが替わった');
     expect(read({ openSync: () => { throw new Error('ELOOP'); } })).toBe('refused: 読めない');
+    // A FUSE view naming the fd under another mount: accepted when its realpath is inside.
+    expect(read({ readlinkSync: () => path.resolve('/mnt/user/0/x/a.md'), realpathSync: () => path.join(realRoot, 'a.md') })).toBe('hello');
+    expect(read({ readlinkSync: () => path.resolve('/mnt/user/0/x/a.md'), realpathSync: () => path.resolve('/elsewhere/a.md') })).toBe('refused: 読む間にファイルが替わった');
+    expect(read({ readlinkSync: () => path.resolve('/mnt/user/0/x/a.md'), realpathSync: () => { throw new Error('ENOENT'); } })).toBe('refused: 読む間にファイルが替わった');
   });
 });
 

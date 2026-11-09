@@ -4345,7 +4345,13 @@ function readMaterialBytes(file, st, realRoot, maxBytes, f) {
     } catch (_) {
       where = null; // no /proc (a host without it): dev + ino stand alone
     }
-    if (where !== null && !pathInsideRoot(path.resolve(where), realRoot)) throw new MaterialRefusal('読む間にファイルが替わった');
+    if (where !== null && !pathInsideRoot(path.resolve(where), realRoot)) {
+      // Some FUSE views report the fd under another mount name (/mnt/..., /data/media/...):
+      // compare the canonical path too before refusing. dev + ino already matched.
+      let canon = null;
+      try { canon = (f.realpathSync || fs.realpathSync)(where); } catch (_) { canon = null; }
+      if (canon === null || !pathInsideRoot(canon, realRoot)) throw new MaterialRefusal('読む間にファイルが替わった');
+    }
     const limit = maxBytes + 1;
     const buf = Buffer.alloc(limit);
     let got = 0;
