@@ -38,7 +38,7 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 - **`outputFolder`** must be inside your Obsidian vault (Settings, default `/sdcard/Documents/ObsidianVault`) or your custom output folder (default `~/agent-output`). A pipeline with `queue` and the digest must be inside the vault, because those are read only from there. Use plain folder names: letters, digits, `_`, `-` and `.`, no spaces.
 - **Instructions** hold 500 characters each. A longer one is refused, not cut. A research instruction that mentions the web gets source capture.
 - **`queue`** takes each run's topic from `_queue.md` in the output folder, as `- [ ] topic` lines. `instructions.topics` also refills that queue through Gemini when it runs low.
-- **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool. `voice` adds a ghostwritten author view (see below).
+- **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool. `voice` adds a ghostwritten author view, `editor` an editor's score in the frontmatter, and `materials` your own files as sources (see below).
 - **Digest**: an optional top-level `digest` lists each day's drafts in one note, with `name`, `prompt`, `lang`, `schedule`, `outputFolder`, `footer`, `engine` and `streams` (`[{ "folder": "Garden", "label": "Garden" }]`, folders next to the digest's own). Ask for it with the id `digest`.
 
 The agent only ever saves a draft. It never publishes and is never autonomous, Its runs always go through the PlanSpec executor. Run now (the sidebar ▶ or `@agent run <name>`) starts that same executor on the same saved plan the schedule uses, so you can test a pipeline right away. A Run now while the scheduled run is still going is refused with "previous run still active" instead of starting a second run.
@@ -92,6 +92,49 @@ A draft can keep one section for your own view, holding the marker `【本人の
 - **When it passes**, the section replaces the marker, the draft gets `material: ghostwritten` and `voice_sha` (the profile's SHA-256), and the footer becomes a fixed disclosure that names `author` and says the section was ghostwritten by AI. The model never writes the footer, and text in the article cannot set `material`. The agent's audit log (`logs/<id>/plan-executor-audit.jsonl`) gets a `voice_passed` line with the hash, the executor's own record of the pass. The digest marks the draft 代筆.
 - **When anything fails** (no reviewed profile, a hash that does not match, a misplaced marker, a failed turn, a review that does not pass, a local check, too little time), the marker stays, the draft is saved with `material: missing`, no `voice_sha`, your own footer, and the reason in `review_note` after `代筆なし:`. The run itself does not fail.
 - **Limits**: the checks are strict on purpose, so a fine section is sometimes refused; the marker then stays for you. They read word forms, not meaning: a general opinion that implies use without naming it ("この道具は手になじむと思う") passes. The review and your own read cover the rest; publishing without your read relies on that residual risk being acceptable to you.
+
+## Editor quality gate
+
+A draft can pass every mechanical check and still say nothing. With `editor`, one more engine reads the draft exactly as it will be saved, just before the save, and scores it. Without the key nothing changes.
+
+```json
+"editor": {
+  "type": "cli", "cli": "codex", "textOnly": true, "model": "gpt-5.5",
+  "rubric": "Readers are working developers. Every claim needs a concrete example, figure or quote from the notes or my material. No generic advice.",
+  "minScore": 3.5
+}
+```
+
+- **The engine** is written like `engines.review`: `gemini-api`, `cerebras`, `groq` or `perplexity` (with an optional `model`), or a text-only CLI (`"type": "cli"`, `"cli": "claude"` or `"codex"`, `"textOnly": true`). A CLI runs with no tools, as above. Pick a family other than the writer's: a model grading its own family is lenient.
+- **`rubric`** is your own text, 500 characters at most, refused rather than cut. **`minScore`** is 1 to 5 in steps of 0.5, 3.5 by default.
+- **What it scores**: six fixed criteria, each 1 to 5 — `substance` (concrete facts, figures and examples from the notes and your material; a draft that stays general or says a point "is not covered" scores 1), `originality`, `structure`, `title` (title and opening), `voice` (reads as a person wrote it, no stock AI phrasing) and `value` — plus `overall`, each with a one-line reason. The answer must be one JSON object with exactly those keys; anything else gets one retry, then the draft is unscored.
+- **Shelly decides, not the model**: the score is the lower of the editor's `overall` and the mean of the six, to one decimal. It passes at `minScore` or above with no criterion at 1.
+- **The frontmatter**: `quality: pass` and `quality_score`; or `quality: fail`, `quality_score` and `quality_note` with the overall and the criteria below `minScore`, lowest first, with their reasons; or `quality: unresolved` with `quality_note` starting `品質未判定:` when the editor could not score (no key, an outage, two answers that are not the JSON, too little time, or a text that changed after scoring). The draft is saved in every case and the run does not fail. A pass never clears `review: unresolved`: hold a draft unless both are clean.
+- **The digest** puts failed and unscored drafts right after the unresolved reviews, counts them as `品質不足 N` in the first line, and marks each 【品質不足（…）】 or 【品質未判定（…）】.
+- **Time**: the editor gets at most 5 minutes and stops a minute before the run's 30-minute limit, so the draft is still saved; with less time left it does not start and the draft is `unresolved`.
+- **Limits**: the editor is a model reading text that came partly from the web. The draft, notes and material go in as data and it is told to ignore instructions inside them, but a fooled editor can still pass a weak draft. It cannot change the draft, the save or any other check.
+
+## Your own material
+
+A dev diary or a review of your own work is only as good as what the writer can read. With `materials`, a queue item can name files of yours, and the research, write, review and revision steps and the editor read them as a source next to the web.
+
+```json
+"queue": true,
+"materials": { "root": "/sdcard/Documents/WorkNotes", "maxFiles": 5, "maxBytes": 20000 }
+```
+
+```markdown
+- [ ] Why the cache keeps three entries
+  材料: design/cache.md, logs/2026-11-02.md
+```
+
+- **`root`** is an absolute folder of plain names (letters, digits, `_`, `-`, `.`), at least two deep, with no dot folder, and not under `/proc`, `/sys` or `/dev`. `maxFiles` is 1 to 5 (default 5) and `maxBytes` the bytes read in one run, up to 40,000 (default 20,000). It needs `"queue": true`.
+- **Naming files**: lines under the item (not its title line) that start with `材料:` or `Material:` / `Materials:` (a `- ` in front is fine) list paths relative to `root`, separated by spaces, commas or `、`.
+- **What is read**: a regular file with one hard link, not a link, with no link in its folders, with a text extension (`.md`, `.txt`, `.json`, `.yaml`, `.csv`, source code, `.log`, `.diff` and similar), valid UTF-8 with no control bytes, within the byte budget. A name with a dot segment, or a part like `env`, `secret`, `credentials`, `password`, `api-key`, `private-key`, `id_rsa`, `keystore` or `netrc`, is refused, and so is a file holding something that looks like a key (an API key format Shelly redacts, a private key block). A refused file is skipped, never the run: the agent's audit log (`logs/<id>/plan-executor-audit.jsonl`) gets a `materials_read` line with each path, its size and hash or the reason, never the text, and MONITOR shows the same.
+- **Commit hashes** are recognised and skipped with a reason: Shelly does not run `git` for this. Save what you want once, for example `git -C <repo> show --stat <hash> > notes/<hash>.txt`, and name that file.
+- **The root is pinned by this config file**: at run time Shelly reads `materials.root` again from `article-pipelines.json` and reads nothing when it differs from the agent's plan. After changing it, ask for the pipeline again.
+- **How the steps see it**: as a block labelled as your own material, with each file as `[M1]`, `[M2]` …, at most 12,000 characters in all (longer files are cut, with a mark). The writer cites it like a web source, the reviewer is told that a claim backed by it is supported, and Sources lists each file by its path under `root`, as `` `design/cache.md` ``, never as a link. Your material counts toward `quality.minSources`, and a run whose web research found no source still goes on when it read a file.
+- **What leaves the phone**: the excerpts go to every engine of the article, research included. Name only files you would send them. A run started from a notification reads nothing, and a topic the queue refill added can never name a file (Shelly drops such lines from the model's answer). Anything that can edit the queue file can name files under `root`, so keep `root` to what you would publish from.
 
 ## Saving a draft through ClosePaw
 

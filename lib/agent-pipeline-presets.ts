@@ -12,8 +12,18 @@
  * a "summarize" step to the on-device model — so the preset only has to author
  * the right step instructions.
  */
-import type { AgentAction, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
-import { MAX_STEP_INSTRUCTION_CHARS, REVIEW_OUTPUT_CONTRACT, normalizeStepLocal } from './agent-orchestration';
+import type { AgentAction, AgentArticleEditorConfig, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import {
+  EDITOR_DEFAULT_MIN_SCORE,
+  EDITOR_RUBRIC_MAX_CHARS,
+  MATERIALS_DEFAULT_MAX_BYTES,
+  MATERIALS_MAX_BYTES,
+  MATERIALS_MAX_FILES,
+  MAX_STEP_INSTRUCTION_CHARS,
+  REVIEW_OUTPUT_CONTRACT,
+  materialsRootOk,
+  normalizeStepLocal,
+} from './agent-orchestration';
 
 export interface PipelinePreset {
   /** Human-friendly agent name (editable in the confirm card). */
@@ -180,6 +190,28 @@ export interface ArticlePipelineConfig {
   quality?: { minChars?: number; minWords?: number; minSources?: number };
   /** A ghostwritten section in place of the marker, after the last revise. */
   voice?: ArticleVoiceConfig;
+  /** The editor quality gate (executor v44): frontmatter `quality`. */
+  editor?: ArticleEditorConfig;
+  /** The owner's own files named under a queue item (executor v44). Needs `queue`. */
+  materials?: ArticleMaterialsConfig;
+}
+
+/** The editor quality gate: an engine (as for review) plus the owner's rubric. */
+export type ArticleEditorConfig = (ArticleEngine | ArticleTextOnlyEngine) & {
+  /** What the owner wants from a draft, at most EDITOR_RUBRIC_MAX_CHARS. */
+  rubric: string;
+  /** 1 to 5 in steps of 0.5. Default EDITOR_DEFAULT_MIN_SCORE. */
+  minScore?: number;
+};
+
+/** Local materials: a folder of the owner's own files. */
+export interface ArticleMaterialsConfig {
+  /** Absolute folder of plain names (no dot segment), at least two deep. */
+  root: string;
+  /** At most MATERIALS_MAX_FILES (the default) files a run. */
+  maxFiles?: number;
+  /** At most MATERIALS_MAX_BYTES bytes a run (default MATERIALS_DEFAULT_MAX_BYTES). */
+  maxBytes?: number;
 }
 
 export interface ArticleDigestConfig {
@@ -263,7 +295,36 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials'] as const;
+
+function articleEditorError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "type", "rubric" }`;
+  const keyError = unknownKeyError(v, ['type', 'cli', 'textOnly', 'model', 'rubric', 'minScore'], where);
+  if (keyError) return keyError;
+  const { rubric, minScore, ...engine } = v;
+  const engineError = articleEngineError(engine, where, true);
+  if (engineError) return engineError;
+  const rubricError = articleTextError(rubric, EDITOR_RUBRIC_MAX_CHARS, `${where}.rubric`, true);
+  if (rubricError) return rubricError;
+  if (minScore !== undefined && (typeof minScore !== 'number' || !Number.isFinite(minScore) || minScore < 1 || minScore > 5 || !Number.isInteger(minScore * 2))) {
+    return `${where}.minScore: use a number from 1 to 5 in steps of 0.5`;
+  }
+  return null;
+}
+
+function articleMaterialsError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "root" }`;
+  const keyError = unknownKeyError(v, ['root', 'maxFiles', 'maxBytes'], where);
+  if (keyError) return keyError;
+  if (!materialsRootOk(v.root)) return `${where}.root: needs an absolute folder of plain names, at least two deep, with no dot folder`;
+  if (v.maxFiles !== undefined && (typeof v.maxFiles !== 'number' || !Number.isInteger(v.maxFiles) || v.maxFiles < 1 || v.maxFiles > MATERIALS_MAX_FILES)) {
+    return `${where}.maxFiles: use 1 to ${MATERIALS_MAX_FILES}`;
+  }
+  if (v.maxBytes !== undefined && (typeof v.maxBytes !== 'number' || !Number.isInteger(v.maxBytes) || v.maxBytes < 1 || v.maxBytes > MATERIALS_MAX_BYTES)) {
+    return `${where}.maxBytes: use 1 to ${MATERIALS_MAX_BYTES}`;
+  }
+  return null;
+}
 
 // A `.md` file relative to the vault, of plain names, so `.obsidian`, `..`,
 // `~`, `$HOME` and an absolute path all fail.
@@ -302,6 +363,15 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (raw.voice !== undefined) {
     const voiceError = articleVoiceError(raw.voice, `${where}.voice`);
     if (voiceError) return voiceError;
+  }
+  if (raw.editor !== undefined) {
+    const editorError = articleEditorError(raw.editor, `${where}.editor`);
+    if (editorError) return editorError;
+  }
+  if (raw.materials !== undefined) {
+    if (raw.queue !== true) return `${where}.materials: needs "queue": true (the files are named under a queue item)`;
+    const materialsError = articleMaterialsError(raw.materials, `${where}.materials`);
+    if (materialsError) return materialsError;
   }
 
   const ins = raw.instructions;
@@ -434,6 +504,11 @@ function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepC
   return { kind: 'voice', of, profile: voice.profile, profileSha256: voice.profileSha256, lang: config.lang, writer: voice.engine ?? DEFAULT_VOICE_ENGINE, review: voice.review, author: voice.author };
 }
 
+function editorConfig(config: ArticlePipelineConfig, notes: number[]): AgentArticleEditorConfig {
+  const { rubric, minScore, ...engine } = config.editor as ArticleEditorConfig;
+  return { notes, lang: config.lang, engine: engine as AgentArticleEditorConfig['engine'], rubric, minScore: minScore ?? EDITOR_DEFAULT_MIN_SCORE };
+}
+
 /**
  * One config's draft agent: [research, write, review1, revise1, review2,
  * revise2, assemble] (with `voice` before assemble when configured), with `queue-pop` first on a queued config and
@@ -461,12 +536,25 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     ...(config.nameLint ? { nameLint: config.nameLint } : {}),
     ...(config.lintSources ? { lintSources: true } : {}),
     quality: { ...config.quality, selfTalk: true },
+    ...(config.editor ? { editor: editorConfig(config, [at(0)]) } : {}),
   };
+  const pop: AgentLocalStepConfig = config.materials
+    ? {
+        kind: 'queue-pop',
+        materials: {
+          root: config.materials.root,
+          maxFiles: config.materials.maxFiles ?? MATERIALS_MAX_FILES,
+          maxBytes: config.materials.maxBytes ?? MATERIALS_DEFAULT_MAX_BYTES,
+          lang,
+        },
+      }
+    : { kind: 'queue-pop' };
+  const popLabel = config.materials
+    ? lang === 'en' ? 'Take the next topic from the queue and read the materials it names (no model)' : 'キューから次のテーマを取り、書かれた材料を読む（モデルは使わない）'
+    : lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）';
   const steps: AgentOrchestrationStep[] = [
     ...(refill ? [{ instruction: ins.topics as string, local: { kind: 'queue-refill' } as AgentLocalStepConfig }] : []),
-    ...(config.queue
-      ? [{ instruction: lang === 'en' ? 'Take the next topic from the queue (no model)' : 'キューから次のテーマを取る（モデルは使わない）', local: { kind: 'queue-pop' } as AgentLocalStepConfig }]
-      : []),
+    ...(config.queue ? [{ instruction: popLabel, local: pop }] : []),
     { instruction: ins.research, ...pinned(engines.research) },
     { instruction: ins.write, ...pinned(engines.write) },
     { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
@@ -474,7 +562,12 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
     { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
     ...(config.voice ? [{ instruction: lang === 'en' ? 'Ghostwrite the author view from the voice profile (text-only CLI, then a review)' : '本人の見解をプロフィールから代筆する（テキストのみの CLI、査読つき）', local: voiceStep(config, [at(1), at(3), at(5)]) }] : []),
-    { instruction: lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）', local: assemble },
+    {
+      instruction: config.editor
+        ? lang === 'en' ? 'Have the editor score the draft, then assemble it with frontmatter and Sources' : '編集者が下書きを採点し、フロントマターと Sources を付けて組み立てる'
+        : lang === 'en' ? 'Assemble the draft with frontmatter and Sources (no model)' : '記事を組み立てて、フロントマターと Sources を付ける（モデルは使わない）',
+      local: assemble,
+    },
   ];
   return {
     name: config.name,

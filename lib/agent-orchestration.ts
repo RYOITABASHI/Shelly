@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentApiCallConfig, AgentAssembleStepConfig, AgentDigestStream, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import type { AgentApiCallConfig, AgentArticleEditorConfig, AgentArticleMaterialsConfig, AgentAssembleStepConfig, AgentDigestStream, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { matchToolMention } from './agent-tool-mentions';
 import { sameProvider } from './agent-cli-workers';
 import { AUTH_REFS } from './capability-envelope';
@@ -219,6 +219,74 @@ function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig |
   };
 }
 
+// The editor quality gate and local materials (executor v44). Mirrored in
+// scripts/shelly-plan-executor.js (normalizeEditorLocal, normalizeMaterialsLocal);
+// the executor also checks `of` and `notes` against its own index.
+export const EDITOR_RUBRIC_MAX_CHARS = 500;
+export const EDITOR_DEFAULT_MIN_SCORE = 3.5;
+export const MATERIALS_MAX_FILES = 5;
+export const MATERIALS_MAX_BYTES = 40000;
+export const MATERIALS_DEFAULT_MAX_BYTES = 20000;
+// An absolute folder of plain names: no `.`/`..` segment, no dot folder, no
+// `~` or `$`. At least two segments, and never under /proc, /sys or /dev.
+export const MATERIALS_ROOT_RE = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*){2,}$/;
+export const MATERIALS_ROOT_MAX_CHARS = 200;
+const MATERIALS_ROOT_DENIED_TOP = ['proc', 'sys', 'dev'];
+
+export function materialsRootOk(root: unknown): root is string {
+  if (typeof root !== 'string' || root.length > MATERIALS_ROOT_MAX_CHARS || !MATERIALS_ROOT_RE.test(root)) return false;
+  return !MATERIALS_ROOT_DENIED_TOP.includes(root.split('/')[1]);
+}
+
+function validStepIndexList(raw: unknown, allowEmpty = false): number[] | undefined {
+  if (!Array.isArray(raw) || (!allowEmpty && raw.length === 0) || raw.length > HARD_MAX_STEPS) return undefined;
+  const out: number[] = [];
+  for (const k of raw) {
+    if (typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k >= HARD_MAX_STEPS) return undefined;
+    if (out.length && k <= out[out.length - 1]) return undefined;
+    out.push(k);
+  }
+  return out;
+}
+
+/** The assemble step's `editor`. Undefined when anything is off. */
+export function normalizeEditorConfig(raw: unknown): AgentArticleEditorConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const notes = validStepIndexList(r.notes, true);
+  if (!notes) return undefined;
+  if (r.lang !== 'ja' && r.lang !== 'en') return undefined;
+  const e = r.engine as Record<string, unknown> | null | undefined;
+  if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.type !== 'string') return undefined;
+  if (e.model !== undefined && (typeof e.model !== 'string' || !VOICE_MODEL_RE.test(e.model))) return undefined;
+  let engine: { type: string; model?: string } | { type: 'cli'; cli: 'claude' | 'codex'; textOnly: true; model?: string };
+  if (e.type === 'cli') {
+    if (typeof e.cli !== 'string' || !VOICE_WRITER_CLIS.includes(e.cli) || e.textOnly !== true) return undefined;
+    engine = { type: 'cli', cli: e.cli as 'claude' | 'codex', textOnly: true, ...(e.model !== undefined ? { model: e.model as string } : {}) };
+  } else {
+    if (!VOICE_REVIEW_TYPES.includes(e.type)) return undefined;
+    engine = { type: e.type, ...(e.model !== undefined ? { model: e.model as string } : {}) };
+  }
+  const rubric = r.rubric;
+  if (typeof rubric !== 'string' || !rubric.trim() || rubric !== rubric.trim() || Array.from(rubric).length > EDITOR_RUBRIC_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(rubric)) return undefined;
+  const m = r.minScore;
+  if (typeof m !== 'number' || !Number.isFinite(m) || m < 1 || m > 5 || !Number.isInteger(m * 2)) return undefined;
+  return { notes, lang: r.lang, engine, rubric, minScore: m };
+}
+
+/** The queue-pop step's `materials`. Undefined when anything is off. */
+export function normalizeMaterialsConfig(raw: unknown): AgentArticleMaterialsConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (!materialsRootOk(r.root)) return undefined;
+  if (r.lang !== 'ja' && r.lang !== 'en') return undefined;
+  const files = r.maxFiles;
+  const bytes = r.maxBytes;
+  if (typeof files !== 'number' || !Number.isInteger(files) || files < 1 || files > MATERIALS_MAX_FILES) return undefined;
+  if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes < 1 || bytes > MATERIALS_MAX_BYTES) return undefined;
+  return { root: r.root, maxFiles: files, maxBytes: bytes, lang: r.lang };
+}
+
 /**
  * Re-validate a step's local config (it lives in the agent JSON / plan file,
  * which a run can rewrite). A fresh object from the known fields, or undefined
@@ -229,7 +297,11 @@ function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig |
 export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
-  if (r.kind === 'queue-pop') return { kind: 'queue-pop' };
+  if (r.kind === 'queue-pop') {
+    if (r.materials === undefined) return { kind: 'queue-pop' };
+    const materials = normalizeMaterialsConfig(r.materials);
+    return materials ? { kind: 'queue-pop', materials } : undefined;
+  }
   if (r.kind === 'queue-refill') return { kind: 'queue-refill' };
   if (r.kind === 'list-drafts') return normalizeListDraftsLocal(r);
   if (r.kind === 'voice') return normalizeVoiceLocal(r);
@@ -267,7 +339,10 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
     }
     if (q.selfTalk === true) quality.selfTalk = true;
   }
+  const editor = r.editor === undefined ? undefined : normalizeEditorConfig(r.editor);
+  if (r.editor !== undefined && !editor) return undefined;
   return {
+    ...(editor ? { editor } : {}),
     kind: 'assemble',
     parts,
     stream: r.stream,
@@ -571,7 +646,7 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
   return kept.map((s, i) => {
     // Article pipeline: same rule for a local step's `parts` indexes.
     if (s.local) {
-      const parts = s.local.kind === 'assemble' ? s.local.parts : s.local.kind === 'voice' ? [s.local.of] : [];
+      const parts = s.local.kind === 'assemble' ? [...s.local.parts, ...(s.local.editor ? [s.local.editor.notes] : [])] : s.local.kind === 'voice' ? [s.local.of] : [];
       if (!shifted && parts.every((list) => list.every((k) => k < i))) return s;
       if (longform) return invalidLocal(s);
       const { local: _dropLocal, ...restLocal } = s;

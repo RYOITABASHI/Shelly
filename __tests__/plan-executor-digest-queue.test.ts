@@ -711,7 +711,7 @@ describe('completeQueuePop', () => {
 describe('parseDraftFrontmatter', () => {
   it('reads what assemble writes', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "題"\nstream: "x"\nreview: pass\nmaterial: missing\nlint: ["禁句"]\n---\n\n本文');
-    expect(fm).toEqual({ title: '題', review: 'pass', reviewNote: '', material: 'missing', lint: ['禁句'], savedAtMs: 0 });
+    expect(fm).toEqual({ title: '題', review: 'pass', reviewNote: '', material: 'missing', lint: ['禁句'], savedAtMs: 0, quality: '', qualityNote: '' });
     expect(executor.parseDraftFrontmatter('---\nmaterial: unknown\n---\n').material).toBe('unknown');
   });
 
@@ -730,7 +730,7 @@ describe('parseDraftFrontmatter', () => {
 
   it('values it does not know come back empty, so the digest flags them', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "unterminated\nreview: PASS!\nmaterial: fine\nlint: nope\n---\n');
-    expect(fm).toEqual({ title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0 });
+    expect(fm).toEqual({ title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0, quality: '', qualityNote: '' });
   });
 
   it('a body that repeats the keys cannot overrule the frontmatter', () => {

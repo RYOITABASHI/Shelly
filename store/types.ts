@@ -1465,6 +1465,8 @@ export interface AgentAssembleStepConfig {
    *  `selfTalk` a body that mentions the search or the notes. With this set,
    *  redirect-only source URLs are flagged too. */
   quality?: { minChars?: number; minWords?: number; minSources?: number; selfTalk?: boolean };
+  /** The editor quality gate (v44): frontmatter `quality`. Absent = no line. */
+  editor?: AgentArticleEditorConfig;
 }
 
 /** One stream the digest expects a draft from. */
@@ -1495,6 +1497,8 @@ export interface AgentListDraftsStepConfig {
  */
 export interface AgentQueuePopStepConfig {
   kind: 'queue-pop';
+  /** Local materials (v44) named under the popped item. */
+  materials?: AgentArticleMaterialsConfig;
 }
 
 /**
@@ -1530,6 +1534,42 @@ export interface AgentVoiceStepConfig {
   review: { type: string; model?: string };
   /** The name in the fixed ghostwritten footer. */
   author: string;
+}
+
+/**
+ * The editor quality gate (executor v44), on the assemble step: before the
+ * frontmatter is written, a separate engine scores the draft exactly as it will
+ * be saved against fixed criteria and the owner's rubric. The answer is a
+ * strict JSON object; a score under `minScore` (or any criterion at 1) gives
+ * frontmatter `quality: fail` with the reasons, an editor that cannot score
+ * gives `quality: unresolved`. The draft is saved either way.
+ */
+export interface AgentArticleEditorConfig {
+  /** The research step(s) whose notes the editor sees as data. */
+  notes: number[];
+  lang: 'ja' | 'en';
+  /** An HTTP engine, or a text-only CLI. */
+  engine: { type: string; model?: string } | { type: 'cli'; cli: 'claude' | 'codex'; textOnly: true; model?: string };
+  /** The owner's rubric, at most 500 characters. */
+  rubric: string;
+  /** 1 to 5 in steps of 0.5. */
+  minScore: number;
+}
+
+/**
+ * Local materials (executor v44), on the queue-pop step: the owner's own files
+ * named on `材料:` / `Material:` lines under the popped queue item are read
+ * read-only, inside `root` (no links, regular text files, size caps, no dot or
+ * secret-looking names). The excerpts reach the later model steps as labelled
+ * data with `[M1]` ids, and assemble lists them in Sources. No model call.
+ */
+export interface AgentArticleMaterialsConfig {
+  /** Absolute folder of plain names. The executor also re-reads it from the
+   *  owner's pipeline config file at run time. */
+  root: string;
+  maxFiles: number;
+  maxBytes: number;
+  lang: 'ja' | 'en';
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
