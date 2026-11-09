@@ -43,6 +43,8 @@
  *   44  usage error
  *   45  scoped.fs denied or failed
  *   46  workspace.exec denied
+ *   (http.fetch-text: 40 on a tainted run, 42 when no URL fits the budget,
+ *   0 otherwise, also when a page could not be read; see runFetchText)
  *   127 internal error
  */
 
@@ -53,6 +55,7 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 // ---------------------------------------------------------------------------
 // Mirror of lib/capability-envelope.ts — keep in sync (parity-tested).
@@ -1291,6 +1294,564 @@ async function runResolveRedirects(args, nowIso, nowMs, probe) {
 }
 
 // ---------------------------------------------------------------------------
+// http.fetch-text: full text of an article's sources (2026-11-10)
+// ---------------------------------------------------------------------------
+// The research step of an article pipeline names its sources by title and
+// address only, so a writer cannot state what a source measured or found. With
+// the pipeline's `fetchSources` set, the plan executor asks this op for the text
+// of the first few sources and hands it to the later model steps as data.
+//   - GET only, https only, port 443 only, no credentials in the URL, a host
+//     name (not an IP literal, not localhost). No secret, no cookie, no caller
+//     header and no body: the headers are fixed (FETCH_TEXT_HEADERS). This op is
+//     not an allowlist entry: http.request still cannot reach these hosts.
+//   - The name is resolved here, EVERY address it resolves to must be public
+//     (fetchTextAddressPublic: no loopback, private, link-local / metadata,
+//     CGNAT, ULA, multicast, documentation, reserved or IPv4-in-IPv6 forms), and
+//     the socket connects to exactly the first of them (the request's `lookup`
+//     returns it), so a second DNS answer cannot move it (rebinding). The peer
+//     address is checked again on the response.
+//   - At most FETCH_TEXT_MAX_REDIRECTS redirects, each hop checked as above.
+//   - At most FETCH_TEXT_MAX_RAW_BYTES of body kept (decoded; a gzip / deflate
+//     / br body a server sends anyway is decoded under the same cap), and one
+//     deadline for the whole call (--timeout-seconds, at most
+//     FETCH_TEXT_TIMEOUT_MAX_SECONDS).
+//   - text/html, application/xhtml+xml and text/plain only. PDF and every
+//     other type are refused (there is no parser here).
+//   - HTML becomes plain text (scripts, styles, navigation, forms and the like
+//     dropped; the <article> or <main> region when it holds enough text), cut to
+//     --max-chars (at most FETCH_TEXT_MAX_CHARS).
+//   - Refused as a whole for a tainted run. One budget charge per URL. One audit
+//     line per URL: hosts, status, byte count and the body's SHA-256, never the
+//     body or the path.
+const FETCH_TEXT_MAX_URLS = 3;
+const FETCH_TEXT_MAX_CHARS = 20000;
+const FETCH_TEXT_MAX_RAW_BYTES = 2 * 1024 * 1024;
+const FETCH_TEXT_MAX_REDIRECTS = 3;
+const FETCH_TEXT_TIMEOUT_MAX_SECONDS = 20;
+const FETCH_TEXT_URL_MAX_CHARS = 500;
+const FETCH_TEXT_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; Shelly-article-fetch/1.0)',
+  Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9',
+  'Accept-Encoding': 'identity',
+};
+const FETCH_TEXT_TYPES = ['text/html', 'application/xhtml+xml', 'text/plain'];
+
+class FetchTextRefusal extends Error {}
+
+/** The URL as a URL object when this op may ask it, else null. Pure. */
+function fetchTextUrlOk(raw) {
+  if (typeof raw !== 'string' || !raw || raw.length > FETCH_TEXT_URL_MAX_CHARS) return null;
+  if (/[\s<>"'`\\\u0000-\u001f\u007f-\u009f]/.test(raw)) return null;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch (_) {
+    return null;
+  }
+  if (u.protocol !== 'https:' || u.username || u.password || u.port) return null;
+  const host = u.hostname.toLowerCase();
+  if (!host || host.indexOf('.') === -1 || host.charAt(0) === '[' || host.indexOf(':') !== -1) return null;
+  // IPv4 literals in any spelling (the URL parser turns 0x7f.1 and 2130706433
+  // into dotted form, which this catches).
+  if (/^[\d.]+$/.test(host) || /^0x/i.test(host)) return null;
+  if (host === 'localhost' || /\.localhost\.?$/.test(host)) return null;
+  if (u.href.length > FETCH_TEXT_URL_MAX_CHARS) return null;
+  return u;
+}
+
+function ipv4Octets(addr) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.every((n) => n <= 255) ? o : null;
+}
+
+function ipv4Public(o) {
+  const a = o[0];
+  const b = o[1];
+  const c = o[2];
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false; // this network, private, loopback, multicast, reserved, broadcast
+  if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT 100.64/10
+  if (a === 169 && b === 254) return false; // link-local, cloud metadata (169.254.169.254)
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return false; // IETF assignments, TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return false; // 6to4 relay anycast
+  if (a === 198 && (b === 18 || b === 19)) return false; // benchmarking
+  if (a === 198 && b === 51 && c === 100) return false; // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return false; // TEST-NET-3
+  return true;
+}
+
+/** The sixteen bytes of an IPv6 address, or null. Pure. */
+function ipv6Bytes(addr) {
+  let s = String(addr).toLowerCase();
+  // A zone index is link-local by nature.
+  if (s.indexOf('%') !== -1) return null;
+  let tail = [];
+  if (s.indexOf('.') !== -1) {
+    const lastColon = s.lastIndexOf(':');
+    if (lastColon === -1) return null;
+    const o = ipv4Octets(s.slice(lastColon + 1));
+    if (!o) return null;
+    tail = [(o[0] << 8) | o[1], (o[2] << 8) | o[3]];
+    s = s.slice(0, lastColon);
+    if (s.endsWith(':')) s += ':';
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part) => (part ? part.split(':') : []).map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN));
+  const head = parse(halves[0]);
+  const back = halves.length === 2 ? parse(halves[1]) : [];
+  if (head.concat(back).some((n) => Number.isNaN(n))) return null;
+  const fill = 8 - tail.length - head.length - back.length;
+  let groups;
+  if (halves.length === 2) {
+    if (fill < 1) return null;
+    groups = head.concat(new Array(fill).fill(0), back, tail);
+  } else {
+    if (fill !== 0) return null;
+    groups = head.concat(tail);
+  }
+  const bytes = [];
+  for (const g of groups) bytes.push(g >> 8, g & 255);
+  return bytes;
+}
+
+function ipv6Public(b) {
+  // Global unicast only (2000::/3). ::, ::1, IPv4-mapped (::ffff:0:0/96),
+  // IPv4-compatible (::/96), NAT64 (64:ff9b::/96), discard (100::/64),
+  // ULA (fc00::/7), link-local (fe80::/10), site-local (fec0::/10) and
+  // multicast (ff00::/8) all fall outside it.
+  if ((b[0] & 0xe0) !== 0x20) return false;
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] < 0x02) return false; // 2001::/23 IETF (Teredo, ORCHID, benchmarking)
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x0d && b[3] === 0xb8) return false; // 2001:db8::/32 documentation
+  if (b[0] === 0x20 && b[1] === 0x02) return false; // 2002::/16 6to4 (an IPv4 address inside)
+  if (b[0] === 0x3f && b[1] === 0xff && (b[2] & 0xf0) === 0) return false; // 3fff::/20 documentation
+  return true;
+}
+
+/** True when `addr` (as dns.lookup returns it) is a public unicast address. Pure. */
+function fetchTextAddressPublic(addr) {
+  if (typeof addr !== 'string') return false;
+  const v4 = ipv4Octets(addr);
+  if (v4) return ipv4Public(v4);
+  if (addr.indexOf(':') === -1) return false;
+  const v6 = ipv6Bytes(addr);
+  return !!v6 && ipv6Public(v6);
+}
+
+/**
+ * The one address the request connects to: every address the name resolves to
+ * must be public (a name that also points inside is refused as a whole), and
+ * the first is used. `lookup` is dns.lookup, injectable for tests.
+ */
+function fetchTextResolve(hostname, lookup) {
+  const look = lookup || require('dns').lookup;
+  return new Promise((resolve, reject) => {
+    try {
+      look(hostname, { all: true, verbatim: true }, (err, list) => {
+        if (err || !Array.isArray(list) || !list.length) return reject(new FetchTextRefusal('name not resolved'));
+        for (const entry of list) {
+          if (!entry || !fetchTextAddressPublic(entry.address)) return reject(new FetchTextRefusal('name resolves to a non-public address'));
+        }
+        const first = list[0];
+        return resolve({ address: first.address, family: first.address.indexOf(':') !== -1 ? 6 : 4 });
+      });
+    } catch (_) {
+      reject(new FetchTextRefusal('name not resolved'));
+    }
+  });
+}
+
+function fetchTextSameAddress(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const strip = (x) => x.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '').toLowerCase();
+  if (strip(a) === strip(b)) return true;
+  const x = ipv6Bytes(a);
+  const y = ipv6Bytes(b);
+  return !!x && !!y && x.every((v, k) => v === y[k]);
+}
+
+/**
+ * One GET of `u`, connected to `pinned`: resolves to { status, location } for a
+ * redirect, or { status, contentType, body, bytes, truncated }; rejects with a
+ * FetchTextRefusal. The body is read only for an allowed type and kept up to
+ * FETCH_TEXT_MAX_RAW_BYTES. `request` is https.request, injectable for tests.
+ */
+function fetchTextRequest(u, pinned, signal, request) {
+  const send = request || https.request;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let req;
+    let res;
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const fail = (why) => {
+      if (res) res.destroy();
+      if (req) req.destroy();
+      const refusal = new FetchTextRefusal(why);
+      refusal.status = res ? res.statusCode || 0 : 0;
+      finish(reject, refusal);
+    };
+    const onAbort = () => fail('deadline');
+    if (signal) {
+      if (signal.aborted) return fail('deadline');
+      signal.addEventListener('abort', onAbort);
+    }
+    // The connection goes to the address checked above, never to a new answer.
+    const lookup = (host, opts, cb) => {
+      const callback = typeof opts === 'function' ? opts : cb;
+      if (opts && typeof opts === 'object' && opts.all) return callback(null, [{ address: pinned.address, family: pinned.family }]);
+      return callback(null, pinned.address, pinned.family);
+    };
+    try {
+      req = send(
+        {
+          method: 'GET',
+          protocol: 'https:',
+          hostname: u.hostname,
+          servername: u.hostname,
+          port: 443,
+          path: `${u.pathname}${u.search}`,
+          headers: Object.assign({}, FETCH_TEXT_HEADERS),
+          agent: false,
+          lookup,
+        },
+        (response) => {
+          res = response;
+          const status = res.statusCode || 0;
+          if (!fetchTextSameAddress(res.socket && res.socket.remoteAddress, pinned.address)) return fail('connected to another address');
+          const headers = res.headers || {};
+          if ([301, 302, 303, 307, 308].indexOf(status) !== -1) {
+            res.destroy();
+            return finish(resolve, { status, location: typeof headers.location === 'string' ? headers.location : '' });
+          }
+          if (status < 200 || status > 299) return fail(`status ${status}`);
+          const contentType = String(headers['content-type'] || '').toLowerCase();
+          const mime = contentType.split(';')[0].trim();
+          if (FETCH_TEXT_TYPES.indexOf(mime) === -1) return fail(`content type ${mime.replace(/[^a-z0-9.+/-]/g, '').slice(0, 60) || 'missing'}`);
+          const encoding = String(headers['content-encoding'] || 'identity').toLowerCase().trim();
+          let stream = res;
+          if (encoding === 'gzip' || encoding === 'x-gzip') stream = res.pipe(zlib.createGunzip());
+          else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
+          else if (encoding === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+          else if (encoding !== 'identity' && encoding !== '') return fail('content encoding not supported');
+          let raw = 0;
+          let kept = 0;
+          let truncated = false;
+          const chunks = [];
+          const settle = () => finish(resolve, { status, contentType, body: Buffer.concat(chunks), bytes: raw, truncated });
+          const broken = () => (chunks.length ? settle() : fail('body unreadable'));
+          if (stream !== res) res.on('data', (c) => { raw += c.length; });
+          stream.on('data', (c) => {
+            if (done) return;
+            if (stream === res) raw += c.length;
+            const room = FETCH_TEXT_MAX_RAW_BYTES - kept;
+            if (c.length >= room) {
+              chunks.push(c.subarray(0, room));
+              kept += room;
+              truncated = true;
+              settle();
+              res.destroy();
+              if (stream !== res) stream.destroy();
+              return;
+            }
+            chunks.push(c);
+            kept += c.length;
+          });
+          stream.on('end', settle);
+          stream.on('error', broken);
+          res.on('error', broken);
+          res.on('aborted', broken);
+          return undefined;
+        },
+      );
+    } catch (_) {
+      fail('request failed');
+      return undefined;
+    }
+    req.on('error', () => fail('request failed'));
+    req.end();
+    return undefined;
+  });
+}
+
+function fetchTextCharset(contentType, body) {
+  const fromHeader = /charset\s*=\s*"?([A-Za-z0-9_.:-]{1,40})/i.exec(contentType || '');
+  if (fromHeader) return fromHeader[1].toLowerCase();
+  const head = body.subarray(0, 4096).toString('latin1');
+  const meta = /<meta[^>]{0,200}?charset\s*=\s*["']?([A-Za-z0-9_.:-]{1,40})/i.exec(head);
+  return meta ? meta[1].toLowerCase() : 'utf-8';
+}
+
+function fetchTextDecode(body, charset) {
+  try {
+    return new TextDecoder(charset, { fatal: false }).decode(body);
+  } catch (_) {
+    return new TextDecoder('utf-8', { fatal: false }).decode(body);
+  }
+}
+
+const HTML_SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'svg', 'math', 'nav', 'footer', 'aside', 'form', 'iframe', 'object', 'embed', 'select', 'button', 'head', 'canvas', 'video', 'audio', 'dialog']);
+const HTML_BLOCK_TAGS = new Set(['p', 'div', 'br', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr', 'td', 'th', 'table', 'section', 'article', 'main', 'blockquote', 'pre', 'dd', 'dt', 'dl', 'figcaption', 'figure', 'hr', 'header', 'caption', 'summary', 'details', 'address']);
+const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '\u2014', ndash: '\u2013', hellip: '\u2026', laquo: '\u00ab', raquo: '\u00bb', ldquo: '\u201c', rdquo: '\u201d', lsquo: '\u2018', rsquo: '\u2019', copy: '\u00a9', reg: '\u00ae', trade: '\u2122', middot: '\u00b7', bull: '\u2022', times: '\u00d7', deg: '\u00b0', minus: '\u2212', plusmn: '\u00b1', micro: '\u00b5', le: '\u2264', ge: '\u2265' };
+
+function decodeHtmlEntities(s) {
+  return s.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,8});/gi, (all, ent) => {
+    if (ent.charAt(0) === '#') {
+      const code = ent.charAt(1).toLowerCase() === 'x' ? parseInt(ent.slice(2), 16) : parseInt(ent.slice(1), 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return ' ';
+      return String.fromCodePoint(code);
+    }
+    const named = HTML_ENTITIES[ent.toLowerCase()];
+    return named === undefined ? all : named;
+  });
+}
+
+/** The text of `html` between `from` and `to`, tags dropped. Linear in the length. Pure. */
+function htmlSliceToText(html, from, to) {
+  const out = [];
+  const tagRe = /<(\/?)([A-Za-z][A-Za-z0-9-]{0,31})\b[^<>]*>/y;
+  let i = from;
+  while (i < to) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1 || lt >= to) {
+      out.push(html.slice(i, to));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      i = end === -1 ? to : end + 3;
+      continue;
+    }
+    const next = html.charAt(lt + 1);
+    if (next === '!' || next === '?') {
+      const end = html.indexOf('>', lt + 2);
+      i = end === -1 ? to : end + 1;
+      continue;
+    }
+    tagRe.lastIndex = lt;
+    const m = tagRe.exec(html);
+    if (!m) {
+      out.push('<');
+      i = lt + 1;
+      continue;
+    }
+    const name = m[2].toLowerCase();
+    i = tagRe.lastIndex;
+    if (!m[1] && HTML_SKIP_TAGS.has(name) && !/\/>$/.test(m[0])) {
+      const closeRe = new RegExp(`</${name}\\b[^<>]*>`, 'gi');
+      closeRe.lastIndex = i;
+      const close = closeRe.exec(html);
+      i = close ? closeRe.lastIndex : to;
+      out.push('\n');
+      continue;
+    }
+    if (HTML_BLOCK_TAGS.has(name)) out.push(name === 'li' && !m[1] ? '\n- ' : '\n');
+    else out.push(' ');
+  }
+  return out.join('');
+}
+
+/** The region of the page that holds the article: <article>, else <main>, else all. */
+function htmlMainRegion(html) {
+  for (const tag of ['article', 'main']) {
+    const open = new RegExp(`<${tag}\\b[^<>]*>`, 'i').exec(html);
+    if (!open) continue;
+    const closeRe = new RegExp(`</${tag}\\s*>`, 'gi');
+    let last = -1;
+    let m;
+    while ((m = closeRe.exec(html))) last = m.index;
+    if (last > open.index) return { from: open.index, to: last };
+  }
+  return { from: 0, to: html.length };
+}
+
+/** A fetched text with controls dropped and whitespace collapsed. Pure. */
+function cleanFetchedText(text) {
+  return String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, ' ')
+    .split('\n')
+    .map((line) => line.replace(/[ \t\u00a0\u3000]+/g, ' ').trim())
+    .filter((line) => line && line !== '-')
+    .join('\n')
+    .trim();
+}
+
+/** HTML to plain text: the article region when it holds enough text. Pure. */
+function htmlToText(html) {
+  const region = htmlMainRegion(html);
+  if (region.from !== 0 || region.to !== html.length) {
+    const inner = cleanFetchedText(decodeHtmlEntities(htmlSliceToText(html, region.from, region.to)));
+    if (Array.from(inner).length >= 500) return inner;
+  }
+  return cleanFetchedText(decodeHtmlEntities(htmlSliceToText(html, 0, html.length)));
+}
+
+/** { text, truncated }: at most `maxChars` characters, cut at a line end when one is near. Pure. */
+function capFetchedText(text, maxChars) {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) return { text, truncated: false };
+  const head = chars.slice(0, maxChars).join('');
+  const nl = head.lastIndexOf('\n');
+  return { text: nl > head.length * 0.6 ? head.slice(0, nl) : head, truncated: true };
+}
+
+/**
+ * One URL through every rule above: { ok: true, status, finalUrl, finalHost,
+ * bytes, sha, text, chars, truncated, redirects } or { ok: false, reason,
+ * status, finalHost, redirects }. deps: { lookup, request } for tests.
+ */
+async function fetchTextUrl(url, maxChars, signal, deps) {
+  const d = deps || {};
+  let current = url;
+  let redirects = 0;
+  let status = 0;
+  let finalHost = null;
+  try {
+    for (;;) {
+      const u = fetchTextUrlOk(current);
+      if (!u) throw new FetchTextRefusal(redirects ? 'redirect to a refused address' : 'refused address');
+      finalHost = u.hostname.toLowerCase();
+      const pinned = await fetchTextResolve(u.hostname, d.lookup);
+      if (signal && signal.aborted) throw new FetchTextRefusal('deadline');
+      const res = await fetchTextRequest(u, pinned, signal, d.request);
+      status = res.status;
+      if (res.location !== undefined) {
+        if (redirects >= FETCH_TEXT_MAX_REDIRECTS) throw new FetchTextRefusal('too many redirects');
+        let next;
+        try {
+          next = new URL(res.location, u).href;
+        } catch (_) {
+          throw new FetchTextRefusal('redirect to a refused address');
+        }
+        redirects += 1;
+        current = next;
+        continue;
+      }
+      const decoded = fetchTextDecode(res.body, fetchTextCharset(res.contentType, res.body));
+      const plain = res.contentType.indexOf('text/plain') === 0 ? cleanFetchedText(decoded) : htmlToText(decoded);
+      if (!plain) throw new FetchTextRefusal('no text');
+      const capped = capFetchedText(plain, maxChars);
+      return {
+        ok: true,
+        status,
+        finalUrl: u.href,
+        finalHost,
+        bytes: res.bytes,
+        sha: crypto.createHash('sha256').update(res.body).digest('hex'),
+        text: capped.text,
+        chars: Array.from(capped.text).length,
+        truncated: capped.truncated || res.truncated,
+        redirects,
+      };
+    }
+  } catch (e) {
+    return { ok: false, reason: e instanceof FetchTextRefusal ? e.message : 'request failed', status: (e && e.status) || status, finalHost, redirects };
+  }
+}
+
+/** Resolves to the exit code. `fetcher(url, maxChars, signal)` is injected for tests. */
+async function runFetchText(args, nowIso, nowMs, fetcher) {
+  const auditFile = args['audit-log'] || '';
+  const budgetFile = args['budget-file'] || '';
+  let fds;
+  try {
+    fds = openOutErr(args.out || '', args.err || '');
+  } catch (e) {
+    process.stderr.write('cannot open out/err files\n');
+    return EXIT.INTERNAL;
+  }
+  const close = (code) => {
+    try { fs.closeSync(fds.outFd); } catch (_) {}
+    try { fs.closeSync(fds.errFd); } catch (_) {}
+    return code;
+  };
+  if (args.tainted === '1') {
+    appendAudit(auditFile, { ts: nowIso, kind: 'http.fetch-text', decision: 'deny', reason: 'tainted run' });
+    fs.writeSync(fds.errFd, 'http.fetch-text: refused on a tainted run\n');
+    return close(EXIT.DENY);
+  }
+  let urls;
+  try {
+    urls = JSON.parse(fs.readFileSync(args['urls-file'] || '', 'utf8'));
+  } catch (_) {
+    urls = null;
+  }
+  const maxChars = Number(args['max-chars']);
+  if (!Array.isArray(urls) || urls.length > FETCH_TEXT_MAX_URLS || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > FETCH_TEXT_MAX_CHARS) {
+    fs.writeSync(fds.errFd, 'http.fetch-text: --urls-file must hold a JSON array of at most ' + FETCH_TEXT_MAX_URLS + ' URLs and --max-chars must be 1-' + FETCH_TEXT_MAX_CHARS + '\n');
+    return close(EXIT.USAGE);
+  }
+  const wanted = [];
+  for (const u of urls) {
+    if (!fetchTextUrlOk(u)) {
+      appendAudit(auditFile, { ts: nowIso, kind: 'http.fetch-text', host: (typeof u === 'string' && hostFromUrl(u)) || '<unparseable>', decision: 'deny', reason: 'refused address' });
+    } else if (wanted.indexOf(u) === -1) {
+      wanted.push(u);
+    }
+  }
+  const charged = [];
+  for (const u of wanted) {
+    const charge = inspectOrChargeBudget(budgetFile, DEFAULT_BUDGET, nowMs, true);
+    if (!charge.ok) {
+      appendAudit(auditFile, { ts: nowIso, kind: 'http.fetch-text', host: hostFromUrl(u), decision: 'deny', reason: redact(charge.reason) });
+      break;
+    }
+    charged.push(u);
+  }
+  if (wanted.length && !charged.length) {
+    fs.writeSync(fds.errFd, 'capability broker BUDGET EXCEEDED: ' + formatBudgetExceededMessage(loadBudgetState(budgetFile, nowMs), DEFAULT_BUDGET, nowMs) + '\n');
+    return close(EXIT.BUDGET);
+  }
+  const asked = Number(args['timeout-seconds']);
+  const timeoutMs = Math.round(Math.min(Number.isFinite(asked) && asked > 0 ? asked : 15, FETCH_TEXT_TIMEOUT_MAX_SECONDS) * 1000);
+  // One deadline for the whole call: what is not in by then is aborted.
+  const controller = new AbortController();
+  const results = charged.map(() => null);
+  let timer;
+  await Promise.race([
+    Promise.all(charged.map((u, k) => Promise.resolve(fetcher(u, maxChars, controller.signal)).then((r) => { results[k] = r; }, () => {}))),
+    new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+  ]);
+  clearTimeout(timer);
+  controller.abort();
+  const out = {};
+  charged.forEach((u, k) => {
+    const r = results[k] || { ok: false, reason: 'deadline', status: 0, finalHost: null, redirects: 0 };
+    // An injected fetcher cannot widen what comes back: the text is cleaned
+    // and cut again here, and the final address checked again.
+    const text = r.ok && typeof r.text === 'string' ? capFetchedText(cleanFetchedText(r.text), maxChars).text : '';
+    const ok = !!text && typeof r.finalUrl === 'string' && !!fetchTextUrlOk(r.finalUrl);
+    if (ok) out[u] = { text, finalUrl: r.finalUrl, truncated: !!r.truncated };
+    const line = {
+      ts: nowIso,
+      kind: 'http.fetch-text',
+      host: hostFromUrl(u),
+      finalHost: r.finalHost || null,
+      decision: 'allow',
+      status: Number(r.status) || 0,
+      ok,
+      redirects: Number(r.redirects) || 0,
+      bytes: r.ok ? Number(r.bytes) || 0 : 0,
+      sha: r.ok && typeof r.sha === 'string' && /^[0-9a-f]{64}$/.test(r.sha) ? r.sha : null,
+      chars: ok ? Array.from(text).length : 0,
+    };
+    if (!ok) line.reason = String(r.reason || 'no text').replace(/[^A-Za-z0-9 ./+-]/g, '').slice(0, 80);
+    appendAudit(auditFile, line);
+  });
+  fs.writeSync(fds.outFd, JSON.stringify(out));
+  return close(EXIT.OK);
+}
+
+// ---------------------------------------------------------------------------
 // FS-001 scoped.fs operations
 // ---------------------------------------------------------------------------
 
@@ -1738,6 +2299,13 @@ function main() {
     );
     return undefined;
   }
+  if (op === 'http.fetch-text') {
+    runFetchText(args, nowIso, nowMs, (u, maxChars, signal) => fetchTextUrl(u, maxChars, signal)).then(
+      (code) => process.exit(code),
+      () => process.exit(EXIT.INTERNAL),
+    );
+    return undefined;
+  }
   if (op !== 'http.request') {
     process.stderr.write('unknown capability op: ' + op + '\n');
     process.exit(EXIT.USAGE);
@@ -2043,4 +2611,17 @@ module.exports = {
   probeGroundingRedirect,
   runResolveRedirects,
   GROUNDING_REDIRECT_TIMEOUT_MAX_SECONDS,
+  fetchTextUrlOk,
+  fetchTextAddressPublic,
+  fetchTextResolve,
+  fetchTextRequest,
+  fetchTextUrl,
+  htmlToText,
+  runFetchText,
+  FETCH_TEXT_HEADERS,
+  FETCH_TEXT_MAX_URLS,
+  FETCH_TEXT_MAX_CHARS,
+  FETCH_TEXT_MAX_RAW_BYTES,
+  FETCH_TEXT_MAX_REDIRECTS,
+  FETCH_TEXT_TIMEOUT_MAX_SECONDS,
 };

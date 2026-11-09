@@ -15,7 +15,7 @@
  *
  * All functions are pure (no IO) for deterministic unit tests.
  */
-import type { AgentApiCallConfig, AgentArticleEditorConfig, AgentArticleMaterialsConfig, AgentAssembleStepConfig, AgentDigestStream, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
+import type { AgentApiCallConfig, AgentArticleEditorConfig, AgentArticleFetchSourcesConfig, AgentArticleMaterialsConfig, AgentAssembleStepConfig, AgentDigestStream, AgentLocalStepConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { matchToolMention } from './agent-tool-mentions';
 import { sameProvider } from './agent-cli-workers';
 import { AUTH_REFS } from './capability-envelope';
@@ -291,6 +291,26 @@ export function normalizeMaterialsConfig(raw: unknown): AgentArticleMaterialsCon
   return { root: r.root, maxFiles: files, maxBytes: bytes, lang: r.lang };
 }
 
+// Source full text (executor v47). Mirrored in scripts/shelly-plan-executor.js
+// (normalizeFetchSourcesConfig); the broker's http.fetch-text op enforces its
+// own caps (3 URLs, 20000 characters) again.
+export const FETCH_SOURCES_MAX = 3;
+export const FETCH_SOURCES_DEFAULT_MAX = 2;
+export const FETCH_SOURCES_MIN_CHARS_EACH = 1000;
+export const FETCH_SOURCES_MAX_CHARS_EACH = 20000;
+export const FETCH_SOURCES_DEFAULT_CHARS_EACH = 8000;
+
+/** The assemble step's `fetchSources`. Undefined when anything is off. */
+export function normalizeFetchSourcesConfig(raw: unknown): AgentArticleFetchSourcesConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const max = r.max;
+  const each = r.maxCharsEach;
+  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > FETCH_SOURCES_MAX) return undefined;
+  if (typeof each !== 'number' || !Number.isInteger(each) || each < FETCH_SOURCES_MIN_CHARS_EACH || each > FETCH_SOURCES_MAX_CHARS_EACH) return undefined;
+  return { max, maxCharsEach: each };
+}
+
 /**
  * Re-validate a step's local config (it lives in the agent JSON / plan file,
  * which a run can rewrite). A fresh object from the known fields, or undefined
@@ -345,8 +365,11 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
   }
   const editor = r.editor === undefined ? undefined : normalizeEditorConfig(r.editor);
   if (r.editor !== undefined && !editor) return undefined;
+  const fetchSources = r.fetchSources === undefined ? undefined : normalizeFetchSourcesConfig(r.fetchSources);
+  if (r.fetchSources !== undefined && !fetchSources) return undefined;
   return {
     ...(editor ? { editor } : {}),
+    ...(fetchSources ? { fetchSources } : {}),
     kind: 'assemble',
     parts,
     stream: r.stream,

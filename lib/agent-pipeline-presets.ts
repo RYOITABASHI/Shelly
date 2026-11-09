@@ -16,6 +16,11 @@ import type { AgentAction, AgentArticleEditorConfig, AgentLocalStepConfig, Agent
 import {
   EDITOR_DEFAULT_MIN_SCORE,
   EDITOR_RUBRIC_MAX_CHARS,
+  FETCH_SOURCES_DEFAULT_CHARS_EACH,
+  FETCH_SOURCES_DEFAULT_MAX,
+  FETCH_SOURCES_MAX,
+  FETCH_SOURCES_MAX_CHARS_EACH,
+  FETCH_SOURCES_MIN_CHARS_EACH,
   MATERIALS_DEFAULT_MAX_BYTES,
   MATERIALS_MAX_BYTES,
   MATERIALS_MAX_FILES,
@@ -194,6 +199,19 @@ export interface ArticlePipelineConfig {
   editor?: ArticleEditorConfig;
   /** The owner's own files named under a queue item (executor v44). Needs `queue`. */
   materials?: ArticleMaterialsConfig;
+  /** The full text of the first sources the research names (executor v47),
+   *  fetched through the broker and given to write / review / revise / the
+   *  editor as data. */
+  fetchSources?: ArticleFetchSourcesConfig;
+}
+
+/** Source full text: how many sources, and how much of each. */
+export interface ArticleFetchSourcesConfig {
+  /** 1 to FETCH_SOURCES_MAX (default FETCH_SOURCES_DEFAULT_MAX). */
+  max?: number;
+  /** FETCH_SOURCES_MIN_CHARS_EACH to FETCH_SOURCES_MAX_CHARS_EACH (default
+   *  FETCH_SOURCES_DEFAULT_CHARS_EACH). */
+  maxCharsEach?: number;
 }
 
 /** The editor quality gate: an engine (as for review) plus the owner's rubric. */
@@ -295,7 +313,20 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources'] as const;
+
+function articleFetchSourcesError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs an object, e.g. { "max": 2, "maxCharsEach": 8000 }`;
+  const keyError = unknownKeyError(v, ['max', 'maxCharsEach'], where);
+  if (keyError) return keyError;
+  if (v.max !== undefined && (typeof v.max !== 'number' || !Number.isInteger(v.max) || v.max < 1 || v.max > FETCH_SOURCES_MAX)) {
+    return `${where}.max: use 1 to ${FETCH_SOURCES_MAX}`;
+  }
+  if (v.maxCharsEach !== undefined && (typeof v.maxCharsEach !== 'number' || !Number.isInteger(v.maxCharsEach) || v.maxCharsEach < FETCH_SOURCES_MIN_CHARS_EACH || v.maxCharsEach > FETCH_SOURCES_MAX_CHARS_EACH)) {
+    return `${where}.maxCharsEach: use ${FETCH_SOURCES_MIN_CHARS_EACH} to ${FETCH_SOURCES_MAX_CHARS_EACH}`;
+  }
+  return null;
+}
 
 function articleEditorError(v: unknown, where: string): string | null {
   if (!isPlainObject(v)) return `${where}: needs { "type", "rubric" }`;
@@ -367,6 +398,10 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (raw.editor !== undefined) {
     const editorError = articleEditorError(raw.editor, `${where}.editor`);
     if (editorError) return editorError;
+  }
+  if (raw.fetchSources !== undefined) {
+    const fetchError = articleFetchSourcesError(raw.fetchSources, `${where}.fetchSources`);
+    if (fetchError) return fetchError;
   }
   if (raw.materials !== undefined) {
     if (raw.queue !== true) return `${where}.materials: needs "queue": true (the files are named under a queue item)`;
@@ -537,6 +572,14 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     ...(config.lintSources ? { lintSources: true } : {}),
     quality: { ...config.quality, selfTalk: true },
     ...(config.editor ? { editor: editorConfig(config, [at(0)]) } : {}),
+    ...(config.fetchSources
+      ? {
+          fetchSources: {
+            max: config.fetchSources.max ?? FETCH_SOURCES_DEFAULT_MAX,
+            maxCharsEach: config.fetchSources.maxCharsEach ?? FETCH_SOURCES_DEFAULT_CHARS_EACH,
+          },
+        }
+      : {}),
   };
   const pop: AgentLocalStepConfig = config.materials
     ? {

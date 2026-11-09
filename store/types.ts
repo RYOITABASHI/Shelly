@@ -1467,6 +1467,19 @@ export interface AgentAssembleStepConfig {
   quality?: { minChars?: number; minWords?: number; minSources?: number; selfTalk?: boolean };
   /** The editor quality gate (v44): frontmatter `quality`. Absent = no line. */
   editor?: AgentArticleEditorConfig;
+  /** Source full text (v47): after the research step, the executor fetches the
+   *  text of the first `max` usable sources through the broker's
+   *  http.fetch-text op and gives it to write / review / revise / the editor
+   *  as data. Absent = no fetch. */
+  fetchSources?: AgentArticleFetchSourcesConfig;
+}
+
+/** The assemble step's `fetchSources` (executor v47). */
+export interface AgentArticleFetchSourcesConfig {
+  /** 1 to 3 sources. */
+  max: number;
+  /** 1000 to 20000 characters kept of each page. */
+  maxCharsEach: number;
 }
 
 /** One stream the digest expects a draft from. */

@@ -259,7 +259,7 @@ function escapeHtml(s: string): string {
 function cleanUrl(raw: unknown): string | null {
   let s = String(raw ?? '').trim();
   s = s.replace(/^<|>$/g, '');
-  s = s.replace(/[)\].,;:!?'"」』）]+$/, '');
+  s = s.replace(/[)\].,;:!?'"」』）*`]+$/, '');
   if (!/^https?:\/\/[^\s/?#.][^\s]*$/i.test(s)) return null;
   if (s.length > MAX_URL_CHARS) return null;
   if (/[<>"'`\\]/.test(s)) return null;

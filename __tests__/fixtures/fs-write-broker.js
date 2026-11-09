@@ -74,5 +74,30 @@ if (arg('op') === 'http.resolve-redirect') {
   return;
 }
 
+// http.fetch-text never reaches the network from a test either. With
+// SHELLY_TEST_FAKE_PAGES naming a JSON file { "<url>": "<page text>" } it
+// answers through the real broker's own op (an injected fetcher, so the op's
+// tainted refusal, URL checks, caps and audit still run); a URL not in the file
+// fails like an unreadable page. Without the variable the op fails as a broker
+// outage would. The asked URLs go to "<file>.calls".
+if (arg('op') === 'http.fetch-text') {
+  const file = process.env.SHELLY_TEST_FAKE_PAGES;
+  if (!file) {
+    if (arg('err')) fs.writeFileSync(arg('err'), 'no network in tests\n');
+    process.exit(23);
+  }
+  const pages = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const { runFetchText } = require(realBroker);
+  const args = {};
+  for (let k = 0; k < argv.length; k += 2) args[argv[k].replace(/^--/, '')] = argv[k + 1];
+  const fetcher = (url) => {
+    fs.appendFileSync(`${file}.calls`, `${url}\n`);
+    if (!Object.prototype.hasOwnProperty.call(pages, url)) return Promise.resolve({ ok: false, reason: 'status 404', status: 404, finalHost: null, redirects: 0 });
+    return Promise.resolve({ ok: true, status: 200, finalUrl: url, finalHost: new URL(url).hostname, bytes: pages[url].length, sha: '0'.repeat(64), text: pages[url], truncated: false, redirects: 0 });
+  };
+  runFetchText(args, new Date().toISOString(), Date.now(), fetcher).then((code) => process.exit(code), () => process.exit(127));
+  return;
+}
+
 const result = spawnSync(process.execPath, [realBroker, ...argv], { stdio: 'inherit' });
 process.exit(result.status === null ? 1 : result.status);

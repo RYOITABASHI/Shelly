@@ -50,4 +50,11 @@ describe('shelly-capability-broker.js parity', () => {
     expect(brokerSrc).toContain("op === 'fs.search'");
     expect(brokerSrc).toContain("op === 'workspace.exec'");
   });
+
+  it('ships the http.fetch-text op (source full text, executor v47) outside the allowlist', () => {
+    expect(brokerSrc).toContain("op === 'http.fetch-text'");
+    // A separate op, never an allowlist entry: http.request still cannot reach
+    // an arbitrary host.
+    expect(EGRESS_ALLOWLIST).not.toContain('*');
+  });
 });
