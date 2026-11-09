@@ -2648,11 +2648,33 @@ const MATERIALS_MAX_FILES = 5;
 const MATERIALS_MAX_BYTES = 40000;
 const MATERIALS_ROOT_RE = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*){2,}$/;
 const MATERIALS_ROOT_MAX_CHARS = 200;
-const MATERIALS_ROOT_DENIED_TOP = ['proc', 'sys', 'dev'];
+// Never under /proc, /sys, /dev or /data (the app's own data and home live
+// there), and never a shared storage root itself: a folder below it is fine
+// (review M1). Mirrors lib/agent-orchestration.ts materialsRootOk.
+const MATERIALS_ROOT_DENIED_TOP = ['proc', 'sys', 'dev', 'data'];
+const MATERIALS_SHARED_STORAGE_ROOTS = ['/sdcard', '/storage/emulated', '/storage/emulated/0', '/storage/self', '/storage/self/primary', '/mnt/sdcard', '/mnt/user', '/mnt/user/0', '/mnt/runtime'];
 
 function materialsRootOk(root) {
   if (typeof root !== 'string' || root.length > MATERIALS_ROOT_MAX_CHARS || !MATERIALS_ROOT_RE.test(root)) return false;
+  if (MATERIALS_SHARED_STORAGE_ROOTS.indexOf(root) !== -1) return false;
   return MATERIALS_ROOT_DENIED_TOP.indexOf(root.split('/')[1]) === -1;
+}
+
+/**
+ * The real root's own check, at run time: not /data or below, not a shared
+ * storage root, and neither inside nor an ancestor of the app's home (or the
+ * app data dir it lives in). '' when fine, else the reason. Pure apart from
+ * the paths it is given.
+ */
+function materialsRealRootProblem(realRoot, realHome) {
+  const posix = String(realRoot).split(path.sep).join('/');
+  if (posix === '/data' || posix.startsWith('/data/')) return '資料のフォルダがアプリのデータ領域にある';
+  if (MATERIALS_SHARED_STORAGE_ROOTS.indexOf(posix) !== -1) return '資料のフォルダが共有ストレージの最上位';
+  if (realHome) {
+    const inside = (a, b) => a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
+    if (inside(realRoot, realHome) || inside(realHome, realRoot)) return '資料のフォルダがアプリのホームと重なる';
+  }
+  return '';
 }
 
 function normalizeEditorConfig(raw, index) {
@@ -4178,7 +4200,11 @@ function buildEditorPrompt(opts) {
 // real path stays inside the real root): no link in any folder below the root,
 // the file itself not a link, a regular file with one hard link, a text type
 // by extension, valid UTF-8 with no control bytes, under the run's byte
-// budget, and no dot, secret-looking name or secret-looking content. The root
+// budget, and no dot, secret-looking name or secret-looking content (key
+// formats, JWTs, the agent config's own secret values). The open descriptor
+// must be the file that was checked (dev + ino, /proc/self/fd inside the
+// root), and the real root is never in /data, a shared storage root itself, or
+// inside or above the app's home. The root
 // is read again from the owner's config file (workers cannot write it), so a
 // rewritten plan cannot move it. A notification-triggered (tainted) run reads
 // nothing, and a queue-refill item can never carry a material line
@@ -4187,7 +4213,11 @@ function buildEditorPrompt(opts) {
 // diff), which a worker able to write in the repository controls. The step
 // leaves only `materialsState`: the fenced excerpts for the model steps and
 // the [Mn] entries for Sources. Nothing here fails the run.
-const MATERIAL_LINE_RE = /^(?:[-*+][ \t]+)?(?:材料|materials?)[ \t]*[:：][ \t]*(.*)$/i;
+// The colon follows the label directly. A line holding any character that
+// sanitizing would change (controls, bidi marks, line separators, `[ ] |`) is
+// never a material line (review H1).
+const MATERIAL_LINE_RE = /^(?:[-*+][ \t]+)?(?:材料|materials?)[:：][ \t]*(.*)$/i;
+const MATERIAL_RAW_UNSAFE_RE = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069\ufeff[\]|]/;
 const MATERIAL_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/;
 const MATERIAL_PATH_MAX_CHARS = 240;
 const MATERIAL_COMMIT_RE = /^[0-9a-f]{7,40}$/;
@@ -4198,8 +4228,13 @@ const MATERIAL_TEXT_EXTENSIONS = new Set([
   '.py', '.rb', '.go', '.rs', '.swift', '.sh', '.html', '.css', '.xml', '.gradle', '.patch', '.diff', '.log',
 ]);
 // Any path segment: names that usually hold credentials.
-const MATERIAL_SECRET_NAME_RE = /(?:^|[._-])(?:env|secrets?|credentials?|passwords?|passwd|api[_-]?keys?|private[_-]?keys?|id_(?:rsa|dsa|ecdsa|ed25519)|keystore|htpasswd|netrc)(?:[._-]|$)/i;
-const MATERIAL_SECRET_TEXT_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}/;
+const MATERIAL_SECRET_NAME_RE = /(?:^|[._-])(?:env|secrets?|credentials?|passwords?|passwd|api[_-]?keys?|private[_-]?keys?|keys?|id_(?:rsa|dsa|ecdsa|ed25519)|keystore|htpasswd|netrc|o?auth|tokens?|cookies?|sessions?)(?:[._-]|$)/i;
+// Private key blocks, AWS and Slack keys, and JWTs. REDACT_PATTERNS and the
+// run's own secret values are checked too (readMaterialFile).
+const MATERIAL_SECRET_TEXT_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+// Config keys whose values are secrets (the agent .env).
+const MATERIAL_SECRET_CONFIG_KEY_RE = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|SESSION/i;
+const MATERIAL_SECRET_VALUE_MIN_CHARS = 8;
 const MATERIAL_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const MATERIALS_PROMPT_MAX_CHARS = 12000;
 const MATERIALS_PIPELINE_FILE = VOICE_PIPELINE_FILE;
@@ -4219,7 +4254,9 @@ function parseMaterialRequests(body) {
   const seen = new Set();
   const lines = String(body == null ? '' : body).split('\n').slice(1);
   for (const line of lines) {
-    const m = MATERIAL_LINE_RE.exec(line.trim());
+    const text = line.replace(/^[ \t]+/, '');
+    if (MATERIAL_RAW_UNSAFE_RE.test(text)) continue;
+    const m = MATERIAL_LINE_RE.exec(text.replace(/[ \t]+$/, ''));
     if (!m) continue;
     for (const raw of m[1].split(/[\s,、，]+/)) {
       const token = raw.replace(/^[`"'「『]+|[`"'」』]+$/g, '');
@@ -4234,7 +4271,7 @@ function parseMaterialRequests(body) {
 }
 
 /** One material file: { text, bytes, sha }. Throws MaterialRefusal. */
-function readMaterialFile(realRoot, rel, maxBytes, fsImpl) {
+function readMaterialFile(realRoot, rel, maxBytes, fsImpl, secretValues) {
   const f = fsImpl || fs;
   if (typeof rel !== 'string' || rel.length > MATERIAL_PATH_MAX_CHARS || !MATERIAL_PATH_RE.test(rel)) throw new MaterialRefusal('パスが不正');
   const segs = rel.split('/');
@@ -4261,12 +4298,7 @@ function readMaterialFile(realRoot, rel, maxBytes, fsImpl) {
   if (!st.isFile()) throw new MaterialRefusal('通常のファイルでない');
   if (st.nlink !== 1) throw new MaterialRefusal('ハードリンク');
   if (st.size > maxBytes) throw new MaterialRefusal('大きさの上限を超える');
-  let buf;
-  try {
-    buf = readBytesBounded(file, maxBytes + 1, f);
-  } catch (_) {
-    throw new MaterialRefusal('読めない');
-  }
+  const buf = readMaterialBytes(file, st, realRoot, maxBytes, f);
   if (buf.length > maxBytes) throw new MaterialRefusal('大きさの上限を超える');
   let text;
   try {
@@ -4274,10 +4306,63 @@ function readMaterialFile(realRoot, rel, maxBytes, fsImpl) {
   } catch (_) {
     throw new MaterialRefusal('テキストでない');
   }
-  text = text.replace(/^﻿/, '');
+  text = text.replace(/^\ufeff/, '');
   if (MATERIAL_CONTROL_RE.test(text)) throw new MaterialRefusal('テキストでない');
   if (redact(text) !== text || MATERIAL_SECRET_TEXT_RE.test(text)) throw new MaterialRefusal('秘密情報らしい内容');
+  if ((secretValues || []).some((v) => typeof v === 'string' && v.length >= MATERIAL_SECRET_VALUE_MIN_CHARS && text.indexOf(v) !== -1)) {
+    throw new MaterialRefusal('秘密情報らしい内容');
+  }
   return { text, bytes: buf.length, sha: sha256Hex(buf) };
+}
+
+/**
+ * The bytes of the file lstat saw, or a MaterialRefusal (review M2). After the
+ * open (O_NOFOLLOW), the descriptor must be the same file (dev + ino), still a
+ * regular file with one link, and where /proc/self/fd says it is (when that
+ * exists) inside the real root. A swap between the checks and the open fails.
+ */
+function readMaterialBytes(file, st, realRoot, maxBytes, f) {
+  let fd;
+  try {
+    fd = f.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  } catch (_) {
+    throw new MaterialRefusal('読めない');
+  }
+  try {
+    let ft;
+    try {
+      ft = f.fstatSync(fd);
+    } catch (_) {
+      throw new MaterialRefusal('読めない');
+    }
+    // A path stat on Windows reports dev 0 (a libuv quirk; Android does not):
+    // there the inode alone is compared.
+    const sameDev = ft.dev === st.dev || (st.dev === 0 && process.platform === 'win32');
+    if (!sameDev || ft.ino !== st.ino || !ft.isFile() || ft.nlink !== 1) throw new MaterialRefusal('読む間にファイルが替わった');
+    let where = null;
+    try {
+      where = f.readlinkSync(`/proc/self/fd/${fd}`);
+    } catch (_) {
+      where = null; // no /proc (a host without it): dev + ino stand alone
+    }
+    if (where !== null && !pathInsideRoot(path.resolve(where), realRoot)) throw new MaterialRefusal('読む間にファイルが替わった');
+    const limit = maxBytes + 1;
+    const buf = Buffer.alloc(limit);
+    let got = 0;
+    while (got < limit) {
+      const n = f.readSync(fd, buf, got, limit - got, got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return buf.subarray(0, got);
+  } catch (e) {
+    if (e instanceof MaterialRefusal) throw e;
+    throw new MaterialRefusal('読めない');
+  } finally {
+    try {
+      f.closeSync(fd);
+    } catch (_) {}
+  }
 }
 
 /**
@@ -4301,6 +4386,16 @@ function readPinnedMaterialsRoot(home, stream, fsImpl) {
   }
 }
 
+/** The secret values of the agent config (API keys, tokens): a material file
+ *  holding one is refused (review M1). Pure. */
+function materialSecretValues(config) {
+  const out = [];
+  for (const [key, value] of Object.entries(config || {})) {
+    if (MATERIAL_SECRET_CONFIG_KEY_RE.test(key) && typeof value === 'string' && value.trim().length >= MATERIAL_SECRET_VALUE_MIN_CHARS) out.push(value.trim());
+  }
+  return out;
+}
+
 /** The fenced excerpts for the model steps ('' with no entry). Pure. */
 function renderMaterialsBlock(entries, nonce, lang) {
   if (!entries.length) return '';
@@ -4320,8 +4415,9 @@ function renderMaterialsBlock(entries, nonce, lang) {
 }
 
 /**
- * Read the materials a popped item names. opts: { home, stream, tainted,
- * nonce, fsImpl }. { entries: [{ id, label, bytes, sha, lang }], skipped:
+ * Read the materials a popped item names. `body` is the item's lines as
+ * written (firstQueueBlock's `raw`). opts: { home, stream, tainted, nonce,
+ * secretValues, fsImpl }. { entries: [{ id, label, bytes, sha, lang }], skipped:
  * [{ token, reason }], block }. Throws nothing.
  */
 function loadQueueMaterials(cfg, body, opts) {
@@ -4344,6 +4440,14 @@ function loadQueueMaterials(cfg, body, opts) {
   } catch (_) {
     return skipAll('資料のフォルダが無い');
   }
+  let realHome = '';
+  try {
+    realHome = opts.home ? f.realpathSync(opts.home) : '';
+  } catch (_) {
+    realHome = opts.home ? path.resolve(opts.home) : '';
+  }
+  const rootProblem = materialsRealRootProblem(realRoot, realHome);
+  if (rootProblem) return skipAll(rootProblem);
   let budget = cfg.maxBytes;
   const texts = [];
   for (const r of requests) {
@@ -4355,7 +4459,7 @@ function loadQueueMaterials(cfg, body, opts) {
       state.skipped.push({ token: r.token, reason: '件数の上限' });
     } else {
       try {
-        const read = readMaterialFile(realRoot, r.token, budget, f);
+        const read = readMaterialFile(realRoot, r.token, budget, f, opts.secretValues);
         budget -= read.bytes;
         const entry = { id: `M${state.entries.length + 1}`, label: r.token, bytes: read.bytes, sha: read.sha, lang: cfg.lang };
         state.entries.push(entry);
@@ -4476,7 +4580,8 @@ function firstQueueBlock(text) {
       body.push(next);
     }
     const cleaned = body.map((l) => l.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().replace(/^#+\s*/, '')).join('\n');
-    return { line: lines[i], body: Array.from(cleaned).slice(0, QUEUE_BLOCK_MAX_CHARS).join('') };
+    // v44: `raw` keeps the lines as written, for the material check (review H1).
+    return { line: lines[i], body: Array.from(cleaned).slice(0, QUEUE_BLOCK_MAX_CHARS).join(''), raw: body.join('\n') };
   }
   return null;
 }
@@ -4534,8 +4639,12 @@ const QUEUE_REFILL_NOT_NEEDED_MESSAGE = 'The queue has enough open topics, so no
 const QUEUE_REFILL_FAILED_MESSAGE = 'No new topics were added to the queue.';
 // A queue item has no use for these, and a listing link or image is against the
 // stream's rules whatever the model was told. v44: nor may a web-derived item
-// name local materials (`材料:` / `Material:`); only the owner writes those.
-const QUEUE_REFILL_DROP_LINE_RE = /(?:https?|hxxps?):\/\/|\/\/[a-z0-9-]+\.|www\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\/\S|!\[|<\s*im(?:g|age)\b|\bdata:[a-z]+\/|材料\s*:|\bmaterials?\s*:/i;
+// name local materials (`材料:` / `Material:`); only the owner writes those, so
+// a refill line that mentions either word at all is dropped
+// (QUEUE_REFILL_MATERIAL_RE, before and after sanitizing).
+const QUEUE_REFILL_DROP_LINE_RE = /(?:https?|hxxps?):\/\/|\/\/[a-z0-9-]+\.|www\.|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\/\S|!\[|<\s*im(?:g|age)\b|\bdata:[a-z]+\//i;
+// Any mention, in any position and with any punctuation around it.
+const QUEUE_REFILL_MATERIAL_RE = /材料|material/i;
 // A grounded call takes well under this. A hung one must leave the run's budget
 // to the article, or a topic lookup could fail the whole run.
 const QUEUE_REFILL_TIMEOUT_SECONDS = 120;
@@ -4564,8 +4673,12 @@ function queueTitleKey(title) {
 // One line of model output as plain text, or '' when it has to go.
 function cleanQueueRefillLine(raw, maxChars) {
   const text = String(raw == null ? '' : raw);
-  if (QUEUE_REFILL_DROP_LINE_RE.test(text.normalize('NFKC'))) return '';
+  const unsafe = (s) => QUEUE_REFILL_DROP_LINE_RE.test(s.normalize('NFKC')) || QUEUE_REFILL_MATERIAL_RE.test(s.normalize('NFKC'));
+  if (unsafe(text)) return '';
   const plain = sanitizeDigestText(text.replace(/\[[ xX]\]/g, ' '), QUEUE_MAX_BYTES).replace(/^[\s\-*+>#]+/, '');
+  // v44 (review H1): checked again on what is written, after sanitizing, so no
+  // punctuation or control character can split a word the first check missed.
+  if (unsafe(plain)) return '';
   return Array.from(plain).slice(0, maxChars).join('').trim();
 }
 
@@ -9420,10 +9533,8 @@ function cliEscalationTimeoutMs(driverTimeoutMs) {
 }
 
 // The branch timer and the driver's --timeout-ms for a CLI turn starting now.
-// v44: `capMs` (the editor's own budget) shortens the turn further.
-function cliBranchTimeouts(limits, capMs) {
-  const cap = Number.isFinite(capMs) && capMs > 0 ? capMs : CLI_STEP_TIMEOUT_MS;
-  const branchMs = Math.max(1, Math.min(CLI_STEP_TIMEOUT_MS, cap, limits.deadlineMs - Date.now()));
+function cliBranchTimeouts(limits) {
+  const branchMs = Math.max(1, Math.min(CLI_STEP_TIMEOUT_MS, limits.deadlineMs - Date.now()));
   const margin = Math.min(CLI_DRIVER_TIMEOUT_MARGIN_MS, Math.floor(branchMs / 4));
   return { branchMs, driverMs: Math.max(1, branchMs - margin) };
 }
@@ -9604,7 +9715,12 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
   if ((!textOnly && !cliStepAttended(args)) || !CLI_STEP_ENGINES.has(engine)) {
     return runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt); // refuses
   }
-  const limits = cliRunLimits();
+  // v44 (review L1): `opts.cliDeadlineMs` (the editor's own end) moves the
+  // deadline earlier for this step: the lock and slot waits stop minRunMs
+  // before it, and the turn's timeouts are computed after the waits from it.
+  const runLimits = cliRunLimits();
+  const ownDeadline = opts && Number.isFinite(opts.cliDeadlineMs) ? Math.min(opts.cliDeadlineMs, runLimits.deadlineMs) : runLimits.deadlineMs;
+  const limits = Object.assign({}, runLimits, { deadlineMs: ownDeadline });
   const exhausted = (waitedMs) => {
     const remainingMs = Math.max(0, limits.deadlineMs - Date.now());
     progressStepEvent(activeProgress, stepIndex, 'tail', { tail: progressTail(`${CLI_STEP_LABELS[engine]} step not started: ${CLI_RUN_TIME_EXHAUSTED_MESSAGE}.`) });
@@ -9638,7 +9754,7 @@ async function holdCliSlot(paths, opts, plan, config, args, stepIndex, step, pro
     if (waited) cliStepAudit(paths, plan, 'cli_slot_acquired', { stepIndex, engine, waitedMs: Date.now() - waitStartedMs });
     if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
     if (limits.deadlineMs - Date.now() < limits.minRunMs) throw exhausted(Date.now() - waitStartedMs);
-    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, cliBranchTimeouts(limits, opts && opts.cliTurnCapMs));
+    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, cliBranchTimeouts(limits));
   } finally {
     releaseCliSlot(paths, engine);
   }
@@ -10092,8 +10208,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   let voiceState = null;
   const hasVoiceStep = longform && voiceStepIndex(plan.steps.list) !== -1;
   // v44: the owner's materials queue-pop read this run ({ entries, skipped,
-  // block }), or null.
+  // block }), or null. They reach the model steps after the first one (write,
+  // review, revise) and the editor, never the research step, which searches
+  // the web with what it is given (review L2).
   let materialsState = null;
+  const firstModelStep = plan.steps.list.findIndex((s) => !!s && s.local === undefined);
 
   // Provider overrides (v16) — see readProviderOverrides' comment above.
   const overrideRunId = activeProgress ? activeProgress.runId : undefined;
@@ -10386,7 +10505,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const block = read ? firstQueueBlock(read.text) : null;
       if (!block) return { stopChain: QUEUE_EMPTY_MESSAGE };
       queuePopped = { line: block.line };
-      if (local.materials) runMaterials(i, local.materials, block.body, stepOpts);
+      if (local.materials) runMaterials(i, local.materials, block.raw, stepOpts);
       return { text: `${QUEUE_TOPIC_NOTE}\n\n${block.body}` };
     }
     if (local.kind === 'list-drafts') {
@@ -10435,6 +10554,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       stream: assembleLocal ? assembleLocal.stream : '',
       tainted: !!(stepOpts && stepOpts.tainted),
       nonce: crypto.randomBytes(8).toString('hex'),
+      secretValues: materialSecretValues(config),
     });
     materialsState = state;
     if (!state.entries.length && !state.skipped.length) return;
@@ -10488,7 +10608,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         let attempt;
         if (cli) {
           const editorStep = { instruction: plan.steps.list[i].instruction, tool: editor.engine };
-          attempt = await dispatchCliStep(paths, Object.assign({}, editorOpts, { cliTurnCapMs: left }), plan, config, args, i, editorStep, prompt);
+          attempt = await dispatchCliStep(paths, Object.assign({}, editorOpts, { cliDeadlineMs: editorDeadline }), plan, config, args, i, editorStep, prompt);
         } else {
           const editorPlan = Object.assign({}, plan, {
             prompt,
@@ -10598,7 +10718,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const promptInstruction = longform ? longformHandoffInstruction(step) : step.instruction;
     const composedPrompt = isolation && typeof isolation.base === 'string'
       ? composeStepPrompt(isolation.base, promptInstruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined, carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform)
-      : composeStepPrompt(plan.prompt, promptInstruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform, longform && materialsState ? materialsState.block : '');
+      : composeStepPrompt(plan.prompt, promptInstruction, contextResults, stepEvidence, carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform, longform && materialsState && i > firstModelStep ? materialsState.block : '');
     const stepPrompt = composedPrompt.prompt;
     // Article pipeline (v30): a verdict on, or a rewrite of, a cut text is not
     // a verdict on the article. assemble pins the review to unresolved.
@@ -12156,6 +12276,11 @@ module.exports = {
   readPinnedMaterialsRoot,
   renderMaterialsBlock,
   loadQueueMaterials,
+  readMaterialBytes,
+  materialsRealRootProblem,
+  materialSecretValues,
+  materialsRootOk,
+  cleanQueueRefillLine,
   // Article pipeline (v38) — the voice step, exported for host unit tests only.
   parseVoiceProfile,
   readVoiceProfile,
@@ -12241,6 +12366,7 @@ module.exports = {
   queueItemTitles,
   queueTitleKey,
   parseQueueRefill,
+  renderQueueRefillItems,
   renderQueueRefillData,
   recentDraftTitles,
   readQueueForRefill,

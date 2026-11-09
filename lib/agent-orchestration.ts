@@ -228,13 +228,17 @@ export const MATERIALS_MAX_FILES = 5;
 export const MATERIALS_MAX_BYTES = 40000;
 export const MATERIALS_DEFAULT_MAX_BYTES = 20000;
 // An absolute folder of plain names: no `.`/`..` segment, no dot folder, no
-// `~` or `$`. At least two segments, and never under /proc, /sys or /dev.
+// `~` or `$`. At least two segments, never under /proc, /sys, /dev or /data
+// (the app's own data and home live there), and never a shared storage root
+// itself: a folder below it is fine. The executor checks the real path too.
 export const MATERIALS_ROOT_RE = /^(?:\/[A-Za-z0-9_-][A-Za-z0-9_.-]*){2,}$/;
 export const MATERIALS_ROOT_MAX_CHARS = 200;
-const MATERIALS_ROOT_DENIED_TOP = ['proc', 'sys', 'dev'];
+const MATERIALS_ROOT_DENIED_TOP = ['proc', 'sys', 'dev', 'data'];
+const MATERIALS_SHARED_STORAGE_ROOTS = ['/sdcard', '/storage/emulated', '/storage/emulated/0', '/storage/self', '/storage/self/primary', '/mnt/sdcard', '/mnt/user', '/mnt/user/0', '/mnt/runtime'];
 
 export function materialsRootOk(root: unknown): root is string {
   if (typeof root !== 'string' || root.length > MATERIALS_ROOT_MAX_CHARS || !MATERIALS_ROOT_RE.test(root)) return false;
+  if (MATERIALS_SHARED_STORAGE_ROOTS.includes(root)) return false;
   return !MATERIALS_ROOT_DENIED_TOP.includes(root.split('/')[1]);
 }
 
