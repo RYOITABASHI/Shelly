@@ -1547,6 +1547,10 @@ export interface AgentVoiceStepConfig {
   review: { type: string; model?: string };
   /** The name in the fixed ghostwritten footer. */
   author: string;
+  /** Executor v48: when the step produces no accepted section, assemble leaves
+   *  the author-view section out (`material: omitted`) instead of keeping the
+   *  marker. Honoured only while the owner's config file says so too. */
+  optional?: true;
 }
 
 /**

@@ -207,6 +207,8 @@ function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig |
   const a = r.author;
   if (typeof a !== 'string' || !a.trim() || a !== a.trim() || Array.from(a).length > VOICE_AUTHOR_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(a) || a.includes('\n')) return undefined;
   if (typeof r.profileSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(r.profileSha256)) return undefined;
+  // Executor v48: `optional: true` only; a plan never carries `false`.
+  if (r.optional !== undefined && r.optional !== true) return undefined;
   return {
     kind: 'voice',
     of,
@@ -216,6 +218,7 @@ function normalizeVoiceLocal(r: Record<string, unknown>): AgentLocalStepConfig |
     writer: { type: 'cli', cli: w.cli as 'claude' | 'codex', textOnly: true, ...(w.model !== undefined ? { model: w.model as string } : {}) },
     review: { type: v.type, ...(v.model !== undefined ? { model: v.model as string } : {}) },
     author: a,
+    ...(r.optional === true ? { optional: true as const } : {}),
   };
 }
 

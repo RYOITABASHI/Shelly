@@ -182,6 +182,9 @@ describe('voice step config', () => {
     ['a CLI reviewer', { review: { type: 'cli', cli: 'codex', textOnly: true } }],
     ['the local LLM as reviewer', { review: { type: 'local' } }],
     ['an unknown field', { personal: 'x' }],
+    ['a non-boolean optional', { optional: 'yes' }],
+    ['a numeric optional', { optional: 1 }],
+    ['a null optional', { optional: null }],
   ])('refuses %s', (_name, patch) => {
     expect(articlePipelineConfigError({ ...CONFIG, voice: { ...CONFIG.voice, ...(patch as object) } })).not.toBeNull();
   });
@@ -203,11 +206,25 @@ describe('voice step config', () => {
       { ...step, author: ' padded' },
       { ...step, of: [3, 1] },
       { ...step, lang: 'fr' },
+      // v48: a plan carries `optional: true` or nothing.
+      { ...step, optional: false },
+      { ...step, optional: 'true' },
     ]) {
       expect(normalizeStepLocal(bad)).toBeUndefined();
       expect(executor.normalizeStepLocal(bad, VOICE)).toBeUndefined();
     }
     expect(executor.normalizeStepLocal(step, 3)).toBeUndefined();
+  });
+
+  it('v48: optional true reaches the step, false or absent leaves it out', () => {
+    const on = (buildArticlePipeline({ ...CONFIG, voice: { ...CONFIG.voice!, optional: true } }).orchestration.steps as any[])[VOICE].local;
+    expect(on.optional).toBe(true);
+    expect(normalizeStepLocal(on)).toEqual(on);
+    expect(executor.normalizeStepLocal(on, VOICE)).toEqual(on);
+    const off = (buildArticlePipeline({ ...CONFIG, voice: { ...CONFIG.voice!, optional: false } }).orchestration.steps as any[])[VOICE].local;
+    expect('optional' in off).toBe(false);
+    expect(articlePipelineConfigError({ ...CONFIG, voice: { ...CONFIG.voice, optional: true } })).toBeNull();
+    expect(articlePipelineConfigError({ ...CONFIG, voice: { ...CONFIG.voice, optional: false } })).toBeNull();
   });
 });
 
@@ -818,6 +835,80 @@ describe('assemble with a voice step', () => {
     expect(frontmatter(text)).not.toContain('voice_sha');
   });
 
+  // v48: an optional voice step.
+  const omittedFooter = executor.voiceOmittedFooter('en', AUTHOR);
+  const optional = (state: object) => ({ ...state, optional: true, omittedFooter });
+
+  it('v48: optional and failed: the section goes, material omitted, no ghostwrite claim', () => {
+    const text = executor.assembleArticle(assemble, ctx(optional({ ok: false, reason: '代筆の査読が合格しない' })));
+    expect(frontmatter(text)).toContain('material: omitted');
+    expect(frontmatter(text)).toContain('本人の見解を省略: 代筆の査読が合格しない');
+    expect(frontmatter(text)).not.toContain('代筆なし');
+    expect(frontmatter(text)).not.toContain('voice_sha');
+    expect(frontmatter(text)).toContain('review: pass');
+    expect(text).not.toContain(MARKER);
+    expect(text).not.toContain('## My take');
+    expect(text).not.toMatch(/【[^】]*】/);
+    expect(text).toContain('The body says 42% [1].\n\n## Sources');
+    expect(text).toContain(omittedFooter);
+    expect(text.slice(text.lastIndexOf('\n---\n'))).not.toMatch(/ghostwritten|代筆/i);
+    expect(text).not.toContain('Configured footer.');
+    expect(frontmatter(text)).not.toContain('marker');
+  });
+
+  it('v48: optional, passed on another version: also omitted', () => {
+    const text = executor.assembleArticle(assemble, ctx(optional(passed({ articleStep: 3 }))));
+    expect(frontmatter(text)).toContain('material: omitted');
+    expect(text).not.toContain(MARKER);
+    expect(text).not.toContain(SECTION);
+  });
+
+  it('v48: optional and passed: unchanged', () => {
+    const plain = executor.assembleArticle(assemble, ctx(passed()));
+    const text = executor.assembleArticle(assemble, ctx(optional(passed())));
+    const body = (t: string) => t.slice(t.indexOf('\n---\n', 4)).replace(/saved_at: .*/, '');
+    expect(frontmatter(text)).toContain('material: ghostwritten');
+    expect(body(text)).toBe(body(plain));
+    expect(text).toContain(`## My take\n\n${SECTION}`);
+  });
+
+  it('v48: optional with a marker it cannot place keeps today\'s behaviour', () => {
+    const text = executor.assembleArticle(assemble, ctx(optional({ ok: false, reason: '印が段落に単独で置かれていない' }), `# A title\n\nSee [${MARKER}](https://x.example).`));
+    expect(frontmatter(text)).toContain('material: missing');
+    expect(frontmatter(text)).toContain('代筆なし: ');
+    expect(text).toContain(MARKER);
+    expect(text).toContain('Configured footer.');
+  });
+
+  it('v48: the cut takes the heading only when nothing else is under it', () => {
+    const cut = executor.withoutAuthorViewSection;
+    expect(cut(`# T\n\nBody.\n\n## 本人の見解\n\n${MARKER}`)).toBe('# T\n\nBody.');
+    expect(cut(`# T\n\nBody.\n\n## My take\n\n${MARKER}\n\n## Next\n\nMore.`)).toBe('# T\n\nBody.\n\n## Next\n\nMore.');
+    // Another paragraph under the heading: the heading stays.
+    expect(cut(`# T\n\n## My take\n\nIntro.\n\n${MARKER}`)).toBe('# T\n\n## My take\n\nIntro.');
+    expect(cut(`# T\n\n## My take\n\n${MARKER}\n\nMore under it.`)).toBe('# T\n\n## My take\n\nMore under it.');
+    // A deeper heading after the marker is still under the section.
+    expect(cut(`# T\n\n## My take\n\n${MARKER}\n\n### Sub\n\nx`)).toBe('# T\n\n## My take\n\n### Sub\n\nx');
+    // Never the title.
+    expect(cut(`# T\n\n${MARKER}`)).toBe('# T');
+    expect(cut(`# T\n\nSee [${MARKER}](https://x.example).`)).toBeNull();
+    expect(cut('# T\n\nNo marker.')).toBeNull();
+  });
+
+  it('v48: the omitted footer names the author and claims no ghostwritten section', () => {
+    for (const lang of ['en', 'ja'] as const) {
+      const footer = executor.voiceOmittedFooter(lang, AUTHOR);
+      expect(footer).toContain(AUTHOR);
+      expect(footer).not.toMatch(/ghostwritten|代筆|本人の見解|My view/);
+    }
+  });
+
+  it('v48: the digest marks an omitted draft', () => {
+    const fm = executor.parseDraftFrontmatter('---\ntitle: "t"\nreview: pass\nmaterial: omitted\n---\n');
+    expect(fm.material).toBe('omitted');
+    expect(executor.digestFlags({ ...fm, lint: [] })).toEqual(['本人の見解なし']);
+  });
+
   it('the digest marks a ghostwritten draft', () => {
     const fm = executor.parseDraftFrontmatter('---\ntitle: "t"\nreview: pass\nmaterial: ghostwritten\n---\n');
     expect(fm.material).toBe('ghostwritten');
@@ -848,7 +939,7 @@ process.exit(0);
 
   interface Setup { home: string; driver: string; recordDir: string; planFile: string; http: string }
 
-  function setup(opts: { article?: string; reviews?: string[]; driver: (string | null)[]; profile?: string | null; pin?: string | null }): Setup {
+  function setup(opts: { article?: string; reviews?: string[]; driver: (string | null)[]; profile?: string | null; pin?: string | null; planOptional?: boolean; fileOptional?: boolean }): Setup {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-voice-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
     fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
@@ -865,10 +956,10 @@ process.exit(0);
       [GROQ]: (opts.reviews ?? []).map(openAi),
     }));
     if (opts.pin !== null) {
-      fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({ version: 1, pipelines: [{ id: STREAM, voice: { profileSha256: opts.pin ?? PROFILE_SHA } }] }));
+      fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({ version: 1, pipelines: [{ id: STREAM, voice: { profileSha256: opts.pin ?? PROFILE_SHA, ...(opts.fileOptional ? { optional: true } : {}) } }] }));
     }
     const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
-    fs.writeFileSync(planFile, JSON.stringify(basePlan(home, voiceChain()), null, 2));
+    fs.writeFileSync(planFile, JSON.stringify(basePlan(home, voiceChain(opts.planOptional ? { optional: true } : {})), null, 2));
     fs.writeFileSync(
       path.join(home, '.shelly/agents/.env'),
       `LOCAL_LLM_URL='http://${LOCAL_URL}:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${vault}'\n`,
@@ -1028,6 +1119,50 @@ process.exit(0);
     expect(frontmatter(result)).toContain(why);
     expect(frontmatter(result)).not.toContain('voice_sha');
     expect(result).toContain(MARKER);
+  }, 30000);
+
+  it('v48: optional (plan and config file): a failed review cuts the section', async () => {
+    const s = setup({ driver: [SECTION, SECTION_2], reviews: ['VERDICT: REVISE\n1. No.', 'VERDICT: REVISE\n1. Still no.'], planOptional: true, fileOptional: true });
+    await run(s);
+    expect(readRunLog(s.home).status).toBe('success');
+    expect(readRunLog(s.home).steps[VOICE].status).toBe('skipped');
+    const result = readResult(s.home);
+    expect(frontmatter(result)).toContain('material: omitted');
+    expect(frontmatter(result)).toContain('本人の見解を省略: 代筆の査読が合格しない');
+    expect(frontmatter(result)).not.toContain('voice_sha');
+    expect(result).not.toContain(MARKER);
+    expect(result).not.toContain('## My take');
+    expect(result).toContain(executor.voiceOmittedFooter('en', AUTHOR));
+    expect(result).not.toContain('Configured footer.');
+  }, 30000);
+
+  it('v48: optional, a failed CLI turn and a missing pin also cut the section', async () => {
+    const s = setup({ driver: [null], reviews: [], planOptional: true, fileOptional: true });
+    await run(s);
+    expect(frontmatter(readResult(s.home))).toContain('material: omitted');
+    expect(readResult(s.home)).not.toContain(MARKER);
+    const p = setup({ driver: [SECTION], reviews: ['VERDICT: PASS'], planOptional: true, fileOptional: true, pin: 'b'.repeat(64) });
+    await run(p);
+    expect(readCalls(p.recordDir)).toHaveLength(0);
+    expect(frontmatter(readResult(p.home))).toContain('material: omitted');
+  }, 60000);
+
+  it('v48: optional and passed: the section goes in as before', async () => {
+    const s = setup({ driver: [SECTION], reviews: ['VERDICT: PASS'], planOptional: true, fileOptional: true });
+    await run(s);
+    const result = readResult(s.home);
+    expect(frontmatter(result)).toContain('material: ghostwritten');
+    expect(result).toContain(`## My take\n\n${SECTION}`);
+    expect(result).toContain(executor.voiceFooter('en', AUTHOR));
+  }, 30000);
+
+  it('v48: a plan that says optional while the config file does not keeps the marker', async () => {
+    const s = setup({ driver: [null], reviews: [], planOptional: true });
+    await run(s);
+    const result = readResult(s.home);
+    expect(frontmatter(result)).toContain('material: missing');
+    expect(result).toContain(MARKER);
+    expect(result).toContain('Configured footer.');
   }, 30000);
 
   it('a failed CLI turn keeps the marker', async () => {

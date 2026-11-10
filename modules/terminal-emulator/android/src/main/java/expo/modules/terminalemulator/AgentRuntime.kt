@@ -568,7 +568,9 @@ object AgentRuntime {
     // v46: unresolved grounding redirect links leave the research notes, the
     // sources lint shows web + material counts, and the author view prompt no
     // longer suggests an ellipsis or a numbered joke list. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 47
+    // v48: an optional author view is left out (material: omitted) when the
+    // voice step produces no accepted section. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 48
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

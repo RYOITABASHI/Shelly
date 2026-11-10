@@ -161,6 +161,10 @@ export interface ArticleVoiceConfig {
   engine?: ArticleTextOnlyEngine;
   /** An HTTP engine, so always another family than the CLI writer. */
   review: ArticleEngine;
+  /** Executor v48. true: a day the section is not accepted, the draft leaves
+   *  the author-view section out (`material: omitted`) instead of keeping the
+   *  marker. Default false: the marker stays. */
+  optional?: boolean;
 }
 
 export interface ArticlePipelineConfig {
@@ -365,8 +369,9 @@ const DEFAULT_VOICE_ENGINE: ArticleTextOnlyEngine = { type: 'cli', cli: 'claude'
 
 function articleVoiceError(v: unknown, where: string): string | null {
   if (!isPlainObject(v)) return `${where}: needs { "profile", "profileSha256", "author", "review" }`;
-  const keyError = unknownKeyError(v, ['profile', 'profileSha256', 'author', 'engine', 'review'], where);
+  const keyError = unknownKeyError(v, ['profile', 'profileSha256', 'author', 'engine', 'review', 'optional'], where);
   if (keyError) return keyError;
+  if (v.optional !== undefined && typeof v.optional !== 'boolean') return `${where}.optional: needs true or false`;
   if (typeof v.profile !== 'string' || v.profile.length > ARTICLE_VOICE_PROFILE_MAX_CHARS || !ARTICLE_VOICE_PROFILE_RE.test(v.profile)) {
     return `${where}.profile: needs a .md file inside the vault, as a path of plain names relative to it`;
   }
@@ -536,7 +541,17 @@ const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice
 
 function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepConfig {
   const voice = config.voice as ArticleVoiceConfig;
-  return { kind: 'voice', of, profile: voice.profile, profileSha256: voice.profileSha256, lang: config.lang, writer: voice.engine ?? DEFAULT_VOICE_ENGINE, review: voice.review, author: voice.author };
+  return {
+    kind: 'voice',
+    of,
+    profile: voice.profile,
+    profileSha256: voice.profileSha256,
+    lang: config.lang,
+    writer: voice.engine ?? DEFAULT_VOICE_ENGINE,
+    review: voice.review,
+    author: voice.author,
+    ...(voice.optional === true ? { optional: true as const } : {}),
+  };
 }
 
 function editorConfig(config: ArticlePipelineConfig, notes: number[]): AgentArticleEditorConfig {

@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=47
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=48
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -206,7 +206,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // fenced data block with the Sources ids (never on a tainted run, never to the
 // research step). A source URL loses trailing markdown (`**`, a backtick)
 // before it is deduped. Plans without `fetchSources` run as before.
-const EXECUTOR_SCRIPT_VERSION = 47;
+// v48 (2026-11-10, optional author view): a voice step with `optional: true`
+// (in the plan and in the owner's config file) that produces no accepted
+// section makes assemble cut the author-view section (the marker and its own
+// heading) instead of keeping the marker, with `material: omitted` and a footer
+// that claims no ghostwritten section. Plans without it run as before.
+const EXECUTOR_SCRIPT_VERSION = 48;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2657,7 +2662,9 @@ function normalizeVoiceLocal(raw, index) {
   const a = raw.author;
   if (typeof a !== 'string' || !a.trim() || a !== a.trim() || Array.from(a).length > VOICE_AUTHOR_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(a) || a.indexOf('\n') !== -1) return undefined;
   if (typeof raw.profileSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(raw.profileSha256)) return undefined;
-  return {
+  // v48: `optional: true` only; a plan never carries `false`.
+  if (raw.optional !== undefined && raw.optional !== true) return undefined;
+  return Object.assign({
     kind: 'voice',
     of,
     profile: raw.profile,
@@ -2666,7 +2673,7 @@ function normalizeVoiceLocal(raw, index) {
     writer: Object.assign({ type: 'cli', cli: w.cli, textOnly: true }, w.model !== undefined ? { model: w.model } : {}),
     review: Object.assign({ type: r.type }, r.model !== undefined ? { model: r.model } : {}),
     author: a,
-  };
+  }, raw.optional === true ? { optional: true } : {});
 }
 
 // v44: the editor gate (on assemble) and local materials (on queue-pop).
@@ -2882,7 +2889,9 @@ function stripArticleSources(text) {
  *  - review: `pass` only when the last review that ran answered VERDICT: PASS;
  *  - material: `ghostwritten` only when this run's voice step passed on the
  *    adopted version (ctx.voice, v38; its section replaces the marker and its
- *    fixed footer the configured one); otherwise
+ *    fixed footer the configured one); `omitted` when an optional voice step
+ *    (v48) produced nothing accepted and its section was cut (with the fixed
+ *    footer of voiceOmittedFooter); otherwise
  *    `missing` when the body still holds 【本人の材料: 未記入】,
  *    `unknown` when it does not: an unattended chain has no owner material, so
  *    a gone marker means it was dropped. Only the owner writes `ok`, by hand;
@@ -3053,7 +3062,20 @@ function assembleArticle(local, ctx) {
       material = 'ghostwritten';
       footer = voice.footer;
     } else {
-      voiceNotes.push(`${VOICE_NOTE_PREFIX}${voice.ok ? VOICE_ARTICLE_CHANGED_REASON : voice.reason}`);
+      const reason = voice.ok ? VOICE_ARTICLE_CHANGED_REASON : voice.reason;
+      // v48: with `optional` (in the plan and in the owner's config file, which
+      // assembleContext checks), the placeholder section goes instead of
+      // staying behind as a marker. Only the one marker articleMarkerSlot
+      // accepts is removed; anything else keeps today's behaviour.
+      const omitted = voice.optional && voice.omittedFooter ? withoutAuthorViewSection(body) : null;
+      if (omitted !== null) {
+        body = omitted;
+        material = 'omitted';
+        footer = voice.omittedFooter;
+        voiceNotes.push(`${VOICE_OMITTED_NOTE_PREFIX}${reason}`);
+      } else {
+        voiceNotes.push(`${VOICE_NOTE_PREFIX}${reason}`);
+      }
     }
   }
   const notes = reviewNotes.concat(voiceNotes);
@@ -3141,6 +3163,9 @@ const VOICE_NOTE_PREFIX = '代筆なし: ';
 const VOICE_ARTICLE_CHANGED_REASON = '代筆の後で本文が変わった';
 const VOICE_DONE_MESSAGE = 'The author view section was ghostwritten, reviewed and checked.';
 const VOICE_FAILED_MESSAGE = 'No ghostwritten section: the marker stays.';
+// v48: an optional voice step that produced nothing accepted.
+const VOICE_OMITTED_NOTE_PREFIX = '本人の見解を省略: ';
+const VOICE_OMITTED_MESSAGE = 'No ghostwritten section: the author view is left out (optional).';
 const VOICE_REVIEWED_RE = /^reviewed:[ \t]*["']?(\d{4}-\d{2}-\d{2})["']?[ \t]*$/m;
 // Profile headings. Experience lines may be restated; allowed private facts and
 // values (including tone) are material the section may use; every other line
@@ -3163,6 +3188,9 @@ const VOICE_KEYWORD_COLON_RE = /[\p{L}\p{N}_]:[\p{L}\p{N}_]/u;
 const VOICE_DOTTED_HOST_RE = /[\p{L}\p{N}-]\.[\p{L}\p{N}]|[A-Za-z0-9-][。．｡][A-Za-z0-9]/u;
 const VOICE_MARKER_LINE_RE = new RegExp(`^${ARTICLE_MATERIAL_MISSING_RE.source}$`);
 const VOICE_MARKER_G = new RegExp(ARTICLE_MATERIAL_MISSING_RE.source, 'g');
+// v48: the heading of the author-view section ("## 本人の見解", "## My take"),
+// any level under the title.
+const VOICE_SECTION_HEADING_RE = /^ {0,3}(#{2,6})[ \t]+\S/;
 
 // A short list (v40): a line that starts with a circled number ①-⑩ or "1. ".
 // The marker is not a number; a circled number in the text that names one of
@@ -3460,6 +3488,38 @@ function articleMarkerSlot(text) {
     if (m && VOICE_MARKER_LINE_RE.test(m[1]) && blank(i - 1) && blank(i + 1)) return { lines, index: i };
   }
   return null;
+}
+
+/**
+ * v48: the article without its author-view section, for an optional voice step
+ * that produced nothing accepted. The one marker articleMarkerSlot accepts goes,
+ * and so does the ##-###### heading right above it (blank lines between them
+ * only) when nothing else is under that heading: the next content after the
+ * marker is the end or a heading of the same or a higher level. A heading with
+ * other text under it stays. Blank lines around the cut fold into one. null
+ * when there is no such marker. Pure.
+ */
+function withoutAuthorViewSection(text) {
+  const slot = articleMarkerSlot(text);
+  if (!slot) return null;
+  const lines = slot.lines;
+  const blank = (k) => !lines[k].trim();
+  let start = slot.index;
+  let end = slot.index;
+  let prev = start - 1;
+  while (prev >= 0 && blank(prev)) prev -= 1;
+  const heading = prev >= 0 ? VOICE_SECTION_HEADING_RE.exec(lines[prev]) : null;
+  if (heading) {
+    let next = end + 1;
+    while (next < lines.length && blank(next)) next += 1;
+    const after = next < lines.length ? /^ {0,3}(#{1,6})[ \t]/.exec(lines[next]) : null;
+    if (next >= lines.length || (after && after[1].length <= heading[1].length)) start = prev;
+  }
+  while (end + 1 < lines.length && blank(end + 1)) end += 1;
+  while (start > 0 && blank(start - 1)) start -= 1;
+  const before = lines.slice(0, start);
+  const rest = lines.slice(end + 1);
+  return before.concat(before.length && rest.length ? [''] : [], rest).join('\n').replace(/\s+$/, '');
 }
 
 /** The section's short list: { lines (each list line without its marker),
@@ -4023,6 +4083,14 @@ function voiceFooter(lang, author) {
     : `AI 利用: 調査・下書き・査読に AI を使い、「本人の見解」は AI が本人の考えをもとに代筆しました。\n著者: ${author}（自動チェックを通った記事は、本人が読む前に公開されることがあります）`;
 }
 
+/** v48: the footer of a draft whose optional author view was left out. Like
+ *  voiceFooter, without the ghostwritten section it no longer has. */
+function voiceOmittedFooter(lang, author) {
+  return lang === 'en'
+    ? `AI disclosure: AI tools were used for research, drafting and review.\nAuthor: ${author}. Posts that pass automated checks may go out before the author reads them.`
+    : `AI 利用: 調査・下書き・査読に AI を使いました。\n著者: ${author}（自動チェックを通った記事は、本人が読む前に公開されることがあります）`;
+}
+
 function voiceRules(lang) {
   const en = lang === 'en';
   const length = en ? `at most ${VOICE_SECTION_MAX_WORDS_EN} words, in English` : `${VOICE_SECTION_MAX_CHARS_JA} characters or fewer, in Japanese`;
@@ -4420,6 +4488,26 @@ function readMaterialBytes(file, st, realRoot, maxBytes, f) {
     try {
       f.closeSync(fd);
     } catch (_) {}
+  }
+}
+
+/**
+ * v48: whether the owner's config file marks this stream's author view
+ * optional (`voice.optional === true`). Read again at run time like the pin,
+ * so a plan alone cannot make a draft drop the section. Throws nothing.
+ */
+function readPinnedVoiceOptional(home, stream, fsImpl) {
+  const f = fsImpl || fs;
+  try {
+    const file = path.join(home, ...VOICE_PIPELINE_FILE.split('/'));
+    const st = f.lstatSync(file);
+    if (st.isSymbolicLink() || !st.isFile() || st.size > VOICE_PIPELINE_FILE_MAX_BYTES) return false;
+    const parsed = JSON.parse(readBytesBounded(file, VOICE_PIPELINE_FILE_MAX_BYTES, f).toString('utf8'));
+    const list = parsed && Array.isArray(parsed.pipelines) ? parsed.pipelines : [];
+    const entry = list.find((p) => p && typeof p === 'object' && p.id === stream);
+    return !!(entry && entry.voice && typeof entry.voice === 'object' && entry.voice.optional === true);
+  } catch (_) {
+    return false;
   }
 }
 
@@ -4944,7 +5032,7 @@ function parseDraftFrontmatter(head) {
       const ms = Date.parse(value);
       out.savedAtMs = Number.isFinite(ms) ? ms : 0;
     } else if (m[1] === 'material') {
-      out.material = value === 'ok' || value === 'ghostwritten' || value === 'missing' || value === 'unknown' ? value : '';
+      out.material = value === 'ok' || value === 'ghostwritten' || value === 'omitted' || value === 'missing' || value === 'unknown' ? value : '';
     } else {
       const parsed = parseJsonValue(value);
       out.lint = Array.isArray(parsed)
@@ -5065,6 +5153,7 @@ function digestFlags(item) {
   if (qualityHeld(item)) flags.push(qualityLabel(item));
   if (item.material === 'missing') flags.push('本人の材料なし');
   else if (item.material === 'ghostwritten') flags.push('代筆');
+  else if (item.material === 'omitted') flags.push('本人の見解なし');
   else if (item.material !== 'ok') flags.push('本人の材料を確認');
   if (item.lint.length) flags.push(`lint: ${item.lint.join(', ')}`);
   return flags;
@@ -10632,7 +10721,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const fail = (reason) => {
       voiceState = { ok: false, reason };
       audit('voice_failed', Object.assign({ reason }, sha ? { sha } : {}));
-      return { status: 'skipped', preview: previewText(`${VOICE_FAILED_MESSAGE} ${reason}`) };
+      return { status: 'skipped', preview: previewText(`${local.optional ? VOICE_OMITTED_MESSAGE : VOICE_FAILED_MESSAGE} ${reason}`) };
     };
     const voiceOpts = Object.assign({}, stepOpts, { branchCtl: undefined, paidPin: false });
     try {
@@ -10741,13 +10830,24 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       });
       return { text: renderDraftDigest(local, scan, sourcingToday) };
     }
-    const ctx = assembleContext();
+    const ctx = assembleContext(local);
     // v44: the editor scores the text assemble is about to save.
     if (local.editor && !local.plain) ctx.editor = await runEditor(i, local, ctx, stepOpts);
     return { text: assembleArticle(local, ctx) };
   }
 
-  function assembleContext() {
+  // v48: an optional voice step (plan and owner's config file both say so)
+  // tells assemble to leave the section out when it produced nothing accepted.
+  function voiceContext(assembleLocal) {
+    if (!hasVoiceStep) return null;
+    const state = voiceState || { ok: false, reason: '代筆の手順が動かなかった' };
+    const at = voiceStepIndex(plan.steps.list);
+    const voiceLocal = normalizeStepLocal(plan.steps.list[at].local, at);
+    if (!voiceLocal || voiceLocal.optional !== true || !assembleLocal || !readPinnedVoiceOptional(paths.home, assembleLocal.stream)) return state;
+    return Object.assign({}, state, { optional: true, omittedFooter: voiceOmittedFooter(voiceLocal.lang, voiceLocal.author) });
+  }
+
+  function assembleContext(assembleLocal) {
     return {
       steps: plan.steps.list,
       results: resultsByStep,
@@ -10758,7 +10858,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       basePrompt: plan.prompt,
       reviewNotes: Array.from(reviewNotes),
       usedEngines: usedEnginesByStep,
-      voice: hasVoiceStep ? (voiceState || { ok: false, reason: '代筆の手順が動かなかった' }) : null,
+      voice: voiceContext(assembleLocal),
       materials: materialsState ? materialsState.entries : [],
     };
   }
@@ -12546,6 +12646,9 @@ module.exports = {
   articleMarkerSlot,
   readPinnedVoiceSha,
   voiceFooter,
+  voiceOmittedFooter,
+  withoutAuthorViewSection,
+  readPinnedVoiceOptional,
   buildVoiceWritePrompt,
   buildVoiceReviewPrompt,
   VoiceFailure,

@@ -70,7 +70,8 @@ A draft can keep one section for your own view, holding the marker `【本人の
   "profile": "Drafts/_voice-profile.md",
   "profileSha256": "<sha256 of the profile file>",
   "author": "Your Name",
-  "review": { "type": "gemini-api" }
+  "review": { "type": "gemini-api" },
+  "optional": true
 }
 ```
 
@@ -91,6 +92,7 @@ A draft can keep one section for your own view, holding the marker `【本人の
   The writer's prompt asks for this style (です・ます, short sentences, one twist, a light "…", sometimes a short list as a joke) and lists these rules with example sentences and one list example per language, so ordinary output passes.
 - **When it passes**, the section replaces the marker, the draft gets `material: ghostwritten` and `voice_sha` (the profile's SHA-256), and the footer becomes a fixed disclosure that names `author` and says the section was ghostwritten by AI. The model never writes the footer, and text in the article cannot set `material`. The agent's audit log (`logs/<id>/plan-executor-audit.jsonl`) gets a `voice_passed` line with the hash, the executor's own record of the pass. The digest marks the draft 代筆.
 - **When anything fails** (no reviewed profile, a hash that does not match, a misplaced marker, a failed turn, a review that does not pass, a local check, too little time), the marker stays, the draft is saved with `material: missing`, no `voice_sha`, your own footer, and the reason in `review_note` after `代筆なし:`. The run itself does not fail.
+- **`optional`** (executor v48, `true` or `false`, default `false`): with `true`, a day the section is not accepted (any of the failures above) the draft leaves the author-view section out instead of keeping the marker: the marker's line goes, and so does the `##`–`######` heading right above it (`## 本人の見解`, `## My take`, whatever yours says) when nothing else sits under that heading. The draft gets `material: omitted`, no `voice_sha`, the reason in `review_note` after `本人の見解を省略:`, and a fixed footer like the ghostwritten one that names `author` but claims no ghostwritten section (AI was used for research, drafting and review; posts that pass the checks may go out unread). Your own `footer` is not used then. With no marker left there is nothing for a marker check to hold, and the editor scores the draft as saved, without the section. A marker the step cannot place (twice, in a link, a quote or a list) is not cut and stays as without `optional`. Shelly reads `optional` again from this file at run time, like the pin: a plan that says optional while this file does not keeps the marker. The digest marks the draft 本人の見解なし. When the section passes nothing changes.
 - **Limits**: the checks are strict on purpose, so a fine section is sometimes refused; the marker then stays for you. They read word forms, not meaning: a general opinion that implies use without naming it ("この道具は手になじむと思う") passes. The review and your own read cover the rest; publishing without your read relies on that residual risk being acceptable to you.
 
 ## Editor quality gate
