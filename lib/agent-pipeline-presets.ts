@@ -21,6 +21,7 @@ import {
   FETCH_SOURCES_MAX,
   FETCH_SOURCES_MAX_CHARS_EACH,
   FETCH_SOURCES_MIN_CHARS_EACH,
+  HARD_MAX_STEPS,
   MATERIALS_DEFAULT_MAX_BYTES,
   MATERIALS_MAX_BYTES,
   MATERIALS_MAX_FILES,
@@ -207,6 +208,9 @@ export interface ArticlePipelineConfig {
    *  fetched through the broker and given to write / review / revise / the
    *  editor as data. */
   fetchSources?: ArticleFetchSourcesConfig;
+  /** Review -> revise rounds (executor v53): 2 (the default) or 3. Round 3
+   *  adds two steps, and the whole chain must stay within HARD_MAX_STEPS. */
+  reviewRounds?: 2 | 3;
 }
 
 /** Source full text: how many sources, and how much of each. */
@@ -322,7 +326,20 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds'] as const;
+
+/** Review -> revise rounds of an article chain without `reviewRounds`. */
+export const ARTICLE_DEFAULT_REVIEW_ROUNDS = 2;
+export const ARTICLE_MAX_REVIEW_ROUNDS = 3;
+
+/** The number of steps buildArticlePipeline makes for `config`: research,
+ *  write, a review and a revise per round and assemble, plus queue-refill,
+ *  queue-pop and voice when configured. Pure. */
+export function articlePipelineStepCount(config: { queue?: unknown; instructions?: unknown; voice?: unknown; reviewRounds?: unknown }): number {
+  const rounds = config.reviewRounds === ARTICLE_MAX_REVIEW_ROUNDS ? ARTICLE_MAX_REVIEW_ROUNDS : ARTICLE_DEFAULT_REVIEW_ROUNDS;
+  const topics = isPlainObject(config.instructions) && config.instructions.topics !== undefined;
+  return 3 + 2 * rounds + (config.queue === true ? 1 : 0) + (topics ? 1 : 0) + (config.voice !== undefined ? 1 : 0);
+}
 
 function articleFetchSourcesError(v: unknown, where: string): string | null {
   if (!isPlainObject(v)) return `${where}: needs an object, e.g. { "max": 2, "maxCharsEach": 8000 }`;
@@ -401,6 +418,9 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (commonError) return commonError;
   if (raw.queue !== undefined && typeof raw.queue !== 'boolean') return `${where}.queue: needs true or false`;
   if (raw.lintSources !== undefined && typeof raw.lintSources !== 'boolean') return `${where}.lintSources: needs true or false`;
+  if (raw.reviewRounds !== undefined && raw.reviewRounds !== ARTICLE_DEFAULT_REVIEW_ROUNDS && raw.reviewRounds !== ARTICLE_MAX_REVIEW_ROUNDS) {
+    return `${where}.reviewRounds: use ${ARTICLE_DEFAULT_REVIEW_ROUNDS} or ${ARTICLE_MAX_REVIEW_ROUNDS}`;
+  }
   if (raw.voice !== undefined) {
     const voiceError = articleVoiceError(raw.voice, `${where}.voice`);
     if (voiceError) return voiceError;
@@ -464,6 +484,11 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (isPlainObject(raw.quality)) {
     const qualityKeyError = unknownKeyError(raw.quality, ['minChars', 'minWords', 'minSources'], `${where}.quality`);
     if (qualityKeyError) return qualityKeyError;
+  }
+  // The queue, refill and voice steps count too.
+  const stepCount = articlePipelineStepCount(raw);
+  if (stepCount > HARD_MAX_STEPS) {
+    return `${where}.reviewRounds: ${raw.reviewRounds ?? ARTICLE_DEFAULT_REVIEW_ROUNDS} needs ${stepCount} steps; at most ${HARD_MAX_STEPS}`;
   }
   return null;
 }
@@ -571,7 +596,8 @@ function editorConfig(config: ArticlePipelineConfig, notes: number[]): AgentArti
 
 /**
  * One config's draft agent: [research, write, review1, revise1, review2,
- * revise2, assemble] (with `voice` before assemble when configured), with `queue-pop` first on a queued config and
+ * revise2, assemble] (review3 and revise3 after revise2 with `reviewRounds: 3`,
+ * executor v53; `voice` before assemble when configured), with `queue-pop` first on a queued config and
  * `queue-refill` before that when it has a topics instruction. Run by the
  * PlanSpec executor, on the cron or on Run now (the same executor and plan,
  * lib/agent-attended-route.ts isExecutorOnlyChain). It ends in the draft
@@ -587,9 +613,23 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
   // `of` and `parts` count from the research step.
   const at = (k: number) => k + (config.queue ? 1 : 0) + (refill ? 1 : 0);
   const review = `${ins.review}\n\n${REVIEW_OUTPUT_CONTRACT}`;
+  const rounds = config.reviewRounds === ARTICLE_MAX_REVIEW_ROUNDS ? ARTICLE_MAX_REVIEW_ROUNDS : ARTICLE_DEFAULT_REVIEW_ROUNDS;
+  // The write step and each round's revise, by index from research.
+  const versions = Array.from({ length: rounds + 1 }, (_, n) => at(1 + 2 * n));
+  // Round r: the review reads [research, the version before it], the revise
+  // reads [that version, the review].
+  const loop: AgentOrchestrationStep[] = [];
+  for (let r = 1; r <= rounds; r++) {
+    const version = at(2 * r - 1);
+    const round = r as 1 | 2 | 3;
+    loop.push(
+      { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), version], round } },
+      { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [version, at(2 * r)], round } },
+    );
+  }
   const assemble: AgentLocalStepConfig = {
     kind: 'assemble',
-    parts: [[at(1), at(3), at(5)]],
+    parts: [versions],
     stream: config.id,
     footer: config.footer,
     ...(config.lintTerms ? { lintTerms: config.lintTerms } : {}),
@@ -625,11 +665,8 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     ...(config.queue ? [{ instruction: popLabel, local: pop }] : []),
     { instruction: ins.research, ...pinned(engines.research) },
     { instruction: ins.write, ...pinned(engines.write) },
-    { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(1)], round: 1 } },
-    { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(1), at(2)], round: 1 } },
-    { instruction: review, ...pinned(engines.review), handoff: { kind: 'review', of: [at(0), at(3)], round: 2 } },
-    { instruction: ins.revise, ...pinned(engines.write), handoff: { kind: 'revise', of: [at(3), at(4)], round: 2 } },
-    ...(config.voice ? [{ instruction: lang === 'en' ? 'Ghostwrite the author view from the voice profile (text-only CLI, then a review)' : '本人の見解をプロフィールから代筆する（テキストのみの CLI、査読つき）', local: voiceStep(config, [at(1), at(3), at(5)]) }] : []),
+    ...loop,
+    ...(config.voice ? [{ instruction: lang === 'en' ? 'Ghostwrite the author view from the voice profile (text-only CLI, then a review)' : '本人の見解をプロフィールから代筆する（テキストのみの CLI、査読つき）', local: voiceStep(config, versions) }] : []),
     {
       instruction: config.editor
         ? lang === 'en' ? 'Have the editor score the draft, then assemble it with frontmatter and Sources' : '編集者が下書きを採点し、フロントマターと Sources を付けて組み立てる'

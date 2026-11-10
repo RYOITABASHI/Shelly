@@ -759,7 +759,7 @@ export function summarizeAgentDraftAsText(
     const allSteps = draft.orchestrationSteps;
     // Agent roles Inc B: a review → revise loop is shown as ONE line on its
     // round-1 review ("… (up to 2 rounds; <implementer> fixes findings, stops
-    // early on PASS)"); its revise / round-2 review steps get no line of
+    // early on PASS)"); its revise / later-round review steps get no line of
     // their own. A judge line says it sees anonymous candidates.
     const handoffOfStep = (s: (typeof allSteps)[number]) => (typeof s === 'string' ? undefined : s.handoff);
     // A full-width （…） suffix (ja) follows the text directly; others get a space.
@@ -780,7 +780,7 @@ export function summarizeAgentDraftAsText(
     };
     const hiddenStep = (s: (typeof allSteps)[number]) => {
       const h = handoffOfStep(s);
-      return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round === 2));
+      return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round >= 2));
     };
     const stepLabel = (s: (typeof draft.orchestrationSteps)[number]) => {
       // A routed step's appended paragraphs (hand-off contract, the

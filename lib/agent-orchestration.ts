@@ -394,21 +394,26 @@ export type StepHandoffKind = 'review' | 'revise' | 'judge';
 export interface StepHandoff {
   kind: StepHandoffKind;
   of: number[];
-  round: 1 | 2;
+  round: 1 | 2 | 3;
   /** Judge only: the candidates' branch folders (index-aligned with `of`),
    *  re-validated by normalizeCandidateDirs (lib/agent-judge-evidence.ts). */
   candidateDirs?: string[];
 }
 
-/** Hard cap of review → revise rounds (the loop is statically unrolled). */
+/** Hard cap of review → revise rounds the role router unrolls. */
 export const MAX_HANDOFF_ROUNDS = 2;
+/** The highest round a hand-off marker may carry (executor v53): an article
+ *  pipeline's `reviewRounds: 3` adds a round-3 review and revise. Round 3 is
+ *  for review and revise only. Mirrored in scripts/shelly-plan-executor.js. */
+export const MAX_HANDOFF_ROUND = 3;
 
 const HANDOFF_KINDS: ReadonlySet<string> = new Set(['review', 'revise', 'judge']);
 
 /**
  * Re-validate a step's hand-off marker (it lives in the agent JSON / plan
  * file, which a run can rewrite). A fresh object from the known fields, or
- * undefined when anything is off (unknown kind, round not 1|2, `of` empty /
+ * undefined when anything is off (unknown kind, round not 1|2 (3 for a review
+ * or revise, executor v53), `of` empty /
  * not strictly ascending non-negative integers below HARD_MAX_STEPS). The
  * "before this step" bound is checked by normalizeSteps (it knows the index).
  * Mirrored in scripts/shelly-plan-executor.js (normalizeStepHandoff).
@@ -417,7 +422,7 @@ export function normalizeStepHandoff(raw: unknown): StepHandoff | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
   if (typeof r.kind !== 'string' || !HANDOFF_KINDS.has(r.kind)) return undefined;
-  if (r.round !== 1 && r.round !== 2) return undefined;
+  if (r.round !== 1 && r.round !== 2 && !(r.round === MAX_HANDOFF_ROUND && (r.kind === 'review' || r.kind === 'revise'))) return undefined;
   if (!Array.isArray(r.of) || r.of.length === 0 || r.of.length > HARD_MAX_STEPS) return undefined;
   const of: number[] = [];
   for (const k of r.of) {
@@ -428,7 +433,7 @@ export function normalizeStepHandoff(raw: unknown): StepHandoff | undefined {
   // Judge evidence (2026-11-02): a malformed candidateDirs drops only itself
   // (the judge then runs on the carried text alone, as before).
   const candidateDirs = r.kind === 'judge' && r.candidateDirs !== undefined ? normalizeCandidateDirs(r.candidateDirs, of.length) : undefined;
-  return { kind: r.kind as StepHandoffKind, of, round: r.round, ...(candidateDirs ? { candidateDirs } : {}) };
+  return { kind: r.kind as StepHandoffKind, of, round: r.round as StepHandoff['round'], ...(candidateDirs ? { candidateDirs } : {}) };
 }
 
 /** The review step's output contract (appended to its instruction, never to
@@ -483,7 +488,7 @@ export function parseJudgeWinner(text: string | undefined, candidates: number): 
 }
 
 /**
- * true when step `index` (a revise step, or a round-2 review) must be skipped:
+ * true when step `index` (a revise step, or a review of round 2 or later) must be skipped:
  * the most recent review step before it answered VERDICT: PASS, or was itself
  * skipped. `results[k]` / `skipped[k]` are index-aligned with the steps.
  * Pure; mirrored in scripts/shelly-plan-executor.js.
@@ -495,7 +500,7 @@ export function shouldSkipHandoffStep(
   skipped: ReadonlyArray<boolean | undefined>,
 ): boolean {
   const h = steps[index]?.handoff;
-  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round === 2))) return false;
+  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round >= 2))) return false;
   for (let j = index - 1; j >= 0; j--) {
     if (steps[j]?.handoff?.kind !== 'review') continue;
     if (skipped[j]) return true;
@@ -508,8 +513,8 @@ export function shouldSkipHandoffStep(
  * The results step `index` carries, and which steps they came from.
  *  - a hand-off step carries exactly its `of` steps that produced a result;
  *  - any other step carries every result before `contextBase` (the parallel
- *    plan's bound), except a round-1 review / revise result superseded by a
- *    round-2 result of the same kind (so a summary sees the final state).
+ *    plan's bound), except a review / revise result superseded by a later
+ *    round's result of the same kind (so a summary sees the final state).
  * Without hand-offs this is `results.slice(0, contextBase)` — the pre-Inc B
  * carry. Pure; mirrored in scripts/shelly-plan-executor.js.
  */
@@ -530,8 +535,8 @@ export function carriedStepContext(
     if (steps.some((s) => s?.handoff)) {
       indexes = indexes.filter((k) => {
         const hk = steps[k]?.handoff;
-        if (!hk || hk.round !== 1 || hk.kind === 'judge') return true;
-        return !indexes.some((j) => j > k && steps[j]?.handoff?.kind === hk.kind && steps[j]?.handoff?.round === 2);
+        if (!hk || hk.kind === 'judge') return true;
+        return !indexes.some((j) => j > k && steps[j]?.handoff?.kind === hk.kind && (steps[j]?.handoff?.round ?? 0) > hk.round);
       });
     }
   }

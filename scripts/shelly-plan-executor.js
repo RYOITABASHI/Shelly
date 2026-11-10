@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=52
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=53
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -227,7 +227,14 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // v52: the history is keyed by the assemble step's stream, not the agent id
 // (re-registering an article agent gives it a new id); a missing stream file
 // starts from the old per-agent logs/<id>/article-history.json.
-const EXECUTOR_SCRIPT_VERSION = 52;
+// v53: an article pipeline may run a third review -> revise round
+// (`reviewRounds: 3`): a hand-off marker may carry round 3 (review / revise
+// only), a PASS at any round skips the rest, and a later round's review /
+// revise supersedes an earlier one in the carried context. The last review,
+// the editor in each review, the final review in assemble and the in-step
+// reserve were already "the last review step", not round 2. A plan without
+// round 3 runs as before.
+const EXECUTOR_SCRIPT_VERSION = 53;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -5783,6 +5790,9 @@ function draftMtimeMs(file) {
 // so the marker is re-validated here, including "every `of` index is before
 // the step itself".
 const MAX_HANDOFF_ROUNDS = 2;
+// v53: an article pipeline's `reviewRounds: 3` adds a round-3 review and
+// revise; round 3 is for review and revise only.
+const MAX_HANDOFF_ROUND = 3;
 const HANDOFF_KINDS = new Set(['review', 'revise', 'judge']);
 const HANDOFF_CANDIDATE_LETTERS = ['A', 'B', 'C'];
 const HANDOFF_PASS_SKIP_MESSAGE = 'Skipped: the reviewer answered VERDICT: PASS.';
@@ -5792,7 +5802,7 @@ const REVIEW_OUTPUT_CONTRACT =
 function normalizeStepHandoff(raw, index) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   if (typeof raw.kind !== 'string' || !HANDOFF_KINDS.has(raw.kind)) return undefined;
-  if (raw.round !== 1 && raw.round !== 2) return undefined;
+  if (raw.round !== 1 && raw.round !== 2 && !(raw.round === MAX_HANDOFF_ROUND && (raw.kind === 'review' || raw.kind === 'revise'))) return undefined;
   if (!Array.isArray(raw.of) || raw.of.length === 0 || raw.of.length > HARD_MAX_STEPS) return undefined;
   const of = [];
   for (const k of raw.of) {
@@ -5834,7 +5844,7 @@ function parseJudgeWinner(text, candidates) {
 
 function shouldSkipHandoffStep(steps, index, results, skipped) {
   const h = handoffOf(steps, index);
-  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round === 2))) return false;
+  if (!h || !(h.kind === 'revise' || (h.kind === 'review' && h.round >= 2))) return false;
   for (let j = index - 1; j >= 0; j -= 1) {
     const hj = handoffOf(steps, j);
     if (!hj || hj.kind !== 'review') continue;
@@ -5856,10 +5866,10 @@ function carriedStepContext(steps, index, results, contextBase) {
     if (steps.some((_, k) => handoffOf(steps, k))) {
       indexes = indexes.filter((k) => {
         const hk = handoffOf(steps, k);
-        if (!hk || hk.round !== 1 || hk.kind === 'judge') return true;
+        if (!hk || hk.kind === 'judge') return true;
         return !indexes.some((j) => {
           const hj = handoffOf(steps, j);
-          return j > k && !!hj && hj.kind === hk.kind && hj.round === 2;
+          return j > k && !!hj && hj.kind === hk.kind && hj.round > hk.round;
         });
       });
     }
@@ -12042,7 +12052,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
 
     // Agent roles Inc B (v26): the latest review answered VERDICT: PASS — the
-    // remaining revise / round-2 review steps settle SKIPPED (not an error;
+    // remaining revise / later-round review steps settle SKIPPED (not an error;
     // reduceStatus folds success + skipped to success) and the chain goes on.
     // v31: a stopped loop skips every hand-off left, including a round-2 review
     // whose revise never ran and so has nothing to read.
@@ -13047,6 +13057,7 @@ module.exports = {
   composeRoleInstructions,
   ROLE_RESULTS_DATA_NOTE,
   MAX_HANDOFF_ROUNDS,
+  MAX_HANDOFF_ROUND,
   HANDOFF_PASS_SKIP_MESSAGE,
   REVIEW_OUTPUT_CONTRACT,
   normalizeStepHandoff,

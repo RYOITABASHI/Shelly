@@ -590,7 +590,7 @@ function toolKey(tool: ToolChoice | undefined): string {
 }
 
 /** Original step indices per summary line (a parallel line holds several).
- *  Agent roles Inc B: a review → revise loop's revise / round-2 review steps
+ *  Agent roles Inc B: a review → revise loop's revise / later-round review steps
  *  have no summary line of their own — each joins the visible line of the
  *  step with the same role before it (the implement line / the round-1
  *  review line), so 「2番目をローカルで」 re-engines every round of it. */
@@ -600,7 +600,7 @@ export function summaryLineSteps(steps: ReadonlyArray<string | AgentOrchestratio
   const step = (i: number) => (typeof steps[i] === 'string' ? undefined : (steps[i] as AgentOrchestrationStep));
   const hidden = (i: number) => {
     const h = step(i)?.handoff;
-    return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round === 2));
+    return !!h && (h.kind === 'revise' || (h.kind === 'review' && h.round >= 2));
   };
   if (!steps.some((_, i) => hidden(i))) return lines;
   const visible = lines.filter((l) => !(l.length === 1 && hidden(l[0])));

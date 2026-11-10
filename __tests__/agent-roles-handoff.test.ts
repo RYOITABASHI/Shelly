@@ -79,7 +79,8 @@ describe('normalizeStepHandoff (TS ↔ executor)', () => {
 
   it.each([
     ['unknown kind', { kind: 'approve', of: [0], round: 1 }],
-    ['round 3', { kind: 'review', of: [0], round: 3 }],
+    ['round 4', { kind: 'review', of: [0], round: 4 }],
+    ['judge round 3', { kind: 'judge', of: [0], round: 3 }],
     ['string round', { kind: 'review', of: [0], round: '1' }],
     ['empty of', { kind: 'review', of: [], round: 1 }],
     ['not ascending', { kind: 'revise', of: [1, 0], round: 1 }],

@@ -575,7 +575,8 @@ object AgentRuntime {
     // v50: the editor in the article review loop, a final review in assemble, a no-repeat history and Perplexity academic search.
     // v51: in-step CLI calls (review editor, final review) get the run's remaining time minus what follows, counted after the slot wait. JS-only.
     // v52: the article main-study history is keyed by the pipeline's stream (logs/article-history-<stream>.json), so it survives re-registration with a new agent id. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 52
+    // v53: an article pipeline may run a third review -> revise round (reviewRounds: 3, round-3 hand-off markers); a PASS at any round skips the rest. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 53
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

@@ -1403,13 +1403,14 @@ export interface AgentOrchestrationStep {
    *  statically unrolled to at most 2 rounds by lib/agent-role-router.ts) or
    *  `judge` (after a parallel group of implementations). `of` = the step
    *  indexes whose results it carries; `round` = loop round. A revise step and
-   *  a round-2 review are skipped (status 'skipped') once the latest review
+   *  a later-round review are skipped (status 'skipped') once the latest review
    *  answered `VERDICT: PASS`. Never changes the step's tool, pin or gate.
    *  Re-validated by normalizeStepHandoff (lib/agent-orchestration.ts). */
   handoff?: {
     kind: 'review' | 'revise' | 'judge';
     of: number[];
-    round: 1 | 2;
+    /** 3 only for an article pipeline's `reviewRounds: 3` (executor v53). */
+    round: 1 | 2 | 3;
     /** Judge only (2026-11-02, build 2806 fix): the candidates' branch
      *  folders, index-aligned with `of` — single-segment names of direct
      *  children of the agent's workspace root (`a`, `b`, `r2-a`), set by

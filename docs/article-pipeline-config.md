@@ -1,6 +1,6 @@
 # Article pipeline config
 
-Shelly can run a long-form writing chain on a schedule: research, write, two rounds of review and revision, then save a draft. It ships no series. Your topics, prompts, engines, schedule and folders live in one file on your device, `~/.shelly/agents/article-pipelines.json`.
+Shelly can run a long-form writing chain on a schedule: research, write, two (or three) rounds of review and revision, then save a draft. It ships no series. Your topics, prompts, engines, schedule and folders live in one file on your device, `~/.shelly/agents/article-pipelines.json`.
 
 Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプライン <id>`. Shelly shows the plan and registers the agent after your OK. Without the file, it tells you so and creates nothing.
 
@@ -40,6 +40,7 @@ Then ask in chat: `@agent article pipeline <id>` or `@agent 記事パイプラ�
 - **`outputFolder`** must be inside your Obsidian vault (Settings, default `/sdcard/Documents/ObsidianVault`) or your custom output folder (default `~/agent-output`). A pipeline with `queue` and the digest must be inside the vault, because those are read only from there. Use plain folder names: letters, digits, `_`, `-` and `.`, no spaces.
 - **Instructions** hold 500 characters each. A longer one is refused, not cut. A research instruction that mentions the web gets source capture.
 - **`queue`** takes each run's topic from `_queue.md` in the output folder, as `- [ ] topic` lines. `instructions.topics` also refills that queue through Gemini when it runs low.
+- **`reviewRounds`**: `2` (the default) or `3` review and revision rounds. A review that answers `VERDICT: PASS` skips the rest at any round. A third round adds two steps, and a chain holds at most 10: research, write, assemble and two steps a round, plus one each for `queue`, `instructions.topics` and `voice`. So `3` works with at most one of those three, and a config over 10 is refused with the count.
 - **Optional fields**: `lintTerms`, `nameLint`, `lintSources` and `quality` flag a draft and never rewrite it. `engines.agent` sets the agent's own tool. `voice` adds a ghostwritten author view, `editor` an editor's score in the frontmatter, `materials` your own files as sources, and `fetchSources` the full text of the first web sources (see below).
 - **Digest**: an optional top-level `digest` lists each day's drafts in one note, with `name`, `prompt`, `lang`, `schedule`, `outputFolder`, `footer`, `engine` and `streams` (`[{ "folder": "Garden", "label": "Garden" }]`, folders next to the digest's own). Ask for it with the id `digest`.
 

@@ -145,11 +145,11 @@ export function liveChannelLabel(stepIndex: number, roleName?: string | null): s
 }
 
 /** Agent roles Inc B: the round suffix of a hand-off step's channel — `·R1` /
- *  `·R2` for a revise step, `·R2` for a round-2 review, else ''. */
+ *  `·R2` / `·R3` for a revise step, `·R2` / `·R3` for a later review, else ''. */
 export function handoffChannelSuffix(handoff: { kind: string; round: number } | undefined | null): string {
-  if (!handoff || (handoff.round !== 1 && handoff.round !== 2)) return '';
+  if (!handoff || (handoff.round !== 1 && handoff.round !== 2 && handoff.round !== 3)) return '';
   if (handoff.kind === 'revise') return `·R${handoff.round}`;
-  if (handoff.kind === 'review' && handoff.round === 2) return '·R2';
+  if (handoff.kind === 'review' && handoff.round >= 2) return `·R${handoff.round}`;
   return '';
 }
 
