@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=51
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=52
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -219,11 +219,15 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // as it was. assemble reviews the final body once more when the last review
 // did not pass that very text, time allowing, and reuses the loop's score when
 // the text did not change. A longform chain with a research step keeps a
-// small per-agent history (logs/<id>/article-history.json: title and the [1]
-// source) and tells the research step not to pick those as the main study.
+// small history per stream (logs/article-history-<stream>.json since v52:
+// title and the [1] source) and tells the research step not to pick those as
+// the main study.
 // A Perplexity research engine with `searchMode: "academic"` sends
 // search_mode: "academic" and no recency filter.
-const EXECUTOR_SCRIPT_VERSION = 51;
+// v52: the history is keyed by the assemble step's stream, not the agent id
+// (re-registering an article agent gives it a new id); a missing stream file
+// starts from the old per-agent logs/<id>/article-history.json.
+const EXECUTOR_SCRIPT_VERSION = 52;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -4336,8 +4340,13 @@ function mergeReviewWithEditor(reviewText, result, verdict, minScore) {
 }
 
 // ── Article pipeline: do not repeat a main study (v50) ──────────────────────
-// A longform chain with a research step keeps, per agent, the title and the
-// [1] source of each draft it saved (logs/<id>/article-history.json, bounded).
+// A longform chain with a research step keeps, per stream, the title and the
+// [1] source of each draft it saved (bounded). Since v52 the file is
+// logs/article-history-<stream>.json (the assemble step's stream): an article
+// agent is re-registered with a new id whenever its config changes, and a
+// per-agent file (logs/<id>/article-history.json) was lost with it. When the
+// stream file does not exist yet, the old per-agent file is the starting
+// content.
 // The next run's research step gets the last ARTICLE_HISTORY_PROMPT_ENTRIES as
 // fenced data with one fixed line: do not choose these as the main study. The
 // file is read defensively (size, shape, every field cleaned) and any error
@@ -4347,6 +4356,13 @@ const ARTICLE_HISTORY_MAX_ENTRIES = 30;
 const ARTICLE_HISTORY_PROMPT_ENTRIES = 10;
 const ARTICLE_HISTORY_MAX_BYTES = 64 * 1024;
 const ARTICLE_HISTORY_URL_MAX_CHARS = 500;
+const ARTICLE_HISTORY_STREAM_RE = /^[a-z0-9-]{1,40}$/;
+
+/** logs/article-history-<stream>.json, or '' when the stream is not a plain id. Pure. */
+function articleHistoryStreamFile(logsDir, stream) {
+  if (typeof logsDir !== 'string' || !logsDir || typeof stream !== 'string' || !ARTICLE_HISTORY_STREAM_RE.test(stream)) return '';
+  return path.join(logsDir, `article-history-${stream}.json`);
+}
 
 function cleanHistoryTitle(raw) {
   if (typeof raw !== 'string') return '';
@@ -4386,9 +4402,16 @@ function parseArticleHistory(text) {
   return out;
 }
 
-function readArticleHistory(file) {
+/** `legacyFile` (v52) is read instead only when `file` does not exist. */
+function readArticleHistory(file, legacyFile) {
   try {
-    const st = fs.lstatSync(file);
+    let st;
+    try {
+      st = fs.lstatSync(file);
+    } catch (e) {
+      if (e && e.code === 'ENOENT' && legacyFile && legacyFile !== file) return readArticleHistory(legacyFile);
+      return [];
+    }
     if (!st.isFile() || st.size > ARTICLE_HISTORY_MAX_BYTES) return [];
     return parseArticleHistory(fs.readFileSync(file, 'utf8'));
   } catch (_) {
@@ -4397,13 +4420,13 @@ function readArticleHistory(file) {
 }
 
 /** Adds one saved draft to the history. Returns true when written. Never throws. */
-function recordArticleHistory(file, entry) {
+function recordArticleHistory(file, entry, legacyFile) {
   try {
     const title = cleanHistoryTitle(entry && entry.title);
     const url = cleanHistoryUrl(entry && entry.url);
     if (!title && !url) return false;
     const date = entry && typeof entry.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date) ? entry.date : '';
-    const entries = readArticleHistory(file).filter((e) => !(e.title === title && e.url === url));
+    const entries = readArticleHistory(file, legacyFile).filter((e) => !(e.title === title && e.url === url));
     entries.push({ title, url, date });
     writeAtomic(file, `${JSON.stringify({ version: 1, entries: entries.slice(-ARTICLE_HISTORY_MAX_ENTRIES) }, null, 2)}\n`);
     return true;
@@ -7042,12 +7065,34 @@ const SOURCE_TEXT_DATA_NOTE =
 
 /** The sources whose text may be fetched: the first `max` that are https and
  *  neither a redirect link nor an index page, in Sources order. Pure. */
+/** The https:// form of an http:// URL (same host, path and query), or '' when
+ *  it does not parse, has credentials or names a port. Pure. */
+function httpsFormOf(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch (_) {
+    return '';
+  }
+  if (u.protocol !== 'http:' || u.username || u.password || u.port || !u.hostname) return '';
+  const rest = raw.slice(raw.indexOf('//') + 2);
+  // URL drops a default ":80"; any port written in the address leaves it out.
+  if (/:\d*$/.test(rest.split(/[/?#]/)[0])) return '';
+  return `https://${rest}`;
+}
+
 function sourceTextCandidates(sources, max) {
   const out = [];
   for (const s of sources || []) {
     if (out.length >= max) break;
-    const url = s && typeof s.url === 'string' ? cleanUrl(s.url) : null;
-    if (!url || url !== s.url || !/^https:\/\//i.test(url) || articleUnusableSourceUrl(url)) continue;
+    const cleaned = s && typeof s.url === 'string' ? cleanUrl(s.url) : null;
+    if (!cleaned || cleaned !== s.url) continue;
+    // v52: a plain http:// source (Perplexity returns some publishers that way)
+    // is fetched as https:// with the same host, path and query. A URL with an
+    // explicit port is left out. The broker still enforces https/443 and the
+    // rest; the Sources list keeps the URL the research returned.
+    const url = /^http:\/\//i.test(cleaned) ? httpsFormOf(cleaned) : cleaned;
+    if (!url || !/^https:\/\//i.test(url) || articleUnusableSourceUrl(url)) continue;
     out.push({ id: s.id, title: s.title, url });
   }
   return out;
@@ -10730,17 +10775,24 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     return local && !local.plain && local.editor ? { at, local } : null;
   })();
   let loopEditorState = null;
-  // v50: the per-agent history of saved drafts (title and [1] source), for a
-  // longform chain with a research step. Read once, for the research step.
-  const historyActive = longform && sourcingActive && !isDigestPlan(plan);
-  const historyFile = path.join(paths.logDir, ARTICLE_HISTORY_FILE);
+  // v50: the history of saved drafts (title and [1] source), for a longform
+  // chain with a research step. Read once, for the research step. v52: keyed
+  // by the assemble step's stream; no plain stream id, no history.
+  const historyFile = (() => {
+    if (!longform || !sourcingActive || isDigestPlan(plan)) return '';
+    const at = plan.steps.list.findIndex((s) => !!s && !!s.local && s.local.kind === 'assemble');
+    const local = at === -1 ? undefined : normalizeStepLocal(plan.steps.list[at].local, at);
+    return local && !local.plain ? articleHistoryStreamFile(paths.logsDir, local.stream) : '';
+  })();
+  const historyActive = !!historyFile;
+  const legacyHistoryFile = path.join(paths.logDir, ARTICLE_HISTORY_FILE);
   let historyBlockText = null;
   function articleHistoryPromptBlock(i) {
     if (!historyActive) return '';
     if (historyBlockText !== null) return historyBlockText;
     historyBlockText = '';
     try {
-      const entries = readArticleHistory(historyFile);
+      const entries = readArticleHistory(historyFile, legacyHistoryFile);
       historyBlockText = articleHistoryBlock(entries, crypto.randomBytes(8).toString('hex'));
       if (historyBlockText) {
         appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_history_used', agentId: plan.agent.id, stepIndex: i, entries: Math.min(entries.length, ARTICLE_HISTORY_PROMPT_ENTRIES) });
@@ -11834,7 +11886,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // A notification-triggered (tainted) run never feeds later prompts.
       if (historyActive && !(stepOpts && stepOpts.tainted) && step.local !== undefined && action.status === 'success' && paths.savedOutput) {
         const main = evidence.sources.find((src) => src.id === 1);
-        const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday });
+        const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday }, legacyHistoryFile);
         appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_history_recorded', agentId: plan.agent.id, recorded });
       }
     }
@@ -13044,6 +13096,7 @@ module.exports = {
   ARTICLE_HISTORY_MAX_ENTRIES,
   parseArticleHistory,
   readArticleHistory,
+  articleHistoryStreamFile,
   recordArticleHistory,
   articleHistoryBlock,
   assembledArticleTitle,
@@ -13076,6 +13129,7 @@ module.exports = {
   // v47: source full text.
   normalizeFetchSourcesConfig,
   sourceTextCandidates,
+  httpsFormOf,
   renderSourceTextBlock,
   fetchSourceTexts,
   loadSourceTexts,

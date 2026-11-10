@@ -106,7 +106,7 @@ describe('source URLs lose trailing markdown (v47)', () => {
 describe('the source text block (pure)', () => {
   it('takes the first usable https sources in Sources order', () => {
     const sources = [
-      { id: 1, title: 'A', url: 'http://plain.example/a' },
+      { id: 1, title: 'A', url: 'http://plain.example:8080/a' },
       { id: 2, title: 'B', url: 'https://www.springer.com/journal/12345' },
       { id: 3, title: 'C', url: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AAA' },
       { id: 4, title: 'D', url: 'https://site-d.example/d' },
@@ -116,6 +116,23 @@ describe('the source text block (pure)', () => {
     expect(executor.sourceTextCandidates(sources, 2).map((s: any) => s.id)).toEqual([4, 5]);
     expect(executor.sourceTextCandidates(sources, 3).map((s: any) => s.id)).toEqual([4, 5, 6]);
     expect(executor.sourceTextCandidates([], 3)).toEqual([]);
+  });
+
+  it('v52: a plain http source is asked for as https with the same host, path and query', () => {
+    const sources = [
+      { id: 1, title: 'Main', url: 'http://link.springer.com/article/10.1000/xyz?lang=en' },
+      { id: 2, title: 'Index', url: 'http://www.springer.com/journal/12345' },
+      { id: 3, title: 'Creds', url: 'http://user:pw@site.example/c' },
+      { id: 4, title: 'D', url: 'https://site-d.example/d' },
+    ];
+    expect(executor.sourceTextCandidates(sources, 3)).toEqual([
+      { id: 1, title: 'Main', url: 'https://link.springer.com/article/10.1000/xyz?lang=en' },
+      { id: 4, title: 'D', url: 'https://site-d.example/d' },
+    ]);
+    // The source list itself is left as the research returned it.
+    expect(sources[0].url).toBe('http://link.springer.com/article/10.1000/xyz?lang=en');
+    expect(executor.httpsFormOf('http://a.example:80/x')).toBe('');
+    expect(executor.httpsFormOf('https://a.example/x')).toBe('');
   });
 
   it('labels each text with its Sources id, fences it with the nonce and stays within the overall budget', () => {
@@ -204,7 +221,7 @@ describe('a longform run with fetchSources (fixture broker)', () => {
 
   interface Setup { home: string; planFile: string; http: string; pages: string }
 
-  function setup(opts: { fetchSources?: boolean } = {}): Setup {
+  function setup(opts: { fetchSources?: boolean; citations?: string[]; pages?: Record<string, string> } = {}): Setup {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-source-text-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
     fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
@@ -213,11 +230,11 @@ describe('a longform run with fetchSources (fixture broker)', () => {
     fs.mkdirSync(outputDir, { recursive: true });
     const http = path.join(home, 'fake-http.json');
     fs.writeFileSync(http, JSON.stringify({
-      [LOCAL_URL]: [openAi(RESEARCH, [SITE_A, INDEX, PLAIN, SITE_B]), openAi(ARTICLE), openAi('VERDICT: PASS')],
+      [LOCAL_URL]: [openAi(RESEARCH, opts.citations ?? [SITE_A, INDEX, PLAIN, SITE_B]), openAi(ARTICLE), openAi('VERDICT: PASS')],
       [GROQ]: [openAi(answer)],
     }));
     const pages = path.join(home, 'fake-pages.json');
-    fs.writeFileSync(pages, JSON.stringify({ [SITE_A]: PAGE_A }));
+    fs.writeFileSync(pages, JSON.stringify(opts.pages ?? { [SITE_A]: PAGE_A }));
     const c = config({ editor: { type: 'groq', rubric: RUBRIC }, ...(opts.fetchSources === false ? { fetchSources: undefined } : {}) });
     const list = normalizeSteps(buildArticlePipeline(c).orchestration).map((step: any) => {
       const { tool: _tool, toolPinned: _pinned, ...rest } = step;
@@ -275,8 +292,8 @@ describe('a longform run with fetchSources (fixture broker)', () => {
   it('fetches the first usable sources after research and gives the text to write, review and the editor', async () => {
     const s = setup();
     expect(await run(s, { SHELLY_TEST_FAKE_PAGES: s.pages })).toBe(0);
-    // The plain-http source and the index page are never asked; B fails (not in the fake).
-    expect(asked(s)).toEqual([SITE_A, SITE_B]);
+    // The index page is never asked; the plain-http source is asked as https (v52) and fails (not in the fake).
+    expect(asked(s)).toEqual([SITE_A, 'https://plain.example/x']);
     const local = prompts(s, LOCAL_URL);
     expect(local).toHaveLength(3);
     expect(local[0]).not.toContain('# Source full text');
@@ -293,12 +310,25 @@ describe('a longform run with fetchSources (fixture broker)', () => {
     expect(audit.find((e) => e.event === 'source_text')).toMatchObject({ asked: 2, tainted: false, read: [{ id: 1, host: 'site-a.example', chars: PAGE_A.length, truncated: false }] });
     expect(JSON.stringify(audit)).not.toContain('washed 50 times');
     const brokerAudit = readLines(path.join(logDir(s.home), 'agent-driver-audit.jsonl')).filter((l) => l.kind === 'http.fetch-text');
-    expect(brokerAudit.map((l) => [l.host, l.ok])).toEqual([['site-a.example', true], ['site-b.example', false]]);
+    expect(brokerAudit.map((l) => [l.host, l.ok])).toEqual([['site-a.example', true], ['plain.example', false]]);
     expect(JSON.stringify(brokerAudit)).not.toContain('washed 50 times');
     // The bold markers around the address never reach Sources.
     const result = readResult(s.home);
     expect(result).toContain(SITE_A);
     expect(result).not.toContain(`${SITE_A}**`);
+  }, 60000);
+
+  it('v52: an http [1] source is fetched as https, and Sources keeps the URL the research returned', async () => {
+    const HTTP_MAIN = 'http://link.example/article/10.1000/xyz?lang=en';
+    const HTTPS_MAIN = 'https://link.example/article/10.1000/xyz?lang=en';
+    const s = setup({ citations: [HTTP_MAIN, INDEX, SITE_B], pages: { [HTTPS_MAIN]: PAGE_A } });
+    expect(await run(s, { SHELLY_TEST_FAKE_PAGES: s.pages })).toBe(0);
+    expect(asked(s)).toEqual([HTTPS_MAIN, SITE_B]);
+    const local = prompts(s, LOCAL_URL);
+    for (const p of local.slice(1)) expect(p).toContain(`— ${HTTPS_MAIN}
+${PAGE_A}`);
+    expect(readAudit(s.home).find((e) => e.event === 'source_text')).toMatchObject({ read: [{ id: 1, host: 'link.example' }] });
+    expect(readResult(s.home)).toContain(HTTP_MAIN);
   }, 60000);
 
   it('a notification-triggered (tainted) run fetches nothing and runs as before', async () => {

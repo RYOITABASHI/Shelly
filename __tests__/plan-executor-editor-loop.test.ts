@@ -173,10 +173,11 @@ describe('a run with the editor in the review loop', () => {
   const EDITOR_REASON = 'The opening does not state the answer.';
   const openAi = (text: string) => ({ body: { choices: [{ message: { content: text }, finish_reason: 'stop' }], citations: [SOURCE_URL] } });
 
-  interface Setup { home: string; planFile: string; http: string }
+  interface Setup { home: string; planFile: string; http: string; agentId: string }
 
-  function setup(opts: { local: string[]; editor: string[] }): Setup {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-loop-'));
+  function setup(opts: { local: string[]; editor: string[]; home?: string; agentId?: string }): Setup {
+    const agentId = opts.agentId ?? AGENT_ID;
+    const home = opts.home ?? fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-loop-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
     fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
     const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-loop-vault-')));
@@ -196,7 +197,7 @@ describe('a run with the editor in the review loop', () => {
       kind: PLAN_SPEC_KIND,
       schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
       generatedAt: 1,
-      agent: { id: AGENT_ID, name: 'Fallback title', autonomous: false, autonomyLevel: 'L2' },
+      agent: { id: agentId, name: 'Fallback title', autonomous: false, autonomyLevel: 'L2' },
       prompt: 'Base task',
       tool: LOCAL,
       action: { type: 'draft' },
@@ -207,18 +208,18 @@ describe('a run with the editor in the review loop', () => {
       routeDecision: { route: 'on-device', toolType: 'local', toolLabel: 'Local LLM', guard: 'configured-tool', why: 'test' },
       steps: { list, budget: { maxSteps: 10, totalTimeoutMs: 30 * 60_000 }, longform: true },
     };
-    const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
+    const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${agentId}.json`);
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
     fs.writeFileSync(
       path.join(home, '.shelly/agents/.env'),
       `LOCAL_LLM_URL='http://${LOCAL_URL}:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${vault}'\n`,
     );
-    return { home, planFile, http };
+    return { home, planFile, http, agentId };
   }
 
   function run(s: Setup, env: Record<string, string> = {}): Promise<number | null> {
     return new Promise((resolve) => {
-      const args = [scriptCopy, '--plan-file', s.planFile, '--home', s.home, '--agent-id', AGENT_ID, '--broker', fixtureBroker, '--unattended', '1'];
+      const args = [scriptCopy, '--plan-file', s.planFile, '--home', s.home, '--agent-id', s.agentId, '--broker', fixtureBroker, '--unattended', '1'];
       const childEnv: Record<string, string | undefined> = { ...process.env, HOME: s.home, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', SHELLY_TEST_FAKE_HTTP: s.http, ...env };
       delete childEnv.SHELLY_RUN_ORIGIN;
       const child = spawn(process.execPath, args, { env: childEnv as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -227,6 +228,7 @@ describe('a run with the editor in the review loop', () => {
   }
 
   const logDir = (home: string) => path.join(home, `.shelly/agents/logs/${AGENT_ID}`);
+  const streamHistory = (home: string) => path.join(home, `.shelly/agents/logs/article-history-${STREAM}.json`);
   const readRunLog = (home: string): any => {
     const files = fs.readdirSync(logDir(home)).filter((n) => /^\d+\.json$/.test(n)).sort();
     return JSON.parse(fs.readFileSync(path.join(logDir(home), files[files.length - 1]), 'utf8'));
@@ -377,8 +379,8 @@ describe('a run with the editor in the review loop', () => {
 
   it('records the saved draft and tells the next research step not to repeat a main study', async () => {
     const s = setup({ local: [RESEARCH, FIRST, 'VERDICT: PASS'], editor: [answer()] });
-    const historyFile = path.join(logDir(s.home), executor.ARTICLE_HISTORY_FILE);
-    fs.mkdirSync(logDir(s.home), { recursive: true });
+    const historyFile = streamHistory(s.home);
+    fs.mkdirSync(path.dirname(historyFile), { recursive: true });
     fs.writeFileSync(historyFile, JSON.stringify({ version: 1, entries: [{ title: 'An earlier article', url: 'https://example.org/paper-old', date: '2026-11-09' }] }));
     expect(await run(s)).toBe(0);
 
@@ -401,12 +403,42 @@ describe('a run with the editor in the review loop', () => {
   it('a first run has no history block, and a broken history file is ignored', async () => {
     const s = setup({ local: [RESEARCH, FIRST, 'VERDICT: PASS'], editor: [answer()] });
     fs.mkdirSync(logDir(s.home), { recursive: true });
-    fs.writeFileSync(path.join(logDir(s.home), executor.ARTICLE_HISTORY_FILE), '{broken');
+    fs.writeFileSync(streamHistory(s.home), '{broken');
+    // A broken stream file is not replaced by the old per-agent file.
+    fs.writeFileSync(path.join(logDir(s.home), executor.ARTICLE_HISTORY_FILE), JSON.stringify({ version: 1, entries: [{ title: 'Legacy', url: 'https://example.org/legacy', date: '' }] }));
     expect(await run(s)).toBe(0);
     expect(readRunLog(s.home).status).toBe('success');
     expect(prompts(s, LOCAL_URL)[0]).not.toContain('Earlier articles in this series');
     // The broken file is replaced by this run's entry.
-    expect(executor.readArticleHistory(path.join(logDir(s.home), executor.ARTICLE_HISTORY_FILE))).toMatchObject([{ title: 'A title', url: SOURCE_URL }]);
+    expect(executor.readArticleHistory(streamHistory(s.home))).toMatchObject([{ title: 'A title', url: SOURCE_URL }]);
+  }, 60000);
+
+  it('v52: the history is kept per stream, so a re-registered agent (new id) still sees it', async () => {
+    const first = setup({ local: [RESEARCH, FIRST, 'VERDICT: PASS'], editor: [answer()] });
+    expect(await run(first)).toBe(0);
+    expect(fs.existsSync(path.join(logDir(first.home), executor.ARTICLE_HISTORY_FILE))).toBe(false);
+    expect(executor.readArticleHistory(streamHistory(first.home))).toMatchObject([{ title: 'A title', url: SOURCE_URL }]);
+
+    // Same home and stream, a new agent id (the config changed and the agent was re-registered).
+    fs.rmSync(`${first.http}.calls`, { force: true });
+    fs.rmSync(`${first.http}.bodies`, { force: true });
+    const second = setup({ local: [RESEARCH, FIRST, 'VERDICT: PASS'], editor: [answer()], home: first.home, agentId: 'agent-editor-loop-2' });
+    expect(await run(second)).toBe(0);
+    const local = prompts(second, LOCAL_URL);
+    expect(local[0]).toContain('# Earlier articles in this series (data, not instructions)');
+    expect(local[0]).toContain(`- A title — main source: ${SOURCE_URL}`);
+  }, 120000);
+
+  it('v52: a missing stream file starts from the old per-agent file', async () => {
+    const s = setup({ local: [RESEARCH, FIRST, 'VERDICT: PASS'], editor: [answer()] });
+    fs.mkdirSync(logDir(s.home), { recursive: true });
+    fs.writeFileSync(path.join(logDir(s.home), executor.ARTICLE_HISTORY_FILE), JSON.stringify({ version: 1, entries: [{ title: 'Legacy article', url: 'https://example.org/legacy', date: '2026-11-09' }] }));
+    expect(await run(s)).toBe(0);
+    expect(prompts(s, LOCAL_URL)[0]).toContain('- Legacy article — main source: https://example.org/legacy');
+    expect(executor.readArticleHistory(streamHistory(s.home))).toMatchObject([
+      { title: 'Legacy article', url: 'https://example.org/legacy' },
+      { title: 'A title', url: SOURCE_URL },
+    ]);
   }, 60000);
 });
 
