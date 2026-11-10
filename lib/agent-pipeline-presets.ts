@@ -137,7 +137,7 @@ export const ARTICLE_PIPELINE_FILE_VERSION = 1;
  *  ladder. The list matches STEP_TOOL_DISPATCHABLE_TYPES in
  *  scripts/shelly-plan-executor.js. */
 export const ARTICLE_ENGINE_TYPES = ['gemini-api', 'cerebras', 'groq', 'perplexity'] as const;
-export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model?: string };
+export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model?: string; searchMode?: 'academic' };
 
 /** The CLIs a write or review engine can name, always in text-only mode: the
  *  turn has no tools, because its prompt carries web-derived text. Matches
@@ -284,8 +284,13 @@ function articleTextError(v: unknown, max: number, where: string, multiline = fa
   return null;
 }
 
-function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = false): string | null {
+function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = false, searchModeAllowed = false): string | null {
   if (!isPlainObject(v)) return `${where}: needs { "type": ... }`;
+  // Executor v50: Perplexity's academic search, on the research engine only.
+  if (v.searchMode !== undefined) {
+    if (!searchModeAllowed || v.type !== 'perplexity') return `${where}.searchMode: only a Perplexity research engine takes it`;
+    if (v.searchMode !== 'academic') return `${where}.searchMode: use "academic"`;
+  }
   if (v.type === 'cli') {
     if (!textOnlyCliAllowed) return `${where}: a CLI cannot run this step`;
     const keyError = unknownKeyError(v, ['type', 'cli', 'textOnly', 'model'], where);
@@ -297,7 +302,7 @@ function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = fals
   }
   if (v.type === 'local') return `${where}: the local LLM cannot finish an article`;
   if (!(ARTICLE_ENGINE_TYPES as readonly unknown[]).includes(v.type)) return `${where}: use one of ${ARTICLE_ENGINE_TYPES.join(', ')}`;
-  const keyError = unknownKeyError(v, ['type', 'model'], where);
+  const keyError = unknownKeyError(v, searchModeAllowed ? ['type', 'model', 'searchMode'] : ['type', 'model'], where);
   if (keyError) return keyError;
   if (v.model !== undefined && (typeof v.model !== 'string' || !ARTICLE_MODEL_RE.test(v.model))) return `${where}: bad model name`;
   return null;
@@ -436,7 +441,7 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   const enginesKeyError = unknownKeyError(engines, ['research', 'write', 'review', 'agent'], `${where}.engines`);
   if (enginesKeyError) return enginesKeyError;
   for (const key of ['research', 'write', 'review'] as const) {
-    const error = articleEngineError(engines[key], `${where}.engines.${key}`, key !== 'research');
+    const error = articleEngineError(engines[key], `${where}.engines.${key}`, key !== 'research', key === 'research');
     if (error) return error;
   }
   if (engines.agent !== undefined) {
@@ -536,6 +541,11 @@ export function articleOutputFolderError(folder: string, roots: ArticleOutputRoo
   return `outputFolder: needs to be inside the vault (${roots.vault}) or the custom folder (${roots.custom})`;
 }
 
+function withoutSearchMode(engine: ArticleEngine): ArticleEngine {
+  const { searchMode: _searchMode, ...rest } = engine;
+  void _searchMode;
+  return rest;
+}
 const withFolderSlash = (folder: string): string => (folder.endsWith('/') ? folder : `${folder}/`);
 const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
 
@@ -634,7 +644,8 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     schedule: config.schedule,
     scheduleLabel: config.scheduleLabel ?? config.schedule,
     autonomous: false,
-    tool: (engines.agent ?? engines.research) as ToolChoice,
+    // searchMode belongs to the research step only, not the agent-level tool.
+    tool: (engines.agent ?? withoutSearchMode(engines.research)) as ToolChoice,
     action: { type: 'draft' },
     output: { outputPath: withFolderSlash(config.outputFolder), outputTemplate: `{date}-${config.id}.md` },
     memoryOff: true,

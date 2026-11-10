@@ -761,7 +761,9 @@ export type ToolChoice =
   | { type: 'groq'; model?: string }
   | { type: 'openrouter'; model?: string }
   | { type: 'local'; model?: string }
-  | { type: 'perplexity'; model?: string }
+  /** searchMode (executor v50): only an article pipeline's research engine
+   *  sets it; the executor sends Perplexity's academic search for it. */
+  | { type: 'perplexity'; model?: string; searchMode?: 'academic' }
   | { type: 'ab-article-eval'; localModel?: string; codexCmd?: string }
   | { type: 'auto' };
 
