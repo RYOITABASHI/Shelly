@@ -175,7 +175,7 @@ describe('a run with the editor in the review loop', () => {
 
   interface Setup { home: string; planFile: string; http: string; agentId: string }
 
-  function setup(opts: { local: string[]; editor: string[]; home?: string; agentId?: string }): Setup {
+  function setup(opts: { local: string[]; editor: string[]; home?: string; agentId?: string; cfg?: ArticlePipelineConfig }): Setup {
     const agentId = opts.agentId ?? AGENT_ID;
     const home = opts.home ?? fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-loop-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
@@ -185,7 +185,7 @@ describe('a run with the editor in the review loop', () => {
     fs.mkdirSync(outputDir, { recursive: true });
     const http = path.join(home, 'fake-http.json');
     fs.writeFileSync(http, JSON.stringify({ [LOCAL_URL]: opts.local.map(openAi), [GROQ]: opts.editor.map(openAi) }));
-    const list = normalizeSteps(buildArticlePipeline(config()).orchestration).map((step: any) => {
+    const list = normalizeSteps(buildArticlePipeline(opts.cfg ?? config()).orchestration).map((step: any) => {
       const { tool: _tool, toolPinned: _pinned, ...rest } = step;
       void _tool;
       void _pinned;
@@ -439,6 +439,67 @@ describe('a run with the editor in the review loop', () => {
       { title: 'Legacy article', url: 'https://example.org/legacy' },
       { title: 'A title', url: SOURCE_URL },
     ]);
+  }, 60000);
+
+  // v55: keep the best version. Three versions, two review rounds that ask for
+  // changes, a final review that still does.
+  const REVISING = [RESEARCH, FIRST, 'VERDICT: REVISE\n1. Fix the marker.', SECOND, 'VERDICT: REVISE\n1. Name the limits.', THIRD, 'VERDICT: REVISE\n1. Still thin.'];
+  const low = (n: number) => answer(Object.fromEntries(executor.EDITOR_KEYS.map((k: string) => [k, n])));
+
+  it('v55: a last version scored below an earlier one loses to it, under the same gates', async () => {
+    const s = setup({ local: REVISING, editor: [answer(), answer({ overall: 3 }), low(2)] });
+    expect(await run(s)).toBe(0);
+    expect(readRunLog(s.home).status).toBe('success');
+    const result = readResult(s.home);
+    expect(result).toContain('The first version says');
+    expect(result).not.toContain('The third version adds');
+    const fm = frontmatter(result);
+    // That version was sent back by its review, so the review stays unresolved;
+    // the editor's score is its own (the text is unchanged, so it is reused).
+    expect(fm).toContain('review: unresolved');
+    expect(fm).toContain('quality: pass\nquality_score: 4');
+    // No extra model call: the final review does not take a second look at a
+    // text a review already sent back, and the score is reused.
+    expect(prompts(s, LOCAL_URL)).toHaveLength(7);
+    expect(prompts(s, GROQ)).toHaveLength(3);
+    expect(events(s.home, 'final_review_skipped')).toMatchObject([{ reason: 'already-reviewed' }]);
+    expect(events(s.home, 'best_version_used')).toEqual([
+      expect.objectContaining({ stepIndex: 6, versionStep: 1, reviewStep: 2, score: 4, lastStep: 5, lastScore: 2 }),
+    ]);
+    expect(Object.keys(events(s.home, 'best_version_used')[0]).sort()).toEqual(['agentId', 'event', 'kind', 'lastScore', 'lastStep', 'reviewStep', 'score', 'stepIndex', 'ts', 'versionStep']);
+  }, 60000);
+
+  it('v55: a last version that scores as high or higher is kept', async () => {
+    const s = setup({ local: REVISING, editor: [answer({ overall: 3 }), low(2), answer({ overall: 3 })] });
+    expect(await run(s)).toBe(0);
+    expect(readResult(s.home)).toContain('The third version adds');
+    expect(frontmatter(readResult(s.home))).toContain('quality: fail\nquality_score: 3');
+    expect(events(s.home, 'best_version_used')).toHaveLength(0);
+    expect(events(s.home, 'best_version_skipped')).toHaveLength(0);
+  }, 60000);
+
+  it('v55: with too little of the run left, the last version stays', async () => {
+    const s = setup({ local: REVISING, editor: [answer(), answer({ overall: 3 }), low(2)] });
+    expect(executor.BEST_VERSION_MIN_LEFT_MS).toBe(executor.FINAL_REVIEW_MIN_LEFT_MS);
+    expect(await run(s, { SHELLY_TEST_BEST_VERSION_MIN_LEFT_MS: String(10 * 60 * 60_000) })).toBe(0);
+    const result = readResult(s.home);
+    expect(result).toContain('The third version adds');
+    expect(frontmatter(result)).toContain('quality: fail\nquality_score: 2');
+    expect(events(s.home, 'best_version_used')).toHaveLength(0);
+    expect(events(s.home, 'best_version_skipped')).toMatchObject([{ reason: 'time', versionStep: 1, score: 4, lastStep: 5, lastScore: 2 }]);
+  }, 60000);
+
+  it('v55: with no editor configured nothing changes', async () => {
+    const { editor: _editor, ...noEditor } = config();
+    void _editor;
+    const s = setup({ local: REVISING.slice(0, 6), editor: [], cfg: noEditor as ArticlePipelineConfig });
+    expect(await run(s)).toBe(0);
+    const result = readResult(s.home);
+    expect(result).toContain('The third version adds');
+    expect(frontmatter(result)).not.toContain('quality:');
+    expect(prompts(s, GROQ)).toHaveLength(0);
+    expect(events(s.home, 'best_version_used')).toHaveLength(0);
+    expect(events(s.home, 'best_version_skipped')).toHaveLength(0);
   }, 60000);
 });
 

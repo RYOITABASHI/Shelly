@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=54
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=55
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -239,7 +239,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // page cut keeping its Methods / Results / Discussion / Limitations sections
 // (allocateSourceTextBudgets, cutKeepingSections; the broker trims and cuts the
 // same way). `fetchSources.maxCharsEach` accepts up to 60,000.
-const EXECUTOR_SCRIPT_VERSION = 54;
+const EXECUTOR_SCRIPT_VERSION = 55;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -4271,6 +4271,16 @@ const REVIEW_EDITOR_TIMEOUT_MS = 3 * 60 * 1000;
 // does not start, and it always ends early enough for the editor and the save.
 const FINAL_REVIEW_MIN_LEFT_MS = 6 * 60 * 1000;
 const FINAL_REVIEW_TIMEOUT_MS = 3 * 60 * 1000;
+// v55: assemble goes back to an earlier version only with this much of the run
+// left (its final review, a re-score if the text changed, and the save).
+const BEST_VERSION_MIN_LEFT_MS = FINAL_REVIEW_MIN_LEFT_MS;
+
+// Test seam, same rule as longformRetryWaitMs: from the process environment
+// only, and it can only raise the minimum (a stricter guard).
+function bestVersionMinLeftMs() {
+  const raw = Number(process.env.SHELLY_TEST_BEST_VERSION_MIN_LEFT_MS);
+  return Number.isFinite(raw) && raw > BEST_VERSION_MIN_LEFT_MS ? raw : BEST_VERSION_MIN_LEFT_MS;
+}
 
 // v51: the time window of a model call made inside a step (the editor in a
 // review step, the final review and the editor in assemble). v50 gave such a
@@ -10933,6 +10943,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     return local && !local.plain && local.editor ? { at, local } : null;
   })();
   let loopEditorState = null;
+  // v55: each draft version an editor scored inside a review step, for this run
+  // only: { step, reviewStep, score, pass, tailSha, state }.
+  const scoredVersions = [];
   // v50: the history of saved drafts (title and [1] source), for a longform
   // chain with a research step. Read once, for the research step. v52: keyed
   // by the assemble step's stream; no plain stream id, no history.
@@ -11307,6 +11320,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (local.editor && !local.plain) {
       ctx.finalReview = await runFinalReview(i, local, ctx, stepOpts);
       ctx.editor = await runEditor(i, local, ctx, stepOpts);
+      // v55: a revision that scored worse than an earlier version loses to it.
+      const best = await bestVersionContext(i, local, ctx, stepOpts);
+      if (best) return { text: assembleArticle(local, best) };
     }
     return { text: assembleArticle(local, ctx) };
   }
@@ -11488,6 +11504,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const state = await runEditor(editorAssemble.at, local, ctx, stepOpts, { reviewStep: i });
       loopEditorState = state.tailSha ? state : null;
       if (!state.ok) return reviewText;
+      scoredVersions.push({ step: versions[versions.length - 1], reviewStep: i, score: state.score, pass: state.pass, tailSha: state.tailSha, state });
       const merged = mergeReviewWithEditor(reviewText, state.result, { pass: state.pass, score: state.score }, state.minScore);
       audit('review_editor_verdict', { reviewer: parseReviewVerdict(reviewText), editorPass: state.pass, score: state.score, minScore: state.minScore, verdict: merged.verdict });
       return merged.text;
@@ -11525,7 +11542,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         }
       }
       if (j === -1 || list[j].local !== undefined || list[j].apiCall) return null;
-      const has = (k) => !skippedByStep[k] && typeof resultsByStep[k] === 'string';
+      // v55: ctx.skipped, so a context that sets later versions aside (bestVersionContext) is read as it.
+      const has = (k) => !ctx.skipped[k] && typeof resultsByStep[k] === 'string';
       const versions = local.parts[0].filter((k) => has(k) && articleDraftText(resultsByStep[k], ctx));
       if (!versions.length) return null;
       const draftStep = versions[versions.length - 1];
@@ -11592,6 +11610,64 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     } catch (error) {
       if (error instanceof RunHalted) throw error;
       audit('final_review_failed', { reason: redact(error && error.message ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 120) });
+      return null;
+    }
+  }
+
+  // Article pipeline (v55): keep the best version. When an editor inside a
+  // review step scored an earlier version strictly higher than the final
+  // editor scored the last one, assemble is rebuilt from that earlier version:
+  // the later review and revise steps are set aside in its context, the final
+  // review runs on it under its own rules (time guard, no second look at a
+  // text a review already sent back) and the editor's score is the one from
+  // the review step when the text is the same, else a new one. The gates do
+  // not move: `review: pass` and `quality` still hold only for the body saved.
+  // One switch at most, the highest earlier score (the earliest on a tie).
+  // Returns the context to assemble from, or null for today's result: no
+  // editor score, nothing better, the last version already passing both, a
+  // ghostwritten section (written on the last version), too little time, or a
+  // re-score that is no longer higher. The audit lines hold steps and scores.
+  async function bestVersionContext(i, local, ctx, stepOpts) {
+    const audit = (event, extra) => appendJsonl(paths.planAuditFile, Object.assign({ ts: new Date().toISOString(), kind: 'plan.executor', event, agentId: plan.agent.id, stepIndex: i }, extra));
+    try {
+      const last = ctx.editor;
+      if (!last || !last.ok || !scoredVersions.length || local.parts.length !== 1) return null;
+      const list = plan.steps.list;
+      const draftsUnder = (c) => local.parts[0].filter((k) => !c.skipped[k] && typeof resultsByStep[k] === 'string' && articleDraftText(resultsByStep[k], c));
+      const versions = draftsUnder(ctx);
+      if (!versions.length) return null;
+      const lastStep = versions[versions.length - 1];
+      let best = null;
+      for (const v of scoredVersions) {
+        if (v.step < lastStep && versions.includes(v.step) && v.score > last.score && (!best || v.score > best.score)) best = v;
+      }
+      if (!best) return null;
+      const skip = (reason) => {
+        audit('best_version_skipped', { reason, versionStep: best.step, score: best.score, lastStep, lastScore: last.score });
+        return null;
+      };
+      const today = assembleArticle(local, ctx);
+      const fm = today.slice(0, today.indexOf('\n---\n', 4));
+      if (/^review: pass$/m.test(fm) && /^quality: pass$/m.test(fm)) return skip('last-passed');
+      if (voiceState && voiceState.ok) return skip('voice');
+      if (longformDeadlineMs - Date.now() < bestVersionMinLeftMs()) return skip('time');
+      const skipped = skippedByStep.slice();
+      for (let k = best.reviewStep + 1; k < i; k += 1) {
+        if (handoffOf(list, k) || local.parts[0].includes(k)) skipped[k] = true;
+      }
+      const alt = Object.assign(assembleContext(local), { skipped });
+      const altVersions = draftsUnder(alt);
+      if (!altVersions.length || altVersions[altVersions.length - 1] !== best.step) return skip('version');
+      progressStepEvent(activeProgress, i, 'tail', { tail: progressTail(`Best version: the draft of step ${best.step + 1} scored ${best.score}, the last one ${last.score}.`) });
+      alt.finalReview = await runFinalReview(i, local, alt, stepOpts);
+      const tail = assembleArticle(local, Object.assign({}, alt, { tailOnly: true }));
+      alt.editor = sha256Hex(tail) === best.tailSha ? best.state : await runEditor(i, local, alt, stepOpts);
+      if (!alt.editor || !alt.editor.ok || !(alt.editor.score > last.score)) return skip('rescored');
+      audit('best_version_used', { versionStep: best.step, reviewStep: best.reviewStep, score: alt.editor.score, lastStep, lastScore: last.score });
+      return alt;
+    } catch (error) {
+      if (error instanceof RunHalted) throw error;
+      audit('best_version_skipped', { reason: 'error' });
       return null;
     }
   }
@@ -13244,6 +13320,7 @@ module.exports = {
   LONGFORM_EDITOR_NOTES_RULE,
   REVIEW_EDITOR_MIN_LEFT_MS,
   FINAL_REVIEW_MIN_LEFT_MS,
+  BEST_VERSION_MIN_LEFT_MS,
   FINAL_REVIEW_TIMEOUT_MS,
   REVIEW_EDITOR_TIMEOUT_MS,
   EDITOR_SAVE_RESERVE_MS,
