@@ -11274,6 +11274,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         if (!hk || hk.kind !== 'review' || !has(k)) continue;
         const seen = local.parts[0].filter((v) => v < k && has(v));
         if (parseReviewVerdict(resultsByStep[k]) === 'PASS' && (seen.length === 0 || seen[seen.length - 1] === draftStep)) return null;
+        // That review already sent this exact body back: a second look at the
+        // same text must not turn a REVISE into a pass.
+        if (seen.length && seen[seen.length - 1] === draftStep) return skip('already-reviewed');
         break;
       }
       // A note already pins the review to unresolved (a cut prompt, a failed
@@ -11775,7 +11778,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // savedOutput is set only after every write of the draft succeeded.
       if (queuePopped && action.status === 'success' && paths.savedOutput) await tickPoppedQueueItem();
       // v50: the saved draft's title and main source, for the next run's research.
-      if (historyActive && step.local !== undefined && action.status === 'success' && paths.savedOutput) {
+      // A notification-triggered (tainted) run never feeds later prompts.
+      if (historyActive && !(stepOpts && stepOpts.tainted) && step.local !== undefined && action.status === 'success' && paths.savedOutput) {
         const main = evidence.sources.find((src) => src.id === 1);
         const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday });
         appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_history_recorded', agentId: plan.agent.id, recorded });
