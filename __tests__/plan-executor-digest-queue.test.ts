@@ -1364,7 +1364,7 @@ describe('topic refill, against a config with a topics instruction', () => {
 
   it.each([
     ['a refused call', [refused], 1],
-    ['a transient outage, after its one retry', [busy, busy], 2],
+    ['a transient outage, after its three retries', [busy, busy, busy, busy], 4],
     ['an answer with nothing usable', [gemini('すみません、見つかりませんでした。')], 1],
   ])('with no open item, %s ends skipped, with no draft, like an empty queue', async (_name, replies, count) => {
     const s = stream('- [x] 済んだ話\n');
