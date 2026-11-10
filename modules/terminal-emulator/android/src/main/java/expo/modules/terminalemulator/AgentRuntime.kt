@@ -573,7 +573,8 @@ object AgentRuntime {
     // v49: a longform step retries its pinned engine up to three times on a
     // transient failure (15 s, 45 s, 90 s) instead of once. JS-only.
     // v50: the editor in the article review loop, a final review in assemble, a no-repeat history and Perplexity academic search.
-    private const val CURRENT_EXECUTOR_VERSION = 50
+    // v51: in-step CLI calls (review editor, final review) get the run's remaining time minus what follows, counted after the slot wait. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 51
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

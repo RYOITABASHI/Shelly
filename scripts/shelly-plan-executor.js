@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=50
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=51
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -223,7 +223,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // source) and tells the research step not to pick those as the main study.
 // A Perplexity research engine with `searchMode: "academic"` sends
 // search_mode: "academic" and no recency filter.
-const EXECUTOR_SCRIPT_VERSION = 50;
+const EXECUTOR_SCRIPT_VERSION = 51;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -4255,6 +4255,43 @@ const REVIEW_EDITOR_TIMEOUT_MS = 3 * 60 * 1000;
 // does not start, and it always ends early enough for the editor and the save.
 const FINAL_REVIEW_MIN_LEFT_MS = 6 * 60 * 1000;
 const FINAL_REVIEW_TIMEOUT_MS = 3 * 60 * 1000;
+
+// v51: the time window of a model call made inside a step (the editor in a
+// review step, the final review and the editor in assemble). v50 gave such a
+// call `now + its own timeout` as its deadline, taken BEFORE the CLI lock and
+// slot waits, so a 60 s wait left a Codex call under minRunMs and it was
+// refused 8 minutes into a 30-minute run. Now:
+// - endMs: the run's wall (cliRunLimits().deadlineMs, the native ceiling minus
+//   its margin) minus `reserveMs`, what must still fit after the call. A call
+//   never starts with less than its minimum before endMs (the waits give up
+//   minRunMs before it, as for any CLI step).
+// - turnMaxMs: the call's own length, counted from when it actually starts
+//   (after the waits), and never past endMs.
+function inStepCallWindow(wallMs, reserveMs, turnMaxMs) {
+  return { endMs: wallMs - Math.max(0, reserveMs), turnMaxMs };
+}
+
+function inStepCallCanStart(w, nowMs, minMs) {
+  return w.endMs - nowMs >= minMs;
+}
+
+function inStepCallDeadline(w, startMs) {
+  return Math.min(w.endMs, startMs + w.turnMaxMs);
+}
+
+// What must still fit in the run after an in-step call. `minRunMs` is the CLI
+// minimum (cliRunLimits().minRunMs); an HTTP call needs EDITOR_MIN_HTTP_MS.
+// - 'review-editor': the revise step after the review (when there is one),
+//   then the editor on assemble and the save.
+// - 'final-review': the editor on assemble and the save.
+// - 'editor': the save.
+function inStepReserveMs(kind, o) {
+  const callMs = (cli) => (cli ? o.minRunMs : EDITOR_MIN_HTTP_MS);
+  const editorAndSaveMs = EDITOR_SAVE_RESERVE_MS + callMs(o.editorCli);
+  if (kind === 'editor') return EDITOR_SAVE_RESERVE_MS;
+  if (kind === 'final-review') return editorAndSaveMs;
+  return (o.reviseFollows ? callMs(o.reviseCli) : 0) + editorAndSaveMs;
+}
 const EDITOR_NOTES_HEADING = '# Editor notes (data)';
 // A criterion under this score is worth a note to the reviser.
 const EDITOR_NOTES_BELOW_SCORE = 4;
@@ -10173,6 +10210,8 @@ async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step,
   // v44 (review L1): `opts.cliDeadlineMs` (the editor's own end) moves the
   // deadline earlier for this step: the lock and slot waits stop minRunMs
   // before it, and the turn's timeouts are computed after the waits from it.
+  // v51: `opts.cliTurnMaxMs` caps the turn itself, counted from when it
+  // starts after the waits (see inStepCallWindow).
   const runLimits = cliRunLimits();
   const ownDeadline = opts && Number.isFinite(opts.cliDeadlineMs) ? Math.min(opts.cliDeadlineMs, runLimits.deadlineMs) : runLimits.deadlineMs;
   const limits = Object.assign({}, runLimits, { deadlineMs: ownDeadline });
@@ -10209,7 +10248,9 @@ async function holdCliSlot(paths, opts, plan, config, args, stepIndex, step, pro
     if (waited) cliStepAudit(paths, plan, 'cli_slot_acquired', { stepIndex, engine, waitedMs: Date.now() - waitStartedMs });
     if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
     if (limits.deadlineMs - Date.now() < limits.minRunMs) throw exhausted(Date.now() - waitStartedMs);
-    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, cliBranchTimeouts(limits));
+    const turnMaxMs = opts && Number.isFinite(opts.cliTurnMaxMs) && opts.cliTurnMaxMs > 0 ? opts.cliTurnMaxMs : Infinity;
+    const turnLimits = Object.assign({}, limits, { deadlineMs: Math.min(limits.deadlineMs, Date.now() + turnMaxMs) });
+    return await runCliStepDriver(paths, opts, plan, config, args, stepIndex, step, prompt, cliBranchTimeouts(turnLimits));
   } finally {
     releaseCliSlot(paths, engine);
   }
@@ -11157,16 +11198,26 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         .map((k) => String(resultsByStep[k]).slice(0, EDITOR_NOTES_MAX_CHARS))
         .join('\n\n');
       const nonce = crypto.randomBytes(8).toString('hex');
-      const editorDeadline = Math.min(longformDeadlineMs - EDITOR_SAVE_RESERVE_MS, Date.now() + (loop ? REVIEW_EDITOR_TIMEOUT_MS : EDITOR_TIMEOUT_MS));
+      // v51: the run's remaining time minus what still follows (inStepCallWindow).
+      const minRunMs = cliRunLimits().minRunMs;
+      let reserveMs = EDITOR_SAVE_RESERVE_MS;
+      if (loop) {
+        const next = plan.steps.list[loop.reviewStep + 1];
+        const nh = handoffOf(plan.steps.list, loop.reviewStep + 1);
+        reserveMs = inStepReserveMs('review-editor', { minRunMs, editorCli: cli, reviseFollows: !!nh && nh.kind === 'revise', reviseCli: !!next && isCliStep(next) });
+      }
+      const callWindow = inStepCallWindow(longformDeadlineMs, reserveMs, loop ? REVIEW_EDITOR_TIMEOUT_MS : EDITOR_TIMEOUT_MS);
       progressStepEvent(activeProgress, at, 'tail', { tail: progressTail(`Editor: scoring the draft with ${cli ? CLI_STEP_LABELS[editor.engine.cli] : (OVERRIDE_TOOL_LABELS[editor.engine.type] || editor.engine.type)}.`) });
       const ask = async (retry) => {
-        const left = editorDeadline - Date.now();
-        if (left < (cli ? cliRunLimits().minRunMs : EDITOR_MIN_HTTP_MS)) throw new EditorFailure('時間切れで採点できない');
+        const now = Date.now();
+        if (!inStepCallCanStart(callWindow, now, cli ? minRunMs : EDITOR_MIN_HTTP_MS)) throw new EditorFailure('時間切れで採点できない');
+        const editorDeadline = inStepCallDeadline(callWindow, now);
+        const left = editorDeadline - now;
         const prompt = buildEditorPrompt({ article: tail, notes, materials: materialsState ? materialsState.block : '', sourceText: sourceTextState ? sourceTextState.block : '', rubric: editor.rubric, lang: editor.lang, nonce, retry });
         let attempt;
         if (cli) {
           const editorStep = { instruction: plan.steps.list[i].instruction, tool: editor.engine };
-          attempt = await dispatchCliStep(paths, Object.assign({}, editorOpts, { cliDeadlineMs: editorDeadline }), plan, config, args, i, editorStep, prompt);
+          attempt = await dispatchCliStep(paths, Object.assign({}, editorOpts, { cliDeadlineMs: callWindow.endMs, cliTurnMaxMs: callWindow.turnMaxMs }), plan, config, args, i, editorStep, prompt);
         } else {
           const editorPlan = Object.assign({}, plan, {
             prompt,
@@ -11288,9 +11339,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       if (cli && !isTextOnlyCliStep(plan, j)) return skip('engine');
       const now = Date.now();
       if (longformDeadlineMs - now < FINAL_REVIEW_MIN_LEFT_MS) return skip('time');
-      const editorNeedsMs = EDITOR_SAVE_RESERVE_MS + (local.editor.engine.type === 'cli' ? cliRunLimits().minRunMs : EDITOR_MIN_HTTP_MS);
-      const deadline = Math.min(now + FINAL_REVIEW_TIMEOUT_MS, longformDeadlineMs - editorNeedsMs);
-      if (deadline - now < (cli ? cliRunLimits().minRunMs : EDITOR_MIN_HTTP_MS)) return skip('time');
+      // v51: the run's remaining time minus the editor and the save (inStepCallWindow).
+      const minRunMs = cliRunLimits().minRunMs;
+      const callWindow = inStepCallWindow(longformDeadlineMs, inStepReserveMs('final-review', { minRunMs, editorCli: local.editor.engine.type === 'cli' }), FINAL_REVIEW_TIMEOUT_MS);
+      if (!inStepCallCanStart(callWindow, now, cli ? minRunMs : EDITOR_MIN_HTTP_MS)) return skip('time');
+      const deadline = inStepCallDeadline(callWindow, now);
       const h = handoffOf(list, j);
       const indexes = Array.from(new Set(h.of.slice(0, -1).filter((k) => k < draftStep && has(k)).concat([draftStep])));
       const contextResults = indexes.map((k) => resultsByStep[k]);
@@ -11314,7 +11367,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       progressStepEvent(activeProgress, i, 'tail', { tail: progressTail('Final review: reading the final text.') });
       let attempt;
       if (cli && !independentTool) {
-        attempt = await dispatchCliStep(paths, Object.assign({}, reviewOpts, { cliDeadlineMs: deadline }), reviewPlan, config, args, j, step, composed.prompt);
+        attempt = await dispatchCliStep(paths, Object.assign({}, reviewOpts, { cliDeadlineMs: callWindow.endMs, cliTurnMaxMs: callWindow.turnMaxMs }), reviewPlan, config, args, j, step, composed.prompt);
       } else {
         attempt = await requestModelContentWithLadder(paths, reviewOpts, reviewPlan, config, true, undefined);
       }
@@ -12980,6 +13033,13 @@ module.exports = {
   LONGFORM_EDITOR_NOTES_RULE,
   REVIEW_EDITOR_MIN_LEFT_MS,
   FINAL_REVIEW_MIN_LEFT_MS,
+  FINAL_REVIEW_TIMEOUT_MS,
+  REVIEW_EDITOR_TIMEOUT_MS,
+  EDITOR_SAVE_RESERVE_MS,
+  inStepCallWindow,
+  inStepCallCanStart,
+  inStepCallDeadline,
+  inStepReserveMs,
   ARTICLE_HISTORY_FILE,
   ARTICLE_HISTORY_MAX_ENTRIES,
   parseArticleHistory,

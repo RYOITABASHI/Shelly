@@ -450,3 +450,176 @@ describe('Perplexity academic search (searchMode)', () => {
     expect(synthesis).not.toHaveProperty('search_mode');
   });
 });
+
+// v51: a Codex call inside a step (the editor in a review step, the final
+// review) gets the run's remaining time minus what still follows, and its own
+// length counts from when it starts after the lock / slot wait. v50 took
+// `now + 3 min` before the wait, so a 60 s wait left it under minRunMs and it
+// was refused 8 minutes into a 30-minute run.
+describe('the time window of a call inside a step (v51)', () => {
+  const MIN = 60_000;
+  const MIN_RUN = 2 * MIN; // CLI_BRANCH_MIN_RUN_MS
+  const start = 0;
+  const wall = start + 29 * MIN; // the 30-minute ceiling minus its margin
+  const reviewEditorReserve = executor.inStepReserveMs('review-editor', { minRunMs: MIN_RUN, editorCli: true, reviseFollows: true, reviseCli: true });
+  const finalReviewReserve = executor.inStepReserveMs('final-review', { minRunMs: MIN_RUN, editorCli: true });
+
+  it('reserves the revise step, the editor on assemble and the save', () => {
+    expect(reviewEditorReserve).toBe(MIN_RUN + executor.EDITOR_SAVE_RESERVE_MS + MIN_RUN);
+    expect(executor.inStepReserveMs('review-editor', { minRunMs: MIN_RUN, editorCli: true, reviseFollows: false })).toBe(executor.EDITOR_SAVE_RESERVE_MS + MIN_RUN);
+    expect(finalReviewReserve).toBe(executor.EDITOR_SAVE_RESERVE_MS + MIN_RUN);
+    expect(executor.inStepReserveMs('editor', { minRunMs: MIN_RUN, editorCli: true })).toBe(executor.EDITOR_SAVE_RESERVE_MS);
+  });
+
+  it('8 minutes in, after a 60 s slot wait, the review editor and the final review still start with their full length', () => {
+    const now = start + 8 * MIN;
+    // The device log: waitedMs 60000, remainingMs 119998.
+    const afterWait = now + 60_002;
+    for (const [reserve, turn] of [[reviewEditorReserve, executor.REVIEW_EDITOR_TIMEOUT_MS], [finalReviewReserve, executor.FINAL_REVIEW_TIMEOUT_MS]]) {
+      const w = executor.inStepCallWindow(wall, reserve, turn);
+      expect(executor.inStepCallCanStart(w, now, MIN_RUN)).toBe(true);
+      // dispatchCliStep's check after the wait, and the turn it then gets.
+      expect(executor.inStepCallCanStart(w, afterWait, MIN_RUN)).toBe(true);
+      expect(executor.inStepCallDeadline(w, afterWait) - afterWait).toBe(turn);
+      // v50's deadline (now + the call's own length, taken before the wait) fell under minRunMs.
+      expect(now + turn - afterWait).toBeLessThan(MIN_RUN);
+    }
+  });
+
+  it('near the wall neither starts, and a wait that eats the margin stops the call', () => {
+    const review = executor.inStepCallWindow(wall, reviewEditorReserve, executor.REVIEW_EDITOR_TIMEOUT_MS);
+    const final = executor.inStepCallWindow(wall, finalReviewReserve, executor.FINAL_REVIEW_TIMEOUT_MS);
+    expect(executor.inStepCallCanStart(review, start + 23 * MIN, MIN_RUN)).toBe(false);
+    expect(executor.inStepCallCanStart(final, start + 25 * MIN, MIN_RUN)).toBe(false);
+    // 23.5 minutes in the final review may start, but not after a 60 s wait.
+    const late = start + 23.5 * MIN;
+    expect(executor.inStepCallCanStart(final, late, MIN_RUN)).toBe(true);
+    expect(executor.inStepCallCanStart(final, late + 60_000, MIN_RUN)).toBe(false);
+    // The turn never runs past what the editor and the save need.
+    expect(executor.inStepCallDeadline(final, late)).toBe(wall - finalReviewReserve);
+  });
+});
+
+describe('a run with Codex reviews and a Codex editor behind a slot wait (v51)', () => {
+  const LOCAL_URL = '127.0.0.1';
+  const SOURCE_URL = 'https://example.org/paper-a';
+  const RESEARCH = '1. Paper A: a figure. https://example.org/paper-a';
+  const FIRST = '# A title\n\nThe first version says the cache keeps 3 entries [1].';
+  const SECOND = '# A title\n\nThe answer first: 3 entries. Then the second version explains why [1].';
+  const THIRD = '# A title\n\nThe answer first: 3 entries. The third version adds the limits the paper names [1].';
+  const CODEX = { type: 'cli' as const, cli: 'codex' as const, textOnly: true as const, model: 'fixture-model' };
+  const openAi = (text: string) => ({ body: { choices: [{ message: { content: text }, finish_reason: 'stop' }], citations: [SOURCE_URL] } });
+
+  // After the calls named in hold.json, the fake hands the text-only Codex
+  // lock to a process that lives for `ms`: the executor's next Codex call
+  // waits for it, as behind another agent's text-only step.
+  const FAKE_DRIVER = `'use strict';
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const argv = process.argv.slice(2);
+const get = (flag) => { const i = argv.indexOf(flag); return i === -1 ? undefined : argv[i + 1]; };
+const dir = process.env.FAKE_DRIVER_RECORD_DIR;
+const answers = JSON.parse(fs.readFileSync(path.join(dir, 'answers.json'), 'utf8'));
+const hold = JSON.parse(fs.readFileSync(path.join(dir, 'hold.json'), 'utf8'));
+const n = fs.readdirSync(dir).filter((f) => f.startsWith('call-')).length;
+const prompt = fs.readFileSync(get('--prompt-file'), 'utf8');
+fs.writeFileSync(path.join(dir, 'call-' + String(n).padStart(2, '0') + '.json'), JSON.stringify({ argv, prompt }));
+const a = answers[n];
+if (a === undefined || a === null) { process.stdout.write('CODEX_ERROR refused by the fake\\n'); process.exit(1); }
+fs.writeFileSync(get('--answer-file'), a);
+if (hold.after.includes(n)) {
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, ' + hold.ms + ')'], { detached: true, stdio: 'ignore' });
+  child.unref();
+  fs.writeFileSync(hold.lockFile, JSON.stringify({ pid: child.pid, start: '' }));
+}
+process.exit(0);
+`;
+
+  it('8 minutes into the run, a slot wait no longer stops the review editor or the final review', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-wait-'));
+    fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
+    fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
+    const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-editor-wait-vault-')));
+    const outputDir = path.join(vault, 'Drafts', 'Loop');
+    fs.mkdirSync(outputDir, { recursive: true });
+    const http = path.join(home, 'fake-http.json');
+    fs.writeFileSync(http, JSON.stringify({ [LOCAL_URL]: [RESEARCH, FIRST, SECOND, THIRD].map(openAi) }));
+
+    const driverDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-fake-editor-wait-'));
+    const driver = path.join(driverDir, 'fake-agent-driver.js');
+    fs.writeFileSync(driver, FAKE_DRIVER);
+    const recordDir = path.join(driverDir, 'records');
+    fs.mkdirSync(recordDir);
+    // Codex calls: review 1, its editor, review 2, its editor, the final review, the editor on assemble.
+    fs.writeFileSync(path.join(recordDir, 'answers.json'), JSON.stringify([
+      'VERDICT: REVISE\n1. Fix the marker.', answer({ voice: 3 }, 'Stock phrasing.'),
+      'VERDICT: REVISE\n1. Name the limits.', answer(),
+      'VERDICT: PASS', answer({ overall: 5 }),
+    ]));
+    // The editor of review 1 and the final review each wait about 3 s for the lock.
+    const lockFile = path.join(home, '.shelly/agents/locks/text-only-codex.slot');
+    fs.writeFileSync(path.join(recordDir, 'hold.json'), JSON.stringify({ after: [0, 3], ms: 3000, lockFile }));
+
+    const list = normalizeSteps(buildArticlePipeline(config({ editor: { ...CODEX, rubric: RUBRIC } })).orchestration).map((step: any) => {
+      const { tool: _tool, toolPinned: _pinned, ...rest } = step;
+      void _tool;
+      void _pinned;
+      return step.handoff?.kind === 'review' ? { ...rest, tool: CODEX, toolPinned: true } : rest;
+    });
+    const policy = { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [], unattended: true };
+    const plan = {
+      kind: PLAN_SPEC_KIND,
+      schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
+      generatedAt: 1,
+      agent: { id: AGENT_ID, name: 'Fallback title', autonomous: false, autonomyLevel: 'L2' },
+      prompt: 'Base task',
+      tool: LOCAL,
+      action: { type: 'draft' },
+      paths: { home },
+      output: { outputDir, outputNameTemplate: `{date}-${STREAM}.md`, slug: STREAM, useGlobalOutput: false, suggestedRoots: [] },
+      limits: { timeoutSeconds: 30, maxConcurrent: 2 },
+      policy,
+      routeDecision: { route: 'on-device', toolType: 'local', toolLabel: 'Local LLM', guard: 'configured-tool', why: 'test' },
+      steps: { list, budget: { maxSteps: 10, totalTimeoutMs: 30 * 60_000 }, longform: true },
+      cliWorker: { cwd: home, policy },
+    };
+    const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://${LOCAL_URL}:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${vault}'\n`);
+
+    // 22 minutes of ceiling left = 8 minutes into a 30-minute run. A minimum
+    // CLI turn just under the review editor's 3 minutes: v50's `now + 3 min`,
+    // taken before the wait, gave up after 1 s of it.
+    const status = await new Promise<number | null>((resolve) => {
+      const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', fixtureBroker, '--unattended', '1', '--agent-driver', driver];
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        HOME: home,
+        SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10',
+        SHELLY_TEST_FAKE_HTTP: http,
+        FAKE_DRIVER_RECORD_DIR: recordDir,
+        SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(22 * 60_000),
+        SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS: String(179_000),
+      };
+      delete env.SHELLY_RUN_ORIGIN;
+      const child = spawn(process.execPath, args, { env: env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      child.on('close', (code) => resolve(code));
+    });
+    expect(status).toBe(0);
+    const audit = fs.readFileSync(path.join(home, `.shelly/agents/logs/${AGENT_ID}/plan-executor-audit.jsonl`), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const ev = (name: string) => audit.filter((e) => e.event === name);
+    expect(ev('cli_run_time_exhausted')).toHaveLength(0);
+    expect(ev('editor_unresolved')).toHaveLength(0);
+    expect(ev('final_review_failed')).toHaveLength(0);
+    // Both waits happened, on the text-only lock.
+    expect(ev('cli_slot_wait').filter((e) => e.reason === 'text-only-engine')).toHaveLength(2);
+    expect(ev('editor_scored').map((e) => e.phase)).toEqual(['review', 'review', 'assemble']);
+    expect(ev('final_review')).toMatchObject([{ verdict: 'PASS', engine: 'cli:codex' }]);
+    expect(fs.readdirSync(recordDir).filter((n) => n.startsWith('call-'))).toHaveLength(6);
+    const result = fs.readFileSync(path.join(home, `.shelly/tmp/agent-result-${AGENT_ID}.md`), 'utf8');
+    const fm = result.slice(0, result.indexOf('\n---\n', 4));
+    expect(fm).toContain('review: pass');
+    expect(fm).toContain('quality: pass');
+  }, 90000);
+});
