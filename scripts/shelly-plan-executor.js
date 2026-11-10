@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=48
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=49
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -211,7 +211,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // section makes assemble cut the author-view section (the marker and its own
 // heading) instead of keeping the marker, with `material: omitted` and a footer
 // that claims no ghostwritten section. Plans without it run as before.
-const EXECUTOR_SCRIPT_VERSION = 48;
+const EXECUTOR_SCRIPT_VERSION = 49;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -948,11 +948,13 @@ const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
 const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
 const ARTICLE_UNREVIEWED_NOTE = '合格した版を採用できなかった';
 const ARTICLE_ECHO_MIN_CHARS = 12;
-// A brief 503 must not move a step off its pinned engine. The retry waits this
-// long, once, and only while the run is far from the broker's 10-minute CAP-001
-// wall (a run that has used most of it would only trade the 503 for rc=42). On
-// two device runs a Gemini overload outlasted 4 s, so the wait is 15 s.
-const LONGFORM_RETRY_WAIT_MS = 15000;
+// A brief 503 must not move a step off its pinned engine. The retry waits
+// these lengths in turn, and only while the run is far from the broker's
+// 10-minute CAP-001 wall (a run that has used most of it would only trade the
+// 503 for rc=42). On two device runs a Gemini overload outlasted 4 s, and on
+// 2026-11-10 one outlasted 15 s, so there are three waits (2.5 min in all).
+const LONGFORM_RETRY_WAITS_MS = [15000, 45000, 90000];
+const LONGFORM_RETRY_WAIT_MS = LONGFORM_RETRY_WAITS_MS[0];
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
 const LONGFORM_OUT_OF_TIME_MESSAGE = 'Not enough run time left before the 30-minute run limit.';
 // Flagged, never rewritten: a draft writing about its own sources of work.
@@ -9579,27 +9581,32 @@ function stepToolCandidates(plan) {
 
 // True when a longform step should try its pinned engine once more. 'unavailable'
 // is the broker's transient exit (429, 5xx, network, timeout); an auth failure, a
-// missing secret or the budget stop is not.
-function longformRetryDue(plan, opts, candidateIndex, alreadyRetried, error) {
+// missing secret or the budget stop is not. `retries` is how many retries this
+// step has made so far (true counts as all of them). The wait must also end
+// inside the window.
+function longformRetryDue(plan, opts, candidateIndex, retries, error) {
   if (!(plan.steps && plan.steps.longform === true)) return false;
-  if (candidateIndex !== 0 || alreadyRetried || !error || error.status !== 'unavailable') return false;
+  const used = retries === true ? LONGFORM_RETRY_WAITS_MS.length : (Number.isInteger(retries) && retries > 0 ? retries : 0);
+  if (candidateIndex !== 0 || used >= LONGFORM_RETRY_WAITS_MS.length || !error || error.status !== 'unavailable') return false;
   const startedAt = opts && opts.chainStartedAt;
-  return typeof startedAt === 'number' && Date.now() - startedAt < LONGFORM_RETRY_WINDOW_MS;
+  return typeof startedAt === 'number' && Date.now() - startedAt + longformRetryWaitMs(used) < LONGFORM_RETRY_WINDOW_MS;
 }
 
 // Tests set this env var so the suite does not sit through the wait. It comes
 // from the process environment, not the plan or any model output, and can only
 // shorten the wait.
-function longformRetryWaitMs() {
+function longformRetryWaitMs(retries) {
+  const index = Number.isInteger(retries) && retries > 0 ? Math.min(retries, LONGFORM_RETRY_WAITS_MS.length - 1) : 0;
+  const wait = LONGFORM_RETRY_WAITS_MS[index];
   const raw = Number(process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS);
-  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, LONGFORM_RETRY_WAIT_MS) : LONGFORM_RETRY_WAIT_MS;
+  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, wait) : wait;
 }
 
 async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
   const candidates = stepToolCandidates(plan);
   const longform = !!(plan.steps && plan.steps.longform === true);
   let lastError = new PlanFailure('no tool candidates to try', { handled: true });
-  let pinnedRetried = false;
+  let pinnedRetries = 0;
   for (let i = 0; i < candidates.length; i += 1) {
     const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
     // Continuous mode: with a ¥0 daily budget a loop never calls an API-key
@@ -9702,8 +9709,9 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
       // they did before toolLadder existed — never added to the ladder walk.
       if (error.exitCode === EXIT.TOOL_DENY) throw error;
       lastError = error;
-      if (longformRetryDue(plan, opts, i, pinnedRetried, error)) {
-        pinnedRetried = true;
+      if (longformRetryDue(plan, opts, i, pinnedRetries, error)) {
+        const waitMs = longformRetryWaitMs(pinnedRetries);
+        pinnedRetries += 1;
         appendJsonl(paths.planAuditFile, {
           ts: new Date().toISOString(),
           kind: 'plan.executor',
@@ -9711,8 +9719,10 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
           agentId: plan.agent && plan.agent.id,
           stepIndex: opts && opts.stepIndex,
           toolType: attemptPlan.tool.type,
+          attempt: pinnedRetries,
+          waitMs,
         });
-        await new Promise((resolve) => setTimeout(resolve, longformRetryWaitMs()));
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
         if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
         i -= 1; // the loop's increment brings this back to the pinned engine
       }
@@ -12664,6 +12674,7 @@ module.exports = {
   ARTICLE_LAST_REVIEW_NOTE,
   LONGFORM_RETRY_WINDOW_MS,
   LONGFORM_RETRY_WAIT_MS,
+  LONGFORM_RETRY_WAITS_MS,
   longformRetryDue,
   longformRetryWaitMs,
   longformIndependentReviewEngine,

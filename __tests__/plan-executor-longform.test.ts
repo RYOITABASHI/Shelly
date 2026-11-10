@@ -284,11 +284,11 @@ describe('shelly-plan-executor.js longform chain', () => {
   it('a failed review keeps the draft: skipped, not an error, and unresolved', async () => {
     const home = makeHome();
     const article = '# 記事\n\n本文です [1]。';
-    replies = [research, article, failed, failed];
+    replies = [research, article, failed, failed, failed, failed];
     expect(await runExecutor(writePlan(home, port, articleChain()), home)).toBe(0);
 
-    // The engine was tried twice: a transient failure gets one retry.
-    expect(prompts).toHaveLength(4);
+    // The engine was tried four times: a transient failure gets three retries.
+    expect(prompts).toHaveLength(6);
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
@@ -301,10 +301,10 @@ describe('shelly-plan-executor.js longform chain', () => {
   it('a failed revise keeps the draft before it, and the second review does not run', async () => {
     const home = makeHome();
     const article = '# 初稿\n\n本文です [1]。';
-    replies = [research, article, 'VERDICT: REVISE\n1. 直す', failed, failed, 'never reached'];
+    replies = [research, article, 'VERDICT: REVISE\n1. 直す', failed, failed, failed, failed, 'never reached'];
     await runExecutor(writePlan(home, port, articleChain()), home);
 
-    expect(prompts).toHaveLength(5);
+    expect(prompts).toHaveLength(7);
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success', 'skipped', 'skipped', 'skipped', 'success']);
@@ -314,10 +314,10 @@ describe('shelly-plan-executor.js longform chain', () => {
 
   it('a failed second review keeps the revised draft', async () => {
     const home = makeHome();
-    replies = [research, '# 初稿\n\n一。', 'VERDICT: REVISE\n1. 直す', '# 改稿\n\n二。', failed, failed];
+    replies = [research, '# 初稿\n\n一。', 'VERDICT: REVISE\n1. 直す', '# 改稿\n\n二。', failed, failed, failed, failed];
     await runExecutor(writePlan(home, port, articleChain()), home);
 
-    expect(prompts).toHaveLength(6);
+    expect(prompts).toHaveLength(8);
     const result = readResult(home);
     expect(result).toContain('# 改稿');
     expect(result).not.toContain('# 初稿');
@@ -326,9 +326,9 @@ describe('shelly-plan-executor.js longform chain', () => {
 
   it('REGRESSION: a failed write step still fails the run', async () => {
     const home = makeHome();
-    replies = [research, failed, failed];
+    replies = [research, failed, failed, failed, failed];
     await runExecutor(writePlan(home, port, articleChain()), home);
-    expect(prompts).toHaveLength(3);
+    expect(prompts).toHaveLength(5);
     expect(readRunLog(home).status).not.toBe('success');
     expect(readResult(home)).not.toContain('title:');
   }, 20000);
@@ -532,11 +532,11 @@ describe('an independent review after a writer fallback', () => {
   it('a writer on Groq is reviewed by Gemini, and that PASS is a real pass', async () => {
     const { calls, result, log } = await run({
       [PERPLEXITY]: [research],
-      [GEMINI]: [busy, busy, gemini('VERDICT: PASS')],
+      [GEMINI]: [busy, busy, busy, busy, gemini('VERDICT: PASS')],
       [GROQ]: [openAi('# 記事\n\n本文です [1]。')],
       [CEREBRAS]: [openAi('VERDICT: PASS')],
     });
-    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GROQ, GEMINI]);
+    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GEMINI, GEMINI, GROQ, GEMINI]);
     expect(log.status).toBe('success');
     expect(result.split('\n')).toContain('review: pass');
     expect(result).not.toContain('review_note');
@@ -545,11 +545,11 @@ describe('an independent review after a writer fallback', () => {
   it('with Gemini down too, the review stops, Cerebras is not asked, and the draft stays unresolved', async () => {
     const { calls, result, log } = await run({
       [PERPLEXITY]: [research],
-      [GEMINI]: [busy, busy, busy, busy],
+      [GEMINI]: [busy, busy, busy, busy, busy, busy, busy, busy],
       [GROQ]: [openAi('# 記事\n\n本文です [1]。')],
       [CEREBRAS]: [openAi('VERDICT: PASS')],
     });
-    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GROQ, GEMINI, GEMINI]);
+    expect(calls).toEqual([PERPLEXITY, GEMINI, GEMINI, GEMINI, GEMINI, GROQ, GEMINI, GEMINI, GEMINI, GEMINI]);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'skipped', 'skipped', 'skipped', 'skipped', 'success']);
     expect(result).toContain('# 記事');
@@ -570,11 +570,11 @@ describe('an independent review after a writer fallback', () => {
   it('a revise that fell back is reviewed by the other family too', async () => {
     const { calls, result } = await run({
       [PERPLEXITY]: [research],
-      [GEMINI]: [gemini('# 初稿\n\n本文です [1]。'), busy, busy, gemini('VERDICT: PASS')],
+      [GEMINI]: [gemini('# 初稿\n\n本文です [1]。'), busy, busy, busy, busy, gemini('VERDICT: PASS')],
       [GROQ]: [openAi('# 改稿\n\n直しました [1]。')],
       [CEREBRAS]: [openAi('VERDICT: REVISE\n1. 直す')],
     });
-    expect(calls).toEqual([PERPLEXITY, GEMINI, CEREBRAS, GEMINI, GEMINI, GROQ, GEMINI]);
+    expect(calls).toEqual([PERPLEXITY, GEMINI, CEREBRAS, GEMINI, GEMINI, GEMINI, GEMINI, GROQ, GEMINI]);
     expect(result).toContain('# 改稿');
     expect(result.split('\n')).toContain('review: pass');
   }, 20000);
@@ -1189,12 +1189,32 @@ describe('truncation and candidates', () => {
     const opts = { chainStartedAt: Date.now() };
     const transient = { status: 'unavailable' };
 
-    it('allows one retry of the pinned engine on a transient failure', () => {
+    it('allows three retries of the pinned engine on a transient failure', () => {
       expect(executor.longformRetryDue(plan, opts, 0, false, transient)).toBe(true);
+      expect(executor.longformRetryDue(plan, opts, 0, 0, transient)).toBe(true);
+      expect(executor.longformRetryDue(plan, opts, 0, 1, transient)).toBe(true);
+      expect(executor.longformRetryDue(plan, opts, 0, 2, transient)).toBe(true);
     });
 
-    it.each<[string, any, any, number, boolean, any]>([
-      ['a second retry', plan, opts, 0, true, transient],
+    it('waits longer each time', () => {
+      expect(executor.LONGFORM_RETRY_WAITS_MS).toEqual([15000, 45000, 90000]);
+    });
+
+    it('does not start a wait that would end past the window', () => {
+      const late = { chainStartedAt: Date.now() - executor.LONGFORM_RETRY_WINDOW_MS + 60000 };
+      const prev = process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS;
+      delete process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS;
+      try {
+        expect(executor.longformRetryDue(plan, late, 0, 0, transient)).toBe(true);
+        expect(executor.longformRetryDue(plan, late, 0, 2, transient)).toBe(false);
+      } finally {
+        if (prev !== undefined) process.env.SHELLY_TEST_LONGFORM_RETRY_WAIT_MS = prev;
+      }
+    });
+
+    it.each<[string, any, any, number, any, any]>([
+      ['a fourth retry', plan, opts, 0, 3, transient],
+      ['a retry after all were used', plan, opts, 0, true, transient],
       ['a ladder rung', plan, opts, 1, false, transient],
       ['an auth or budget failure', plan, opts, 0, false, { status: 'error' }],
       ['an ordinary plan', {}, opts, 0, false, transient],
