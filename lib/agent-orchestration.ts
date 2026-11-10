@@ -300,7 +300,7 @@ export function normalizeMaterialsConfig(raw: unknown): AgentArticleMaterialsCon
 export const FETCH_SOURCES_MAX = 3;
 export const FETCH_SOURCES_DEFAULT_MAX = 2;
 export const FETCH_SOURCES_MIN_CHARS_EACH = 1000;
-export const FETCH_SOURCES_MAX_CHARS_EACH = 20000;
+export const FETCH_SOURCES_MAX_CHARS_EACH = 60000; // v54 (2026-11-11): was 20000
 export const FETCH_SOURCES_DEFAULT_CHARS_EACH = 8000;
 
 /** The assemble step's `fetchSources`. Undefined when anything is off. */

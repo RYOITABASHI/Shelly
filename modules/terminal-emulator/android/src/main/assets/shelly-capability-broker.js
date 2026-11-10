@@ -1321,13 +1321,17 @@ async function runResolveRedirects(args, nowIso, nowMs, probe) {
 //   - text/html, application/xhtml+xml and text/plain only. PDF and every
 //     other type are refused (there is no parser here).
 //   - HTML becomes plain text (scripts, styles, navigation, forms and the like
-//     dropped; the <article> or <main> region when it holds enough text), cut to
-//     --max-chars (at most FETCH_TEXT_MAX_CHARS).
+//     dropped; the <article> or <main> region when it holds enough text), page
+//     chrome and the reference list trimmed (trimFetchedBoilerplate, v54), cut
+//     to --max-chars (at most FETCH_TEXT_MAX_CHARS) keeping the key sections
+//     (cutKeepingSections, v54).
 //   - Refused as a whole for a tainted run. One budget charge per URL. One audit
 //     line per URL: hosts, status, byte count and the body's SHA-256, never the
 //     body or the path.
 const FETCH_TEXT_MAX_URLS = 3;
-const FETCH_TEXT_MAX_CHARS = 20000;
+// v54: 60,000 (was 20,000). The executor's prompt block holds at most 60,000 in
+// all; the 2 MB body cap and the 20 s deadline are unchanged.
+const FETCH_TEXT_MAX_CHARS = 60000;
 const FETCH_TEXT_MAX_RAW_BYTES = 2 * 1024 * 1024;
 // Bytes on the wire for a compressed body (decoded output keeps the cap above).
 const FETCH_TEXT_MAX_COMPRESSED_BYTES = 4 * 1024 * 1024;
@@ -1723,13 +1727,171 @@ function htmlToText(html) {
   return cleanFetchedText(decodeHtmlEntities(htmlSliceToText(html, 0, html.length)));
 }
 
-/** { text, truncated }: at most `maxChars` characters, cut at a line end when one is near. Pure. */
-function capFetchedText(text, maxChars) {
-  const chars = Array.from(text);
-  if (chars.length <= maxChars) return { text, truncated: false };
-  const head = chars.slice(0, maxChars).join('');
+// v54 (2026-11-11): page chrome before the cut. A journal page opens with
+// navigation, a cookie banner and "Skip to main content", and ends with the
+// reference list, so the character budget went to those and not to the paper.
+// trimFetchedBoilerplate drops, deterministically and conservatively:
+//   - lines that are exactly a known navigation / chrome phrase
+//     (FETCH_TEXT_CHROME_LINES, case-insensitive, a leading "- " ignored);
+//   - cookie-banner lines (mention cookies and accept / consent / settings /
+//     preferences / manage / reject / agree / use, at most 400 characters);
+//   - a short line (at most 40 characters, no digit, not a key section
+//     heading) seen three or more times: only its first occurrence is kept;
+//   - everything from a "References" / "Bibliography" / 参考文献 / 引用文献
+//     heading line on, when that line starts past 30% of the text (a link
+//     with that name near the top is left alone).
+// A page that would come out empty is returned unchanged.
+const FETCH_TEXT_CHROME_LINES = new Set([
+  'skip to main content', 'skip to content', 'skip to navigation', 'skip navigation', 'jump to main content', 'jump to content',
+  'menu', 'main menu', 'search', 'search all content', 'log in', 'login', 'sign in', 'sign up', 'register', 'subscribe',
+  'my account', 'cart', 'close', 'share', 'share this article', 'advertisement', 'back to top', 'print', 'email',
+  'download pdf', 'download citation', 'cite this article', 'access through your institution', 'buy article pdf',
+  'buy now', 'view all journals', 'explore content', 'about the journal', 'publish with us', 'open access',
+  'メニュー', '検索', 'ログイン', '新規登録', '共有', 'ページの先頭へ', '本文へスキップ', '本文へ移動', '広告',
+]);
+const FETCH_TEXT_COOKIE_RE = /\bcookies?\b|クッキー|Cookie/i;
+const FETCH_TEXT_COOKIE_ACTION_RE = /accept|consent|settings|preferences|manage|reject|agree|\buse\b|同意|設定|使用/i;
+const FETCH_TEXT_REFERENCES_RE = /^(?:\d{1,2}[.)]?\s+)?(?:references|reference list|bibliography|works cited|literature cited|参考文献|引用文献|文献)\s*[:：]?$/i;
+
+/** A fetched text without obvious page chrome and the reference list. Pure. */
+function trimFetchedBoilerplate(text) {
+  const src = String(text);
+  const lines = src.split('\n');
+  const norm = (line) => line.replace(/^-\s+/, '').trim();
+  const counts = new Map();
+  for (const line of lines) {
+    const t = norm(line).toLowerCase();
+    if (t.length <= 40 && !/\d/.test(t)) counts.set(t, (counts.get(t) || 0) + 1);
+  }
+  let refAt = -1;
+  let offset = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (offset > src.length * 0.3 && FETCH_TEXT_REFERENCES_RE.test(norm(lines[i]))) {
+      refAt = i;
+      break;
+    }
+    offset += lines[i].length + 1;
+  }
+  const seen = new Set();
+  const out = [];
+  for (const line of refAt === -1 ? lines : lines.slice(0, refAt)) {
+    const t = norm(line);
+    const low = t.toLowerCase();
+    if (FETCH_TEXT_CHROME_LINES.has(low.replace(/[.:：。]$/, ''))) continue;
+    if (t.length <= 400 && FETCH_TEXT_COOKIE_RE.test(t) && FETCH_TEXT_COOKIE_ACTION_RE.test(t)) continue;
+    if ((counts.get(low) || 0) >= 3 && !isKeySectionHeading(t)) {
+      if (seen.has(low)) continue;
+      seen.add(low);
+    }
+    out.push(line);
+  }
+  const trimmed = out.join('\n').trim();
+  return trimmed ? trimmed : src;
+}
+
+// v54 (2026-11-11): a long page is cut keeping its key sections. A paper's
+// methods, results, discussion and limitations come after the page chrome and
+// the introduction, so a plain head cut dropped them first. Over the budget,
+// cutKeepingSections keeps the head (at least SECTION_CUT_HEAD_SHARE of the
+// budget, more when the key sections are short), then each section whose
+// heading line names Methods / Results / Discussion / Limitations / Conclusion
+// (or 方法 / 結果 / 考察 / 限界 / 結論 and the like), in page order, each running to
+// the next key heading. The rest of the budget is shared equally among those
+// sections (a short one leaves its share to the others), so a long Methods
+// cannot crowd out Limitations. A part that does not fit is cut at a line end,
+// one left under SECTION_CUT_MIN_PART_CHARS is dropped, and a gap is marked
+// with SECTION_CUT_MARK. A text with no key
+// heading is cut at the head as before. Deterministic and pure. The same code
+// is in scripts/shelly-plan-executor.js (the per-source prompt budget).
+const SECTION_CUT_MARK = '[… cut]';
+const SECTION_CUT_HEAD_SHARE = 0.4;
+const SECTION_CUT_MIN_PART_CHARS = 120;
+const SECTION_CUT_HEADING_MAX_CHARS = 60;
+const SECTION_CUT_HEADING_RE = /^(?:(?:\d{1,2}(?:\.\d{1,2}){0,2}|[IVX]{1,4})[.)]?\s+)?(?:(?:materials?\s+and\s+)?methods?|methodology|study design|procedures?|participants|measures|results?|findings|results and discussion|(?:general\s+)?discussion|(?:strengths and\s+)?limitations?(?:\s+of\s+(?:the|this)\s+study)?|study limitations|conclusions?|方法|研究方法|対象と方法|対象者|手続き|結果|考察|総合考察|限界|研究の限界|本研究の限界|結論)\s*[:：]?$/i;
+
+/** True when one line of fetched text is a key section heading. Pure. */
+function isKeySectionHeading(line) {
+  const t = String(line).replace(/^-\s+/, '').trim();
+  return t.length > 0 && t.length <= SECTION_CUT_HEADING_MAX_CHARS && SECTION_CUT_HEADING_RE.test(t);
+}
+
+/** The first `budget` code points of `chars`, cut at a line end when one is near. Pure. */
+function cutCharsAtLine(chars, budget) {
+  if (chars.length <= budget) return chars.join('');
+  const head = chars.slice(0, Math.max(0, budget)).join('');
   const nl = head.lastIndexOf('\n');
-  return { text: nl > head.length * 0.6 ? head.slice(0, nl) : head, truncated: true };
+  return nl > head.length * 0.6 ? head.slice(0, nl) : head;
+}
+
+/** { text, cut }: `text` within `budget` code points, keeping the head and the key sections. Pure. */
+function cutKeepingSections(text, budget) {
+  const src = String(text);
+  const all = Array.from(src);
+  if (all.length <= budget) return { text: src, cut: false };
+  // Only the last line with a given heading starts a section: a page's table
+  // of contents names the same headings before the body does.
+  const lines = src.split('\n');
+  const keyOf = (line) => line.replace(/^-\s+/, '').trim().toLowerCase();
+  const lastAt = new Map();
+  lines.forEach((line, i) => {
+    if (isKeySectionHeading(line)) lastAt.set(keyOf(line), i);
+  });
+  const parts = [[]];
+  lines.forEach((line, i) => {
+    if (lastAt.get(keyOf(line)) === i) parts.push([line]);
+    else parts[parts.length - 1].push(line);
+  });
+  if (parts.length === 1) return { text: cutCharsAtLine(all, budget), cut: true };
+  const mark = Array.from(`\n${SECTION_CUT_MARK}\n`).length;
+  const head = Array.from(parts[0].join('\n'));
+  const sections = parts.slice(1).map((p) => Array.from(p.join('\n')));
+  const sectionsTotal = sections.reduce((n, s) => n + s.length + mark, 0);
+  const headBudget = Math.min(head.length, Math.max(Math.floor(budget * SECTION_CUT_HEAD_SHARE), budget - sectionsTotal));
+  const out = [];
+  let used = 0;
+  let gap = false;
+  if (head.length) {
+    const h = headBudget > 0 ? cutCharsAtLine(head, headBudget) : '';
+    if (h) {
+      out.push(h);
+      used += Array.from(h).length + 1;
+    }
+    gap = Array.from(h).length < head.length;
+  }
+  // The room after the head is shared among the key sections (each also pays
+  // for one gap mark), so a long Methods cannot crowd out Limitations: equal
+  // shares, and what a short section leaves goes to the longer ones.
+  const room = Math.max(0, budget - used - sections.length * mark);
+  const allot = sections.map(() => 0);
+  let left = room;
+  for (let round = 0; round < sections.length && left > 0; round += 1) {
+    const hungry = sections.map((_, i) => i).filter((i) => allot[i] < sections[i].length);
+    if (!hungry.length) break;
+    const per = Math.floor(left / hungry.length);
+    if (per <= 0) break;
+    for (const i of hungry) {
+      const take = Math.min(per, sections[i].length - allot[i]);
+      allot[i] += take;
+      left -= take;
+    }
+  }
+  sections.forEach((s, i) => {
+    if (allot[i] < Math.min(s.length, SECTION_CUT_MIN_PART_CHARS)) {
+      gap = true;
+      return;
+    }
+    const piece = cutCharsAtLine(s, allot[i]);
+    if (gap && out.length) out.push(SECTION_CUT_MARK);
+    out.push(piece);
+    gap = Array.from(piece).length < s.length;
+  });
+  return { text: out.join('\n'), cut: true };
+}
+
+/** { text, truncated }: at most `maxChars` characters, keeping the key sections (v54). Pure. */
+function capFetchedText(text, maxChars) {
+  const r = cutKeepingSections(text, maxChars);
+  return { text: r.text, truncated: r.cut };
 }
 
 /**
@@ -1765,7 +1927,7 @@ async function fetchTextUrl(url, maxChars, signal, deps) {
         continue;
       }
       const decoded = fetchTextDecode(res.body, fetchTextCharset(res.contentType, res.body));
-      const plain = res.contentType.indexOf('text/plain') === 0 ? cleanFetchedText(decoded) : htmlToText(decoded);
+      const plain = trimFetchedBoilerplate(res.contentType.indexOf('text/plain') === 0 ? cleanFetchedText(decoded) : htmlToText(decoded));
       if (!plain) throw new FetchTextRefusal('no text');
       const capped = capFetchedText(plain, maxChars);
       return {
@@ -2645,6 +2807,11 @@ module.exports = {
   fetchTextRequest,
   fetchTextUrl,
   htmlToText,
+  trimFetchedBoilerplate,
+  cutKeepingSections,
+  isKeySectionHeading,
+  capFetchedText,
+  SECTION_CUT_MARK,
   runFetchText,
   FETCH_TEXT_HEADERS,
   FETCH_TEXT_MAX_URLS,

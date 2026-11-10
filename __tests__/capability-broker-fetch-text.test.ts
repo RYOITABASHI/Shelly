@@ -323,7 +323,7 @@ describe('http.fetch-text: the op', () => {
   it('refuses more than three URLs or a char limit past the cap', async () => {
     const fetcher = jest.fn();
     expect(await broker.runFetchText(files(['https://a.example/1', 'https://a.example/2', 'https://a.example/3', 'https://a.example/4']).args, 'now', Date.now(), fetcher)).toBe(44);
-    expect(await broker.runFetchText({ ...files(['https://a.example/1']).args, 'max-chars': '20001' }, 'now', Date.now(), fetcher)).toBe(44);
+    expect(await broker.runFetchText({ ...files(['https://a.example/1']).args, 'max-chars': String(broker.FETCH_TEXT_MAX_CHARS + 1) }, 'now', Date.now(), fetcher)).toBe(44);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -363,5 +363,80 @@ describe('http.fetch-text: the op', () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(JSON.parse(fs.readFileSync(args.out, 'utf8'))).toEqual({});
     expect(audit(args['audit-log'])[0]).toMatchObject({ ok: false, reason: 'deadline' });
+  });
+});
+
+describe('http.fetch-text: page chrome and key sections (v54)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { JOURNAL_PAGE_HTML } = require('./fixtures/journal-page');
+  const text = () => broker.trimFetchedBoilerplate(broker.htmlToText(JOURNAL_PAGE_HTML)) as string;
+
+  it('raises the per-page cap to 60,000', () => {
+    expect(broker.FETCH_TEXT_MAX_CHARS).toBe(60000);
+  });
+
+  it('drops navigation, the cookie banner, repeated short lines and the reference list', () => {
+    const t = text();
+    expect(t).not.toContain('Skip to main content');
+    expect(t).not.toMatch(/cookies/i);
+    expect(t.split('\n')).not.toContain('- Menu');
+    expect(t).not.toContain('Back to top');
+    expect(t).not.toContain('FIXTURE-REFERENCE');
+    expect(t.split('\n').filter((l: string) => l === 'Share').length).toBeLessThanOrEqual(1);
+    // The paper itself stays.
+    expect(t).toContain('FIXTURE-METHODS');
+    expect(t).toContain('FIXTURE-LIMITATIONS');
+    expect(t).toContain('Introduction paragraph 60');
+  });
+
+  it('is conservative: a page with nothing to drop is unchanged, and an all-chrome page is left as it was', () => {
+    const plain = 'A title\nA paragraph of the page.\nReferences to earlier work are in the text.';
+    expect(broker.trimFetchedBoilerplate(plain)).toBe(plain);
+    expect(broker.trimFetchedBoilerplate('Menu\nSearch')).toBe('Menu\nSearch');
+    // A "References" link near the top does not cut the page.
+    const early = `References\n${'body line\n'.repeat(20)}end`;
+    expect(broker.trimFetchedBoilerplate(early)).toContain('end');
+  });
+
+  it('recognises key section headings and nothing else', () => {
+    for (const h of ['Methods', '2. Methods', 'Materials and Methods', 'Results', '3.1 Results', 'Discussion', 'General discussion', 'Limitations', 'Limitations of the study', 'Conclusions', '方法', '結果', '考察', '限界', '研究の限界', '- Methods']) {
+      expect([h, broker.isKeySectionHeading(h)]).toEqual([h, true]);
+    }
+    for (const h of ['Introduction', 'Methods for the reader who wants more detail', 'The results were clear.', 'References', '']) {
+      expect([h, broker.isKeySectionHeading(h)]).toEqual([h, false]);
+    }
+  });
+
+  it('a cut keeps the beginning and then Methods, Results, Discussion and Limitations, past the table of contents', () => {
+    const t = text();
+    expect(Array.from(t).length).toBeGreaterThan(14000);
+    const { text: cut, truncated } = broker.capFetchedText(t, 12000);
+    expect(truncated).toBe(true);
+    expect(Array.from(cut).length).toBeLessThanOrEqual(12000);
+    expect(cut.startsWith('A made-up study of practice schedules')).toBe(true);
+    for (const m of ['FIXTURE-METHODS', 'FIXTURE-RESULTS', 'FIXTURE-LIMITATIONS']) expect(cut).toContain(m);
+    expect(cut).toContain(broker.SECTION_CUT_MARK);
+    expect(cut.indexOf('FIXTURE-METHODS')).toBeLessThan(cut.indexOf('FIXTURE-RESULTS'));
+    expect(cut.indexOf('FIXTURE-RESULTS')).toBeLessThan(cut.indexOf('FIXTURE-LIMITATIONS'));
+    expect(cut).toContain('Introduction paragraph 1:');
+    // A plain head cut would have lost them.
+    expect(Array.from(t).slice(0, 12000).join('')).not.toContain('FIXTURE-LIMITATIONS');
+  });
+
+  it('without a key heading the cut is the head, as before; within the budget nothing changes', () => {
+    const t = 'line of text\n'.repeat(500);
+    const r = broker.cutKeepingSections(t, 1000);
+    expect(r.cut).toBe(true);
+    expect(t.startsWith(r.text)).toBe(true);
+    expect(broker.cutKeepingSections('short', 1000)).toEqual({ text: 'short', cut: false });
+  });
+
+  it('the whole fetch path trims and keeps the sections', async () => {
+    const { out } = await fetchWith('https://a.example/paper', { 'a.example/paper': { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: JOURNAL_PAGE_HTML } }, { 'a.example': [PUBLIC_A] }, 12000);
+    expect(out.ok).toBe(true);
+    expect(out.truncated).toBe(true);
+    expect(out.text).not.toContain('Skip to main content');
+    expect(out.text).not.toContain('FIXTURE-REFERENCE');
+    expect(out.text).toContain('FIXTURE-LIMITATIONS');
   });
 });

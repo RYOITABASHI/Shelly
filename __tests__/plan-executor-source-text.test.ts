@@ -56,7 +56,7 @@ describe('config', () => {
     expect(articlePipelineConfigError(config())).toBeNull();
     expect(articlePipelineConfigError(config({ fetchSources: {} }))).toBeNull();
     expect(assembleOf(config({ fetchSources: {} })).fetchSources).toEqual({ max: 2, maxCharsEach: 8000 });
-    expect(assembleOf(config({ fetchSources: { max: 3, maxCharsEach: 20000 } })).fetchSources).toEqual({ max: 3, maxCharsEach: 20000 });
+    expect(assembleOf(config({ fetchSources: { max: 3, maxCharsEach: 60000 } })).fetchSources).toEqual({ max: 3, maxCharsEach: 60000 });
     const { fetchSources: _omit, ...without } = config();
     void _omit;
     expect(assembleOf(without as ArticlePipelineConfig).fetchSources).toBeUndefined();
@@ -67,7 +67,7 @@ describe('config', () => {
     [{ max: 4 }, 'fetchSources.max'],
     [{ max: 1.5 }, 'fetchSources.max'],
     [{ maxCharsEach: 999 }, 'fetchSources.maxCharsEach'],
-    [{ maxCharsEach: 20001 }, 'fetchSources.maxCharsEach'],
+    [{ maxCharsEach: 60001 }, 'fetchSources.maxCharsEach'],
     [{ maxCharsEach: '8000' }, 'fetchSources.maxCharsEach'],
     [{ urls: ['https://x.example/'] }, 'unknown field "urls"'],
     [true, 'fetchSources: needs an object'],
@@ -353,4 +353,50 @@ ${PAGE_A}`);
     expect(asked(s)).toEqual([]);
     expect(readAudit(s.home).some((e) => e.event === 'source_text')).toBe(false);
   }, 60000);
+});
+
+describe('v54: budgets and section-keeping', () => {
+  it('raises the ceilings to 60,000', () => {
+    expect(executor.SOURCE_TEXT_PROMPT_MAX_CHARS).toBe(60000);
+    expect(executor.FETCH_SOURCES_MAX_CHARS_EACH).toBe(60000);
+    expect(articlePipelineConfigError(config({ fetchSources: { maxCharsEach: 60000 } }))).toBeNull();
+    expect((normalizeStepLocal(assembleOf(config({ fetchSources: { max: 2, maxCharsEach: 60000 } }))) as any)?.fetchSources).toEqual({ max: 2, maxCharsEach: 60000 });
+  });
+
+  it('gives the main source 60% and shares the rest; what is unused goes to the main source first', () => {
+    const alloc = executor.allocateSourceTextBudgets;
+    expect(alloc([100000, 100000, 100000], 60000, 60000)).toEqual([36000, 12000, 12000]);
+    expect(alloc([100000, 100000], 60000, 60000)).toEqual([36000, 24000]);
+    // A short second source leaves its share to the main one.
+    expect(alloc([60000, 3000], 60000, 60000)).toEqual([57000, 3000]);
+    // One source: up to maxCharsEach.
+    expect(alloc([60000], 60000, 60000)).toEqual([60000]);
+    expect(alloc([60000], 60000, 20000)).toEqual([20000]);
+    // A short main source leaves its share to the others.
+    expect(alloc([5000, 60000, 60000], 60000, 60000)).toEqual([5000, 27500, 27500]);
+    // Never past maxCharsEach nor the total.
+    expect(alloc([20000, 100000], 60000, 20000)).toEqual([20000, 20000]);
+    for (const lengths of [[1, 2, 3], [70000, 70000, 70000], [0, 50000], [59000, 59000, 1000]]) {
+      const b = alloc(lengths, 60000, 60000);
+      expect(b.reduce((a: number, c: number) => a + c, 0)).toBeLessThanOrEqual(60000);
+      b.forEach((x: number, i: number) => expect(x).toBeLessThanOrEqual(lengths[i]));
+    }
+    expect(alloc([], 60000, 60000)).toEqual([]);
+  });
+
+  it('the block keeps the main study key sections and stays fenced within the budget', () => {
+    const intro = 'Introduction line of the main study.\n'.repeat(1500);
+    const main = `A main study\n${intro}Methods\nMAIN-METHODS forty-two volunteers.\n${'method detail\n'.repeat(200)}Results\nMAIN-RESULTS\nLimitations\nMAIN-LIMITS small sample.`;
+    const other = 'other page line\n'.repeat(3000);
+    const entries = [
+      { id: 1, title: 'Main', url: 'https://m.example/p', text: main, truncated: false },
+      { id: 2, title: 'Other', url: 'https://o.example/p', text: other, truncated: false },
+    ];
+    const block = executor.renderSourceTextBlock(entries, 'NONCE54', 60000);
+    for (const m of ['MAIN-METHODS', 'MAIN-RESULTS', 'MAIN-LIMITS']) expect(block).toContain(m);
+    expect(block.split('NONCE54').length - 1).toBe(2);
+    expect(block.length).toBeLessThan(executor.SOURCE_TEXT_PROMPT_MAX_CHARS + 2000);
+    const mainPart = block.slice(block.indexOf('## [1]'), block.indexOf('## [2]'));
+    expect(Array.from(mainPart).length).toBeGreaterThan(30000);
+  });
 });

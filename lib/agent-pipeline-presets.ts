@@ -217,8 +217,8 @@ export interface ArticlePipelineConfig {
 export interface ArticleFetchSourcesConfig {
   /** 1 to FETCH_SOURCES_MAX (default FETCH_SOURCES_DEFAULT_MAX). */
   max?: number;
-  /** FETCH_SOURCES_MIN_CHARS_EACH to FETCH_SOURCES_MAX_CHARS_EACH (default
-   *  FETCH_SOURCES_DEFAULT_CHARS_EACH). */
+  /** FETCH_SOURCES_MIN_CHARS_EACH to FETCH_SOURCES_MAX_CHARS_EACH (60,000
+   *  since executor v54; default FETCH_SOURCES_DEFAULT_CHARS_EACH). */
   maxCharsEach?: number;
 }
 

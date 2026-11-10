@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=53
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=54
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -234,7 +234,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // the editor in each review, the final review in assemble and the in-step
 // reserve were already "the last review step", not round 2. A plan without
 // round 3 runs as before.
-const EXECUTOR_SCRIPT_VERSION = 53;
+// v54 (2026-11-11): source full text up to 60,000 characters in all, the main
+// source first (60%), page chrome and the reference list trimmed and a long
+// page cut keeping its Methods / Results / Discussion / Limitations sections
+// (allocateSourceTextBudgets, cutKeepingSections; the broker trims and cuts the
+// same way). `fetchSources.maxCharsEach` accepts up to 60,000.
+const EXECUTOR_SCRIPT_VERSION = 54;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2780,7 +2785,7 @@ function normalizeMaterialsConfig(raw) {
 // v47: mirrors lib/agent-orchestration.ts's normalizeFetchSourcesConfig.
 const FETCH_SOURCES_MAX = 3;
 const FETCH_SOURCES_MIN_CHARS_EACH = 1000;
-const FETCH_SOURCES_MAX_CHARS_EACH = 20000;
+const FETCH_SOURCES_MAX_CHARS_EACH = 60000; // v54: was 20000
 
 function normalizeFetchSourcesConfig(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
@@ -7065,7 +7070,21 @@ async function longformResearchCapture(paths, opts, plan, attempt, text, fallbac
 // labelled with the same [n] ids as Sources. The research step never gets it.
 // Nothing here fails the run: a tainted run, too little time, a broker failure
 // or a page that cannot be read leaves the chain exactly as before.
-const SOURCE_TEXT_PROMPT_MAX_CHARS = 20000;
+// v54 (2026-11-11): 60,000 in all (was 20,000, split equally). The main source
+// ([1], the first source read) gets up to SOURCE_TEXT_MAIN_SHARE of it, the
+// others share the rest equally, and what one leaves unused goes first to the
+// main source and then to the others, each up to `maxCharsEach`
+// (allocateSourceTextBudgets). Each text is cut keeping its key sections
+// (cutKeepingSections). Prompt size: the block sits outside composeStepPrompt's
+// head budget (like the materials block), so it never cuts the draft or the
+// carried results; a write / review / revise prompt grows by up to about 61,000
+// characters (15k-60k tokens, more for Japanese). The CLI driver passes the
+// prompt by file and stdin with no size cap of its own; Gemini, Perplexity and
+// the CLIs take it, while a small-context Groq / Cerebras model may refuse the
+// request (the step then fails as any engine failure does): keep
+// `maxCharsEach` low with those engines.
+const SOURCE_TEXT_PROMPT_MAX_CHARS = 60000;
+const SOURCE_TEXT_MAIN_SHARE = 0.6;
 const SOURCE_TEXT_TIMEOUT_SECONDS = 20;
 // The fetch is skipped when less than this is left before the run's limit:
 // its own deadline plus the review loop's room.
@@ -7108,20 +7127,148 @@ function sourceTextCandidates(sources, max) {
   return out;
 }
 
-/** The fenced block for the model steps ('' with no entry). Each entry gets an
- *  equal share of SOURCE_TEXT_PROMPT_MAX_CHARS. Pure. */
-function renderSourceTextBlock(entries, nonce) {
-  if (!entries.length) return '';
-  const budget = Math.floor(SOURCE_TEXT_PROMPT_MAX_CHARS / entries.length);
-  const cutMark = '[… cut]';
-  const parts = entries.map((e) => {
-    const chars = Array.from(String(e.text).split(nonce).join(' ').trim());
-    let text = chars.join('');
-    if (chars.length > budget || e.truncated) {
-      const head = chars.slice(0, budget).join('');
-      const nl = head.lastIndexOf('\n');
-      text = `${chars.length > budget && nl > budget * 0.6 ? head.slice(0, nl) : head}\n${cutMark}`;
+/**
+ * Characters for each read source, in entry order (v54). The first entry is the
+ * main source: up to SOURCE_TEXT_MAIN_SHARE of `total`; the others share the
+ * rest equally. What an entry leaves unused goes to the main source, then to
+ * the others equally, never past `maxEach` or the entry's own length. Pure.
+ */
+function allocateSourceTextBudgets(lengths, total = SOURCE_TEXT_PROMPT_MAX_CHARS, maxEach = FETCH_SOURCES_MAX_CHARS_EACH) {
+  const n = lengths.length;
+  if (!n) return [];
+  const want = lengths.map((l) => Math.max(0, Math.min(Math.floor(l), maxEach)));
+  if (n === 1) return [Math.min(want[0], total)];
+  const mainShare = Math.floor(total * SOURCE_TEXT_MAIN_SHARE);
+  const otherShare = Math.floor((total - mainShare) / (n - 1));
+  const out = want.map((w, i) => Math.min(w, i === 0 ? mainShare : otherShare));
+  let left = total - out.reduce((a, c) => a + c, 0);
+  const extra = Math.min(left, want[0] - out[0]);
+  out[0] += extra;
+  left -= extra;
+  for (let round = 0; round < n && left > 0; round += 1) {
+    const hungry = out.map((_, i) => i).filter((i) => i > 0 && out[i] < want[i]);
+    if (!hungry.length) break;
+    const per = Math.floor(left / hungry.length);
+    if (per <= 0) break;
+    for (const i of hungry) {
+      const take = Math.min(per, want[i] - out[i]);
+      out[i] += take;
+      left -= take;
     }
+  }
+  return out;
+}
+
+// v54 (2026-11-11): a long page is cut keeping its key sections. A paper's
+// methods, results, discussion and limitations come after the page chrome and
+// the introduction, so a plain head cut dropped them first. Over the budget,
+// cutKeepingSections keeps the head (at least SECTION_CUT_HEAD_SHARE of the
+// budget, more when the key sections are short), then each section whose
+// heading line names Methods / Results / Discussion / Limitations / Conclusion
+// (or 方法 / 結果 / 考察 / 限界 / 結論 and the like), in page order, each running to
+// the next key heading. The rest of the budget is shared equally among those
+// sections (a short one leaves its share to the others), so a long Methods
+// cannot crowd out Limitations. A part that does not fit is cut at a line end,
+// one left under SECTION_CUT_MIN_PART_CHARS is dropped, and a gap is marked
+// with SECTION_CUT_MARK. A text with no key
+// heading is cut at the head as before. Deterministic and pure. The same code
+// is in scripts/shelly-capability-broker.js (the per-page cut).
+const SECTION_CUT_MARK = '[… cut]';
+const SECTION_CUT_HEAD_SHARE = 0.4;
+const SECTION_CUT_MIN_PART_CHARS = 120;
+const SECTION_CUT_HEADING_MAX_CHARS = 60;
+const SECTION_CUT_HEADING_RE = /^(?:(?:\d{1,2}(?:\.\d{1,2}){0,2}|[IVX]{1,4})[.)]?\s+)?(?:(?:materials?\s+and\s+)?methods?|methodology|study design|procedures?|participants|measures|results?|findings|results and discussion|(?:general\s+)?discussion|(?:strengths and\s+)?limitations?(?:\s+of\s+(?:the|this)\s+study)?|study limitations|conclusions?|方法|研究方法|対象と方法|対象者|手続き|結果|考察|総合考察|限界|研究の限界|本研究の限界|結論)\s*[:：]?$/i;
+
+/** True when one line of fetched text is a key section heading. Pure. */
+function isKeySectionHeading(line) {
+  const t = String(line).replace(/^-\s+/, '').trim();
+  return t.length > 0 && t.length <= SECTION_CUT_HEADING_MAX_CHARS && SECTION_CUT_HEADING_RE.test(t);
+}
+
+/** The first `budget` code points of `chars`, cut at a line end when one is near. Pure. */
+function cutCharsAtLine(chars, budget) {
+  if (chars.length <= budget) return chars.join('');
+  const head = chars.slice(0, Math.max(0, budget)).join('');
+  const nl = head.lastIndexOf('\n');
+  return nl > head.length * 0.6 ? head.slice(0, nl) : head;
+}
+
+/** { text, cut }: `text` within `budget` code points, keeping the head and the key sections. Pure. */
+function cutKeepingSections(text, budget) {
+  const src = String(text);
+  const all = Array.from(src);
+  if (all.length <= budget) return { text: src, cut: false };
+  // Only the last line with a given heading starts a section: a page's table
+  // of contents names the same headings before the body does.
+  const lines = src.split('\n');
+  const keyOf = (line) => line.replace(/^-\s+/, '').trim().toLowerCase();
+  const lastAt = new Map();
+  lines.forEach((line, i) => {
+    if (isKeySectionHeading(line)) lastAt.set(keyOf(line), i);
+  });
+  const parts = [[]];
+  lines.forEach((line, i) => {
+    if (lastAt.get(keyOf(line)) === i) parts.push([line]);
+    else parts[parts.length - 1].push(line);
+  });
+  if (parts.length === 1) return { text: cutCharsAtLine(all, budget), cut: true };
+  const mark = Array.from(`\n${SECTION_CUT_MARK}\n`).length;
+  const head = Array.from(parts[0].join('\n'));
+  const sections = parts.slice(1).map((p) => Array.from(p.join('\n')));
+  const sectionsTotal = sections.reduce((n, s) => n + s.length + mark, 0);
+  const headBudget = Math.min(head.length, Math.max(Math.floor(budget * SECTION_CUT_HEAD_SHARE), budget - sectionsTotal));
+  const out = [];
+  let used = 0;
+  let gap = false;
+  if (head.length) {
+    const h = headBudget > 0 ? cutCharsAtLine(head, headBudget) : '';
+    if (h) {
+      out.push(h);
+      used += Array.from(h).length + 1;
+    }
+    gap = Array.from(h).length < head.length;
+  }
+  // The room after the head is shared among the key sections (each also pays
+  // for one gap mark), so a long Methods cannot crowd out Limitations: equal
+  // shares, and what a short section leaves goes to the longer ones.
+  const room = Math.max(0, budget - used - sections.length * mark);
+  const allot = sections.map(() => 0);
+  let left = room;
+  for (let round = 0; round < sections.length && left > 0; round += 1) {
+    const hungry = sections.map((_, i) => i).filter((i) => allot[i] < sections[i].length);
+    if (!hungry.length) break;
+    const per = Math.floor(left / hungry.length);
+    if (per <= 0) break;
+    for (const i of hungry) {
+      const take = Math.min(per, sections[i].length - allot[i]);
+      allot[i] += take;
+      left -= take;
+    }
+  }
+  sections.forEach((s, i) => {
+    if (allot[i] < Math.min(s.length, SECTION_CUT_MIN_PART_CHARS)) {
+      gap = true;
+      return;
+    }
+    const piece = cutCharsAtLine(s, allot[i]);
+    if (gap && out.length) out.push(SECTION_CUT_MARK);
+    out.push(piece);
+    gap = Array.from(piece).length < s.length;
+  });
+  return { text: out.join('\n'), cut: true };
+}
+
+/** The fenced block for the model steps ('' with no entry). The budgets come
+ *  from allocateSourceTextBudgets; each text is cut keeping its key sections. Pure. */
+function renderSourceTextBlock(entries, nonce, maxCharsEach = FETCH_SOURCES_MAX_CHARS_EACH) {
+  if (!entries.length) return '';
+  const cutMark = SECTION_CUT_MARK;
+  const texts = entries.map((e) => String(e.text).split(nonce).join(' ').trim());
+  const budgets = allocateSourceTextBudgets(texts.map((t) => Array.from(t).length), SOURCE_TEXT_PROMPT_MAX_CHARS, maxCharsEach);
+  const parts = entries.map((e, k) => {
+    const cut = cutKeepingSections(texts[k], budgets[k]);
+    let text = cut.text;
+    if (cut.cut || e.truncated) text = `${text}\n${cutMark}`;
     const title = sanitizeUntrusted(e.title, MAX_SOURCE_TITLE_CHARS) || hostOf(e.url);
     return `## [${e.id}] ${title} — ${e.url}\n${text}`;
   });
@@ -7161,7 +7308,8 @@ async function fetchSourceTexts(paths, opts, plan, urls, maxCharsEach) {
       if (!Object.prototype.hasOwnProperty.call(data, url)) continue;
       const entry = data[url];
       if (!entry || typeof entry.text !== 'string' || !entry.text.trim()) continue;
-      out[url] = { text: Array.from(entry.text).slice(0, maxCharsEach).join(''), truncated: entry.truncated === true };
+      const capped = cutKeepingSections(entry.text, maxCharsEach);
+      out[url] = { text: capped.text, truncated: entry.truncated === true || capped.cut };
     }
     return out;
   } catch (_) {
@@ -7185,7 +7333,7 @@ async function loadSourceTexts(paths, opts, plan, sources, cfg) {
   const entries = candidates
     .filter((c) => Object.prototype.hasOwnProperty.call(fetched, c.url))
     .map((c) => Object.assign({}, c, { text: fetched[c.url].text, truncated: fetched[c.url].truncated }));
-  const block = renderSourceTextBlock(entries, crypto.randomBytes(8).toString('hex'));
+  const block = renderSourceTextBlock(entries, crypto.randomBytes(8).toString('hex'), cfg.maxCharsEach);
   return { entries: entries.map((e) => ({ id: e.id, url: e.url, chars: Array.from(e.text).length, truncated: e.truncated })), block, asked: candidates.length };
 }
 
@@ -13145,6 +13293,11 @@ module.exports = {
   fetchSourceTexts,
   loadSourceTexts,
   SOURCE_TEXT_PROMPT_MAX_CHARS,
+  SOURCE_TEXT_MAIN_SHARE,
+  allocateSourceTextBudgets,
+  cutKeepingSections,
+  isKeySectionHeading,
+  FETCH_SOURCES_MAX_CHARS_EACH,
   SOURCE_TEXT_MIN_LEFT_MS,
   stripArticleMetaNotes,
   articleHasMetaNote,
