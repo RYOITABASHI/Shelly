@@ -343,7 +343,8 @@ export function normalizeStepLocal(raw: unknown): AgentLocalStepConfig | undefin
     parts.push([...list]);
   }
   if (typeof r.stream !== 'string' || !LOCAL_STEP_STREAM_RE.test(r.stream)) return undefined;
-  if (typeof r.footer !== 'string' || !r.footer.trim() || r.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(r.footer)) return undefined;
+  // An empty footer ('') means no footer; whitespace alone is still refused (v57).
+  if (typeof r.footer !== 'string' || (r.footer !== '' && !r.footer.trim()) || r.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(r.footer)) return undefined;
   const lintTerms = r.lintTerms === undefined ? undefined : validLocalStepTerms(r.lintTerms);
   if (r.lintTerms !== undefined && !lintTerms) return undefined;
   let nameLint: AgentAssembleStepConfig['nameLint'];

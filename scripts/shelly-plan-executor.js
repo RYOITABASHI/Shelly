@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=56
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=57
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -243,7 +243,8 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // citations left out (the main study, most of all). Up to 5 of them join
 // Sources with the next ids and get their [id] in the notes; a study the notes
 // label as the main one is fetched first (absorbResearchNoteUrls).
-const EXECUTOR_SCRIPT_VERSION = 56;
+// v57 (2026-11-11): an article pipeline's `footer` may be '' for no footer block.
+const EXECUTOR_SCRIPT_VERSION = 57;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2935,7 +2936,8 @@ function normalizeStepLocal(raw, index) {
     parts.push(list.slice());
   }
   if (typeof raw.stream !== 'string' || !LOCAL_STEP_STREAM_RE.test(raw.stream)) return undefined;
-  if (typeof raw.footer !== 'string' || !raw.footer.trim() || raw.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(raw.footer)) return undefined;
+  // v57: an empty footer ('') means no footer; whitespace alone is still refused.
+  if (typeof raw.footer !== 'string' || (raw.footer !== '' && !raw.footer.trim()) || raw.footer.length > LOCAL_STEP_FOOTER_MAX_CHARS || LOCAL_STEP_CONTROL_RE.test(raw.footer)) return undefined;
   const lintTerms = raw.lintTerms === undefined ? undefined : validLocalStepTerms(raw.lintTerms);
   if (raw.lintTerms !== undefined && !lintTerms) return undefined;
   let nameLint;
@@ -3169,7 +3171,7 @@ function assembleArticle(local, ctx) {
   }
   let body = parts.filter(Boolean).join('\n\n');
   if (!body) throw new PlanFailure('assemble: the article is empty', { handled: true });
-  if (local.plain) return `${body}\n\n---\n\n${local.footer.trim()}\n`;
+  if (local.plain) return local.footer.trim() ? `${body}\n\n---\n\n${local.footer.trim()}\n` : `${body}\n`;
   // v42: a note left for an editor is cut, and the draft says so.
   const metaNotes = stripArticleMetaNotes(body);
   body = metaNotes.text;
@@ -3254,7 +3256,8 @@ function assembleArticle(local, ctx) {
     `- [${s.id}] [${escapeLinkText(s.title) || hostOf(s.url)}](${escapeLinkUrl(s.url)})${s.date ? ` — ${escapeHtml(s.date)}` : ''}`)
     .concat(materials.map((m) => `- [${m.id}] \`${m.label}\`${m.lang === 'en' ? ' (author\'s own material)' : '（筆者の資料）'}`));
   const sourcesBlock = sources.length ? `\n\n## Sources\n\n${sources.join('\n')}` : '';
-  const tail = `${body}${sourcesBlock}\n\n---\n\n${footer}\n`;
+  // v57: no footer block when the owner's footer is empty (a fixed voice footer still shows).
+  const tail = footer ? `${body}${sourcesBlock}\n\n---\n\n${footer}\n` : `${body}${sourcesBlock}\n`;
   if (ctx.tailOnly) return tail;
   // v44: the editor's verdict holds only for this very text.
   const editorLines = [];

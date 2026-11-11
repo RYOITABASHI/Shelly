@@ -209,7 +209,7 @@ describe('the config is validated strictly', () => {
     ['prompt', { prompt: 'x'.repeat(2001) }],
     ['lang', { lang: 'fr' }],
     ['footer', { footer: 'x'.repeat(601) }],
-    ['footer', { footer: '' }],
+    ['footer', { footer: '   ' }],
     ['lintTerms', { lintTerms: Array(65).fill('t') }],
     ['nameLint', { nameLint: { canonical: 'x' } }],
     ['quality', { quality: { minChars: 0 } }],

@@ -121,6 +121,24 @@ describe('journal index pages leave the research (v42)', () => {
   });
 });
 
+describe('an empty footer (v57)', () => {
+  const steps = [{ instruction: 'r' }, { instruction: 'w' }];
+  const body = '# 記事\n\n本文です [1]。';
+  const ctx = { steps, results: ['r', body], skipped: [], sources: [{ id: 1, title: 'S', url: 'https://example.com/a' }], today: '2026-11-11', fallbackTitle: 'F' };
+
+  it('is accepted, and the draft ends with Sources and no rule', () => {
+    const local = executor.normalizeStepLocal({ kind: 'assemble', parts: [[1]], stream: 'example', footer: '' }, 2);
+    expect(local).toBeTruthy();
+    const out = executor.assembleArticle(local, ctx);
+    expect(out).toMatch(/## Sources\n\n- \[1\] \[S\]\(https:\/\/example\.com\/a\)\n$/);
+    expect(out.split('\n---\n').length).toBe(2); // only the frontmatter fences
+  });
+
+  it('a footer of spaces is still refused', () => {
+    expect(executor.normalizeStepLocal({ kind: 'assemble', parts: [[1]], stream: 'example', footer: '   ' }, 2)).toBeUndefined();
+  });
+});
+
 describe('notes to an editor (v42)', () => {
   const steps = [{ instruction: 'r' }, { instruction: 'w' }, { instruction: 'review', handoff: { kind: 'review', of: [0, 1], round: 1 } }];
   const local = { kind: 'assemble', parts: [[1]], stream: 'example', footer: 'F', quality: { selfTalk: true } };
