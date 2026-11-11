@@ -221,7 +221,7 @@ describe('a longform run with fetchSources (fixture broker)', () => {
 
   interface Setup { home: string; planFile: string; http: string; pages: string }
 
-  function setup(opts: { fetchSources?: boolean; citations?: string[]; pages?: Record<string, string> } = {}): Setup {
+  function setup(opts: { fetchSources?: boolean; citations?: string[]; pages?: Record<string, string>; research?: string } = {}): Setup {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-source-text-'));
     fs.mkdirSync(path.join(home, '.shelly/agents/plans'), { recursive: true });
     fs.mkdirSync(path.join(home, '.shelly/tmp'), { recursive: true });
@@ -230,7 +230,7 @@ describe('a longform run with fetchSources (fixture broker)', () => {
     fs.mkdirSync(outputDir, { recursive: true });
     const http = path.join(home, 'fake-http.json');
     fs.writeFileSync(http, JSON.stringify({
-      [LOCAL_URL]: [openAi(RESEARCH, opts.citations ?? [SITE_A, INDEX, PLAIN, SITE_B]), openAi(ARTICLE), openAi('VERDICT: PASS')],
+      [LOCAL_URL]: [openAi(opts.research ?? RESEARCH, opts.citations ?? [SITE_A, INDEX, PLAIN, SITE_B]), openAi(ARTICLE), openAi('VERDICT: PASS')],
       [GROQ]: [openAi(answer)],
     }));
     const pages = path.join(home, 'fake-pages.json');
@@ -347,6 +347,28 @@ ${PAGE_A}`);
     expect(readResult(s.home)).toContain('# A title');
   }, 60000);
 
+  it('v56: a notes URL missing from the citations becomes [11], the writer sees it, and the labelled main study is fetched first', async () => {
+    const MAIN = 'https://main.example/articles/10.0000/study-1/full';
+    const citations = Array.from({ length: 10 }, (_, i) => `https://c${i + 1}.example/p`);
+    const research = `主研究: Example washing study ${MAIN}?utm_source=feed.\n1. Fading after 50 washes [1].\n2. Mill list [2].`;
+    const s = setup({ citations, research, pages: { [MAIN]: PAGE_A } });
+    expect(await run(s, { SHELLY_TEST_FAKE_PAGES: s.pages })).toBe(0);
+    // The main study first, then the first other source (max 2).
+    expect(asked(s)).toEqual([MAIN, citations[0]]);
+    const local = prompts(s, LOCAL_URL);
+    expect(local[0]).not.toContain('[11]');
+    expect(local[1]).toContain(`${MAIN} [11]`);
+    expect(local[1]).toMatch(/\[11\][^\n]*main\.example/);
+    expect(local[1]).toContain(`— ${MAIN}\n${PAGE_A}`);
+    expect(local[1]).not.toContain('utm_source');
+    const audit = readAudit(s.home);
+    const added = audit.find((e) => e.event === 'research_note_urls_added');
+    expect(added).toMatchObject({ count: 1, hosts: ['main.example'] });
+    expect(Object.keys(added).sort()).toEqual(['agentId', 'count', 'event', 'hosts', 'kind', 'stepIndex', 'ts']);
+    expect(audit.find((e) => e.event === 'source_text')).toMatchObject({ read: [{ id: 11, host: 'main.example' }] });
+    expect(readResult(s.home)).toContain(MAIN);
+  }, 60000);
+
   it('a plan without fetchSources never asks', async () => {
     const s = setup({ fetchSources: false });
     expect(await run(s, { SHELLY_TEST_FAKE_PAGES: s.pages })).toBe(0);
@@ -398,5 +420,82 @@ describe('v54: budgets and section-keeping', () => {
     expect(block.length).toBeLessThan(executor.SOURCE_TEXT_PROMPT_MAX_CHARS + 2000);
     const mainPart = block.slice(block.indexOf('## [1]'), block.indexOf('## [2]'));
     expect(Array.from(mainPart).length).toBeGreaterThan(30000);
+  });
+});
+
+describe('v56: URLs in the research notes (pure)', () => {
+  const tenSources = () => {
+    const ev = executor.createChainEvidence();
+    for (let i = 1; i <= 10; i++) ev.sources.push({ id: i, title: `Source ${i}`, url: `https://c${i}.example/p` });
+    return ev;
+  };
+  const citationUrls = (ev: any) => ev.sources.map((src: any) => src.url);
+
+  it('a notes URL not among the citations becomes the next id and gets its marker in the notes', () => {
+    const ev = tenSources();
+    const notes = 'Main study: https://new.example/a/b. More [1].';
+    const r = executor.absorbResearchNoteUrls(ev, notes, notes, citationUrls(ev));
+    expect(ev.sources[10]).toEqual({ id: 11, title: 'new.example', url: 'https://new.example/a/b' });
+    expect(r.text).toBe('Main study: https://new.example/a/b [11]. More [1].');
+    expect(r).toMatchObject({ count: 1, hosts: ['new.example'], mainId: 11 });
+  });
+
+  it('a duplicate of a citation (www., tracking params, trailing slash, bold) is not added or marked', () => {
+    const ev = tenSources();
+    const notes = 'See **https://www.c3.example/p/?utm_source=x** and https://c4.example/p#top [4].';
+    const r = executor.absorbResearchNoteUrls(ev, notes, notes, citationUrls(ev));
+    expect(ev.sources).toHaveLength(10);
+    expect(r.text).toBe(notes);
+    expect(r.count).toBe(0);
+  });
+
+  it('a redirect link, an index page, localhost, an IP literal, a port or credentials are never added', () => {
+    const ev = tenSources();
+    const notes = [
+      'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC',
+      'https://www.springer.com/journal/12345',
+      'http://localhost/a',
+      'https://127.0.0.1/a',
+      'https://ok.example:8443/a',
+      'https://user:pw@ok.example/a',
+      'ftp://ok.example/a',
+    ].join('\n');
+    const r = executor.absorbResearchNoteUrls(ev, notes, notes, citationUrls(ev));
+    expect(ev.sources).toHaveLength(10);
+    expect(r.text).toBe(notes);
+    expect(r.count).toBe(0);
+  });
+
+  it('adds at most 5 per research step', () => {
+    const ev = tenSources();
+    const notes = Array.from({ length: 7 }, (_, i) => `- n${i} https://n${i}.example/x`).join('\n');
+    const r = executor.absorbResearchNoteUrls(ev, notes, notes, citationUrls(ev));
+    expect(executor.RESEARCH_NOTE_URLS_MAX).toBe(5);
+    expect(ev.sources.map((src: any) => src.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(r.count).toBe(5);
+    expect(r.text).toContain('https://n4.example/x [15]');
+    expect(r.text).not.toContain('https://n5.example/x [');
+  });
+
+  it('a labelled main study is first; a [1] line counts when nothing is labelled; otherwise [1] stays first', () => {
+    const ev = tenSources();
+    const labelled = executor.absorbResearchNoteUrls(ev, '主研究:\nhttps://c7.example/p\n[1] https://n.example/z', '', citationUrls(ev));
+    expect(labelled.mainId).toBe(7);
+    expect(executor.mainSourceFirst(ev.sources, labelled.mainId).map((src: any) => src.id).slice(0, 3)).toEqual([7, 1, 2]);
+    const ev2 = tenSources();
+    const first = executor.absorbResearchNoteUrls(ev2, 'Notes\n- [1] https://lead.example/p', '', citationUrls(ev2));
+    expect(first.mainId).toBe(11);
+    const ev3 = tenSources();
+    const none = executor.absorbResearchNoteUrls(ev3, 'Just https://other.example/q here.', '', citationUrls(ev3));
+    expect(none.mainId).toBe(0);
+    expect(executor.mainSourceFirst(ev3.sources, none.mainId).map((src: any) => src.id)[0]).toBe(1);
+  });
+
+  it('a markdown link gets its marker after the link, and an existing marker is not repeated', () => {
+    const ev = tenSources();
+    const notes = 'The [study](https://md.example/s) found X. Also https://md2.example/t [12] there.';
+    const r = executor.absorbResearchNoteUrls(ev, notes, notes, citationUrls(ev));
+    expect(r.text).toBe('The [study](https://md.example/s) [11] found X. Also https://md2.example/t [12] there.');
+    expect(ev.sources[10].title).toBe('study');
   });
 });

@@ -578,7 +578,8 @@ object AgentRuntime {
     // v53: an article pipeline may run a third review -> revise round (reviewRounds: 3, round-3 hand-off markers); a PASS at any round skips the rest. JS-only.
     // v54: article source full text up to 60,000 characters (main source 60%), page chrome and references trimmed, long pages cut keeping Methods / Results / Discussion / Limitations. JS-only (executor + broker).
     // v55: article assemble keeps the best version: when an editor inside a review step scored an earlier draft strictly higher than the final editor scored the last one, the draft is rebuilt from it (same review and quality gates, time guard, audit best_version_used). JS-only (executor).
-    private const val CURRENT_EXECUTOR_VERSION = 55
+    // v56: a longform research step's notes may name addresses the citations left out; up to 5 join Sources with the next ids and their [id] in the notes, and a study the notes label as the main one is fetched first. JS-only (executor).
+    private const val CURRENT_EXECUTOR_VERSION = 56
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

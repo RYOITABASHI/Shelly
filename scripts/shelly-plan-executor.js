@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=55
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=56
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -239,7 +239,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // page cut keeping its Methods / Results / Discussion / Limitations sections
 // (allocateSourceTextBudgets, cutKeepingSections; the broker trims and cuts the
 // same way). `fetchSources.maxCharsEach` accepts up to 60,000.
-const EXECUTOR_SCRIPT_VERSION = 55;
+// v56 (2026-11-11): a longform research step's notes may name addresses the
+// citations left out (the main study, most of all). Up to 5 of them join
+// Sources with the next ids and get their [id] in the notes; a study the notes
+// label as the main one is fetched first (absorbResearchNoteUrls).
+const EXECUTOR_SCRIPT_VERSION = 56;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2534,6 +2538,121 @@ function withoutUnusableSources(text, parsed) {
     return url && articleUnusableSourceUrl(url) ? '' : u;
   });
   return { text: cleaned, parsed: { sources: keep, indexMap }, droppedIndex, droppedRedirects };
+}
+
+// ── Article pipeline: URLs in the research notes (v56, 2026-11-11) ──────────
+// A research answer can name its main study and write the study's address in
+// the notes while the API's citations leave it out. The Sources list then had
+// no entry for it, the writer cited it as [主] or [11], every review flagged a
+// citation with no Sources entry and fetchSources never read it. For a
+// longform research step only, after the usual absorption:
+//  - each http(s) address written in the notes that is not already in Sources
+//    (compared by urlKey after cleanUrl) becomes a source with the next id,
+//    at most RESEARCH_NOTE_URLS_MAX per step, past the usual cap of
+//    MAX_CHAIN_SOURCES. Tracking parameters and the fragment are dropped; a
+//    redirect link, an index page, an address with credentials, a port, an IP
+//    literal or localhost is never added (the same rules a resolved grounding
+//    link and the Sources list already follow). Nothing is fetched here.
+//  - every note-derived address in the carried notes gets its [id] right after
+//    it (unless that marker is already there), so the writer can cite it. The
+//    model's own [n] markers are never renumbered.
+//  - the main study: the first address on a line that labels it (主研究 /
+//    主要な研究 / メインの研究 / main study / primary study / key study, the
+//    address on that line or on the next line), else the first address on a
+//    line that starts with "[1]". When one is found and is in Sources, it is
+//    the main source: fetchSources reads it first (the main share of the budget,
+//    v54) and the article history records it. Otherwise [1] stays the main
+//    source, as before.
+// The audit line `research_note_urls_added` holds the count and the hosts only.
+const RESEARCH_NOTE_URLS_MAX = 5;
+const RESEARCH_NOTE_MAIN_LABEL_RE = /主研究|主要な?研究|メインの?研究|中心(?:となる|的な)?研究|\bmain (?:study|paper|source)\b|\bprimary (?:study|paper|source)\b|\bkey study\b/i;
+const RESEARCH_NOTE_FIRST_LABEL_RE = /^\s*(?:[-*+•]\s*)?(?:\*\*)?\[1\]/;
+const RESEARCH_NOTE_TRACKING_PARAM_RE = /^(?:utm_[^=]*|fbclid|gclid|mc_cid|mc_eid)(?:=|$)/i;
+
+function researchNoteUrlRe() {
+  return /\[([^\]\n]*)\]\((https?:\/\/[^)\s]+)\)|https?:\/\/[^\s<>()"'\]]+/g;
+}
+
+/** A note address as it may enter Sources, or null. Pure. */
+function researchNoteUrl(raw) {
+  const cleaned = cleanUrl(raw);
+  if (!cleaned) return null;
+  const m = /^([^?#]*)(\?[^#]*)?(#.*)?$/.exec(cleaned);
+  if (!m) return null;
+  const query = (m[2] || '').replace(/^\?/, '').split('&').filter((kv) => kv && !RESEARCH_NOTE_TRACKING_PARAM_RE.test(kv)).join('&');
+  const url = cleanUrl(`${m[1]}${query ? `?${query}` : ''}`);
+  if (!url || !usableRedirectTarget(url) || articleUnusableSourceUrl(url)) return null;
+  return url;
+}
+
+/**
+ * Adds the research notes' own addresses to the chain evidence (mutates
+ * `evidence`) and returns { text, count, hosts, mainId }: `text` is `carried`
+ * with each note-derived address followed by its [id]. `citationUrls` are the
+ * structured sources' URLs (never marked, never counted as note URLs). Pure
+ * apart from `evidence`.
+ */
+function absorbResearchNoteUrls(evidence, rawText, carried, citationUrls) {
+  const citationKeys = new Set((citationUrls || []).map((u) => urlKey(u)));
+  const lines = nfkc(stripReasoning(rawText)).split(/\r?\n/);
+  const found = [];
+  let mainUrl = '';
+  let firstLabelUrl = '';
+  let mainPending = false;
+  for (const line of lines) {
+    const urls = [];
+    const re = researchNoteUrlRe();
+    let m;
+    while ((m = re.exec(line))) {
+      const url = researchNoteUrl(m[2] || m[0]);
+      if (url) urls.push({ url, title: m[2] ? m[1] : '' });
+    }
+    const labelled = RESEARCH_NOTE_MAIN_LABEL_RE.test(line);
+    if (!mainUrl && urls.length && (labelled || mainPending)) mainUrl = urls[0].url;
+    if (!firstLabelUrl && urls.length && RESEARCH_NOTE_FIRST_LABEL_RE.test(line)) firstLabelUrl = urls[0].url;
+    if (line.trim()) mainPending = labelled && !urls.length;
+    found.push(...urls);
+  }
+  const byKey = new Map(evidence.sources.map((s) => [urlKey(s.url), s.id]));
+  let added = 0;
+  for (const f of found) {
+    const key = urlKey(f.url);
+    if (byKey.has(key)) continue;
+    if (added >= RESEARCH_NOTE_URLS_MAX) break;
+    const src = { id: evidence.sources.length + 1, title: sanitizeUntrusted(f.title, MAX_SOURCE_TITLE_CHARS) || hostOf(f.url), url: f.url };
+    evidence.sources.push(src);
+    appendSourceText(evidence, src.id, src.title);
+    byKey.set(key, src.id);
+    added += 1;
+  }
+  // Every source from the notes (also one the usual absorption took under its cap).
+  const noteSources = evidence.sources.filter((s) => !citationKeys.has(urlKey(s.url)) && found.some((f) => urlKey(f.url) === urlKey(s.url)));
+  const noteByKey = new Map(noteSources.map((s) => [urlKey(s.url), s]));
+  const text = String(carried == null ? '' : carried).replace(researchNoteUrlRe(), (all, _title, linkUrl, offset, whole) => {
+    const url = researchNoteUrl(linkUrl || all);
+    const src = url ? noteByKey.get(urlKey(url)) : undefined;
+    if (!src) return all;
+    // A bare address is written as in Sources (no tracking parameters) and
+    // keeps its trailing punctuation after the marker.
+    const cleaned = linkUrl ? null : cleanUrl(all);
+    const head = cleaned && all.startsWith(cleaned) ? cleaned : all;
+    const tail = all.slice(head.length);
+    const shown = head === cleaned ? src.url : head;
+    const after = `${tail}${whole.slice(offset + all.length)}`;
+    if (new RegExp(`^\\s*\\[${src.id}\\]`).test(after)) return `${shown}${tail}`;
+    return `${shown} [${src.id}]${tail}`;
+  });
+  const mainKey = mainUrl ? urlKey(mainUrl) : firstLabelUrl ? urlKey(firstLabelUrl) : '';
+  const mainId = mainKey && byKey.has(mainKey) ? byKey.get(mainKey) : 0;
+  return { text, count: noteSources.length, hosts: Array.from(new Set(noteSources.map((s) => hostOf(s.url)))), mainId };
+}
+
+/** Sources with the main one first, the rest in order. Pure. */
+function mainSourceFirst(sources, mainId) {
+  const list = Array.isArray(sources) ? sources.slice() : [];
+  const at = mainId ? list.findIndex((s) => s && s.id === mainId) : -1;
+  if (at <= 0) return list;
+  return [list[at]].concat(list.slice(0, at), list.slice(at + 1));
 }
 
 // ── Article pipeline: notes left for an editor (v42, narrowed in v43) ───────
@@ -10861,7 +10980,24 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   function absorbOutcome(outcome) {
     if (outcome.research && !outcome.failed) {
       outcome.result = absorbResearchStep(evidence, fullResultText(outcome.research.text), outcome.research.parsed);
-      if (longform) outcome.result = capLongformResearch(outcome.result);
+      if (longform) {
+        // v56: the notes' own addresses join Sources; a labelled main study is read first.
+        const notes = absorbResearchNoteUrls(evidence, fullResultText(outcome.research.text), outcome.result, outcome.research.parsed.sources.map((s) => s.url));
+        outcome.result = notes.text;
+        if (notes.mainId && !evidence.mainSourceId) evidence.mainSourceId = notes.mainId;
+        if (notes.count) {
+          appendJsonl(paths.planAuditFile, {
+            ts: new Date().toISOString(),
+            kind: 'plan.executor',
+            event: 'research_note_urls_added',
+            agentId: plan.agent.id,
+            stepIndex: outcome.record.index,
+            count: notes.count,
+            hosts: notes.hosts,
+          });
+        }
+        outcome.result = capLongformResearch(outcome.result);
+      }
       researchStepsDone += 1;
       appendJsonl(paths.planAuditFile, {
         ts: new Date().toISOString(),
@@ -10983,10 +11119,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     let state;
     // A tainted (notification-triggered) run asks nothing; the broker would refuse it too.
     if (opts.tainted) {
-      state = { entries: [], block: '', asked: sourceTextCandidates(evidence.sources, fetchSourcesCfg.max).length };
+      state = { entries: [], block: '', asked: sourceTextCandidates(mainSourceFirst(evidence.sources, evidence.mainSourceId), fetchSourcesCfg.max).length };
     } else {
       try {
-        state = await loadSourceTexts(paths, fetchOpts, plan, evidence.sources, fetchSourcesCfg);
+        // v56: a labelled main study is read first (the main share of the budget).
+        state = await loadSourceTexts(paths, fetchOpts, plan, mainSourceFirst(evidence.sources, evidence.mainSourceId), fetchSourcesCfg);
       } catch (_) {
         state = { entries: [], block: '', asked: 0 };
       }
@@ -12119,7 +12256,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // v50: the saved draft's title and main source, for the next run's research.
       // A notification-triggered (tainted) run never feeds later prompts.
       if (historyActive && !(stepOpts && stepOpts.tainted) && step.local !== undefined && action.status === 'success' && paths.savedOutput) {
-        const main = evidence.sources.find((src) => src.id === 1);
+        const main = evidence.sources.find((src) => src.id === (evidence.mainSourceId || 1));
         const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday }, legacyHistoryFile);
         appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_history_recorded', agentId: plan.agent.id, recorded });
       }
@@ -13362,6 +13499,11 @@ module.exports = {
   GROUNDING_REDIRECT_MIN_LEFT_MS,
   articleMetaNoteStart,
   withoutUnusableSources,
+  // v56: URLs in the research notes.
+  absorbResearchNoteUrls,
+  researchNoteUrl,
+  mainSourceFirst,
+  RESEARCH_NOTE_URLS_MAX,
   // v47: source full text.
   normalizeFetchSourcesConfig,
   sourceTextCandidates,
