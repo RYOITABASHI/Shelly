@@ -184,8 +184,11 @@ describe('native half (source)', () => {
   });
 
   it('splits the queue at unlock: pre-approved drafts go through the same send, the rest are asked', () => {
-    // A draft with image hosts always asks (the hosts come from a same-uid-writable file).
-    expect(fn(drafts, 'private fun preapproved(')).toContain('if (it.imageHosts.isEmpty()) destinationKey(it.draft) else null');
+    // 2026-11-13 owner decision: drafts with image hosts go without a tap too; the
+    // hosts are checked against the destinations file by fit() and shown in the notice.
+    expect(fn(drafts, 'private fun preapproved(')).toContain('val keys = items.map { destinationKey(it.draft) }');
+    expect(fn(drafts, 'private fun noticeLabel(')).toContain('" images: "');
+    expect(drafts).toContain('!destinations.imageHosts.containsAll(imageHosts) -> Fit.REFUSED');
     const unlock = fn(drafts, 'private fun unlockStep(');
     expect(unlock).toContain('val auto = preapproved(app, items)');
     expect(unlock).toContain('if (auto.isNotEmpty()) startAutoBatch(app, auto) else requestApproval(app, items)');

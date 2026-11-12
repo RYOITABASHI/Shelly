@@ -279,10 +279,13 @@ object ClosePawDrafts {
      * count is stored before anything goes, so a crash can only use the cap up.
      */
     private fun preapproved(app: Context, items: List<Item>): List<Item> {
-        // A draft with image hosts always asks: the editor fetches those with the
-        // owner's cookies, and the hosts come from a file any process of this uid
-        // can edit, so only the approval line shows them to the owner.
-        val keys = items.map { if (it.imageHosts.isEmpty()) destinationKey(it.draft) else null }
+        // Owner decision 2026-11-13: a draft with image hosts goes without a tap too.
+        // Every host is already in the owner's destinations file ([fit], at queue
+        // time and again before sending), and the notice afterwards names the hosts.
+        // That file is same-uid writable (see the class comment), so a process that
+        // writes it directly can add a host that is then fetched with the owner's
+        // cookies without anyone seeing it first: accepted by the owner.
+        val keys = items.map { destinationKey(it.draft) }
         if (keys.none { ClosePawDraftPreapproval.isOn(app, it) }) return emptyList()
         val mask = ClosePawDraftPreapproval.reserve(app, keys)
         return items.filterIndexed { i, _ -> mask[i] }
@@ -544,7 +547,8 @@ object ClosePawDrafts {
     private fun noticeLabel(item: Item): String {
         val d = item.draft
         val where = if (d.platform == "substack") "substack ${d.subdomain}" else d.platform
-        return "[$where] ${displayText(item.title, MAX_SHOWN_TITLE_CHARS)}"
+        val hosts = if (item.imageHosts.isEmpty()) "" else " images: " + displayText(item.imageHosts.joinToString(", "), MAX_SHOWN_HOSTS_CHARS)
+        return "[$where]$hosts ${displayText(item.title, MAX_SHOWN_TITLE_CHARS)}"
     }
 
     /**
