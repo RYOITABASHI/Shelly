@@ -61,7 +61,7 @@ export interface ChainEvidence {
 export type SearchRecency = 'day' | 'week' | 'month';
 
 export type StepEvidence =
-  | { mode: 'research'; today: string; recency?: SearchRecency; count?: number }
+  | { mode: 'research'; today: string; recency?: SearchRecency; count?: number; listSources?: boolean }
   | { mode: 'synthesis'; sources: ResearchSource[]; items: ResearchItem[]; count?: number };
 
 export interface ParsedSources {
@@ -82,6 +82,9 @@ const MAX_CORPUS_CHARS = 40000;
 const MAX_SOURCE_TEXT_CHARS = 4000;
 
 export const RESEARCH_REQUIREMENTS_MARKER = '# Research requirements';
+// v58: only for a research step whose answer carries no structured citations
+// (the Codex web-search research step).
+export const RESEARCH_LIST_SOURCES_LINE = '- End your answer with a section headed "## Sources" that lists every page you used, one per line as "[n] Title — URL", numbered to match the [n] markers in the text. Give the full https address of the page itself, never a search-results page, and list only pages you actually opened in your search results.';
 export const SOURCING_CONTRACT_MARKER = '# Sourcing contract';
 export const NO_SOURCES_MESSAGE =
   'No verifiable sources: the research step returned no source URLs, so no briefing was written (unsourced content is never saved).';
@@ -948,6 +951,9 @@ export function renderStepEvidence(evidence: StepEvidence): string {
       `- Search the web now and return a numbered list of ${count} items. For each item give: the exact headline as published, a 1-2 sentence factual summary, the publication date (YYYY-MM-DD), and the source URL, with a citation marker [n].`,
       '- Only include items that appear in your search results. If you find fewer, return fewer. Never guess names, products, numbers, or dates.',
     ];
+    // v58: a CLI research step (Codex web search) returns text only, so its
+    // sources are read from this section (extractSourcesFromText).
+    if (evidence.listSources === true) lines.push(RESEARCH_LIST_SOURCES_LINE);
     return `${lines.join('\n')}\n\n`;
   }
   const contractLines = [

@@ -1916,7 +1916,8 @@ function renderStepEvidence(evidence) {
     ];
     // v58: a CLI research step (Codex web search) returns text only, so its
     // sources are read from this section (extractSourcesFromText).
-    if (evidence.listSources === true) lines.push(RESEARCH_LIST_SOURCES_LINE);
+    if (evidence.listSources === true)
+      lines.push(RESEARCH_LIST_SOURCES_LINE);
     return `${lines.join('\n')}\n\n`;
   }
   const contractLines = [
