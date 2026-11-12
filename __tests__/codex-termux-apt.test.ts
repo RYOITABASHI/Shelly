@@ -203,9 +203,13 @@ describe('the pin', () => {
     expect(() => apt.validatePin({ ...pin(), upstreamVersion: '0.1.0' })).toThrow();
   });
 
-  it('starts the channel on the bundled package', () => {
-    const channel = JSON.parse(read('.ci-versions/codex-termux-channel.json'));
-    expect(apt.validatePin(channel).sha256).toBe(repoPin.sha256);
+  // The channel starts on the bundled package and the Bump job then moves it
+  // ahead on its own (bundled pin stays put), so it is never behind the bundle.
+  it('keeps the channel on or ahead of the bundled package', () => {
+    const channel = apt.validatePin(JSON.parse(read('.ci-versions/codex-termux-channel.json')));
+    expect(channel.package).toBe(repoPin.package);
+    expect(apt.compareDebVersions(channel.version, repoPin.version)).toBeGreaterThanOrEqual(0);
+    if (channel.version === repoPin.version) expect(channel.sha256).toBe(repoPin.sha256);
   });
 
   it('left the fork pins behind', () => {
