@@ -208,7 +208,7 @@ describe('the pin', () => {
   it('keeps the channel on or ahead of the bundled package', () => {
     const channel = apt.validatePin(JSON.parse(read('.ci-versions/codex-termux-channel.json')));
     expect(channel.package).toBe(repoPin.package);
-    expect(apt.compareDebVersions(channel.version, repoPin.version)).toBeGreaterThanOrEqual(0);
+    expect(apt.compareDebVersions(apt.parseDebVersion(channel.version), apt.parseDebVersion(repoPin.version))).toBeGreaterThanOrEqual(0);
     if (channel.version === repoPin.version) expect(channel.sha256).toBe(repoPin.sha256);
   });
 
