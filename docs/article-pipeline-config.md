@@ -49,7 +49,7 @@ The agent only ever saves a draft. It never publishes and is never autonomous, I
 
 ## Text-only CLI engines
 
-`engines.write` and `engines.review` can name Claude Code or Codex, so writing, review and revision can use your subscription. Revision uses the `write` engine. Research stays on an HTTP engine, and `engines.agent` and the digest's `engine` cannot be a CLI.
+`engines.write` and `engines.review` can name Claude Code or Codex, so writing, review and revision can use your subscription. Revision uses the `write` engine. Research stays on an HTTP engine unless it is Codex with web search (below), and `engines.agent` and the digest's `engine` cannot be a CLI.
 
 ```json
 "engines": {
@@ -64,6 +64,24 @@ The agent only ever saves a draft. It never publishes and is never autonomous, I
 - **What it needs**: the build agents run (`claude-install --agent` for Claude Code, the bundled build for Codex). Claude Code signs in as it does for any agent: your Anthropic API key if one is set, otherwise your subscription, and with the setting "Claude subscription for unattended runs" off a scheduled run is refused. Codex uses your ChatGPT login.
 - **When a step fails**, nothing falls back to another engine. A failed write fails the run. A failed review or revision keeps the last good version and marks the draft unresolved.
 - **Time**: one run has 30 minutes, the CLI steps included. When less than 2 minutes remain, or a call runs into the last minute, the review loop stops and the last good version is saved as unresolved. Each engine takes one text-only step at a time across agents, so two agents at the same minute wait for each other.
+
+### Research on Codex with web search
+
+`engines.research` can be Codex with its built-in web search, so research uses your ChatGPT subscription instead of an API key (not yet checked on a device):
+
+```json
+"engines": {
+  "research": { "type": "cli", "cli": "codex", "textOnly": true, "webSearch": true, "model": "gpt-5.5" },
+  "write": { "type": "cli", "cli": "claude", "textOnly": true },
+  "review": { "type": "cli", "cli": "codex", "textOnly": true, "model": "gpt-5.5" },
+  "agent": { "type": "groq" }
+}
+```
+
+- **Only research, only Codex, only with `"webSearch": true` and `"textOnly": true`.** `webSearch` is refused on every other engine and step, and on Claude Code. The turn is the text-only turn above with one tool left on: Codex's hosted web search, which runs on OpenAI's side. No shell, no file changes, no MCP, no images, no hooks; anything but text and web searches stops the turn and fails the step.
+- **What leaves the phone**: Codex's search queries. Each finished search is written to the driver's audit log (`codex_web_search`), and a query that carries a known secret value or a secret-shaped string (an API key, a token, a private key) stops the turn. A run started from a notification never starts the search.
+- **`engines.agent` is required** with a CLI research engine, and must be an HTTP engine (the agent's own tool is never a CLI).
+- **Sources**: Codex has no citations list, so the research step is asked to end with a `## Sources` section of `[n] Title — URL` lines; those become the draft's Sources (and what `fetchSources` reads). An answer with no address stops the run, as with any research that finds no sources.
 
 ## Ghostwritten author view
 

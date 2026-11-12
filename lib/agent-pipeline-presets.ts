@@ -146,6 +146,12 @@ export type ArticleEngine = { type: (typeof ARTICLE_ENGINE_TYPES)[number]; model
 export const ARTICLE_TEXT_ONLY_CLIS = ['claude', 'codex'] as const;
 export type ArticleTextOnlyEngine = { type: 'cli'; cli: (typeof ARTICLE_TEXT_ONLY_CLIS)[number]; textOnly: true; model?: string };
 
+/** Executor v58: the research engine may be the Codex CLI with its hosted web
+ *  search and no other tool (driver --text-only --web-search). Only research,
+ *  only Codex, only with `webSearch: true`; re-checked in the executor's
+ *  isResearchWebSearchCliStep / textOnlyPlanRefusal. */
+export type ArticleResearchCliEngine = { type: 'cli'; cli: 'codex'; textOnly: true; webSearch: true; model?: string };
+
 /** The ghostwritten author view (executor v38). Off without this key. */
 export interface ArticleVoiceConfig {
   /** The voice profile, a `.md` file given relative to the vault
@@ -190,8 +196,9 @@ export interface ArticlePipelineConfig {
    *  REVIEW_OUTPUT_CONTRACT appended, and the limit counts that too. */
   instructions: { research: string; write: string; review: string; revise: string; topics?: string };
   /** No defaults: the user picks. `agent` is the agent-level tool (default:
-   *  `research`). `write` and `review` may be text-only CLIs. */
-  engines: { research: ArticleEngine; write: ArticleEngine | ArticleTextOnlyEngine; review: ArticleEngine | ArticleTextOnlyEngine; agent?: ArticleEngine };
+   *  `research`; required when `research` is a CLI). `write` and `review` may
+   *  be text-only CLIs, `research` the Codex web-search CLI (v58). */
+  engines: { research: ArticleEngine | ArticleResearchCliEngine; write: ArticleEngine | ArticleTextOnlyEngine; review: ArticleEngine | ArticleTextOnlyEngine; agent?: ArticleEngine };
   /** Flagged in frontmatter `lint`, never rewritten. */
   lintTerms?: string[];
   nameLint?: { canonical: string; forms: string[] };
@@ -288,8 +295,19 @@ function articleTextError(v: unknown, max: number, where: string, multiline = fa
   return null;
 }
 
-function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = false, searchModeAllowed = false): string | null {
+function articleEngineError(v: unknown, where: string, textOnlyCliAllowed = false, searchModeAllowed = false, webSearchCliAllowed = false): string | null {
   if (!isPlainObject(v)) return `${where}: needs { "type": ... }`;
+  // Executor v58: Codex's web search, on the research engine only.
+  if (v.webSearch !== undefined && (!webSearchCliAllowed || v.type !== 'cli')) return `${where}.webSearch: only a Codex research engine takes it`;
+  if (v.type === 'cli' && webSearchCliAllowed) {
+    const keyError = unknownKeyError(v, ['type', 'cli', 'textOnly', 'webSearch', 'model'], where);
+    if (keyError) return keyError;
+    if (v.cli !== 'codex') return `${where}.cli: research runs only on "codex" (with its web search)`;
+    if (v.textOnly !== true) return `${where}: a CLI runs an article step only with "textOnly": true`;
+    if (v.webSearch !== true) return `${where}: a CLI research engine needs "webSearch": true`;
+    if (v.model !== undefined && (typeof v.model !== 'string' || !ARTICLE_MODEL_RE.test(v.model))) return `${where}: bad model name`;
+    return null;
+  }
   // Executor v50: Perplexity's academic search, on the research engine only.
   if (v.searchMode !== undefined) {
     if (!searchModeAllowed || v.type !== 'perplexity') return `${where}.searchMode: only a Perplexity research engine takes it`;
@@ -461,8 +479,12 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   const enginesKeyError = unknownKeyError(engines, ['research', 'write', 'review', 'agent'], `${where}.engines`);
   if (enginesKeyError) return enginesKeyError;
   for (const key of ['research', 'write', 'review'] as const) {
-    const error = articleEngineError(engines[key], `${where}.engines.${key}`, key !== 'research', key === 'research');
+    const error = articleEngineError(engines[key], `${where}.engines.${key}`, key !== 'research', key === 'research', key === 'research');
     if (error) return error;
+  }
+  // The agent-level tool is never a CLI; with a CLI research engine it must be named.
+  if (isPlainObject(engines.research) && engines.research.type === 'cli' && engines.agent === undefined) {
+    return `${where}.engines.agent: needs an HTTP engine when research runs on a CLI`;
   }
   if (engines.agent !== undefined) {
     const error = articleEngineError(engines.agent, `${where}.engines.agent`);
@@ -572,7 +594,7 @@ function withoutSearchMode(engine: ArticleEngine): ArticleEngine {
   return rest;
 }
 const withFolderSlash = (folder: string): string => (folder.endsWith('/') ? folder : `${folder}/`);
-const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
+const pinned = (tool: ArticleEngine | ArticleTextOnlyEngine | ArticleResearchCliEngine): { tool: ToolChoice; toolPinned: true } => ({ tool: tool as ToolChoice, toolPinned: true });
 
 function voiceStep(config: ArticlePipelineConfig, of: number[]): AgentLocalStepConfig {
   const voice = config.voice as ArticleVoiceConfig;
@@ -682,7 +704,9 @@ export function buildArticlePipeline(config: ArticlePipelineConfig): PipelinePre
     scheduleLabel: config.scheduleLabel ?? config.schedule,
     autonomous: false,
     // searchMode belongs to the research step only, not the agent-level tool.
-    tool: (engines.agent ?? withoutSearchMode(engines.research)) as ToolChoice,
+    // A CLI research engine requires `agent` (articlePipelineConfigError), so the
+    // fallback is always an HTTP engine.
+    tool: (engines.agent ?? withoutSearchMode(engines.research as ArticleEngine)) as ToolChoice,
     action: { type: 'draft' },
     output: { outputPath: withFolderSlash(config.outputFolder), outputTemplate: `{date}-${config.id}.md` },
     memoryOff: true,

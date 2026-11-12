@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=57
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=58
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -244,7 +244,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // Sources with the next ids and get their [id] in the notes; a study the notes
 // label as the main one is fetched first (absorbResearchNoteUrls).
 // v57 (2026-11-11): an article pipeline's `footer` may be '' for no footer block.
-const EXECUTOR_SCRIPT_VERSION = 57;
+// v58 (2026-11-13): an article pipeline's research step may run on the Codex CLI
+// with its hosted web search and no other tool (tool.webSearch, driver
+// --text-only --web-search; isResearchWebSearchCliStep). Its Sources come from the
+// answer's own Sources section (extractSourcesFromText).
+const EXECUTOR_SCRIPT_VERSION = 58;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -1059,6 +1063,9 @@ const MAX_ITEM_SUMMARY_CHARS = 300;
 const MAX_CORPUS_CHARS = 40000;
 const MAX_SOURCE_TEXT_CHARS = 4000;
 const RESEARCH_REQUIREMENTS_MARKER = '# Research requirements';
+// v58: only for a research step whose answer carries no structured citations
+// (the Codex web-search research step).
+const RESEARCH_LIST_SOURCES_LINE = '- End your answer with a section headed "## Sources" that lists every page you used, one per line as "[n] Title — URL", numbered to match the [n] markers in the text. Give the full https address of the page itself, never a search-results page, and list only pages you actually opened in your search results.';
 const SOURCING_CONTRACT_MARKER = '# Sourcing contract';
 const NO_SOURCES_MESSAGE = 'No verifiable sources: the research step returned no source URLs, so no briefing was written (unsourced content is never saved).';
 const DISPATCH_PENDING_MESSAGE = 'Briefing verified; the final action is still running in the background — its result will appear when it finishes.';
@@ -1907,6 +1914,9 @@ function renderStepEvidence(evidence) {
       `- Search the web now and return a numbered list of ${count} items. For each item give: the exact headline as published, a 1-2 sentence factual summary, the publication date (YYYY-MM-DD), and the source URL, with a citation marker [n].`,
       '- Only include items that appear in your search results. If you find fewer, return fewer. Never guess names, products, numbers, or dates.',
     ];
+    // v58: a CLI research step (Codex web search) returns text only, so its
+    // sources are read from this section (extractSourcesFromText).
+    if (evidence.listSources === true) lines.push(RESEARCH_LIST_SOURCES_LINE);
     return `${lines.join('\n')}\n\n`;
   }
   const contractLines = [
@@ -5634,10 +5644,47 @@ function longformPlanRefusal(plan) {
 // before any step. The flag can only remove capabilities, and every exception
 // below asks isTextOnlyCliStep, never the flag alone.
 const TEXT_ONLY_MODEL_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
-const TEXT_ONLY_REFUSED_MESSAGE = 'This agent has a malformed text-only CLI step. Text-only is for the write, review and revise steps of a long-form chain, after an HTTP research step. Open Shelly to regenerate the plan.';
+const TEXT_ONLY_REFUSED_MESSAGE = 'This agent has a malformed text-only CLI step. Text-only is for the write, review and revise steps of a long-form chain, after an HTTP research step (or a Codex web-search research step). Open Shelly to regenerate the plan.';
 
 function hasTextOnlyMark(value) {
   return !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'textOnly');
+}
+
+function hasWebSearchMark(value) {
+  return !!value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'webSearch');
+}
+
+// v58: the chain's research step may be a text-only Codex turn whose one tool is
+// Codex's hosted web search (driver --text-only --web-search). Exactly: the first
+// model step of a long-form, non-digest chain, not the last step, tool
+// {type:'cli', cli:'codex', textOnly:true, webSearch:true[, model]} and nothing
+// else on the step. Claude never; webSearch anywhere else refuses the plan
+// (textOnlyPlanRefusal). The search runs on OpenAI's side, the queries are
+// audited and secret-checked by the driver, and a tainted run never starts it
+// (runCliStepDriver).
+const RESEARCH_WEB_SEARCH_TOOL_KEYS = new Set(['type', 'cli', 'textOnly', 'webSearch', 'model']);
+function isResearchWebSearchCliStep(plan, i) {
+  const steps = plan && plan.steps;
+  if (!steps || steps.longform !== true || !Array.isArray(steps.list) || isDigestPlan(plan)) return false;
+  const list = steps.list;
+  const step = list[i];
+  if (!step || step.local !== undefined || !isCliStep(step) || hasTextOnlyMark(step) || hasWebSearchMark(step)) return false;
+  const tool = step.tool;
+  if (tool.cli !== 'codex' || tool.textOnly !== true || tool.webSearch !== true) return false;
+  if (Object.keys(tool).some((k) => !RESEARCH_WEB_SEARCH_TOOL_KEYS.has(k))) return false;
+  if (tool.model !== undefined && (typeof tool.model !== 'string' || !TEXT_ONLY_MODEL_RE.test(tool.model))) return false;
+  if (step.apiCall || step.parallelGroup !== undefined || step.role !== undefined || step.handoff !== undefined || step.paidPin !== undefined) return false;
+  if (i === list.length - 1) return false;
+  const first = list.findIndex((s) => !!s && s.local === undefined);
+  return first === i;
+}
+
+// The chain's first model step is the research a later text-only step relies on:
+// an HTTP step, or (v58) the Codex web-search research step.
+function longformFirstModelStepIsResearch(plan) {
+  const list = plan.steps.list;
+  const first = list.findIndex((s) => !!s && s.local === undefined);
+  return first !== -1 && (!isCliStep(list[first]) || isResearchWebSearchCliStep(plan, first));
 }
 
 function isTextOnlyCliStep(plan, i) {
@@ -5645,7 +5692,8 @@ function isTextOnlyCliStep(plan, i) {
   if (!steps || steps.longform !== true || !Array.isArray(steps.list) || isDigestPlan(plan)) return false;
   const step = steps.list[i];
   if (step && step.local !== undefined) return isVoiceTextOnlyStep(plan, i) || isEditorTextOnlyStep(plan, i);
-  if (!step || !isCliStep(step) || step.tool.textOnly !== true || hasTextOnlyMark(step)) return false;
+  if (isResearchWebSearchCliStep(plan, i)) return true;
+  if (!step || !isCliStep(step) || step.tool.textOnly !== true || hasTextOnlyMark(step) || hasWebSearchMark(step) || hasWebSearchMark(step.tool)) return false;
   if (!CLI_STEP_ENGINES.has(step.tool.cli)) return false;
   if (step.tool.model !== undefined && (typeof step.tool.model !== 'string' || !TEXT_ONLY_MODEL_RE.test(step.tool.model))) return false;
   if (step.local !== undefined || step.apiCall || step.parallelGroup !== undefined || step.role !== undefined) return false;
@@ -5654,10 +5702,11 @@ function isTextOnlyCliStep(plan, i) {
     const h = handoffOf(steps.list, i);
     if (!h || (h.kind !== 'review' && h.kind !== 'revise')) return false;
   }
-  // Research stays on an HTTP engine: the first model step comes before this one
-  // and is not a CLI step. A cloud research step is the whole point of the chain.
+  // Research comes first: the first model step comes before this one and is an
+  // HTTP step or (v58) the Codex web-search research step. A cloud research step
+  // is the whole point of the chain.
   const first = steps.list.findIndex((s) => !!s && s.local === undefined);
-  return first !== -1 && first < i && !isCliStep(steps.list[first]);
+  return first !== -1 && first < i && longformFirstModelStepIsResearch(plan);
 }
 
 // v38: the voice step's writer is a text-only CLI too. Its config sits in
@@ -5673,7 +5722,7 @@ function isVoiceTextOnlyStep(plan, i) {
   if (list.filter((s) => !!s && !!s.local && s.local.kind === 'voice').length !== 1) return false;
   if (i === list.length - 1 || list.slice(i + 1).some((s) => !s || s.local === undefined)) return false;
   const first = list.findIndex((s) => !!s && s.local === undefined);
-  return first !== -1 && first < i && !isCliStep(list[first]);
+  return first !== -1 && first < i && longformFirstModelStepIsResearch(plan);
 }
 
 // v44: an editor on the assemble step may run on a text-only CLI too. The
@@ -5690,7 +5739,7 @@ function isEditorTextOnlyStep(plan, i) {
   if (i !== list.length - 1) return false;
   if (list.filter((s) => !!s && !!s.local && s.local.kind === 'assemble' && s.local.editor !== undefined).length !== 1) return false;
   const first = list.findIndex((s) => !!s && s.local === undefined);
-  return first !== -1 && first < i && !isCliStep(list[first]);
+  return first !== -1 && first < i && longformFirstModelStepIsResearch(plan);
 }
 
 // A local step whose config names a text-only CLI (v38 voice, v44 editor).
@@ -5701,15 +5750,29 @@ function localNamesTextOnlyCli(s) {
   return !!engine && typeof engine === 'object' && (engine.type === 'cli' || hasTextOnlyMark(engine));
 }
 
+// v58: a webSearch key anywhere in a local step's config (voice writer or
+// review, editor engine). None may carry one.
+function localNamesWebSearch(s) {
+  if (!s.local || typeof s.local !== 'object') return false;
+  const l = s.local;
+  const editorEngine = l.editor && typeof l.editor === 'object' ? l.editor.engine : null;
+  return hasWebSearchMark(l) || hasWebSearchMark(l.writer) || hasWebSearchMark(l.review) || hasWebSearchMark(l.editor) || hasWebSearchMark(editorEngine);
+}
+
 // '' when every textOnly mark in the plan sits on a step that qualifies, and a
-// voice step (v38) or a CLI editor (v44) is one that qualifies.
+// voice step (v38) or a CLI editor (v44) is one that qualifies. v58: every
+// webSearch mark sits on the one qualifying research step
+// (isResearchWebSearchCliStep), never on plan.tool, a ladder rung or another step.
 function textOnlyPlanRefusal(plan) {
   const steps = plan && plan.steps;
   const list = steps && Array.isArray(steps.list) ? steps.list : [];
   const ladder = Array.isArray(plan.toolLadder) ? plan.toolLadder : [];
   if (hasTextOnlyMark(plan.tool) || ladder.some(hasTextOnlyMark)) return TEXT_ONLY_REFUSED_MESSAGE;
+  if (hasWebSearchMark(plan.tool) || ladder.some(hasWebSearchMark)) return TEXT_ONLY_REFUSED_MESSAGE;
   const bad = list.some((s, i) => !!s && (hasTextOnlyMark(s) || hasTextOnlyMark(s.tool) || localNamesTextOnlyCli(s)) && !isTextOnlyCliStep(plan, i));
-  return bad ? TEXT_ONLY_REFUSED_MESSAGE : '';
+  if (bad) return TEXT_ONLY_REFUSED_MESSAGE;
+  const badSearch = list.some((s, i) => !!s && (hasWebSearchMark(s) || hasWebSearchMark(s.tool) || localNamesWebSearch(s)) && !isResearchWebSearchCliStep(plan, i));
+  return badSearch ? TEXT_ONLY_REFUSED_MESSAGE : '';
 }
 
 // Across runs: two scheduled agents can land on one minute, and each engine's
@@ -10409,6 +10472,7 @@ function cliActivityFromDriverLine(line) {
   label = label.replace(/[^A-Za-z0-9 _.:-]/g, '').trim().slice(0, CLI_ACTIVITY_MAX_CHARS);
   return label || null;
 }
+const CLI_WEB_SEARCH_TAINTED_MESSAGE = 'Skipped: this article research step searches the web with Codex, and a run started by a notification never sends web searches. Run it from Shelly or on its schedule.';
 const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude Code step, and a CLI step (Codex/Claude Code) runs only with Run now. Open Shelly and tap Run now to run it.';
 
 // Whole-run preflight (before any step / model call): the first CLI step of a
@@ -10617,6 +10681,14 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: 'plan has no cliWorker policy' });
     throw new PlanFailure('CLI step cannot run: this agent plan predates CLI steps. Open Shelly to regenerate it.', { exitCode: EXIT.TOOL_DENY });
   }
+  // v58: the web-search research step sends search queries off the device. A
+  // notification-triggered (tainted) run never starts it, as it never fetches
+  // source text (runSourceTexts) or resolves redirects.
+  const webSearch = isResearchWebSearchCliStep(plan, stepIndex);
+  if (webSearch && opts && opts.tainted) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: 'web search on a tainted run' });
+    throw new PlanFailure(CLI_WEB_SEARCH_TAINTED_MESSAGE, { exitCode: EXIT.TOOL_DENY });
+  }
   const driver = opts.agentDriver || path.join(paths.home, '.shelly-agent-driver.js');
   if (!fs.existsSync(driver)) {
     throw new PlanFailure('Shelly agent driver is unavailable. Update Shelly runtime, then retry.', { exitCode: EXIT.TOOL_DENY });
@@ -10660,7 +10732,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // v22: every engine reports usage (Claude: stream-json result; Codex:
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
-    ...(textOnly ? ['--text-only', ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
+    ...(textOnly ? ['--text-only', ...(webSearch ? ['--web-search'] : []), ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
   ];
 
   unlinkQuiet(answerFile);
@@ -10679,7 +10751,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     provider: { kind: 'CLI', name: `cli:${engine}` },
   });
   const startedMs = Date.now();
-  cliStepAudit(paths, plan, 'cli_branch_start', { stepIndex, engine, runId: branchRunId, attended, cwd, textOnly });
+  cliStepAudit(paths, plan, 'cli_branch_start', { stepIndex, engine, runId: branchRunId, attended, cwd, textOnly, ...(webSearch ? { webSearch: true } : {}) });
   const invocation = nodeInvocation(driver, driverArgs, paths, opts);
   let outcome;
   try {
@@ -10969,8 +11041,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // count taken from the prose, and no fallback briefing.
   const longform = plan.steps.longform === true;
   const longformDeadlineMs = cliRunLimits().deadlineMs;
+  // v58: the Codex web-search research step of an article pipeline is research,
+  // whatever its text says (isResearchWebSearchCliStep).
   const researchFlags = plan.steps.list.map((step, i) =>
-    i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && step.local === undefined && !(longform && step.handoff !== undefined) && isResearchStep(step.instruction, effectiveStepTool(step).type));
+    (longform && isResearchWebSearchCliStep(plan, i)) ||
+    (i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && step.local === undefined && !(longform && step.handoff !== undefined) && isResearchStep(step.instruction, effectiveStepTool(step).type)));
   const sourcingActive = researchFlags.some(Boolean);
   const sourcingToday = localIsoDate(new Date());
   const sourcingRecency = detectRecency(chainRequestText);
@@ -11865,7 +11940,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const research = stepIsResearch(i);
     const synthesis = sourcingActive && !research && !step.apiCall && evidence.sources.length > 0;
     const stepEvidence = research
-      ? { mode: 'research', today: sourcingToday, recency: sourcingRecency, count: sourcingCount }
+      ? { mode: 'research', today: sourcingToday, recency: sourcingRecency, count: sourcingCount, ...(isCliStep(step) ? { listSources: true } : {}) }
       : synthesis
         ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount }
         : undefined;
@@ -12078,7 +12153,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       if (longform && step.local === undefined && step.handoff !== undefined && step.handoff.kind === 'review') resultText = await reviewWithEditor(i, resultText, stepOpts);
       if (isFinal && activeContinuous) activeContinuous.control = attempt.control || null;
       if (research) {
-        researchCapture = { text: resultText, parsed: parseResearchSources(attempt.response) };
+        // v58: a CLI research answer is text; its sources are its Sources section.
+        researchCapture = { text: resultText, parsed: cliStep ? extractSourcesFromText(resultText) : parseResearchSources(attempt.response) };
         // v42: Google's own attribution and real links, without index pages.
         if (longform) researchCapture = await longformResearchCapture(paths, stepOpts, plan, attempt, resultText, researchCapture);
       }
@@ -13352,6 +13428,7 @@ module.exports = {
   CLI_STEP_ATTENDED_ONLY_MESSAGE,
   cliStepNeedingAttended,
   isTextOnlyCliStep,
+  isResearchWebSearchCliStep,
   textOnlyPlanRefusal,
   takeTextOnlyEngineLock,
   releaseTextOnlyEngineLock,

@@ -298,7 +298,8 @@ describe('the config is validated strictly', () => {
 
   it('refuses a CLI anywhere else, without the flag, or with anything extra', () => {
     const claude = { type: 'cli', cli: 'claude', textOnly: true };
-    expect(over({ engines: { ...engines, research: claude } })).toContain('a CLI cannot run this step');
+    // v58: research takes only the Codex web-search CLI.
+    expect(over({ engines: { ...engines, research: claude } })).toContain('.cli');
     expect(over({ engines: { ...engines, agent: claude } })).toContain('a CLI cannot run this step');
     expect(over({ engines: { ...engines, write: { type: 'cli', cli: 'claude', textOnly: false } } })).toContain('textOnly');
     expect(over({ engines: { ...engines, write: { type: 'cli', cli: 'claude', textOnly: 'true' } } })).toContain('textOnly');
@@ -306,6 +307,66 @@ describe('the config is validated strictly', () => {
     expect(over({ engines: { ...engines, write: { ...claude, tools: ['Bash'] } } })).toContain('unknown field');
     expect(over({ engines: { ...engines, write: { ...claude, model: 'x; rm -rf' } } })).toContain('bad model');
     expect(articleDigestConfigError({ ...EXAMPLE_DIGEST, engine: claude })).toContain('a CLI cannot run this step');
+  });
+
+  describe('a Codex web-search research engine (v58)', () => {
+    const research = { type: 'cli', cli: 'codex', textOnly: true, webSearch: true };
+
+    it('is taken for research, carried to the first step, and passes the executor', () => {
+      expect(over({ engines: { ...engines, research } })).toBeNull();
+      expect(over({ engines: { ...engines, research: { ...research, model: 'gpt-test' } } })).toBeNull();
+      const cfg = { ...EXAMPLE_CONFIGS['example-a'], engines: { ...engines, research: { ...research, model: 'gpt-test' } } } as unknown as ArticlePipelineConfig;
+      const preset = buildArticlePipeline(cfg);
+      const steps = preset.orchestration.steps as AgentOrchestrationStep[];
+      expect(steps[0].tool).toEqual({ ...research, model: 'gpt-test' });
+      expect(steps.filter((s) => (s.tool as { webSearch?: unknown } | undefined)?.webSearch !== undefined)).toHaveLength(1);
+      // The agent-level tool is never the CLI.
+      expect(preset.tool).toEqual({ type: 'gemini-api' });
+      const plan = buildAgentPlanSpec(agentFrom(preset));
+      expect(executor.textOnlyPlanRefusal(plan)).toBe('');
+      expect(executor.longformPlanRefusal(plan)).toBe('');
+      expect(executor.isResearchWebSearchCliStep(plan, 0)).toBe(true);
+      expect(plan.steps!.list.map((_s: unknown, i: number) => executor.isTextOnlyCliStep(plan, i))).toEqual([true, false, false, false, false, false, false]);
+    });
+
+    it('with text-only writers too, every model step is a text-only CLI step', () => {
+      const claude = { type: 'cli', cli: 'claude', textOnly: true };
+      const cfg = { ...EXAMPLE_CONFIGS['example-a'], engines: { ...engines, research, write: claude, review: claude } } as unknown as ArticlePipelineConfig;
+      const plan = buildAgentPlanSpec(agentFrom(buildArticlePipeline(cfg)));
+      expect(executor.textOnlyPlanRefusal(plan)).toBe('');
+      expect(plan.steps!.list.map((_s: unknown, i: number) => executor.isTextOnlyCliStep(plan, i))).toEqual([true, true, true, true, true, true, false]);
+    });
+
+    it.each<[string, Record<string, unknown>, string]>([
+      ['Claude', { ...research, cli: 'claude' }, '.cli'],
+      ['no webSearch', { type: 'cli', cli: 'codex', textOnly: true }, 'webSearch'],
+      ['webSearch false', { ...research, webSearch: false }, 'webSearch'],
+      ['webSearch as a string', { ...research, webSearch: 'true' }, 'webSearch'],
+      ['no textOnly', { type: 'cli', cli: 'codex', webSearch: true }, 'textOnly'],
+      ['an extra field', { ...research, tools: ['shell'] }, 'unknown field'],
+      ['a bad model', { ...research, model: 'x; rm -rf' }, 'bad model'],
+      ['searchMode', { ...research, searchMode: 'academic' }, 'unknown field'],
+    ])('refuses %s on research', (_name, engine, message) => {
+      expect(over({ engines: { ...engines, research: engine } })).toContain(message);
+    });
+
+    it('needs a named HTTP agent engine', () => {
+      const { agent: _agent, ...rest } = engines as Record<string, unknown>;
+      void _agent;
+      expect(over({ engines: { ...rest, research } })).toContain('engines.agent');
+      expect(over({ engines: { ...rest, research, agent: research } })).not.toBeNull();
+    });
+
+    it('refuses webSearch on every other engine', () => {
+      const codex = { type: 'cli', cli: 'codex', textOnly: true };
+      expect(over({ engines: { ...engines, write: { ...codex, webSearch: true } } })).toContain('webSearch');
+      expect(over({ engines: { ...engines, review: { ...codex, webSearch: true } } })).toContain('webSearch');
+      expect(over({ engines: { ...engines, write: { type: 'gemini-api', webSearch: true } } })).toContain('webSearch');
+      expect(over({ engines: { ...engines, research: { type: 'perplexity', webSearch: true } } })).toContain('webSearch');
+      expect(over({ engines: { ...engines, agent: { type: 'gemini-api', webSearch: true } } })).toContain('webSearch');
+      expect(over({ editor: { ...codex, webSearch: true } })).not.toBeNull();
+      expect(articleDigestConfigError({ ...EXAMPLE_DIGEST, engine: { ...codex, webSearch: true } })).not.toBeNull();
+    });
   });
 
   it('refuses the local LLM, api-call and unknown engines, and a bad model', () => {

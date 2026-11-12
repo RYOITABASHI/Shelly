@@ -754,8 +754,10 @@ export type AgentCliId = 'codex' | 'claude';
 export type ToolChoice =
   /** textOnly (executor v37): a long-form step that runs with no tools at all,
    *  and `model` for that turn. Only an article pipeline config sets these, and
-   *  the executor refuses them anywhere else (textOnlyPlanRefusal). */
-  | { type: 'cli'; cli: AgentCliId; textOnly?: true; model?: string }
+   *  the executor refuses them anywhere else (textOnlyPlanRefusal).
+   *  webSearch (executor v58): only an article pipeline's Codex research step,
+   *  a text-only turn whose one tool is Codex's hosted web search. */
+  | { type: 'cli'; cli: AgentCliId; textOnly?: true; webSearch?: true; model?: string }
   | { type: 'gemini-api'; model?: string }
   | { type: 'cerebras'; model?: string }
   | { type: 'groq'; model?: string }

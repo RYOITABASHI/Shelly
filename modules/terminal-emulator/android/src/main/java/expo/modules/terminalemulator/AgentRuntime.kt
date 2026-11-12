@@ -580,7 +580,8 @@ object AgentRuntime {
     // v55: article assemble keeps the best version: when an editor inside a review step scored an earlier draft strictly higher than the final editor scored the last one, the draft is rebuilt from it (same review and quality gates, time guard, audit best_version_used). JS-only (executor).
     // v56: a longform research step's notes may name addresses the citations left out; up to 5 join Sources with the next ids and their [id] in the notes, and a study the notes label as the main one is fetched first. JS-only (executor).
     // v57: an article pipeline's footer may be empty (no footer block). JS-only (executor).
-    private const val CURRENT_EXECUTOR_VERSION = 57
+    // v58: an article pipeline's research step may run on the Codex CLI with its hosted web search and no other tool (driver --text-only --web-search; never on a tainted run). JS-only (executor + driver).
+    private const val CURRENT_EXECUTOR_VERSION = 58
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

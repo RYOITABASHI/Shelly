@@ -493,6 +493,89 @@ describe('Codex text-only turn', () => {
     expect(driver.turnPrompt({ prompt: 'x' })).toBe(driver.workerPrompt('x'));
     expect(driver.turnPrompt({ prompt: 'x', textOnly: true })).toBe('x');
   });
+
+  // --web-search (executor v58): an article research step on Codex keeps one
+  // tool, the hosted web search. Everything else of the text-only turn stays.
+  describe('--web-search', () => {
+    const search = (query: string, method = 'item/completed') => ({
+      method,
+      params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: 'ws1', query, action: { type: 'search', query } } },
+    });
+
+    it('turns web search on in the indexed mode and keeps every other text-only switch', () => {
+      const r = run([search('started', 'item/started'), search('public topic 2026')], {}, { extra: ['--web-search'] });
+      expect(r.status).toBe(0);
+      expect(r.answer).toBe('THE ANSWER');
+      const { config, catalog } = r.home;
+      expect(config).toContain('web_search = "indexed"');
+      expect(config).not.toContain('web_search = "disabled"');
+      for (const f of ['shell_tool', 'shell_snapshot', 'goals', 'apps', 'hooks', 'view_image', 'image_generation', 'standalone_web_search', 'code_mode']) {
+        expect(config).toMatch(new RegExp(`^${f} = false$`, 'm'));
+      }
+      expect(config).toMatch(/^project_root_markers = \[\]$/m);
+      expect(catalog.models[0]).toMatchObject({ shell_type: 'disabled', apply_patch_tool_type: null, experimental_supported_tools: [], base_instructions: driver.TEXT_ONLY_WEB_SEARCH_INSTRUCTIONS });
+      const thread = r.seen.find((m: any) => m.method === 'thread/start').params;
+      expect(thread).toMatchObject({ sandbox: 'read-only', baseInstructions: driver.TEXT_ONLY_WEB_SEARCH_INSTRUCTIONS });
+      const turn = r.seen.find((m: any) => m.method === 'turn/start').params;
+      expect(turn.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false });
+      for (const sub of ['features', 'app-server']) {
+        const call = r.calls.find((c: string[]) => c[0] === sub);
+        expect(call).toContain('web_search="indexed"');
+        expect(call).toContain('features.shell_tool=false');
+      }
+      expect(auditOf(r.audit, 'driver_start')).toMatchObject({ textOnly: true, webSearch: true, codexWebSearchMode: 'indexed' });
+      expect(auditOf(r.audit, 'codex_web_search')).toMatchObject({ itemId: 'ws1', query: 'public topic 2026' });
+    }, 60_000);
+
+    it('a search carrying a secret stops the turn and is not logged', () => {
+      const secret = 'sk-AbCdEfGhIjKlMnOpQrSt1234';
+      const r = run([search(`what is ${secret}`)], {}, { extra: ['--web-search'] });
+      expect(r.status).toBe(1);
+      expect(r.answer).toBeNull();
+      expect(auditKinds(r.audit)).toContain('codex_web_search_leak_blocked');
+      expect(r.audit).not.toContain(secret);
+      expect(r.out).not.toContain(secret);
+    }, 60_000);
+
+    it.each(['commandExecution', 'fileChange', 'imageGeneration', 'mcpToolCall', 'imageView', 'somethingNew'])('item %s still stops the turn', (type) => {
+      const r = run([item(type)], {}, { extra: ['--web-search'] });
+      expect(r.status).toBe(1);
+      expect(r.answer).toBeNull();
+      expect(auditOf(r.audit, 'codex_text_only_item_blocked')).toMatchObject({ itemType: type });
+    }, 60_000);
+
+    it('without the flag a web search still stops a text-only turn', () => {
+      const r = run([search('x')]);
+      expect(r.status).toBe(1);
+      expect(r.home.config).toContain('web_search = "disabled"');
+    }, 60_000);
+
+    it.each([
+      ['without --text-only', ['--web-search']],
+      ['on Claude', ['--text-only', '--web-search', '--engine', 'claude']],
+      ['with an image turn', ['--image-only', '--web-search', '--image-style', 'abstract-light', '--image-subject', 'x', '--image-out', '/nonexistent/x.png']],
+    ])('is refused %s', (_name, args) => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-args-'));
+      const r = childProcess.spawnSync(process.execPath, [driverPath, ...args, '--cwd', tmp, '--prompt', 'x', '--codex-bin', process.execPath, '--policy-json', '{}'], {
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, HOME: tmp, CODEX_HOME: tmp },
+      });
+      fs.rmSync(tmp, { recursive: true, force: true });
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}${r.stderr}`).toMatch(/--web-search/);
+    }, 60_000);
+
+    it('the helpers say the same', () => {
+      expect(driver.codexTextOnlyWebSearchMode(true)).toBe('indexed');
+      expect(driver.codexTextOnlyWebSearchMode(false)).toBe('disabled');
+      expect(driver.codexMcpDisableArgs([], true, false, true)).toContain('web_search="indexed"');
+      expect(driver.codexMcpDisableArgs([], true, false, false)).toContain('web_search="disabled"');
+      // An image turn never gets web search, whatever the flag.
+      expect(driver.codexMcpDisableArgs([], true, true, true)).toContain('web_search="disabled"');
+      expect([...driver.CODEX_TEXT_ONLY_WEB_SEARCH_ITEM_TYPES].sort()).toEqual(['agentMessage', 'reasoning', 'userMessage', 'webSearch']);
+    });
+  });
 });
 
 // Needs a real Codex: SHELLY_TEST_REAL_CODEX=<path to codex> (see DEFERRED.md, the
