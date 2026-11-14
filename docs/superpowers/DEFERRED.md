@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-14: 外部エージェント連携の議論（#153）で合意した「MCP の入口に外部入力の印を付ける」を登録し、読み取りプロトタイプで `tools/call` が Shelly の背面で返らないことを確認して同項目の 7 に追記（下記 P1「MCP の入口」）。
 - 2026-11-08: セキュリティレビューで `referenced_image_paths` が read-only sandbox（`:root` 読み取り可）を素通りしてローカル画像を読んで送れると指摘。画像専用ターンを per-run 権限プロファイルに閉じ込め、canary 合格の版だけで動かすよう修正、通常ワーカーの画像生成は無効化（下記 P1「`shelly image`」）。
 - 2026-11-08: CC（feat/image-only-worker、未push）が汎用のヘッダー画像生成を実装（driver `--image-only`、`shelly image`、vendored jpeg-js 0.4.4、BASHRC_VERSION 291 / シム v26）。PC ではスタンドインの app-server と単体テストのみ。本物の Codex で画像が出るかは未確認（下記 P1「`shelly image`」）。
 - 2026-11-08: CC（feat/save-draft-preapproval、未push）が ClosePaw 下書き保存の「宛先ごとの承認なし」（オーナー決定の案 2）を実装（`ClosePawDraftPreapproval.kt`、`lib/closepaw-draft-preapproval.ts`、設定の「下書き（ClosePaw）」）。Kotlin は kotlinc で型検査のみ、Gradle ビルドと実機は未実施（下記 P1「ClosePaw save-draft」）。
