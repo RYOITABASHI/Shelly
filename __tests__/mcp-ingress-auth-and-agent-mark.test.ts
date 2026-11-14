@@ -76,7 +76,7 @@ import {
   stopMCPPoller,
 } from '@/lib/mcp-server-bridge';
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
-import { canonicalJson, verifyMcpRequest } from '@/lib/mcp-request-auth';
+import { __resetMcpSeenCallIdsForTests, canonicalJson, verifyMcpRequest } from '@/lib/mcp-request-auth';
 import {
   MCP_WINDOW_GRACE_MS,
   __resetMcpIngressOriginForTests,
@@ -131,6 +131,7 @@ beforeAll(() => {
 beforeEach(() => {
   setMCPBridgeKey(TEST_BRIDGE_KEY);
   __resetMcpIngressOriginForTests();
+  __resetMcpSeenCallIdsForTests();
 });
 afterEach(() => {
   stopMCPPoller();
@@ -185,6 +186,37 @@ describe('queue request authentication', () => {
     startMCPPoller();
     await waitFor(() => mockFiles.has(`${RESULTS}/s1.json`));
     expect(JSON.parse(mockFiles.get(`${RESULTS}/s1.json`)!)).toEqual({ ok: true, data: [] });
+  });
+
+  it('drops a signed request whose file name is not `${callId}.json`', async () => {
+    mockFiles.set(`${REQUESTS}/other.json`, await signedRequest('w1', 'list_repos', {}));
+    startMCPPoller();
+    await waitFor(() => !mockFiles.has(`${REQUESTS}/other.json`));
+    expect(mockFiles.has(`${RESULTS}/w1.json`)).toBe(false);
+    expect(mockLogs.join('\n')).toMatch(/other\.json \(bad file name\)/);
+  });
+
+  it('drops a signed request older than 10 minutes, and one dated in the future', async () => {
+    const stale = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    await dropAndDrain('s2', await signedRequest('s2', 'list_repos', {}, { receivedAt: stale }));
+    expect(mockFiles.has(`${RESULTS}/s2.json`)).toBe(false);
+    expect(mockLogs.join('\n')).toMatch(/s2\.json \(stale request\)/);
+    const future = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+    await dropAndDrain('s3', await signedRequest('s3', 'list_repos', {}, { receivedAt: future }));
+    expect(mockFiles.has(`${RESULTS}/s3.json`)).toBe(false);
+    expect(mockLogs.join('\n')).toMatch(/s3\.json \(stale request\)/);
+  });
+
+  it('drops a replayed request file the second time', async () => {
+    const content = await signedRequest('rp1', 'list_repos', {});
+    mockFiles.set(`${REQUESTS}/rp1.json`, content);
+    startMCPPoller();
+    await waitFor(() => mockFiles.has(`${RESULTS}/rp1.json`));
+    mockFiles.delete(`${RESULTS}/rp1.json`);
+    mockFiles.set(`${REQUESTS}/rp1.json`, content);
+    await waitFor(() => !mockFiles.has(`${REQUESTS}/rp1.json`));
+    expect(mockFiles.has(`${RESULTS}/rp1.json`)).toBe(false);
+    expect(mockLogs.join('\n')).toMatch(/rp1\.json \(replay\)/);
   });
 
   it('rejects a signed request with a path-like callId', async () => {
@@ -506,7 +538,7 @@ describe('markMcpAgentBeforePersist', () => {
   it('the confirm path marks before persisting, refuses on failure and creates under the marked id', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'hooks/use-ai-pane-dispatch.ts'), 'utf8');
     const markAt = src.indexOf('const mcpMark = await markMcpAgentBeforePersist(');
-    const persistAt = src.indexOf('const persisted = await persistAgentDraft(');
+    const persistAt = src.indexOf('persisted = await persistAgentDraft(');
     expect(markAt).toBeGreaterThan(0);
     expect(markAt).toBeLessThan(persistAt);
     const between = src.slice(markAt, persistAt);
@@ -515,6 +547,16 @@ describe('markMcpAgentBeforePersist', () => {
     const mgr = fs.readFileSync(path.join(__dirname, '..', 'lib/agent-manager.ts'), 'utf8');
     expect(mgr).toContain("throw new Error('createAgent: the pre-chosen agent id is invalid or already used')");
     expect(mgr).toContain('id: params.id ?? `agent-${Date.now().toString(36)}`');
+  });
+
+  it('the confirm path catches a same-millisecond duplicate id and refuses in the chat line', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'hooks/use-ai-pane-dispatch.ts'), 'utf8');
+    const persistAt = src.indexOf('persisted = await persistAgentDraft(');
+    expect(persistAt).toBeGreaterThan(0);
+    const after = src.slice(persistAt, persistAt + 2500);
+    expect(after).toContain("e.message.includes('pre-chosen agent id')");
+    expect(after).toMatch(/agentCardState: 'cancelled'/);
+    expect(after).toMatch(/もう一度確認してください/);
   });
 });
 
@@ -527,5 +569,9 @@ describe('generated shim copies SHELLY_INGRESS into the request line', () => {
   it('appends the sanitized marker only when SHELLY_INGRESS is set', () => {
     expect(kt).toContain("sb.appendLine(\"    fs.writeFileSync(f + '.tmp', line + agentIngressSuffix() + '\\\\n', { mode: 0o600 });\")");
     expect(kt).toContain("if (!process.env.SHELLY_INGRESS) return '';");
+  });
+  it('closepaw confirm/reject carries the marker too', () => {
+    const line = kt.split('\n').find((l) => l.includes("fs.writeFileSync(cpFile + '.tmp'"));
+    expect(line).toContain('agentIngressSuffix()');
   });
 });

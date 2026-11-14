@@ -4786,19 +4786,45 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           return;
         }
         if (mcpMark.marked) logInfo('AgentIngressTaint', `marked ${mcpMark.agentId} as MCP-originated before registration`);
-        const persisted = await persistAgentDraft({
-          editingAgentId,
-          createParams: {
-            ...agentFields,
-            ...(mcpMark.marked && mcpMark.presetId ? { id: mcpMark.presetId } : {}),
-            outputPath: confirmed.presetOutput?.outputPath ?? `$HOME/.shelly/agents/${safeName}/output.md`,
-            ...(confirmed.presetOutput ? { outputTemplate: confirmed.presetOutput.outputTemplate } : {}),
-          },
-          updatePartial: agentFields,
-          runCommand: runAgentShellCommand,
-          create: createAgent,
-          update: updateAgent,
-        });
+        // Same-millisecond duplicate id: another confirm can take the
+        // pre-chosen id between the mark and here (newAgentIdFor is
+        // time-based), and createAgent throws rather than create an
+        // unmarked agent. A re-check alone can't close that window — the
+        // other confirm's continuation can run between the last await
+        // and the create — so catch that throw and refuse in this draft's
+        // chat line, the same way a failed mark refuses above. The mark
+        // under the taken id stays inert (that id will never be created).
+        // confirmAgentDraft has no catch of its own (try/finally only),
+        // so without this the throw surfaces as an unhandled rejection.
+        let persisted: { agent: Agent | null; edited: boolean };
+        try {
+          persisted = await persistAgentDraft({
+            editingAgentId,
+            createParams: {
+              ...agentFields,
+              ...(mcpMark.marked && mcpMark.presetId ? { id: mcpMark.presetId } : {}),
+              outputPath: confirmed.presetOutput?.outputPath ?? `$HOME/.shelly/agents/${safeName}/output.md`,
+              ...(confirmed.presetOutput ? { outputTemplate: confirmed.presetOutput.outputTemplate } : {}),
+            },
+            updatePartial: agentFields,
+            runCommand: runAgentShellCommand,
+            create: createAgent,
+            update: updateAgent,
+          });
+        } catch (e) {
+          if (mcpMark.marked && e instanceof Error && e.message.includes('pre-chosen agent id')) {
+            logWarn('AgentIngressTaint', `MCP-originated registration refused for ${mcpMark.agentId}: id taken by another registration`);
+            const refuseLocale = detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt);
+            updateOrFallback({
+              agentCardState: 'cancelled',
+              content: refuseLocale === 'ja'
+                ? 'このエージェントは外部（MCP）からの依頼で作られたため印を付けましたが、同じ ID が他の登録に使われたので登録しませんでした。もう一度確認してください。'
+                : 'This agent came from an external (MCP) request and was marked, but its id was taken by another registration, so it was not registered. Please confirm again.',
+            });
+            return;
+          }
+          throw e;
+        }
         const created = persisted.agent;
         if (!created) throw new Error(`Agent not found: ${editingAgentId}`);
         // "承認なしで実行": the summary the user just OK'd showed the line, so

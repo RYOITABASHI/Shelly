@@ -5,9 +5,10 @@
  * Any process running as the app uid can drop a file into
  * $HOME/.shelly-mcp-queue/requests/. Only files signed with the bridge key
  * are MCP calls: RN generates the key in memory before it starts the server
- * (hooks/use-mcp-server-bridge.ts), MCPBridge.kt passes it to the node
- * process as SHELLY_MCP_BRIDGE_KEY (env, never argv, never logged), and
- * scripts/shelly-mcp-server.js signs every request it writes:
+ * (hooks/use-mcp-server-bridge.ts), MCPBridge.kt hands it to the node
+ * process on its stdin (never env — /proc/<pid>/environ is readable by the
+ * same uid — never argv, never logged), and scripts/shelly-mcp-server.js
+ * signs every request it writes:
  *
  *   { callId, tool, args, ingress: { kind: 'mcp', principal, clientNameSelfReported }, receivedAt, mac }
  *   mac = hex(HMAC-SHA256(utf8(bridgeKey), canonicalJson(<the object without mac>)))
@@ -102,25 +103,78 @@ function timingSafeEqualHex(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/** How long a signed request stays usable after the server wrote it.
+ *  The server writes receivedAt when it writes the file and the poller
+ *  reads it within a tick, so a legitimate request is never near the
+ *  limit; anything older is a replayed copy. A small future tolerance
+ *  covers a clock step, not a different device (same clock here). */
+export const MCP_REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
+export const MCP_REQUEST_FUTURE_TOLERANCE_MS = 60 * 1000;
+/** Accepted callIds, remembered so a copied file can't run twice. Capped:
+ *  one entry per MCP call, oldest evicted first. */
+const MAX_SEEN_CALL_IDS = 1000;
+const seenCallIds = new Set<string>();
+
+/** Test hook: forget every accepted callId (fresh state per test). */
+export function __resetMcpSeenCallIdsForTests(): void {
+  seenCallIds.clear();
+}
+
+function noteCallIdSeen(callId: string): void {
+  seenCallIds.add(callId);
+  while (seenCallIds.size > MAX_SEEN_CALL_IDS) {
+    seenCallIds.delete(seenCallIds.values().next().value as string);
+  }
+}
+
+export type VerifyMcpRequestOpts = {
+  /** The request file's name; a verified request must be `${callId}.json`.
+   *  Omitted by direct callers that verify a parsed body without a file. */
+  fileName?: string;
+  /** Clock for the freshness check (tests); Date.now() in production. */
+  nowMs?: number;
+};
+
 /**
  * Verifies one parsed request file against the bridge key. Fails closed:
- * no key, a missing / malformed / wrong MAC, or a malformed field.
+ * no key, a missing / malformed / wrong MAC, or a malformed field — and,
+ * after the MAC: a file name that is not `${callId}.json`, a receivedAt
+ * older than 10 minutes (or implausibly in the future), or a callId that
+ * was already accepted (replay). A callId is recorded only once its
+ * request fully verifies, so a refused file never consumes its id.
  */
-export async function verifyMcpRequest(parsed: unknown, bridgeKey: string | null, sha256: Sha256): Promise<McpRequestCheck> {
+export async function verifyMcpRequest(
+  parsed: unknown,
+  bridgeKey: string | null,
+  sha256: Sha256,
+  opts: VerifyMcpRequestOpts = {},
+): Promise<McpRequestCheck> {
   if (!bridgeKey || !MCP_BRIDGE_KEY_RE.test(bridgeKey)) return { ok: false, reason: 'no bridge key' };
   if (!isPlainObject(parsed)) return { ok: false, reason: 'not an object' };
   const { mac, ...unsigned } = parsed;
   if (typeof mac !== 'string' || !MAC_RE.test(mac)) return { ok: false, reason: 'missing mac' };
   const expected = await mcpRequestMac(bridgeKey, unsigned, sha256);
   if (!timingSafeEqualHex(expected, mac)) return { ok: false, reason: 'bad mac' };
-  const { callId, tool, args, ingress } = unsigned;
+  const { callId, tool, args, ingress, receivedAt } = unsigned;
   if (typeof callId !== 'string' || !MCP_CALL_ID_RE.test(callId)) return { ok: false, reason: 'bad callId' };
+  if (opts.fileName !== undefined && opts.fileName !== `${callId}.json`) return { ok: false, reason: 'bad file name' };
+  const receivedMs = typeof receivedAt === 'string' ? Date.parse(receivedAt) : NaN;
+  const nowMs = opts.nowMs ?? Date.now();
+  if (
+    !Number.isFinite(receivedMs) ||
+    receivedMs > nowMs + MCP_REQUEST_FUTURE_TOLERANCE_MS ||
+    nowMs - receivedMs > MCP_REQUEST_MAX_AGE_MS
+  ) {
+    return { ok: false, reason: 'stale request' };
+  }
+  if (seenCallIds.has(callId)) return { ok: false, reason: 'replay' };
   if (typeof tool !== 'string' || !tool) return { ok: false, reason: 'bad tool' };
   if (args !== undefined && !isPlainObject(args)) return { ok: false, reason: 'bad args' };
   if (!isPlainObject(ingress) || ingress.kind !== 'mcp') return { ok: false, reason: 'bad ingress' };
   if (typeof ingress.principal !== 'string' || !MCP_PRINCIPAL_RE.test(ingress.principal)) {
     return { ok: false, reason: 'bad principal' };
   }
+  noteCallIdSeen(callId);
   return {
     ok: true,
     request: {

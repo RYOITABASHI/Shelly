@@ -1,5 +1,7 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 
 // scripts/shelly-mcp-server.js is a dependency-free node script shipped as an
 // APK asset; when require()d it exports its transport-agnostic handler instead
@@ -535,5 +537,74 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     const bridge = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'), 'utf8');
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_EXEC"\] = if \(exec\) "1" else "0"/);
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_READ_TERMINAL"\] = if \(readTerminal\) "1" else "0"/);
+  });
+});
+
+describe('main() bridge key on stdin', () => {
+  const KEY = 'a1'.repeat(32);
+  const scriptPath = path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js');
+
+  function spawnServer(port: number, keyInput: string | null) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdin-'));
+    const child = spawn('node', [scriptPath, dir, String(port)], {
+      env: { ...process.env, SHELLY_MCP_TOKEN: TOKEN, SHELLY_MCP_EXEC: '0', SHELLY_MCP_READ_TERMINAL: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (keyInput !== null) child.stdin.end(keyInput);
+    else child.stdin.end();
+    return { child, dir };
+  }
+
+  /** GET /mcp with the right token answers 405 once the server is up. */
+  async function waitForPort(port: number, ms = 5000): Promise<boolean> {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'GET', headers: { authorization: `Bearer ${TOKEN}` } });
+        if (res.status === 405) return true;
+      } catch {
+        /* not up yet */
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  it('starts when the key arrives on stdin (and the key is never an env var)', async () => {
+    const root = path.resolve(__dirname, '..');
+    const script = fs.readFileSync(scriptPath, 'utf8');
+    expect(script).not.toContain('process.env.SHELLY_MCP_BRIDGE_KEY');
+    const bridge = fs.readFileSync(
+      path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'),
+      'utf8',
+    );
+    expect(bridge).not.toMatch(/environment\(\)\["SHELLY_MCP_BRIDGE_KEY"\]/);
+    expect(bridge).toMatch(/outputStream/);
+
+    const port = 18000 + Math.floor(Math.random() * 1000);
+    const { child, dir } = spawnServer(port, `${KEY}\n`);
+    try {
+      expect(await waitForPort(port)).toBe(true);
+    } finally {
+      child.kill('SIGTERM');
+      await new Promise((r) => child.on('exit', r));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exits without listening when stdin carries no key', async () => {
+    const port = 19000 + Math.floor(Math.random() * 1000);
+    const { child, dir } = spawnServer(port, null);
+    try {
+      const code = await Promise.race([
+        new Promise<number | null>((r) => child.on('exit', (c) => r(c))),
+        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+      ]);
+      expect(code).toBe(1);
+      expect(await waitForPort(port, 500)).toBe(false);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

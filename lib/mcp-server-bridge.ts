@@ -399,8 +399,9 @@ async function processRequestFile(name: string): Promise<void> {
     // Only requests the server signed with this start's bridge key are MCP
     // calls; anything else in the queue dir (any same-uid process can write
     // there) is dropped without an answer. Taint is never read from the file:
-    // every verified request is external input.
-    const check = await verifyMcpRequest(parsed, bridgeKey, requestSha256);
+    // every verified request is external input. The file name is part of
+    // the check: a signed body copied under another name is a replay.
+    const check = await verifyMcpRequest(parsed, bridgeKey, requestSha256, { fileName: name });
     if ('reason' in check) {
       logError('MCPBridge', `rejected unauthenticated request file ${name} (${check.reason})`);
       return;
