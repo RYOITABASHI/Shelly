@@ -4662,9 +4662,11 @@ function articleHistoryBlock(entries, nonce) {
 // The history block alone did not stop a research model from picking a study
 // an earlier article was built on. After the longform research step (the first
 // model step, not a digest), its main study (the labelled one, else [1]) and
-// its [1] are compared with the history's main sources by study key: host in
-// lower case without www., http and https alike, no query, fragment or
-// trailing slash; arXiv abs / pdf / html and ar5iv pages of one paper (any
+// its [1] (only the labelled one when the notes label it) are compared with
+// the history's main sources by study key: host in lower case without www.,
+// http and https alike, no fragment, tracking parameters or trailing slash;
+// the other query parameters stay, sorted (article?id=, forum?id=, watch?v=
+// name different works); arXiv abs / pdf / html and ar5iv pages of one paper (any
 // version) are `arxiv:<id>`, a doi.org link is `doi:<doi>` in lower case.
 // On a match the research step runs ONCE more, through the very same path
 // (same engine, same taint checks and driver flags), with one more data block
@@ -4703,6 +4705,14 @@ function articleStudyKey(raw) {
     // keep it as written
   }
   pathname = pathname.replace(/\/+$/, '');
+  // As urlKey: only tracking parameters go; the rest, sorted, name the work.
+  const params = [];
+  for (const [k, v] of u.searchParams) {
+    if (!k || /^(?:utm_.*|fbclid|gclid|mc_cid|mc_eid)$/i.test(k)) continue;
+    params.push(`${k}=${v}`);
+  }
+  params.sort();
+  const query = params.length ? `?${params.join('&')}` : '';
   if (ARXIV_HOST_RE.test(host)) {
     const m = /^\/(?:abs|pdf|html|papers)\/(.+?)(?:\.pdf)?$/i.exec(pathname);
     if (m) return `arxiv:${m[1].toLowerCase().replace(/v\d+$/, '')}`;
@@ -4711,7 +4721,7 @@ function articleStudyKey(raw) {
     const doi = pathname.replace(/^\/+/, '');
     if (/^10\.\d{4,9}\//.test(doi)) return `doi:${doi.toLowerCase()}`;
   }
-  return `${host}${pathname}`;
+  return `${host}${pathname}${query}`;
 }
 
 /** The candidate keys found among the history's, in candidate order. Pure. */
@@ -11405,7 +11415,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const carried = absorbResearchStep(probe, text, parsed);
     const notes = absorbResearchNoteUrls(probe, text, carried, parsed.sources.map((s) => s.url));
     const urls = [];
-    for (const id of [probe.mainSourceId || notes.mainId || 1, 1]) {
+    // A labelled main study is the one compared; else [1].
+    const labelled = probe.mainSourceId || notes.mainId || 0;
+    for (const id of labelled ? [labelled] : [1]) {
       const src = probe.sources.find((s) => s.id === id);
       if (src) urls.push(src.url);
     }
@@ -12715,6 +12727,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     progressStepEvent(activeProgress, i, 'tail', { tail: progressTail('Research: the main study was used by an earlier article; searching once more.') });
     let retry = null;
     let failReason = '';
+    let retryUrls = [];
     researchExclusionBlock = block;
     try {
       retry = await executeStepWithProgress(i, contextResults, carriedIndexes);
@@ -12724,18 +12737,23 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     } finally {
       researchExclusionBlock = '';
     }
-    if (!retry || retry.failed || !retry.research) {
+    if (haltedChain || isHalted(paths)) failReason = 'halted';
+    if (!failReason && retry && !retry.failed && retry.research) {
+      try {
+        retryUrls = researchMainCandidates(retry);
+      } catch (_) {
+        retryUrls = [];
+      }
+      // A retry with nothing citable would stop the chain on NO_SOURCES: the first answer stands.
+      if (!retryUrls.length) failReason = 'retry-no-sources';
+    }
+    if (failReason || !retry || retry.failed || !retry.research) {
       // The first answer stands; its step did succeed.
       progressState(activeProgress, i, progressStatusState(outcome.record.status), outcome.record.outputPreview);
       repeat(failReason || 'retry-failed', matches.map(studyKeyHost));
       return outcome;
     }
-    let again;
-    try {
-      again = researchHistoryMatches(researchMainCandidates(retry), history);
-    } catch (_) {
-      again = [];
-    }
+    const again = researchHistoryMatches(retryUrls, history);
     if (again.length) {
       audit('research_history_match', { attempt: 2, hosts: again.map(studyKeyHost) });
       repeat('still-matches', again.map(studyKeyHost));

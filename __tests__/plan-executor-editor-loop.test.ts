@@ -520,7 +520,7 @@ describe('a run with the editor in the review loop', () => {
   function setupCited(local: { text: string; cite: string }[], editor: string[], history: { title: string; url: string }[]): Setup {
     const s = setup({ local: [], editor });
     fs.writeFileSync(s.http, JSON.stringify({
-      [LOCAL_URL]: local.map((a) => ({ body: { choices: [{ message: { content: a.text }, finish_reason: 'stop' }], citations: [a.cite] } })),
+      [LOCAL_URL]: local.map((a) => ({ body: { choices: [{ message: { content: a.text }, finish_reason: 'stop' }], citations: a.cite ? [a.cite] : [] } })),
       [GROQ]: editor.map(openAi),
     }));
     fs.mkdirSync(path.dirname(streamHistory(s.home)), { recursive: true });
@@ -573,6 +573,23 @@ describe('a run with the editor in the review loop', () => {
     const fm = frontmatter(readResult(s.home));
     expect(fm).toContain('review: unresolved');
     expect(fm).toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
+  }, 60000);
+
+  it('v60: a retry with nothing citable keeps the first answer instead of stopping on no sources', async () => {
+    const s = setupCited([
+      { text: RESEARCH, cite: SOURCE_URL },
+      { text: '1. Nothing citable was found.', cite: '' },
+      { text: FIRST, cite: SOURCE_URL },
+      { text: 'VERDICT: PASS', cite: SOURCE_URL },
+    ], [answer()], USED);
+    expect(await run(s)).toBe(0);
+    expect(readRunLog(s.home).status).toBe('success');
+    expect(prompts(s, LOCAL_URL)).toHaveLength(4);
+    expect(events(s.home, 'sourcing_no_sources')).toHaveLength(0);
+    expect(events(s.home, 'research_history_repeat')).toMatchObject([{ reason: 'retry-no-sources' }]);
+    const result = readResult(s.home);
+    expect(result).toContain(SOURCE_URL);
+    expect(frontmatter(result)).toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
   }, 60000);
 
   it('v60: with too little of the run left there is no retry, and the draft is marked', async () => {
@@ -633,9 +650,23 @@ describe('v60: study keys and the full review log (pure)', () => {
     expect(k('https://arxiv.org/abs/hep-th/9901001v2')).toBe('arxiv:hep-th/9901001');
     expect(k('https://doi.org/10.1000/ABC.123')).toBe(k('https://dx.doi.org/10.1000/abc.123'));
     expect(k('https://example.org/paper-a')).not.toBe(k('https://example.org/paper-b'));
+    // Only tracking parameters go; the rest name the work (sorted).
+    expect(k('https://example.org/p?b=2&a=1&utm_medium=m')).toBe('example.org/p?a=1&b=2');
+    expect(k('https://example.org/p?a=1')).not.toBe(k('https://example.org/p'));
     expect(k('ftp://example.org/x')).toBe('');
     expect(k('not a url')).toBe('');
     expect(k(undefined)).toBe('');
+  });
+
+  it.each([
+    ['https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000001', 'https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000002'],
+    ['https://openreview.net/forum?id=AbCdEf1', 'https://openreview.net/forum?id=XyZ9876'],
+    ['https://papers.ssrn.com/sol3/papers.cfm?abstract_id=111111', 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=222222'],
+    ['https://www.youtube.com/watch?v=aaaaaaaaaaa', 'https://youtube.com/watch?v=bbbbbbbbbbb'],
+  ])('two works on one query-addressed site never collide: %s', (a, b) => {
+    expect(executor.articleStudyKey(a)).not.toBe(executor.articleStudyKey(b));
+    expect(executor.researchHistoryMatches([b], [{ title: 'T', url: a }])).toEqual([]);
+    expect(executor.researchHistoryMatches([`${a}&utm_source=x#top`], [{ title: 'T', url: a }])).toHaveLength(1);
   });
 
   it('matches candidates against the history, and the exclusion block holds the addresses as data', () => {
