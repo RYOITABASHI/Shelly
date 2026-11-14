@@ -29,6 +29,7 @@ import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
 import { ensureAgentKeepAlive, keepAliveDelay } from './agent-keepalive';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
+import { isIngressTaintedForApproval } from './agent-run-without-approval';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
 import { migrateSeededSampleAgents } from './agent-seeded-sample-migration';
@@ -1091,6 +1092,13 @@ async function materializeAgentBody(
 
   const scriptPath = getScriptPath(agent.id);
   const planSpecPath = getPlanSpecPath(agent.id);
+  // MCP ingress taint Inc 5: a marked agent's script exports
+  // SHELLY_INGRESS_TAINTED=1 readonly (native AgentRuntime sets it too, from
+  // the same store, for every run of it). Fails closed (unreadable store ⇒
+  // tainted). Clearing a mark takes effect in the script at the next
+  // materialize (attended run or startup repair); native stops exporting at once.
+  const ingressTainted = await isIngressTaintedForApproval(agent.id);
+  if (ingressTainted) logInfo('AgentManager', `materializeAgentBody: ${agent.id} carries the MCP ingress mark; its runs refuse writes and external sends`);
   const metadataPath = `${agentsDir()}/${agent.id}.json`;
   const planSpec = buildAgentPlanSpec(agentForRun, effectiveRunOpts);
   // P0-1 reliability: only touch nextExpectedAt when we are ACTUALLY (re-)arming
@@ -1130,7 +1138,7 @@ async function materializeAgentBody(
     // effectiveRunOpts carries optimisticWorkspaceWrites straight through to
     // generateRunScript's own re-check; the metadata write above deliberately
     // does NOT, so the persisted agent record is never mutated by it.
-    writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
+    writeFileCommand(scriptPath, generateRunScript(agentForRun, { ...effectiveRunOpts, ingressTainted })),
     writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
     // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): "arm" the

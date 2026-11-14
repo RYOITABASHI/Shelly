@@ -2249,6 +2249,8 @@ const ja: Record<string, string> = {
   'agent_detail.run_without_approval_all_unavailable': 'このエージェントは Web など信頼できない入力（Web 調査・URL・ブラウザや通知のステップ）を読むため「すべて」は選べません。',
   'agent_run_without_approval.auto_approved': '承認なしで実行: 自動許可 {{command}}',
   'agent_run_without_approval.auto_approved_all': '承認なしで実行（すべて）: 自動許可 {{command}}',
+  'agent_ingress_taint.action_declined': '拒否（MCP 経由で作られたエージェントのため、書き込みと外部送信はしない）: {{command}}',
+  'agent_ingress_taint.action_declined_store': '拒否（MCP の印の記録を確認できないため、すべてのエージェントを外部入力として扱う）: {{command}}',
   'agent_run_without_approval.enabled_line': 'このエージェントの「承認なしで実行」をONにしました。',
   'agent_run_without_approval.enabled_all_line': 'このエージェントの「承認なしで実行」を「すべて」にしました。',
   'agent_run_without_approval.disabled_line': 'このエージェントの「承認なしで実行」をOFFにしました。',

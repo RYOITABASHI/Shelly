@@ -32,6 +32,7 @@ import {
   AUTO_APPROVABLE_ACTION_TYPES,
   auditCommandText,
   decideActionAutoApproval,
+  isIngressTaintedForApproval,
   type RunWithoutApprovalSetting,
 } from './agent-run-without-approval';
 
@@ -159,6 +160,8 @@ export interface HeadlessActionDrainDeps {
   audit: (agentId: string, setting: RunWithoutApprovalSetting, what: string) => void;
   log: (line: string) => void;
   now?: () => number;
+  /** MCP ingress taint (Inc 5); defaults to isIngressTaintedForApproval (fails closed). */
+  isIngressTainted?: (agentId: string) => Promise<boolean>;
 }
 
 /** Keys already handled by this drain (accepted or refused), so a request is
@@ -204,7 +207,12 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
         }
         const agent = deps.agentFor(parsed.agentId);
         const setting = await deps.getSetting(agent);
+        // Inc 5: a marked agent's action is never accepted here; the
+        // foreground drain declines it with a logged reason once mounted
+        // (or the executor's wait times out into a decline).
+        const ingressTainted = await (deps.isIngressTainted ?? isIngressTaintedForApproval)(parsed.agentId).catch(() => true);
         const decision = await decideActionAutoApproval(parsed, {
+          ingressTainted,
           enabled: setting !== 'off',
           policyBlocksAutoAccept: policyBlocks,
           originOf: deps.originOf,

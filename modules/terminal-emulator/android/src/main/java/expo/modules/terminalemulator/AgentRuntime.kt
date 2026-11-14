@@ -475,7 +475,11 @@ object AgentRuntime {
     // v78 (2026-11-07): a device with no content project no longer gets one made
     // for it (PROJECT_DIR falls back to agent-output), and the A/B eval prompt is
     // generic. JS-only.
-    private const val CURRENT_SCRIPT_VERSION = 78
+    // v79 (2026-11-15, MCP ingress taint Inc 5): dispatch_agent_action refuses
+    // every action of a run with SHELLY_INGRESS_TAINTED=1 (native exports it
+    // for an agent marked by MCP ingress; RN bakes it into that agent's script)
+    // and audits ingress_tainted_refused. JS + native.
+    private const val CURRENT_SCRIPT_VERSION = 79
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -581,7 +585,12 @@ object AgentRuntime {
     // v56: a longform research step's notes may name addresses the citations left out; up to 5 join Sources with the next ids and their [id] in the notes, and a study the notes label as the main one is fetched first. JS-only (executor).
     // v57: an article pipeline's footer may be empty (no footer block). JS-only (executor).
     // v58: an article pipeline's research step may run on the Codex CLI with its hosted web search and no other tool (driver --text-only --web-search; never on a tainted run). JS-only (executor + driver).
-    private const val CURRENT_EXECUTOR_VERSION = 58
+    // v59: MCP ingress taint Inc 5 — runAgentInner exports SHELLY_INGRESS_TAINTED
+    // (+ _REASON) from the persisted ingress taint (AgentIngressTaint); the
+    // executor passes --tainted to the agent driver, whose gate then declines
+    // writes / exec / network sends (attended too, no escalation), and
+    // dispatches no action. Native + JS.
+    private const val CURRENT_EXECUTOR_VERSION = 59
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -590,6 +599,22 @@ object AgentRuntime {
     // preflight ensures the SAME model the executor will actually request when
     // the PlanSpec carries no explicit tool.model.
     private const val DEFAULT_LOCAL_LLM_MODEL = "Qwen3.5-0.8B-Q4_K_M"
+
+    /**
+     * MCP ingress taint Inc 5: the exports for an ingress-tainted run, readonly
+     * so nothing later in the shell (the sourced .bashrc / script / .env) can
+     * clear them. Empty when [reason] is null. The reason is one of
+     * AgentIngressTaint's RUN_REASON_* constants (fixed strings, shell-safe).
+     */
+    private fun ingressTaintExports(reason: String?): String {
+        if (reason == null) return ""
+        val safe = when (reason) {
+            AgentIngressTaint.RUN_REASON_MCP, AgentIngressTaint.RUN_REASON_OVERFLOW -> reason
+            else -> AgentIngressTaint.RUN_REASON_UNREADABLE
+        }
+        return " && export SHELLY_INGRESS_TAINTED=1 SHELLY_INGRESS_TAINTED_REASON=$safe" +
+            " && readonly SHELLY_INGRESS_TAINTED SHELLY_INGRESS_TAINTED_REASON"
+    }
 
     private data class TrustedPlanLaunch(
         val actionType: String,
@@ -631,7 +656,7 @@ object AgentRuntime {
     private fun runAgentInner(
         context: Context,
         agentId: String,
-        tainted: Boolean,
+        callerTainted: Boolean,
         unattended: Boolean,
         notificationText: String?,
         notificationPackage: String?,
@@ -639,6 +664,21 @@ object AgentRuntime {
     ): AgentRunResult {
         val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
+        // MCP ingress taint Inc 5 (DEFERRED.md P1 "MCP の入口（ingress）"): an agent
+        // created or changed through MCP (or every agent, when the taint store
+        // cannot be trusted) runs ingress-tainted on every path (schedule,
+        // widget, Run now, notification): SHELLY_INGRESS_TAINTED=1 +
+        // SHELLY_INGRESS_TAINTED_REASON, readonly, for the .sh chain and the
+        // PlanSpec executor (which passes --tainted to the agent driver).
+        // Deliberately NOT folded into SHELLY_CAP_TAINTED: the broker turns a
+        // tainted call with a credential into an approval (rc 41), which would
+        // stop every cloud model call. The driver refuses writes / sends, the
+        // dispatch refuses actions. Fails closed.
+        val ingressReason = AgentIngressTaint.runTaintReason(appContext, agentId)
+        val tainted = callerTainted
+        if (ingressReason != null) {
+            Log.i(TAG, "Agent $agentId runs ingress-tainted reason=$ingressReason (writes and external sends are refused)")
+        }
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
 
@@ -714,7 +754,7 @@ object AgentRuntime {
         val bashPath = LibExtractor.getBashPath(appContext)
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -783,6 +823,7 @@ object AgentRuntime {
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
+            append(ingressTaintExports(ingressReason))
             if (unattended) {
                 // Per-run signal (this specific invocation was fired by a cron/interval
                 // alarm, not a manual "Once" run or a Review-approved fire) -- distinct
@@ -904,7 +945,8 @@ object AgentRuntime {
         unattended: Boolean,
         notificationText: String? = null,
         notificationPackage: String? = null,
-        runOrigin: String = "event"
+        runOrigin: String = "event",
+        ingressReason: String? = null
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -1060,6 +1102,7 @@ object AgentRuntime {
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
+            append(ingressTaintExports(ingressReason))
             // POLICY-001: readonly so nothing later in this shell can relabel
             // a proactive run as user-initiated.
             append(" && export SHELLY_RUN_ORIGIN=")

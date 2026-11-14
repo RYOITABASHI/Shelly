@@ -130,6 +130,11 @@ Options:
                              that exact path, the inside one arrives as inputImages with its sha256,
                              and the plain generation works. Prints IMAGE_CANARY PASS|FAIL codex=<v>.
                              --image-only refuses a Codex version not in CODEX_IMAGE_CANARY_VERIFIED.
+  --tainted                  The run belongs to an agent marked by MCP ingress (created or changed
+                             through MCP). Also on when SHELLY_INGRESS_TAINTED=1. A tool
+                             use the gate sees as a write, exec, network send, secret read or path
+                             outside the workspace is declined at once, attended too (no escalation,
+                             no preapproval grant), and audited as ingress_tainted_refused.
   --claude-runner <path>     (claude) Runner script. Defaults to $HOME/.shelly-claude-run.sh.
   --claude-runner-interpreter <path>
                              (claude, host only) Interpreter for the runner. Defaults to "bash";
@@ -181,6 +186,11 @@ function parseArgs(argv) {
     imageOut: null,
     imageCanary: false,
     usageFile: null,
+    // MCP ingress taint Inc 5: only ever turned ON (env or flag), never off.
+    // Keyed on the MCP ingress mark (native exports SHELLY_INGRESS_TAINTED=1
+    // readonly), not on SHELLY_CAP_TAINTED: a notification-triggered run keeps
+    // today's gate behaviour (owner rule: untainted agents unchanged).
+    tainted: process.env.SHELLY_INGRESS_TAINTED === '1',
     claudeRunner: path.join(process.env.HOME || process.cwd(), '.shelly-claude-run.sh'),
     claudeRunnerInterpreter: 'bash',
   };
@@ -258,6 +268,8 @@ function parseArgs(argv) {
       args.imageOut = next();
     } else if (arg === '--image-canary') {
       args.imageCanary = true;
+    } else if (arg === '--tainted') {
+      args.tainted = true;
     } else if (arg === '--usage-file') {
       args.usageFile = next();
     } else if (arg === '--claude-runner') {
@@ -816,6 +828,8 @@ function ensureConfig(args) {
   if (args.webSearch) {
     if (args.engine !== 'codex') throw new Error('--web-search runs on Codex only');
     if (!args.textOnly || args.imageOnly || args.imageCanary) throw new Error('--web-search needs --text-only (and no image turn)');
+    // A tainted run sends nothing off the device on the model's say-so (MCP ingress taint Inc 5).
+    if (args.tainted) throw new Error('--web-search is refused on a tainted run');
   }
   const imageArgsGiven = args.imageStyle !== null || args.imageSubject !== null || args.imageOut !== null;
   let imageOut = null;
@@ -859,6 +873,7 @@ function ensureConfig(args) {
     imageOnly: args.imageOnly === true,
     imageCanary: args.imageCanary === true,
     webSearch: args.webSearch === true,
+    tainted: args.tainted === true,
     imageOut,
     cwd,
     prompt,
@@ -1791,7 +1806,7 @@ function copyCodexAgentsMd(realHome, dir, fsImpl = fs) {
   }
 }
 
-function codexWorkerConfigToml(carried = {}, textOnly = null) {
+function codexWorkerConfigToml(carried = {}, textOnly = null, opts = {}) {
   const imageOnly = !!(textOnly && textOnly.imageOnly === true);
   if (imageOnly && (typeof textOnly.readRoot !== 'string' || !path.isAbsolute(textOnly.readRoot))) {
     throw new Error('an image-only config needs the absolute readable root');
@@ -1809,7 +1824,8 @@ function codexWorkerConfigToml(carried = {}, textOnly = null) {
     ...(carriedLines.length ? ['# Model settings carried over from the real config.toml (allowlist only).', ...carriedLines] : []),
     'check_for_update_on_startup = false',
     'cli_auth_credentials_store = "file"',
-    `web_search = "${textOnly ? codexTextOnlyWebSearchMode(textOnly.webSearch === true && !imageOnly) : CODEX_WORKER_WEB_SEARCH_MODE}"`,
+    // A tainted run (MCP ingress taint Inc 5) gets no hosted web search: a search is an external send.
+    `web_search = "${opts && opts.tainted ? 'disabled' : textOnly ? codexTextOnlyWebSearchMode(textOnly.webSearch === true && !imageOnly) : CODEX_WORKER_WEB_SEARCH_MODE}"`,
     ...(textOnly ? [`model_catalog_json = ${JSON.stringify(textOnly.catalogPath)}`, 'project_doc_max_bytes = 0', 'project_root_markers = []'] : []),
     ...(imageOnly ? [`default_permissions = ${JSON.stringify(CODEX_IMAGE_ONLY_PROFILE)}`] : []),
     '',
@@ -2013,7 +2029,7 @@ function persistIsolatedCodexAuth(isolatedDir, realHome, fsImpl = fs) {
  * → {ok:true, dir, realHome, carried: [keys], agentsMd: status} or
  * {ok:false, reason}; never leaves a half-made home.
  */
-function createCodexIsolatedHome(env = process.env, fsImpl = fs, textOnly = null) {
+function createCodexIsolatedHome(env = process.env, fsImpl = fs, textOnly = null, opts = {}) {
   const realHome = realCodexHome(env);
   const carried = readCarriedCodexConfig(realHome, fsImpl);
   const textOnlyModel = textOnly ? textOnly.model || carried.values.model : null;
@@ -2036,7 +2052,7 @@ function createCodexIsolatedHome(env = process.env, fsImpl = fs, textOnly = null
       fsImpl.writeFileSync(catalogPath, JSON.stringify(codexTextOnlyCatalog(textOnlyModel, textOnly.imageOnly === true, textOnly.webSearch === true && textOnly.imageOnly !== true)), { mode: 0o600, flag: 'wx' });
       textOnlyConfig = { model: textOnlyModel, catalogPath, imageOnly: textOnly.imageOnly === true, webSearch: textOnly.webSearch === true && textOnly.imageOnly !== true, readRoot: textOnly.readRoot || null };
     }
-    fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(carried.values, textOnlyConfig), { mode: 0o600 });
+    fsImpl.writeFileSync(path.join(dir, 'config.toml'), codexWorkerConfigToml(carried.values, textOnlyConfig, { tainted: !!(opts && opts.tainted) }), { mode: 0o600 });
   } catch (error) {
     removeCodexIsolatedHome(dir, fsImpl);
     return { ok: false, reason: `isolated CODEX_HOME could not be created: ${String(error && error.message ? error.message : error).slice(0, 200)}` };
@@ -3146,6 +3162,34 @@ async function waitForEscalation(config, request, audit) {
   }
 }
 
+// MCP ingress taint Inc 5 (DEFERRED.md P1 "MCP の入口（ingress）"): on a
+// tainted run (an agent marked by MCP ingress: --tainted or
+// SHELLY_INGRESS_TAINTED=1) these gate signals are refused outright — never escalated to a human,
+// never covered by a preapproval grant — attended and unattended alike (owner
+// rule: no new approval prompts; writes and external sends are refused).
+// A gate result without a signals array (gate error / malformed output) is
+// refused too (fail closed). Only a clean pure read (no signals) passes.
+const TAINT_REFUSED_SIGNALS = new Set([
+  'write-or-exec',
+  'leaves-root',
+  'network-send',
+  'secret-read',
+  'destructive',
+  'opaque-script-exec',
+  'indirect-exec',
+  'policy-write',
+]);
+
+function taintRefusalOf(result) {
+  const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : null;
+  const signals = auditPayload && Array.isArray(auditPayload.signals) ? auditPayload.signals.map(String) : null;
+  if (!result.action || !result.action.command) return { signals: [], reason: 'missing command' };
+  if (result.error || !signals) return { signals: signals || [], reason: 'gate result without signals' };
+  const hit = signals.filter((signal) => TAINT_REFUSED_SIGNALS.has(signal));
+  if (hit.length) return { signals: hit, reason: `tainted run: ${hit.join(', ')}` };
+  return null;
+}
+
 // Shared gate core for every engine (Codex app-server approvals and Claude
 // Code can_use_tool requests): each shell-equivalent command runs through the
 // same gate helper, then gray verdicts go through signed preapproval grants,
@@ -3175,7 +3219,32 @@ async function gateCommandActions(config, audit, actions, ctx) {
   const escalationOutcomes = new Map();
   let finalDecision = 'accept';
 
+  // MCP ingress taint Inc 5: refuse before any escalation or grant lookup.
+  const taintRefusals = new Map();
+  if (config.tainted) {
+    for (const result of gateResults) {
+      const refusal = taintRefusalOf(result);
+      if (!refusal) continue;
+      const reqId = gateResults.length === 1 ? String(ctx.requestId) : `${ctx.requestId}-${result.action.index}`;
+      taintRefusals.set(result.action.index, refusal);
+      escalationOutcomes.set(result.action.index, { reqId, decision: 'decline', reason: `ingress-tainted: ${refusal.reason}` });
+      audit('ingress_tainted_refused', {
+        reqId,
+        agentId: config.agentId,
+        approvalKind: ctx.approvalKind,
+        actionIndex: result.action.index,
+        commandSha256: commandSha256(result.action.command),
+        gateAnswer: result.answer,
+        signals: refusal.signals,
+        reason: refusal.reason,
+        attended: !isUnattendedPolicy(config.policy),
+      });
+    }
+  }
+
   if (gateResults.some((result) => result.answer === 'n')) {
+    finalDecision = 'decline';
+  } else if (taintRefusals.size > 0) {
     finalDecision = 'decline';
   } else {
     for (const result of gateResults.filter((item) => item.answer === 'escalate')) {
@@ -3198,7 +3267,8 @@ async function gateCommandActions(config, audit, actions, ctx) {
         continue;
       }
 
-      const preapproval = await consumePreapprovalGrant(config, {
+      // A tainted run never uses a preapproval grant (MCP ingress taint Inc 5).
+      const preapproval = config.tainted ? null : await consumePreapprovalGrant(config, {
         reqId,
         command: result.action.command,
         commandSha256: commandSha256(result.action.command),
@@ -3284,9 +3354,12 @@ async function gateCommandActions(config, audit, actions, ctx) {
     const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
     const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
     const escalation = escalationOutcomes.get(result.action.index) || null;
-    const actionDecision = result.answer === 'escalate'
-      ? escalation && escalation.decision === 'accept' ? 'accept' : 'decline'
-      : mapGateToDecision(result.answer);
+    const taintRefusal = taintRefusals.get(result.action.index) || null;
+    const actionDecision = taintRefusal
+      ? 'decline'
+      : result.answer === 'escalate'
+        ? escalation && escalation.decision === 'accept' ? 'accept' : 'decline'
+        : mapGateToDecision(result.answer);
     const redactedCommand = redact(result.action.command);
 
     gateLine(config.auditLog, {
@@ -3310,6 +3383,7 @@ async function gateCommandActions(config, audit, actions, ctx) {
       reason: auditPayload.reason || result.error || null,
       signals: auditPayload.signals || [],
       level: auditPayload.level || config.policy.level,
+      ...(taintRefusal ? { ingressTainted: true } : {}),
       gateElapsedMs: result.elapsedMs,
       gateError: result.error || null,
       rawGateStdout: result.rawStdout ? redact(result.rawStdout.trim()) : '',
@@ -3345,7 +3419,7 @@ async function runDriver(config) {
     process.once('exit', () => removeImageCanary(canary.outsideDir));
     config = { ...config, prompt: imageCanaryPrompt(canary.outsidePath, canary.insidePath) };
   }
-  const isolatedHome = createCodexIsolatedHome(process.env, fs, config.textOnly ? { model: config.textOnlyModel, imageOnly: config.imageOnly === true, webSearch: config.webSearch === true, readRoot: config.cwd } : null);
+  const isolatedHome = createCodexIsolatedHome(process.env, fs, config.textOnly ? { model: config.textOnlyModel, imageOnly: config.imageOnly === true, webSearch: config.webSearch === true, readRoot: config.cwd } : null, { tainted: config.tainted === true });
   if (!isolatedHome.ok) {
     if (config.textOnly) process.stdout.write(`CODEX_ERROR ${isolatedHome.reason}\n`);
     audit('driver_start', {
@@ -3759,6 +3833,22 @@ async function runDriver(config) {
       return true;
     }
     const disposition = codexItemDisposition(item);
+    // MCP ingress taint Inc 5: web search is off for a tainted run (config.toml);
+    // should one still appear, the turn stops.
+    if (config.tainted && item && item.type === 'webSearch') {
+      process.stdout.write('CODEX_ERROR A web search on a tainted run; stopped.\n');
+      stopUngatedActivity('ingress_tainted_refused', {
+        phase,
+        agentId: config.agentId,
+        threadId: params && params.threadId,
+        turnId: params && typeof params.turnId === 'string' ? params.turnId : activeTurnId,
+        itemId: safeName(item && item.id),
+        itemType: 'webSearch',
+        signals: ['network-send'],
+        reason: 'tainted run: web search',
+      }, 'web search on a tainted run (MCP ingress taint)');
+      return true;
+    }
     if (disposition === 'mcp') {
       blockMcpActivity('mcp_tool_call_blocked', { phase, ...mcpToolCallDetails(params) });
       return true;
@@ -5578,4 +5668,8 @@ module.exports = {
   CLAUDE_DENIED_TOOLS,
   CLAUDE_GATED_TOOLS,
   CLAUDE_ALLOWED_TOOLS,
+  parseArgs,
+  gateCommandActions,
+  taintRefusalOf,
+  TAINT_REFUSED_SIGNALS,
 };

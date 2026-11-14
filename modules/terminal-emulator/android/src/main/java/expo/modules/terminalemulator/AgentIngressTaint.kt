@@ -281,6 +281,57 @@ object AgentIngressTaint {
     fun isTainted(context: Context, agentId: String, mcpEverEnabled: Boolean): Boolean =
         snapshot(context, mcpEverEnabled).isTainted(agentId)
 
+    /** Separate, plain prefs written by [seal]: "MCP was enabled on this install". */
+    private const val EVER_PREFS = "shelly_mcp_ever_enabled"
+    private const val KEY_EVER = "ever"
+
+    /**
+     * Whether [seal] ever ran (MCP was enabled at least once). Native cannot read
+     * the SecureStore MCP token RN uses for `mcpEverEnabled`, so [seal] also
+     * leaves this plain marker. A read error counts as "ever" (fail closed).
+     */
+    fun mcpEverEnabledNative(context: Context): Boolean = try {
+        context.getSharedPreferences(EVER_PREFS, Context.MODE_PRIVATE).getBoolean(KEY_EVER, false)
+    } catch (e: Throwable) {
+        true
+    }
+
+    /** Why a run is tainted, or null. Wire values match SHELLY_INGRESS_TAINTED_REASON. */
+    const val RUN_REASON_MCP = "mcp"
+    const val RUN_REASON_UNREADABLE = "store-unreadable"
+    const val RUN_REASON_OVERFLOW = "store-overflow"
+
+    /**
+     * Inc 5: the run-start check (AgentRuntime.runAgentInner), which has no RN.
+     * mcpEverEnabled comes from [mcpEverEnabledNative] (the marker [seal]
+     * writes), so with MCP ever enabled "alias and prefs both gone" reads
+     * UNREADABLE here as in RN. Residual: deleting the marker prefs AND the
+     * alias AND the taint prefs (the alias needs Keystore access) still reads
+     * EMPTY natively; RN keeps reading it as unreadable (SecureStore token).
+     * Returns [RUN_REASON_MCP] when this agent is listed, [RUN_REASON_UNREADABLE]
+     * / [RUN_REASON_OVERFLOW] when the store cannot be trusted (every agent is
+     * treated as external), null when the agent is not tainted. An invalid id,
+     * or any throw, is [RUN_REASON_UNREADABLE] (fail closed). Never throws.
+     */
+    fun runTaintReason(context: Context, agentId: String): String? = try {
+        if (!isValidAgentId(agentId)) {
+            RUN_REASON_UNREADABLE
+        } else {
+            val snap = snapshot(context, mcpEverEnabledNative(context))
+            when (snap.status) {
+                Status.EMPTY -> null
+                Status.OK -> if (snap.entries.any { it.agentId == agentId }) RUN_REASON_MCP else null
+                Status.UNREADABLE -> RUN_REASON_UNREADABLE
+                Status.OVERFLOW -> RUN_REASON_OVERFLOW
+            }
+        }
+    } catch (e: Throwable) {
+        Log.w(TAG, "ingress taint run check failed - treating as tainted type=${e.javaClass.simpleName}")
+        RUN_REASON_UNREADABLE
+    }
+
+    fun isTaintedForRun(context: Context, agentId: String): Boolean = runTaintReason(context, agentId) != null
+
     /** Owner action: the agent is trusted again. No effect while UNREADABLE (use [reset]). */
     @Synchronized
     fun clear(context: Context, agentId: String, mcpEverEnabled: Boolean): Status =
@@ -340,6 +391,12 @@ object AgentIngressTaint {
      */
     @Synchronized
     fun seal(context: Context): Status {
+        // Inc 5: plain marker the native run-start check reads (runTaintReason).
+        try {
+            context.getSharedPreferences(EVER_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_EVER, true).commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "mcp-ever marker not stored type=${e.javaClass.simpleName}")
+        }
         if (snapshot(context, mcpEverEnabled = false).status == Status.EMPTY) {
             try {
                 write(context, emptyList(), false)

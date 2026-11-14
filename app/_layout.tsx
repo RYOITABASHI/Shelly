@@ -132,6 +132,8 @@ import {
   escalationAutoApprovable,
   linkProbeIsClean,
   getRunWithoutApprovalSetting,
+  ingressTaintReasonForApproval,
+  isIngressTaintedForApproval,
   isRunWithoutApprovalEnabled,
   postRunWithoutApprovalAuditLine,
   runWithoutApprovalAuditKey,
@@ -2381,11 +2383,14 @@ export default function RootLayout() {
         // 2026-11-01: the level ('standard' | 'all') comes from the same
         // Keystore entry; 'all' applies only to an attended run.
         const setting = await getRunWithoutApprovalSetting(agent);
+        // MCP ingress taint Inc 5: a marked agent gets pure reads only (fails closed).
+        const ingressTainted = await isIngressTaintedForApproval(parsed.agentId);
         const gateOpts = {
           trustedWorkspaceRoot: agent?.workspaceRoot?.trim() || defaultAgentWorkspace(getHomePath()),
           homePaths: [getHomePath(), '/data/user/0/dev.shelly.terminal/files/home', '/data/data/dev.shelly.terminal/files/home'],
           level: setting === 'all' ? ('all' as const) : ('standard' as const),
           attended: userStarted,
+          ingressTainted,
         };
         const notApplied = (reason: string) => {
           logInfo('AgentEscalation', `run-without-approval not applied run=${parsed.runId} req=${parsed.reqId} reason=${reason}`);
@@ -2847,6 +2852,25 @@ export default function RootLayout() {
           activeKeys.add(key);
           activeRunIds.add(parsed.runId);
           if (notifiedActionApprovals.has(key)) continue;
+          // MCP ingress taint Inc 5 (DEFERRED.md P1 "MCP の入口"): an agent
+          // created or changed through MCP never gets an action (draft save,
+          // notification, webhook, post, DM …) — declined here with a logged
+          // reason, before trust-ramp / run-without-approval / autoAccept /
+          // ClosePaw pre-approval, and without asking (no new prompt). If the
+          // decline cannot be written the request is left to time out.
+          if (await isIngressTaintedForApproval(parsed.agentId)) {
+            const declined = await policyResolveActionApproval(parsed, 'decline');
+            // 'mcp' = this agent came in through MCP; store-* = the taint store
+            // cannot be trusted, so every agent is treated as external.
+            const taintReason = await ingressTaintReasonForApproval(parsed.agentId);
+            logInfo('AgentActionApproval', `ingress-tainted: declined=${declined} run=${parsed.runId} agent=${parsed.agentId} action=${parsed.actionType} reason=${taintReason}`);
+            postRunWithoutApprovalAuditLine(
+              parsed.agentId,
+              t(taintReason === 'mcp' ? 'agent_ingress_taint.action_declined' : 'agent_ingress_taint.action_declined_store', { command: parsed.actionType }),
+            );
+            rememberActionApproval(key, parsed);
+            continue;
+          }
           // POLICY-001 (lib/agent-policy-approval.ts): fine-grained user
           // rules + proactive floor + trust-ramp allows, flag-gated OFF.
           let policyBlocksAutoAccept = false;

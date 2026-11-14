@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=58
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=59
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -248,7 +248,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // with its hosted web search and no other tool (tool.webSearch, driver
 // --text-only --web-search; isResearchWebSearchCliStep). Its Sources come from the
 // answer's own Sources section (extractSourcesFromText).
-const EXECUTOR_SCRIPT_VERSION = 58;
+// v59 (2026-11-15): MCP ingress taint Inc 5 — a run of an agent marked by MCP
+// ingress (SHELLY_INGRESS_TAINTED=1 from native) passes --tainted to the agent
+// driver, which declines every write / exec / network send, and dispatches no
+// action (ingress_tainted_refused audit line).
+const EXECUTOR_SCRIPT_VERSION = 59;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -381,6 +385,52 @@ class ActionSkipped extends Error {
     super(message);
     this.name = 'ActionSkipped';
   }
+}
+
+// v59 MCP ingress taint Inc 5: an action refused because the agent carries the
+// MCP ingress mark. A skip recorded in the run log and the audit file only:
+// run() posts no notification for it (owner rule: refusals are checked later,
+// never pushed).
+class IngressTaintRefused extends ActionSkipped {
+  constructor(message) {
+    super(message);
+    this.name = 'IngressTaintRefused';
+  }
+}
+
+// Native exports SHELLY_INGRESS_TAINTED=1 (readonly) and, with it,
+// SHELLY_INGRESS_TAINTED_REASON: 'mcp' (this agent came in through MCP) or
+// 'store-unreadable' / 'store-overflow' (the taint store cannot be trusted, so
+// every agent is treated as external). Anything else reads as 'mcp'.
+function ingressTainted() {
+  return process.env.SHELLY_INGRESS_TAINTED === '1';
+}
+
+function ingressTaintReason() {
+  const r = String(process.env.SHELLY_INGRESS_TAINTED_REASON || '');
+  return r === 'store-unreadable' || r === 'store-overflow' ? r : 'mcp';
+}
+
+function ingressTaintMessage(reason) {
+  if (reason === 'store-unreadable' || reason === 'store-overflow') {
+    return `Not dispatched: the MCP taint record cannot be verified (${reason === 'store-overflow' ? 'too many marks' : 'unreadable'}), so every agent is treated as external input and its writes and external sends are refused. The result stays in the run log.`;
+  }
+  return 'Not dispatched: this agent was created or changed through MCP, so its writes and external sends are refused. The result stays in the run log.';
+}
+
+/** One audit line, then the error to throw (null when the run is not ingress-tainted). */
+function ingressTaintRefusal(paths, plan, event, actionType) {
+  if (!ingressTainted()) return null;
+  const reason = ingressTaintReason();
+  appendJsonl(paths.planAuditFile, {
+    ts: new Date().toISOString(),
+    kind: 'ingress_tainted_refused',
+    event,
+    agentId: plan.agent.id,
+    actionType,
+    reason,
+  });
+  return new IngressTaintRefused(ingressTaintMessage(reason));
 }
 
 // STOP-ALL (v13): the `.halted` sentinel appeared while this run was blocked
@@ -9293,12 +9343,33 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     // differentiation, so writing here from a chain's intermediate step
     // would land at the exact same destination the chain's FINAL step
     // uses, which caused a real stale-content bug, 2026-07-15).
+    // v59 MCP ingress taint: no write to the output dir, the Obsidian mirror
+    // or the source registry. The step's text stays in the run's private
+    // files (result file, run log) only.
+    if (ingressTainted()) {
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'ingress_tainted_refused',
+        event: 'suppressed_draft',
+        agentId: plan.agent.id,
+        actionType,
+        reason: ingressTaintReason(),
+      });
+      return { status: 'success', preview };
+    }
     await writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
+  // v59 MCP ingress taint Inc 5 (DEFERRED.md P1 "MCP の入口"): an agent created
+  // or changed through MCP gets no action at all — no draft save, notification,
+  // webhook, post, DM, intent or command — attended or not, and nobody is
+  // asked. Native exports SHELLY_INGRESS_TAINTED=1 (readonly) from the
+  // Keystore-sealed taint store. The refusal is one audit line, no prompt.
+  const ingressRefusal = ingressTaintRefusal(paths, plan, 'action', actionType);
+  if (ingressRefusal) throw ingressRefusal;
   // POLICY-001 dispatch-time gate (see policyActionEffect). Runs with the
   // generated text available so keyword rules apply. deny ⇒ skipped;
   // draft_only ⇒ the result is saved as a draft and NOT dispatched; ask ⇒ a
@@ -9934,6 +10005,9 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
   if (!Array.isArray(plan.actions) || plan.actions.length < 2) {
     return await dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
   }
+  // v59 MCP ingress taint: every action of the fan-out is refused at once.
+  const ingressRefusal = ingressTaintRefusal(paths, plan, 'actions', plan.actions.map((a) => String((a && a.type) || '')).join(','));
+  if (ingressRefusal) throw ingressRefusal;
   const results = [];
   let successCount = 0;
   let errorCount = 0;
@@ -10686,8 +10760,8 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   // notification-triggered (tainted) run never starts it, as it never fetches
   // source text (runSourceTexts) or resolves redirects.
   const webSearch = isResearchWebSearchCliStep(plan, stepIndex);
-  if (webSearch && opts && opts.tainted) {
-    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: 'web search on a tainted run' });
+  if (webSearch && ((opts && opts.tainted) || ingressTainted())) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: ingressTainted() ? `web search on an ingress-tainted run (${ingressTaintReason()})` : 'web search on a tainted run' });
     throw new PlanFailure(CLI_WEB_SEARCH_TAINTED_MESSAGE, { exitCode: EXIT.TOOL_DENY });
   }
   const driver = opts.agentDriver || path.join(paths.home, '.shelly-agent-driver.js');
@@ -10734,6 +10808,11 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
     ...(textOnly ? ['--text-only', ...(webSearch ? ['--web-search'] : []), ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
+    // v59 (MCP ingress taint Inc 5): a run of an agent marked by MCP ingress
+    // (native exports SHELLY_INGRESS_TAINTED=1) declines every write / exec /
+    // network send in the driver's gate, attended too, with no escalation or
+    // grant. A notification-triggered run (tainted, unmarked) is unchanged.
+    ...(ingressTainted() ? ['--tainted'] : []),
   ];
 
   unlinkQuiet(answerFile);
@@ -12849,8 +12928,9 @@ async function run(args) {
       progressStatus = halted ? 'halted' : 'skipped';
       const message = redact(e.message);
       progressReason = message;
-      // A user-initiated halt does not notify (mirrors the native gate).
-      if (!halted) writeNotification(paths, plan, 'skipped', message);
+      // A user-initiated halt does not notify (mirrors the native gate), nor
+      // does an MCP ingress-taint refusal (run log + audit line only).
+      if (!halted && !(e instanceof IngressTaintRefused)) writeNotification(paths, plan, 'skipped', message);
       writeRunLog(paths, plan, 'skipped', message, durationMs, message);
       runLogWritten = true;
       appendJsonl(paths.planAuditFile, {

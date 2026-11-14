@@ -224,6 +224,74 @@ export function __setRunWithoutApprovalStorageForTests(s: RunWithoutApprovalStor
   cache = null;
 }
 
+// ── MCP ingress taint (DEFERRED.md P1 "MCP の入口（ingress）", Inc 5) ────────
+//
+// An agent created or changed through Shelly's MCP server (lib/agent-ingress-taint.ts,
+// marked at confirm by lib/mcp-agent-ingress.ts) never gets the "all" level and
+// is never auto-answered for anything but a pure read: its writes and external
+// sends are refused by the driver's gate (--tainted) and its draft / notify /
+// other action approvals are declined by app/_layout.tsx. No new prompt.
+
+type IngressTaintCheck = (agentId: string) => Promise<boolean>;
+let ingressTaintOverride: IngressTaintCheck | null | undefined;
+
+function ingressTaintCheck(): IngressTaintCheck | null {
+  if (ingressTaintOverride !== undefined) return ingressTaintOverride;
+  try {
+    // Lazy: the module pulls in the native TerminalEmulator module.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('@/lib/agent-ingress-taint').isAgentIngressTainted as IngressTaintCheck;
+  } catch {
+    // No native module at all (web, unit tests): there is no store that could
+    // hold a mark — the same "unavailable ⇒ never marked" rule as
+    // isAgentIngressTainted itself for builds without the store.
+    return null;
+  }
+}
+
+/** Test hook: null = "no store in this runtime", undefined = the real module. */
+export function __setIngressTaintCheckForTests(fn: IngressTaintCheck | null | undefined): void {
+  ingressTaintOverride = fn;
+}
+
+/** Why an agent counts as ingress-tainted, for log / audit wording only (never for the decision). */
+export type IngressTaintReason = 'mcp' | 'store-unreadable' | 'store-overflow';
+
+/**
+ * 'mcp' = this agent came in through MCP; 'store-unreadable' / 'store-overflow'
+ * = the taint store cannot be trusted, so every agent is treated as external.
+ * Reads the store status; anything it cannot read is 'store-unreadable'. The
+ * decision itself is isIngressTaintedForApproval — call this only after it.
+ */
+export async function ingressTaintReasonForApproval(agentId: string | null | undefined): Promise<IngressTaintReason> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('@/lib/agent-ingress-taint') as typeof import('@/lib/agent-ingress-taint');
+    const s = await mod.agentIngressStatus();
+    if (s.status === 'overflow') return 'store-overflow';
+    if (s.status === 'unreadable') return 'store-unreadable';
+    if (s.status === 'ok' && !s.entries.some((e) => e.agentId === agentId)) return 'store-unreadable';
+    return 'mcp';
+  } catch {
+    return 'store-unreadable';
+  }
+}
+
+/**
+ * Whether this agent's runs carry the MCP ingress mark. Fails closed: a check
+ * that throws (store unreadable, native error) reads as tainted; the store
+ * itself already reads 'unreadable' / 'overflow' as "every agent tainted".
+ */
+export async function isIngressTaintedForApproval(agentId: string | null | undefined): Promise<boolean> {
+  const fn = ingressTaintCheck();
+  if (!fn) return false;
+  try {
+    return (await fn(String(agentId ?? ''))) !== false;
+  } catch {
+    return true;
+  }
+}
+
 function warn(message: string): void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -342,6 +410,11 @@ export async function getRunWithoutApprovalSetting(
   const level = entryLevel(entry);
   // H2: an agent that reads untrusted input never gets the "all" level.
   if (level === 'all' && !runWithoutApprovalAllAllowedFor(agent as UntrustedInputAgentLike)) return 'standard';
+  // Inc 5: nor does an agent marked by MCP ingress (its requests are untrusted input).
+  if (level === 'all' && (await isIngressTaintedForApproval(agent.id))) {
+    warn(`agent ${agent.id} carries the MCP ingress mark; "all" is treated as standard (reads only are auto-answered)`);
+    return 'standard';
+  }
   return level;
 }
 
@@ -364,6 +437,8 @@ export async function setRunWithoutApproval(
   let level: RunWithoutApprovalSetting = setting === true ? 'standard' : setting === false ? 'off' : setting;
   // H2: never store "all" for an agent that reads untrusted input.
   if (level === 'all' && !runWithoutApprovalAllAllowedFor(agent as UntrustedInputAgentLike)) level = 'standard';
+  // Inc 5: nor for an agent marked by MCP ingress.
+  if (level === 'all' && (await isIngressTaintedForApproval(agent.id))) level = 'standard';
   const list = (await loadRunWithoutApproval()).filter((e) => e.agentId !== agent.id);
   const entry: RunWithoutApprovalEntry | null = level === 'off'
     ? null
@@ -456,6 +531,8 @@ export async function decideActionAutoApproval<T extends ActionAutoApproveReques
   parsed: T,
   opts: {
     enabled: boolean;
+    /** MCP ingress taint (Inc 5): a marked agent's actions are never auto-accepted. */
+    ingressTainted?: boolean;
     /** POLICY-001 deny / draft_only / ask, or a proactive origin. */
     policyBlocksAutoAccept: boolean;
     /** lib/agent-policy-approval.ts trustedRequestOrigin (registry AND file). */
@@ -465,6 +542,7 @@ export async function decideActionAutoApproval<T extends ActionAutoApproveReques
     now?: number;
   },
 ): Promise<ActionAutoApproveDecision<T>> {
+  if (opts.ingressTainted) return { ok: false, reason: 'ingress-tainted' };
   if (!opts.enabled) return { ok: false, reason: 'flag-off' };
   if (opts.originOf(parsed) !== 'user') return { ok: false, reason: 'proactive' };
   const first = actionAutoApprovable(parsed, { enabled: true, policyBlocksAutoAccept: opts.policyBlocksAutoAccept });
@@ -682,6 +760,8 @@ export type EscalationAutoApproveOpts = {
    *  app. The "all" level applies only when this is true; otherwise the
    *  standard rules decide. */
   attended?: boolean;
+  /** MCP ingress taint (Inc 5): only a pure read is auto-answered, at any level. */
+  ingressTainted?: boolean;
 };
 
 /**
@@ -837,6 +917,11 @@ export function escalationAutoApprovable(
   request: EscalationRequestLike,
   opts: EscalationAutoApproveOpts,
 ): AutoApproveVerdict {
+  if (opts.ingressTainted) {
+    const verdict = standardEscalationVerdict(request, { ...opts, level: 'standard' });
+    if (verdict.ok === true && verdict.kind !== 'read') return { ok: false, reason: 'ingress-tainted' };
+    return verdict;
+  }
   const standard = standardEscalationVerdict(request, opts);
   if (standard.ok === true || opts.level !== 'all' || opts.attended !== true) return standard;
   if (!isSoftReasonForAll(standard.reason)) return standard;

@@ -2288,6 +2288,8 @@ const en: Record<string, string> = {
   'agent_detail.run_without_approval_all_unavailable': '"All" is not offered for this agent: it reads web or other untrusted input (web research, a URL, a browser or notification step).',
   'agent_run_without_approval.auto_approved': 'Run without approval: auto-approved {{command}}',
   'agent_run_without_approval.auto_approved_all': 'Run without approval (all): auto-allowed {{command}}',
+  'agent_ingress_taint.action_declined': 'Declined (agent created via MCP; writes and external sends are refused): {{command}}',
+  'agent_ingress_taint.action_declined_store': 'Declined (the MCP taint record cannot be verified, so every agent is treated as external input): {{command}}',
   'agent_run_without_approval.enabled_line': 'Run without approval turned ON for this agent.',
   'agent_run_without_approval.enabled_all_line': 'Run without approval turned ON (all) for this agent.',
   'agent_run_without_approval.disabled_line': 'Run without approval turned OFF for this agent.',

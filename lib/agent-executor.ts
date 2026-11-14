@@ -773,7 +773,11 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // run. A device that already has it (or sets SHELLY_CONTENT_PROJECT) keeps it;
 // otherwise PROJECT_DIR is agent-output. The ab-article-eval prompt and rubric
 // are generic. Bump in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 78;
+// v79 (2026-11-15, MCP ingress taint Inc 5): dispatch_agent_action refuses
+// every action when SHELLY_INGRESS_TAINTED=1 (native exports it for an agent
+// marked by MCP ingress; generateRunScript bakes it for that agent too) and
+// writes an ingress_tainted_refused audit line. Lockstep with AgentRuntime.kt.
+const AGENT_SCRIPT_VERSION = 79;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1179,7 +1183,33 @@ function bashArrayLiteral(values: string[]): string {
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
+/**
+ * MCP ingress taint Inc 5: baked right after \`set -euo pipefail\` into the
+ * script of an agent carrying the MCP ingress mark. Native exports the same
+ * variables readonly for every run of it; the guards keep a readonly value,
+ * and \`readonly\` here stops a later-sourced .env / .bashrc from clearing them.
+ * Not SHELLY_CAP_TAINTED: the broker would turn every credentialed model call
+ * into an approval. NOTE: clearing a mark (clearAgentIngress / reset) does not
+ * rewrite this file; the agent script must be re-materialized (any attended
+ * run or the startup repair does it) before the bake goes away.
+ */
+const INGRESS_TAINT_SCRIPT_HEADER = [
+  '# MCP ingress taint: this agent came in through MCP; writes and external sends are refused.',
+  '[ "${SHELLY_INGRESS_TAINTED:-}" = 1 ] || export SHELLY_INGRESS_TAINTED=1',
+  '[ -n "${SHELLY_INGRESS_TAINTED_REASON:-}" ] || export SHELLY_INGRESS_TAINTED_REASON=mcp',
+  'readonly SHELLY_INGRESS_TAINTED SHELLY_INGRESS_TAINTED_REASON',
+  '',
+].join('\n');
+
 export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean; chainLockNonce?: string;
+  /** MCP ingress taint Inc 5: the agent carries the MCP ingress mark
+   *  (lib/agent-ingress-taint.ts, read by lib/agent-manager.ts at
+   *  materialize). Bakes INGRESS_TAINT_SCRIPT_HEADER (SHELLY_INGRESS_TAINTED=1,
+   *  readonly), so the driver declines every write / exec / network send and
+   *  dispatch_agent_action refuses every action. Native AgentRuntime also sets
+   *  it from the same store at run start; either alone is enough. Absent ⇒ the
+   *  script is unchanged. */
+  ingressTainted?: boolean;
   /** Rollback-type execution: bake ACTION_APPROVAL_MODE_OVERRIDE='auto' for a
    *  run whose every action is a reversible workspace file write AND whose
    *  workspace was just snapshotted. Only lib/agent-manager.ts's attended-run
@@ -1836,7 +1866,7 @@ fi`;
 # Do not edit manually.
 SHELLY_AGENT_SCRIPT_VERSION=${AGENT_SCRIPT_VERSION}
 set -euo pipefail
-
+${opts.ingressTainted ? INGRESS_TAINT_SCRIPT_HEADER : ''}
 AGENT_ID=${shellQuote(agentId)}
 AGENT_NAME=${shellQuote(agent.name)}
 # DEFERRED.md #2 残り (workspaceRoot → driver --cwd): empty when unset, so the
@@ -3894,6 +3924,18 @@ save_draft_result() {
   rm -f "$redacted_result"
 }
 
+# MCP ingress taint Inc 5: one audit line per refusal (no notification).
+ingress_taint_audit() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"ingress_tainted_refused","event":"%s","agentId":"%s","actionType":"%s","reason":"%s"}\\n' \\
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
+    "$([ "$1" = "__suppressed__" ] && echo suppressed_draft || echo action)" \\
+    "$AGENT_ID" \\
+    "$(printf '%s' "$1" | tr -cd 'a-z_-')" \\
+    "$(printf '%s' "\${SHELLY_INGRESS_TAINTED_REASON:-mcp}" | tr -cd 'a-z-')" \\
+    >> "$LOG_DIR/agent-driver-audit.jsonl" 2>/dev/null || true
+}
+
 dispatch_agent_action() {
   result_file="$1"
   preview="$2"
@@ -3912,6 +3954,23 @@ dispatch_agent_action() {
   if continuous_stop_requested; then
     ACTION_DISPATCH_STATUS="skipped"
     ACTION_DISPATCH_MESSAGE="Continuous run stopped by the user."
+    return 1
+  fi
+  # v79 MCP ingress taint Inc 5: an agent created or changed through MCP gets
+  # no action (draft, notify, webhook, post, DM, intent, command), attended or
+  # not, and nobody is asked. One audit line records the refusal.
+  if [ "\${SHELLY_INGRESS_TAINTED:-0}" = "1" ]; then
+    ingress_taint_audit "\${ACTION_TYPE:-}"
+    # Intermediate chain step: the text stays in $RESULT_FILE / the run log;
+    # no output dir, mirror or source registry write.
+    [ "$ACTION_TYPE" = "__suppressed__" ] && return 0
+    ACTION_DISPATCH_STATUS="skipped"
+    case "\${SHELLY_INGRESS_TAINTED_REASON:-mcp}" in
+      store-unreadable|store-overflow)
+        ACTION_DISPATCH_MESSAGE="Not dispatched: the MCP taint record cannot be verified (\${SHELLY_INGRESS_TAINTED_REASON}), so every agent is treated as external input and its writes and external sends are refused. The result stays in the run log." ;;
+      *)
+        ACTION_DISPATCH_MESSAGE="Not dispatched: this agent was created or changed through MCP, so its writes and external sends are refused. The result stays in the run log." ;;
+    esac
     return 1
   fi
 
@@ -6543,7 +6602,10 @@ ${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVE
   # final write deliberately overwrites that with the ONE consolidated
   # outcome for the whole run, exactly mirroring the "last write wins"
   # mechanism the single-action path already relies on.
-  write_native_notification_request "$STATUS" "$PREVIEW" || true
+  # MCP ingress taint: refusals are audit lines, not notifications.
+  if [ "\${SHELLY_INGRESS_TAINTED:-0}" != "1" ]; then
+    write_native_notification_request "$STATUS" "$PREVIEW" || true
+  fi
 ` : `  if ! dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"; then
     STATUS="\${ACTION_DISPATCH_STATUS:-error}"
     ERROR_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-agent action dispatch failed}"
