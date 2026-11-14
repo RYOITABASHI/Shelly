@@ -4,15 +4,19 @@
  *
  * Exposes tools so an MCP client on the same network (Claude Code, Claude
  * Desktop) can inspect — and, opt-in, act on — this Shelly instance:
- * read-only (always available once the server is on) — terminal output,
- * git status, registered agents, configured repos; exec/write (gated
- * behind settings.mcpExecEnabled, off by default, checked per-call in
- * lib/mcp-server-bridge.ts) — run_command and write_file. This is the
- * ingress-side capability gate this file's comment used to say didn't
- * exist: every exec/write call blocks on an in-app approval tap
- * (components/McpApprovalModal.tsx, fail-closed on timeout) and a
- * CRITICAL-risk command (lib/command-safety.ts) is refused outright
- * regardless of approval. The pre-existing capability broker
+ * read-only (always available once the server is on) — git status,
+ * registered agents, configured repos; terminal output only with
+ * settings.mcpReadTerminalEnabled (off by default: the screen can show
+ * tokens or pasted secrets); exec/write (settings.mcpExecEnabled, off by
+ * default) — run_command and write_file. A tool whose setting is off is
+ * left out of tools/list and refused in tools/call here (SHELLY_MCP_EXEC /
+ * SHELLY_MCP_READ_TERMINAL from MCPBridge.kt), and refused again per call
+ * in lib/mcp-server-bridge.ts. This is the ingress-side capability gate:
+ * every exec/write call is treated as untrusted input — the agent gate
+ * (lib/agent-boundary-policy.ts, strict policy paths + POLICY-001) refuses
+ * a deny outright (policy-write, CRITICAL, user deny rules) without asking,
+ * and everything else blocks on an in-app approval tap
+ * (components/McpApprovalModal.tsx, fail-closed on timeout). The pre-existing capability broker
  * (lib/capability-envelope.ts / scripts/shelly-capability-broker.js) still
  * only gates OUTGOING agent requests — unrelated to this ingress path.
  *
@@ -113,7 +117,7 @@ const SERVER_INFO = { name: 'shelly', version: '1.1.0' };
 const SERVER_CAPABILITIES = { tools: {} };
 const SERVER_INSTRUCTIONS =
   'Shelly is an Android terminal running on the user\'s phone. run_command and write_file '
-  + 'are disabled unless the user enabled them, and every call waits for an approval tap on the phone.';
+  + 'are listed only when the user enabled them, and every call waits for an approval tap on the phone.';
 
 // JSON-RPC / MCP error codes.
 const PARSE_ERROR = -32700;
@@ -135,9 +139,14 @@ const META_SERVER_INFO = 'io.modelcontextprotocol/serverInfo';
 // something to show while it retries. Informational only.
 const META_APPROVAL_STATUS = 'dev.shelly/approvalStatus';
 
-// tools/list + server/discover never change while this process runs (the
-// exec/write gate is enforced per call, not by hiding tools), so a long TTL
-// is truthful. "private": every result sits behind a per-device bearer token.
+// tools/list + server/discover never change while this process runs, so a
+// long TTL is truthful. The list does depend on two settings (exec/write and
+// read_terminal_output, passed in as SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL),
+// but RN restarts this process whenever either changes
+// (hooks/use-mcp-server-bridge.ts), so within one process the list is fixed.
+// A client that cached an older list only gets "tool disabled" errors for a
+// tool that was turned off; the RN side refuses it again on its own.
+// "private": every result sits behind a per-device bearer token.
 const LIST_TTL_MS = 3_600_000;
 const LIST_CACHE_SCOPE = 'private';
 
@@ -218,6 +227,22 @@ const TOOLS = [
     },
   },
 ];
+
+// Tools hidden unless a setting turned them on: run_command / write_file need
+// "MCP: Allow exec/write", read_terminal_output needs "MCP: Allow reading
+// terminal output" (the screen can show tokens or pasted secrets).
+const READ_TERMINAL_TOOL = 'read_terminal_output';
+
+/** The tools this process offers, given the two settings it was started with. */
+function availableTools(flags) {
+  const exec = !!(flags && flags.exec === true);
+  const readTerminal = !!(flags && flags.readTerminal === true);
+  return TOOLS.filter((t) => {
+    if (APPROVAL_TOOLS.has(t.name)) return exec;
+    if (t.name === READ_TERMINAL_TOOL) return readTerminal;
+    return true;
+  });
+}
 
 // ── File-queue IPC (production callTool) ─────────────────────────────────
 
@@ -463,6 +488,8 @@ function settlesWithin(promise, ms) {
  *   opts.mrtr      — enable the opt-in MRTR approval deferral (main() sets
  *                    it from SHELLY_MCP_MRTR=1; default off — see header)
  *   opts.initialHoldMs / opts.retryHoldMs — MRTR hold windows (tests)
+ *   opts.exec      — offer run_command / write_file (SHELLY_MCP_EXEC=1)
+ *   opts.readTerminal — offer read_terminal_output (SHELLY_MCP_READ_TERMINAL=1)
  *   opts.log       — diagnostic sink
  * Returns handle({ method, url, headers, body }) → Promise<{ status, headers, body }>
  * where `headers` are lower-cased request headers and `body` is the raw string.
@@ -477,6 +504,17 @@ function createMcpHandler(opts) {
   const retryHoldMs = opts.retryHoldMs ?? MRTR_RETRY_HOLD_MS;
   const log = opts.log || (() => {});
   if (!token || typeof callTool !== 'function') throw new Error('createMcpHandler: token and callTool are required');
+  // Both default to off: a caller that forgets them gets the read-only set.
+  const tools = availableTools({ exec: opts.exec === true, readTerminal: opts.readTerminal === true });
+  const toolNames = new Set(tools.map((t) => t.name));
+  /** null when `name` may be called, else the JSON-RPC error message. */
+  function toolRefusal(name) {
+    if (toolNames.has(name)) return null;
+    if (TOOLS.some((t) => t.name === name)) {
+      return `tool disabled on the device: ${name} (turn it on in Shelly's settings)`;
+    }
+    return `unknown tool: ${name}`;
+  }
 
   const principal = sha256Hex(`shelly-mcp-principal:${token}`).slice(0, 32);
   // Constant-time bearer check: compare fixed-length digests so neither the
@@ -590,11 +628,12 @@ function createMcpHandler(opts) {
       case 'ping':
         return json(200, jsonRpcResult(id, {}));
       case 'tools/list':
-        return json(200, jsonRpcResult(id, { tools: TOOLS }));
+        return json(200, jsonRpcResult(id, { tools }));
       case 'tools/call': {
         const toolName = isPlainObject(params) ? params.name : undefined;
-        if (!TOOLS.some((t) => t.name === toolName)) {
-          return json(200, jsonRpcError(id, INVALID_PARAMS, `unknown tool: ${toolName}`));
+        const refusal = toolRefusal(toolName);
+        if (refusal) {
+          return json(200, jsonRpcError(id, INVALID_PARAMS, refusal));
         }
         // Legacy peers have no MRTR — block on the bridge exactly as before.
         const result = await callTool(toolName, (params && params.arguments) || {});
@@ -673,7 +712,7 @@ function createMcpHandler(opts) {
         }));
       case 'tools/list':
         // Deterministic order (static array) per 2026-07-28 caching guidance.
-        return json(200, modernResult(id, { tools: TOOLS, ttlMs: LIST_TTL_MS, cacheScope: LIST_CACHE_SCOPE }));
+        return json(200, modernResult(id, { tools, ttlMs: LIST_TTL_MS, cacheScope: LIST_CACHE_SCOPE }));
       case 'tools/call':
         return modernToolsCall(id, params);
       default:
@@ -685,8 +724,9 @@ function createMcpHandler(opts) {
 
   async function modernToolsCall(id, params) {
     const toolName = params.name;
-    if (!TOOLS.some((t) => t.name === toolName)) {
-      return json(200, jsonRpcError(id, INVALID_PARAMS, `unknown tool: ${toolName}`));
+    const refusal = toolRefusal(toolName);
+    if (refusal) {
+      return json(200, jsonRpcError(id, INVALID_PARAMS, refusal));
     }
     const args = isPlainObject(params.arguments) ? params.arguments : {};
 
@@ -844,11 +884,17 @@ function main() {
 
   const log = (...args) => process.stderr.write(`[shelly-mcp] ${args.join(' ')}\n`);
   const mrtr = process.env.SHELLY_MCP_MRTR === '1';
+  // Set by MCPBridge.kt from the RN settings at start; RN restarts this
+  // process when either setting changes and refuses the calls itself too.
+  const exec = process.env.SHELLY_MCP_EXEC === '1';
+  const readTerminal = process.env.SHELLY_MCP_READ_TERMINAL === '1';
   const handler = createMcpHandler({
     token,
     callTool: createDirectReadCallTool({ queueDir, token, fallback: createFileQueueCallTool(queueDir), log }),
     log,
     mrtr,
+    exec,
+    readTerminal,
   });
 
   const server = http.createServer((req, res) => {
@@ -865,7 +911,7 @@ function main() {
   });
 
   server.listen(port, '0.0.0.0', () => {
-    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')}; mrtr=${mrtr ? 'on' : 'off'})`);
+    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')}; mrtr=${mrtr ? 'on' : 'off'}; exec=${exec ? 'on' : 'off'}; readTerminal=${readTerminal ? 'on' : 'off'})`);
   });
 
   server.on('error', (err) => {
@@ -891,6 +937,7 @@ if (require.main === module) {
   module.exports = {
     createMcpHandler,
     createDirectReadCallTool,
+    availableTools,
     snapshotMac,
     GIT_REFUSED_CONFIG,
     TOOLS,

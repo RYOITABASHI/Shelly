@@ -167,6 +167,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   a2aServerEnabled: false,
   mcpServerEnabled: false,
   mcpExecEnabled: false,
+  mcpReadTerminalEnabled: false,
   codexRemoteAutostart: false,
   terminalWallpaperTransparency: true,
   // Front agent (窓口): default 'none' = current behaviour (plain bash in the

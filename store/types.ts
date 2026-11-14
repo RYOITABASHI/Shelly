@@ -441,15 +441,22 @@ export type AppSettings = {
    *  Nacre Bridge this opens a real HTTP listener. */
   a2aServerEnabled?: boolean;
   /** MCP (Model Context Protocol) server (hooks/use-mcp-server-bridge.ts,
-   *  MCPBridge.kt) — exposes read-only tools (read_terminal_output,
-   *  git_status, list_agents, list_repos) to MCP clients (Claude Code,
-   *  Claude Desktop) on the same network. Off by default: opens a real
-   *  HTTP listener, same as the A2A server. */
+   *  MCPBridge.kt) — exposes read-only tools (git_status, list_agents,
+   *  list_repos; read_terminal_output only with mcpReadTerminalEnabled) to
+   *  MCP clients (Claude Code, Claude Desktop) on the same network. Off by
+   *  default: opens a real HTTP listener, same as the A2A server. */
   mcpServerEnabled?: boolean;
+  /** Offers the MCP tool `read_terminal_output` (default false). Separate
+   *  from the other read tools because the terminal can show tokens or
+   *  pasted secrets. The server hides the tool from tools/list while this is
+   *  off (restarted on change) and lib/mcp-server-bridge.ts refuses it too. */
+  mcpReadTerminalEnabled?: boolean;
   /** Extends the MCP server with two additional tools — `run_command`
    *  (routes through execCommand()) and `write_file` (scoped to
-   *  Sidebar repo paths / the home dir) — each gated behind an in-app
-   *  approval modal (components/McpApprovalModal.tsx) shown while Shelly
+   *  Sidebar repo paths / the home dir, checked on the real path) — listed
+   *  in tools/list only while this is on; each call is first run through
+   *  the agent gate (a deny is refused without asking) and then gated
+   *  behind an in-app approval modal (components/McpApprovalModal.tsx) shown while Shelly
    *  is foregrounded; auto-denied if nobody answers within the timeout,
    *  and CRITICAL-level commands (lib/command-safety.ts) are refused
    *  outright regardless of approval. Off by default, and only takes

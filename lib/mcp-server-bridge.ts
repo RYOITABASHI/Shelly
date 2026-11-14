@@ -10,10 +10,16 @@
  * tools instead of A2A skills).
  *
  * The read-only tools are scoped to data the user already exposed through
- * Shelly's own UI (registered agents, Sidebar repo paths, terminal session
- * transcripts). run_command / write_file are gated by mcpExecEnabled, the
- * CRITICAL-risk refusal and an on-device approval tap (requestApproval
- * below) — always decided HERE, never by the MCP peer.
+ * Shelly's own UI (registered agents, Sidebar repo paths; terminal session
+ * transcripts only with mcpReadTerminalEnabled). run_command / write_file
+ * are gated by mcpExecEnabled, then by the agent gate as an untrusted
+ * (tainted) request (lib/mcp-ingress-gate.ts: a deny — policy-write, the
+ * strict agents-dir / shared_prefs form, CRITICAL, a POLICY-001 user deny
+ * rule — is refused without asking), and then by an on-device approval tap
+ * (requestApproval below) that a gate allow never skips. write_file is
+ * checked on the real path (symlinks followed) before and after the tap.
+ * Always decided HERE, never by the MCP peer; the node server also hides
+ * the tools whose setting is off, but that is not relied on.
  *
  * Protocol-era agnostic: this side only sees one request file per tool
  * call. Whether the peer is a legacy (initialize/session) client holding
@@ -32,7 +38,8 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { execCommand } from '@/hooks/use-native-exec';
-import { checkCommandSafety } from '@/lib/command-safety';
+import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteTarget, shellQuote, type McpShellRunner } from '@/lib/mcp-ingress-gate';
+import { getCachedUserPolicy, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
 import { logError, logInfo } from '@/lib/debug-logger';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
@@ -51,8 +58,33 @@ function isMCPToolRequest(value: unknown): value is MCPToolRequest {
   return !!v && typeof v === 'object' && typeof v.callId === 'string' && typeof v.tool === 'string';
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+const EXEC_DISABLED_ERROR = 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)';
+
+function execEnabled(): boolean {
+  return useSettingsStore.getState().settings.mcpExecEnabled === true;
+}
+
+/** Bare (no file://) app home, the same form list_repos paths use. */
+function homeDir(): string {
+  return `${FileSystem.documentDirectory}home`.replace(/^file:\/\//, '');
+}
+
+const shellRunner: McpShellRunner = async (script) => {
+  const r = await execCommand(script, 10_000);
+  return { stdout: r.stdout, exitCode: r.exitCode };
+};
+
+/** POLICY-001 user rules for the gate. Loaded once (the app keeps the cache
+ *  current when the rules change); a failed load means "rules unavailable",
+ *  which escalates side effects but never refuses on its own. */
+async function userPolicy(): Promise<LoadedUserPolicy | null> {
+  const cached = getCachedUserPolicy();
+  if (cached) return cached;
+  try {
+    return await loadUserPolicy(async (cmd) => (await execCommand(cmd, 10_000)).stdout);
+  } catch {
+    return null;
+  }
 }
 
 type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -128,6 +160,10 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
       return { ok: true, data: useSidebarStore.getState().repoPaths };
     }
     case 'read_terminal_output': {
+      // Separate switch: the screen can show tokens or pasted secrets.
+      if (useSettingsStore.getState().settings.mcpReadTerminalEnabled !== true) {
+        return { ok: false, error: 'read_terminal_output is disabled (Settings → Agents → MCP: Allow reading terminal output)' };
+      }
       // `sessions[].id` is the JS-logical id (`session-1`, `shelly-1-...`);
       // the native module keys transcripts by `nativeSessionId` instead
       // (`session-<timestamp>`) — passing the logical id straight through
@@ -167,30 +203,36 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
       }
     }
     case 'run_command': {
-      if (!useSettingsStore.getState().settings.mcpExecEnabled) {
-        return { ok: false, error: 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)' };
+      if (!execEnabled()) {
+        return { ok: false, error: EXEC_DISABLED_ERROR };
       }
       const command = typeof args.command === 'string' ? args.command : '';
       if (!command.trim()) {
         return { ok: false, error: 'command is required' };
       }
       const cwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : undefined;
-      const safety = checkCommandSafety(command);
-      if (safety.level === 'CRITICAL') {
-        return { ok: false, error: `refused — CRITICAL risk command: ${safety.reason}` };
+      // Judge the command together with its `cd`, so a cwd of ~/.shelly/agents
+      // counts (the home prefix is shown to the gate as GATE_HOME).
+      const full = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+      const gate = evaluateMcpCommand(gateCommandWithCwd(command, cwd, homeDir()), homeDir(), await userPolicy());
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
+      if (gate.refused) {
+        logInfo('MCPBridge', `run_command refused by the gate (${gate.summary})`);
+        return { ok: false, error: `refused by Shelly's agent gate — ${gate.summary}` };
       }
       const approved = await requestApproval({
         kind: 'run_command',
         summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
-        detail: command,
-        riskLevel: safety.level,
+        detail: `${command}\n\nGate: ${gate.summary}`,
+        riskLevel: gate.outcome?.verdict.dangerLevel,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
+      // The setting may have been turned off while the modal was open.
+      if (!execEnabled()) return { ok: false, error: EXEC_DISABLED_ERROR };
       try {
-        const full = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
         const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 30_000;
         const result = await execCommand(full, timeoutMs);
         return { ok: true, data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode } };
@@ -199,36 +241,59 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
       }
     }
     case 'write_file': {
-      if (!useSettingsStore.getState().settings.mcpExecEnabled) {
-        return { ok: false, error: 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)' };
+      if (!execEnabled()) {
+        return { ok: false, error: EXEC_DISABLED_ERROR };
       }
       const targetPath = typeof args.path === 'string' ? args.path : '';
       const content = typeof args.content === 'string' ? args.content : '';
       // repoPaths (from list_repos) are bare filesystem paths, never
-      // file:// URIs — compare against documentDirectory with the scheme
+      // file:// URIs — compare against the home dir with the scheme
       // stripped so the two match on the same footing.
-      const homeDir = `${FileSystem.documentDirectory}home`.replace(/^file:\/\//, '');
-      const allowedRoots = [homeDir, ...useSidebarStore.getState().repoPaths];
-      if (!targetPath || !allowedRoots.some((root) => targetPath === root || targetPath.startsWith(`${root}/`))) {
-        return { ok: false, error: 'path must be under the home dir or a Shelly-configured repo (see list_repos)' };
+      const home = homeDir();
+      const allowedRoots = [home, ...useSidebarStore.getState().repoPaths];
+      const resolved = await resolveWriteTarget(targetPath, allowedRoots, shellRunner);
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
+      if ('error' in resolved) {
+        logInfo('MCPBridge', `write_file refused (${resolved.error})`);
+        return { ok: false, error: resolved.error };
+      }
+      const realPath = resolved.realPath;
+      // Judged as the gate judges a worker's `tee -- <path>`, on both the
+      // path as sent and where it really lands.
+      const policy = await userPolicy();
+      const gates = [evaluateMcpCommand(gateWriteCommand(realPath, home), home, policy)];
+      if (realPath !== targetPath) gates.push(evaluateMcpCommand(gateWriteCommand(targetPath, home), home, policy));
+      const denied = gates.find((g) => g.refused);
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
+      if (denied) {
+        logInfo('MCPBridge', `write_file refused by the gate (${denied.summary})`);
+        return { ok: false, error: `refused by Shelly's agent gate — ${denied.summary}` };
       }
       const preview = content.length > 400 ? `${content.slice(0, 400)}\n… (${content.length} bytes total)` : content;
+      const shownPath = realPath === targetPath ? realPath : `${targetPath}\n→ ${realPath}`;
       const approved = await requestApproval({
         kind: 'write_file',
         summary: `Write ${content.length} bytes to a file via MCP?`,
-        detail: `${targetPath}\n\n${preview}`,
+        detail: `${shownPath}\n\nGate: ${gates[0].summary}\n\n${preview}`,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
+      if (!execEnabled()) return { ok: false, error: EXEC_DISABLED_ERROR };
+      // A symlink swapped in while the modal was open must not redirect the
+      // approved write: resolve again and require the same real path.
+      const again = await resolveWriteTarget(targetPath, allowedRoots, shellRunner);
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
+      if (!again.ok || again.realPath !== realPath) {
+        return { ok: false, error: `refused: the target changed while waiting for approval${'error' in again ? ` (${again.error})` : ''}` };
+      }
       try {
         // On-device found 2026-09-17: writeAsStringAsync needs a file://
         // URI — a bare path (what every MCP client naturally sends, and
         // what list_repos/git_status use elsewhere) throws "isn't writable".
-        const fileUri = targetPath.startsWith('file://') ? targetPath : `file://${targetPath}`;
-        await FileSystem.writeAsStringAsync(fileUri, content);
-        return { ok: true, data: { path: targetPath, bytes: content.length } };
+        await FileSystem.writeAsStringAsync(`file://${realPath}`, content);
+        return { ok: true, data: { path: realPath, bytes: content.length } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

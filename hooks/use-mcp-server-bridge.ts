@@ -11,6 +11,14 @@
  * request-queue poller (lib/mcp-server-bridge.ts), and tearing both down
  * together on toggle-off or unmount. Token lifecycle logic (create /
  * regenerate + restart) lives in lib/mcp-token.ts.
+ *
+ * The server reads mcpExecEnabled / mcpReadTerminalEnabled only at start
+ * (MCPBridge.kt passes them as SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL and
+ * the script hides the matching tools from tools/list), so the effect below
+ * also depends on both: a change stops the old process and starts a new one,
+ * each step under withMcpServerLock. Every start first revokes what is still
+ * pending in the queue — the previous process and its clients are gone, so
+ * nothing they asked for may still be approved or run.
  */
 import { useEffect } from 'react';
 import * as Crypto from 'expo-crypto';
@@ -61,9 +69,15 @@ async function probeLocalServer(token: string): Promise<number | null> {
   }
 }
 
+/** Starts the native server with the tool settings as they are right now. */
+function startNativeServer(token: string): Promise<boolean> {
+  const { settings } = useSettingsStore.getState();
+  return TerminalEmulator.startMCPServer(token, settings.mcpExecEnabled === true, settings.mcpReadTerminalEnabled === true);
+}
+
 const serverControl: McpServerControl = {
   isRunning: () => TerminalEmulator.isMCPServerRunning(),
-  start: (token) => TerminalEmulator.startMCPServer(token),
+  start: startNativeServer,
   stop: () => TerminalEmulator.stopMCPServer(),
   probe: probeLocalServer,
   revokePending: revokePendingMCPRequests,
@@ -101,6 +115,10 @@ export async function regenerateMCPToken(): Promise<RegenerateResult> {
 
 export function useMCPServerBridge(): void {
   const enabled = useSettingsStore((s) => s.settings.mcpServerEnabled ?? false);
+  // Not read in the effect body (startNativeServer reads the store), but a
+  // change must restart the server: see the module doc.
+  const execEnabled = useSettingsStore((s) => s.settings.mcpExecEnabled === true);
+  const readTerminalEnabled = useSettingsStore((s) => s.settings.mcpReadTerminalEnabled === true);
 
   useEffect(() => {
     if (!enabled) return;
@@ -109,12 +127,18 @@ export function useMCPServerBridge(): void {
       try {
         const token = await getOrCreateMCPToken();
         if (cancelled) return;
-        const started = await TerminalEmulator.startMCPServer(token);
+        try {
+          await revokePendingMCPRequests();
+        } catch (e) {
+          logError('MCPBridge', 'could not clear the request queue before start', e);
+        }
+        if (cancelled) return;
+        const started = await startNativeServer(token);
         if (cancelled) return;
         if (started) {
           startMCPPoller();
           startMCPSnapshotPublisher(token);
-          logInfo('MCPBridge', 'server + poller started');
+          logInfo('MCPBridge', `server + poller started (exec=${execEnabled}, readTerminal=${readTerminalEnabled})`);
         } else {
           logError('MCPBridge', 'native server failed to start');
         }
@@ -128,5 +152,5 @@ export function useMCPServerBridge(): void {
       stopMCPSnapshotPublisher();
       void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
     };
-  }, [enabled]);
+  }, [enabled, execEnabled, readTerminalEnabled]);
 }

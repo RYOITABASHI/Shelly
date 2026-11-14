@@ -9,8 +9,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * MCPBridge — spawns/stops scripts/shelly-mcp-server.js, a minimal MCP
- * (Model Context Protocol) server exposing a small set of READ-ONLY tools
- * (read_terminal_output, git_status, list_agents, list_repos) to an MCP
+ * (Model Context Protocol) server exposing a small set of read tools
+ * (git_status, list_agents, list_repos; read_terminal_output and the
+ * exec/write tools only when their settings are on) to an MCP
  * client (Claude Code, Claude Desktop) on the same network. See that
  * script's own doc comment for the protocol details, why it targets the
  * older initialize+Mcp-Session-Id flow rather than the newer stateless
@@ -62,8 +63,15 @@ object MCPBridge {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) proc.destroyForcibly() else proc.destroy()
     }
 
+    /**
+     * [exec] / [readTerminal] mirror the RN settings mcpExecEnabled /
+     * mcpReadTerminalEnabled. The script only reads them at startup (it hides
+     * run_command / write_file / read_terminal_output from tools/list when
+     * off), so RN restarts the server whenever either changes
+     * (hooks/use-mcp-server-bridge.ts). RN still refuses those calls itself.
+     */
     @Synchronized
-    fun start(context: Context, token: String): Boolean {
+    fun start(context: Context, token: String, exec: Boolean, readTerminal: Boolean): Boolean {
         if (token.isBlank()) {
             Log.e(TAG, "no token provided")
             return false
@@ -87,6 +95,9 @@ object MCPBridge {
         pb.environment()["SHELLY_LIB_DIR"] = libDir.absolutePath
         pb.environment()["HOME"] = homeDir.absolutePath
         pb.environment()["SHELLY_MCP_TOKEN"] = token
+        // Explicit "0" so an inherited value can never turn a tool on.
+        pb.environment()["SHELLY_MCP_EXEC"] = if (exec) "1" else "0"
+        pb.environment()["SHELLY_MCP_READ_TERMINAL"] = if (readTerminal) "1" else "0"
         pb.directory(homeDir)
         pb.redirectErrorStream(false)
         return try {

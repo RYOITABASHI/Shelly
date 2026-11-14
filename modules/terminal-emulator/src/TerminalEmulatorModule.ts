@@ -535,9 +535,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * like the A2A server, not session-scoped like voice. `token` is the
    * pre-shared bearer token the caller must send as `Authorization: Bearer
    * <token>` — generate and persist it via lib/secure-store.ts, never pass
-   * a hardcoded value.
+   * a hardcoded value. `exec` / `readTerminal` are settings.mcpExecEnabled /
+   * mcpReadTerminalEnabled at start time: the server leaves run_command /
+   * write_file / read_terminal_output out of tools/list when they are off,
+   * so restart the server when either changes.
    */
-  startMCPServer(token: string): Promise<boolean>;
+  startMCPServer(token: string, exec: boolean, readTerminal: boolean): Promise<boolean>;
   stopMCPServer(): Promise<void>;
   isMCPServerRunning(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
