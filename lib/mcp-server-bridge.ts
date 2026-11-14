@@ -122,14 +122,7 @@ export async function revokePendingMCPRequests(): Promise<void> {
 async function callTool(tool: string, args: Record<string, unknown>, epoch: number = queueEpoch): Promise<ToolResult> {
   switch (tool) {
     case 'list_agents': {
-      const agents = useAgentStore.getState().agents.map((a) => ({
-        id: a.id,
-        name: a.name,
-        enabled: a.enabled,
-        schedule: a.schedule ?? null,
-        autonomous: a.autonomous,
-      }));
-      return { ok: true, data: agents };
+      return { ok: true, data: agentSummaries() };
     }
     case 'list_repos': {
       return { ok: true, data: useSidebarStore.getState().repoPaths };
@@ -323,5 +316,119 @@ export function stopMCPPoller(): void {
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
+  }
+}
+
+// ── Snapshot for direct reads ────────────────────────────────────────────
+//
+// RN pauses JS timers while Shelly is in the background, so the poller
+// above stops and queued tool calls hang. scripts/shelly-mcp-server.js
+// answers list_agents / list_repos / git_status itself from this snapshot
+// (see createDirectReadCallTool there). Store subscriptions fire on state
+// changes without timers, so the file stays current. The HMAC key derives
+// from the bearer token; the server ignores a snapshot it can't verify.
+
+const SNAPSHOT_URI = `${QUEUE_DIR}/snapshot.json`;
+
+export type McpSnapshotAgent = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  schedule: unknown;
+  autonomous: unknown;
+};
+
+export function agentSummaries(): McpSnapshotAgent[] {
+  return useAgentStore.getState().agents.map((a) => ({
+    id: a.id,
+    name: a.name,
+    enabled: a.enabled,
+    schedule: a.schedule ?? null,
+    autonomous: a.autonomous,
+  }));
+}
+
+export function buildSnapshotBody(agents: McpSnapshotAgent[], repoPaths: string[]): string {
+  return JSON.stringify({ v: 1, agents, repoPaths });
+}
+
+type Sha256 = (data: Uint8Array) => Promise<Uint8Array>;
+
+const expoSha256: Sha256 = async (data) => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Crypto = require('expo-crypto');
+  return new Uint8Array(await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, data));
+};
+
+function utf8(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+/** HMAC-SHA256 (RFC 2104) with key = SHA256("shelly-mcp-snapshot:" + token).
+ *  Must match snapshotMac() in scripts/shelly-mcp-server.js. */
+export async function signSnapshot(token: string, body: string, sha256: Sha256 = expoSha256): Promise<string> {
+  const key = new Uint8Array(64);
+  key.set(await sha256(utf8(`shelly-mcp-snapshot:${token}`)));
+  const ipad = key.map((b) => b ^ 0x36);
+  const opad = key.map((b) => b ^ 0x5c);
+  const inner = await sha256(concat(ipad, utf8(body)));
+  const mac = await sha256(concat(opad, inner));
+  return Array.from(mac, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+let snapshotToken: string | null = null;
+let lastSnapshotBody = '';
+let snapshotUnsubs: (() => void)[] = [];
+let snapshotWrite: Promise<void> = Promise.resolve();
+
+function publishSnapshot(): void {
+  const token = snapshotToken;
+  if (!token) return;
+  const body = buildSnapshotBody(agentSummaries(), useSidebarStore.getState().repoPaths);
+  if (body === lastSnapshotBody) return;
+  lastSnapshotBody = body;
+  snapshotWrite = snapshotWrite
+    .then(async () => {
+      if (snapshotToken !== token) return;
+      const file = JSON.stringify({ body, mac: await signSnapshot(token, body) });
+      await FileSystem.makeDirectoryAsync(QUEUE_DIR, { intermediates: true }).catch(() => {});
+      const tmp = `${SNAPSHOT_URI}.tmp`;
+      await FileSystem.writeAsStringAsync(tmp, file);
+      await FileSystem.deleteAsync(SNAPSHOT_URI, { idempotent: true });
+      await FileSystem.moveAsync({ from: tmp, to: SNAPSHOT_URI });
+    })
+    .catch(async (e) => {
+      lastSnapshotBody = '';
+      // Never leave an older, validly signed snapshot behind a failed write.
+      await FileSystem.deleteAsync(SNAPSHOT_URI, { idempotent: true }).catch(() => {});
+      logError('MCPBridge', 'snapshot write failed', e);
+    });
+}
+
+export function startMCPSnapshotPublisher(token: string): void {
+  stopMCPSnapshotPublisher({ keepFile: true });
+  snapshotToken = token;
+  lastSnapshotBody = '';
+  publishSnapshot();
+  snapshotUnsubs = [
+    useAgentStore.subscribe(() => publishSnapshot()),
+    useSidebarStore.subscribe(() => publishSnapshot()),
+  ];
+}
+
+export function stopMCPSnapshotPublisher(opts: { keepFile?: boolean } = {}): void {
+  for (const unsub of snapshotUnsubs) unsub();
+  snapshotUnsubs = [];
+  snapshotToken = null;
+  lastSnapshotBody = '';
+  if (!opts.keepFile) {
+    snapshotWrite = snapshotWrite.then(() => FileSystem.deleteAsync(SNAPSHOT_URI, { idempotent: true })).catch(() => {});
   }
 }

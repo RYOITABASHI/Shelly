@@ -93,6 +93,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Buffer } = require('buffer');
+const { execFile } = require('child_process');
 
 const RESULT_POLL_MS = 250;
 // run_command / write_file wait on an in-app approval tap (up to 90s,
@@ -259,6 +261,132 @@ function createFileQueueCallTool(queueDir) {
       JSON.stringify({ callId, tool: toolName, args: args || {}, receivedAt: new Date().toISOString() }),
     );
     return waitForResult(callId);
+  };
+}
+
+// ── Direct reads (no RN round-trip) ──────────────────────────────────────
+//
+// tools/call normally goes through the file queue above, which the RN side
+// drains with JS timers. RN pauses those timers while Shelly is in the
+// background, so every call hung there (2026-11-14 read prototype: the
+// handshake answered over Tailscale, tools/call did not). The read tools
+// that need no live UI state are answered here instead:
+//   list_agents / list_repos — from snapshot.json, which the RN bridge
+//     rewrites whenever the agent list or the Sidebar repos change;
+//   git_status — git run by this process, only for a repo in that snapshot.
+// The snapshot carries an HMAC keyed by the bearer token, so a file planted
+// in the queue dir by anything that doesn't hold the token is ignored and
+// the call falls back to the queue (the old behaviour). read_terminal_output,
+// run_command and write_file always go through the queue.
+
+const SNAPSHOT_FILE = 'snapshot.json';
+const SNAPSHOT_MAX_BYTES = 256 * 1024;
+const GIT_TIMEOUT_MS = 10_000;
+const DIRECT_READ_TOOLS = new Set(['list_agents', 'list_repos', 'git_status']);
+
+function snapshotMac(token, body) {
+  const key = crypto.createHash('sha256').update(`shelly-mcp-snapshot:${token}`).digest();
+  return crypto.createHmac('sha256', key).update(body).digest('hex');
+}
+
+function readVerifiedSnapshot(queueDir, token) {
+  try {
+    const file = path.join(queueDir, SNAPSHOT_FILE);
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > SNAPSHOT_MAX_BYTES) return null;
+    const outer = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!isPlainObject(outer) || typeof outer.body !== 'string' || typeof outer.mac !== 'string') return null;
+    const expected = Buffer.from(snapshotMac(token, outer.body), 'hex');
+    const presented = Buffer.from(outer.mac, 'hex');
+    if (presented.length !== expected.length || !crypto.timingSafeEqual(presented, expected)) return null;
+    const data = JSON.parse(outer.body);
+    if (!isPlainObject(data) || data.v !== 1 || !Array.isArray(data.agents) || !Array.isArray(data.repoPaths)) return null;
+    if (!data.repoPaths.every((r) => typeof r === 'string')) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// git as a network peer's request: the repo's own config must not be able
+// to run a program. Plain `git status` can run fsmonitor, hooks, clean
+// filters (filter.<x>.clean on modified tracked files) and child gits for
+// submodules, and can be pointed elsewhere by core.worktree / a gitdir file.
+// So: refuse a repo whose config names any of those, ignore global/system
+// config, stop discovery at the repo, skip submodules. Binaries in the lib
+// dir can't be exec'd directly (app_data_file), so go through linker64 the
+// same way MCPBridge.kt starts node.
+const GIT_REFUSED_CONFIG = /^(filter\.|core\.worktree$|core\.fsmonitor$|core\.hookspath$|include\.|includeif\.|status\.|submodule\.|diff\.)/i;
+
+function gitLibDir() {
+  return process.env.SHELLY_LIB_DIR || (process.env.LD_LIBRARY_PATH || '').split(':')[0] || '';
+}
+
+function execGit(args, repoPath) {
+  const libDir = gitLibDir();
+  const env = {
+    ...process.env,
+    GIT_EXEC_PATH: libDir,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CEILING_DIRECTORIES: path.dirname(repoPath),
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+  };
+  delete env.SHELLY_MCP_TOKEN;
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  const fixed = ['-c', `safe.directory=${repoPath}`, '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.untrackedCache=false'];
+  return new Promise((resolve) => {
+    execFile('/system/bin/linker64', [path.join(libDir, 'git'), ...fixed, '-C', repoPath, ...args], { env, timeout: GIT_TIMEOUT_MS, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+      resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
+async function defaultRunGit(repoPath) {
+  try {
+    if (!fs.lstatSync(path.join(repoPath, '.git')).isDirectory()) {
+      return { ok: false, error: 'refused: .git is not a directory in this repo' };
+    }
+  } catch {
+    return { ok: false, error: 'refused: not a git repository root' };
+  }
+  const cfg = await execGit(['config', '--local', '--list', '--name-only'], repoPath);
+  if (cfg.err && (cfg.err.code === 'ENOENT' || cfg.err.code === 'EACCES' || cfg.err.code === 'EPERM')) return { spawnFailed: true };
+  if (cfg.err) return { ok: false, error: cfg.stderr.slice(0, 2000) || cfg.err.message };
+  const refused = cfg.stdout.split(/\r?\n/).filter((k) => GIT_REFUSED_CONFIG.test(k.trim()));
+  if (refused.length) {
+    return { ok: false, error: `refused: repo config sets ${[...new Set(refused)].join(', ')}, which git status could use to run a program` };
+  }
+  const st = await execGit(['status', '--ignore-submodules=all'], repoPath);
+  if (st.err) return { ok: false, error: st.stderr.slice(0, 2000) || st.err.message };
+  return { ok: true, data: st.stdout };
+}
+
+/**
+ * Wraps the queue-backed callTool: answers the direct-read tools from the
+ * verified snapshot, and falls back to the queue when there is no valid
+ * snapshot (RN never published one, or it was signed with an older token)
+ * or git can't be spawned from here.
+ */
+function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {} }) {
+  return async function callTool(toolName, args) {
+    if (!DIRECT_READ_TOOLS.has(toolName)) return fallback(toolName, args);
+    const snap = readVerifiedSnapshot(queueDir, token);
+    if (!snap) return fallback(toolName, args);
+    if (toolName === 'list_agents') return { ok: true, data: snap.agents };
+    if (toolName === 'list_repos') return { ok: true, data: snap.repoPaths };
+    const target = args && typeof args.path === 'string' ? args.path : '';
+    if (!snap.repoPaths.includes(target)) {
+      return { ok: false, error: 'path is not a Shelly-configured repo (see list_repos)' };
+    }
+    const result = await runGit(target);
+    if (result && result.spawnFailed) {
+      log('git_status: git could not be started here, falling back to the app');
+      return fallback(toolName, args);
+    }
+    return result;
   };
 }
 
@@ -716,7 +844,12 @@ function main() {
 
   const log = (...args) => process.stderr.write(`[shelly-mcp] ${args.join(' ')}\n`);
   const mrtr = process.env.SHELLY_MCP_MRTR === '1';
-  const handler = createMcpHandler({ token, callTool: createFileQueueCallTool(queueDir), log, mrtr });
+  const handler = createMcpHandler({
+    token,
+    callTool: createDirectReadCallTool({ queueDir, token, fallback: createFileQueueCallTool(queueDir), log }),
+    log,
+    mrtr,
+  });
 
   const server = http.createServer((req, res) => {
     let body = '';
@@ -757,6 +890,9 @@ if (require.main === module) {
 } else {
   module.exports = {
     createMcpHandler,
+    createDirectReadCallTool,
+    snapshotMac,
+    GIT_REFUSED_CONFIG,
     TOOLS,
     MODERN_VERSIONS,
     LEGACY_VERSIONS,

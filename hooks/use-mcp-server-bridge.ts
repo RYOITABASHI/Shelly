@@ -18,7 +18,13 @@ import { useSettingsStore } from '@/store/settings-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
-import { revokePendingMCPRequests, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import {
+  revokePendingMCPRequests,
+  startMCPPoller,
+  startMCPSnapshotPublisher,
+  stopMCPPoller,
+  stopMCPSnapshotPublisher,
+} from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
 import {
   MCP_SERVER_PORT,
@@ -81,6 +87,15 @@ export async function regenerateMCPToken(): Promise<RegenerateResult> {
     // with whatever token is stored.
     useSettingsStore.getState().updateSettings({ mcpServerEnabled: false });
   }
+  // The snapshot is signed with the token: re-sign it with the new one so
+  // direct reads keep working (an old-token snapshot is ignored by the server).
+  if (useSettingsStore.getState().settings.mcpServerEnabled) {
+    void getOrCreateMCPToken()
+      .then((token) => {
+        if (useSettingsStore.getState().settings.mcpServerEnabled) startMCPSnapshotPublisher(token);
+      })
+      .catch(() => {});
+  }
   return result;
 }
 
@@ -98,6 +113,7 @@ export function useMCPServerBridge(): void {
         if (cancelled) return;
         if (started) {
           startMCPPoller();
+          startMCPSnapshotPublisher(token);
           logInfo('MCPBridge', 'server + poller started');
         } else {
           logError('MCPBridge', 'native server failed to start');
@@ -109,6 +125,7 @@ export function useMCPServerBridge(): void {
     return () => {
       cancelled = true;
       stopMCPPoller();
+      stopMCPSnapshotPublisher();
       void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
     };
   }, [enabled]);

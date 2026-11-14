@@ -84,6 +84,7 @@ object MCPBridge {
 
         val pb = ProcessBuilder("/system/bin/linker64", nodePath, scriptPath, queueDir.absolutePath, PORT.toString())
         pb.environment()["LD_LIBRARY_PATH"] = libDir.absolutePath
+        pb.environment()["SHELLY_LIB_DIR"] = libDir.absolutePath
         pb.environment()["HOME"] = homeDir.absolutePath
         pb.environment()["SHELLY_MCP_TOKEN"] = token
         pb.directory(homeDir)
