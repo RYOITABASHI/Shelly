@@ -50,6 +50,14 @@
  *     slot-fill follow-up turns also stay confirm-gated).
  */
 
+import {
+  classifyTerminalRequest,
+  isIngressField,
+  parseIngressMarker,
+  type McpIngressMarker,
+  type McpRequestOrigin,
+} from '@/lib/mcp-ingress-origin';
+
 export const AGENT_ADD_PREFIX = 'agentadd:';
 /** Requests older than this are dropped (never surfaced, never confirmed). */
 export const AGENT_ADD_MAX_AGE_MS = 10 * 60 * 1000;
@@ -96,7 +104,10 @@ export type AgentAddResultCode =
   | 'failed';
 
 export type AgentAddParse =
-  | { ok: true; reqId: string; tsMs: number; text: string }
+  /** ingress: the optional `:ingress=mcp.<principal>.<callId>` marker the shim
+   *  copies from $SHELLY_INGRESS* (lib/mcp-ingress-origin.ts). Present only
+   *  when valid; it can only add taint, never remove it. */
+  | { ok: true; reqId: string; tsMs: number; text: string; ingress?: McpIngressMarker }
   | { ok: false; reqId: string | null; reason: 'malformed' | 'stale' | 'empty' | 'reserved' };
 
 export function sanitizeAgentAddText(raw: string | null | undefined): string {
@@ -119,8 +130,19 @@ export function validateAgentAddText(text: string): 'empty' | 'reserved' | null 
   return null;
 }
 
-export function encodeAgentAddLine(reqId: string, tsMs: number, text: string): string {
-  return `${AGENT_ADD_PREFIX}${reqId}:${tsMs}:${encodeURIComponent(text)}`;
+export function encodeAgentAddLine(reqId: string, tsMs: number, text: string, ingress?: McpIngressMarker): string {
+  const marker = ingress ? `:ingress=mcp.${ingress.principal}.${ingress.callId}` : '';
+  return `${AGENT_ADD_PREFIX}${reqId}:${tsMs}:${encodeURIComponent(text)}${marker}`;
+}
+
+/** Splits off an optional trailing `ingress=` field. `bad` = a malformed one
+ *  (the whole line is then refused as malformed). */
+function splitIngress(parts: string[], baseLength: number): { parts: string[]; ingress?: McpIngressMarker; bad?: true } {
+  if (parts.length === baseLength + 1 && isIngressField(parts[baseLength])) {
+    const ingress = parseIngressMarker(parts[baseLength]);
+    return ingress ? { parts: parts.slice(0, baseLength), ingress } : { parts, bad: true };
+  }
+  return { parts };
 }
 
 /** Pure validation of one request record. Never throws. */
@@ -128,8 +150,9 @@ export function parseAgentAddLine(line: string, nowMs: number): AgentAddParse {
   if (typeof line !== 'string') return { ok: false, reqId: null, reason: 'malformed' };
   const trimmed = line.replace(/\r?\n$/, '');
   if (!trimmed.startsWith(AGENT_ADD_PREFIX)) return { ok: false, reqId: null, reason: 'malformed' };
-  const parts = trimmed.slice(AGENT_ADD_PREFIX.length).split(':');
-  if (parts.length !== 3) return { ok: false, reqId: null, reason: 'malformed' };
+  const split = splitIngress(trimmed.slice(AGENT_ADD_PREFIX.length).split(':'), 3);
+  const parts = split.parts;
+  if (split.bad || parts.length !== 3) return { ok: false, reqId: null, reason: 'malformed' };
   const [reqIdRaw, tsRaw, encoded] = parts;
   const reqId = REQ_ID_RE.test(reqIdRaw) ? reqIdRaw : null;
   if (!reqId || !TS_RE.test(tsRaw) || encoded.length > AGENT_ADD_MAX_ENCODED_CHARS) {
@@ -148,7 +171,7 @@ export function parseAgentAddLine(line: string, nowMs: number): AgentAddParse {
   const text = sanitizeAgentAddText(decoded);
   const invalid = validateAgentAddText(text);
   if (invalid) return { ok: false, reqId, reason: invalid };
-  return { ok: true, reqId, tsMs: ts, text };
+  return split.ingress ? { ok: true, reqId, tsMs: ts, text, ingress: split.ingress } : { ok: true, reqId, tsMs: ts, text };
 }
 
 /** The exact AI-pane input a validated request becomes — the same text the
@@ -167,29 +190,45 @@ const CTL_FILE_RE = /^\.shelly-agent-ctl-[0-9]{10,16}-[0-9a-f]{8}$/;
 const SUMMARY_FILE_RE = /^\.shelly-agent-summary-([0-9]{10,16}-[0-9a-f]{8})\.json$/;
 const CTL_HASH_PREFIX_RE = /^[0-9a-f]{8}$/;
 
-export type AgentCtlRequest =
-  /** hashPrefix: first 8 hex of the definition hash printed in the summary
-   *  (a binding, not a secret — lib/agent-add-approval.ts). */
-  | { ctlId: string; op: 'confirm'; reqId: string; hashPrefix: string }
-  | { ctlId: string; op: 'reject'; reqId: string }
-  /** `shelly closepaw confirm <reqId> <hash8>` / `reject <reqId>` (Shelly-
-   *  trusted ClosePaw variant — lib/closepaw-shell-approval.ts). */
-  | { ctlId: string; op: 'closepaw-confirm'; reqId: string; hashPrefix: string }
-  | { ctlId: string; op: 'closepaw-reject'; reqId: string };
+/** Optional on every control request: the marker from the line (`ingress`)
+ *  and, set by the drain only, whether the control request itself came in
+ *  through MCP (marker or an MCP command window — lib/mcp-ingress-origin.ts). */
+type AgentCtlOrigin = { ingress?: McpIngressMarker; mcpOrigin?: McpRequestOrigin | null };
 
-/** `agentctl:<ctlId>:<tsMs>:<confirm|reject>:<reqId>[:<hash8>]`. Never throws. */
+export type AgentCtlRequest = AgentCtlOrigin &
+  (
+    /** hashPrefix: first 8 hex of the definition hash printed in the summary
+     *  (a binding, not a secret — lib/agent-add-approval.ts). */
+    | { ctlId: string; op: 'confirm'; reqId: string; hashPrefix: string }
+    | { ctlId: string; op: 'reject'; reqId: string }
+    /** `shelly closepaw confirm <reqId> <hash8>` / `reject <reqId>` (Shelly-
+     *  trusted ClosePaw variant — lib/closepaw-shell-approval.ts). */
+    | { ctlId: string; op: 'closepaw-confirm'; reqId: string; hashPrefix: string }
+    | { ctlId: string; op: 'closepaw-reject'; reqId: string }
+  );
+
+/** `agentctl:<ctlId>:<tsMs>:<confirm|reject>:<reqId>[:<hash8>][:ingress=mcp.<p>.<c>]`. Never throws. */
 export function parseAgentCtlLine(line: string, nowMs: number): AgentCtlRequest | null {
   if (typeof line !== 'string' || !line.startsWith(AGENT_CTL_PREFIX)) return null;
-  const parts = line.replace(/\r?\n$/, '').slice(AGENT_CTL_PREFIX.length).split(':');
+  const raw = line.replace(/\r?\n$/, '').slice(AGENT_CTL_PREFIX.length).split(':');
+  let ingress: McpIngressMarker | undefined;
+  let parts = raw;
+  if (isIngressField(raw[raw.length - 1] ?? '')) {
+    const m = parseIngressMarker(raw[raw.length - 1]);
+    if (!m) return null;
+    ingress = m;
+    parts = raw.slice(0, -1);
+  }
   if (parts.length < 4 || parts.length > 5) return null;
   const [ctlId, tsRaw, op, reqId, hashPrefix] = parts;
   if (!REQ_ID_RE.test(ctlId) || !TS_RE.test(tsRaw) || !REQ_ID_RE.test(reqId)) return null;
   const ts = Number(tsRaw);
   if (nowMs - ts > AGENT_CTL_MAX_AGE_MS || ts - nowMs > AGENT_ADD_MAX_FUTURE_MS) return null;
-  if (op === 'confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix };
-  if (op === 'reject' && parts.length === 4) return { ctlId, op, reqId };
-  if (op === 'closepaw-confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix };
-  if (op === 'closepaw-reject' && parts.length === 4) return { ctlId, op, reqId };
+  const extra = ingress ? { ingress } : {};
+  if (op === 'confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix, ...extra };
+  if (op === 'reject' && parts.length === 4) return { ctlId, op, reqId, ...extra };
+  if (op === 'closepaw-confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix, ...extra };
+  if (op === 'closepaw-reject' && parts.length === 4) return { ctlId, op, reqId, ...extra };
   return null;
 }
 
@@ -362,6 +401,10 @@ export async function drainAgentAddRequests(
       await deps.writeCtlResult(ctlId, { ok: false, code: 'invalid', message: 'shelly agent: malformed or expired control request' });
       continue;
     }
+    // Did the control request itself come in through MCP? (marker, or seen
+    // inside an MCP command window — lib/mcp-ingress-origin.ts)
+    ctl.mcpOrigin = classifyTerminalRequest(`ctl-${ctlId}`, ctl.ingress, [reqIdTimestamp(ctlId), now]);
+    if (ctl.mcpOrigin) deps.log?.(`agent ctl: ${ctlId} (${ctl.op}) came in through MCP (via ${ctl.mcpOrigin.via})`);
     let result: AgentAddResult;
     try {
       result = await deps.handleCtl(ctl);
@@ -402,6 +445,10 @@ export async function drainAgentAddRequests(
       continue;
     }
 
+    // MCP origin (marker, or seen inside an MCP command window): remembered
+    // by request id so the confirm path marks the agent (Inc 4).
+    const origin = classifyTerminalRequest(parsed.reqId, parsed.ingress, [parsed.tsMs, reqIdTimestamp(parsed.reqId), now]);
+    if (origin) deps.log?.(`agent add: ${file.kind} ${file.reqId} came in through MCP (via ${origin.via})`);
     const opened = deps.handOff(buildAgentAddPrompt(parsed.text), parsed.reqId);
     state.lastHandOffAt = now;
     deps.log?.(`agent add: ${file.kind} ${file.reqId} handed to the AI pane (opened=${opened}, ${parsed.text.length} chars)`);

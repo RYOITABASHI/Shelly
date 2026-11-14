@@ -76,7 +76,7 @@ describe('MCP direct reads', () => {
     await writeSnapshot(TOKEN);
     const { callTool, fallback } = make(jest.fn(async () => ({ spawnFailed: true })));
     expect(await callTool('git_status', { path: REPO })).toEqual({ ok: true, data: 'from-queue' });
-    expect(fallback).toHaveBeenCalledWith('git_status', { path: REPO });
+    expect(fallback).toHaveBeenCalledWith('git_status', { path: REPO }, undefined);
   });
 
   it('ignores a missing, forged, old-token or malformed snapshot and uses the queue', async () => {

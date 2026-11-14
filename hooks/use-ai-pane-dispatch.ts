@@ -86,6 +86,8 @@ import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, 
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
+import { mcpOriginForRequest } from '@/lib/mcp-ingress-origin';
+import { markMcpAgentBeforePersist, mcpOriginForDraft } from '@/lib/mcp-agent-ingress';
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
 import { runWithoutApprovalAllAllowedFor, setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 import {
@@ -3144,6 +3146,10 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             // binding + shell-readable summary can never cover another draft.
             if (dispatchOpts?.source === 'terminal-request' && isAgentAddRequestId(dispatchOpts.requestId)) {
               draft.terminalRequestId = dispatchOpts.requestId;
+              // MCP ingress (Inc 4): the request came in through MCP — carried
+              // on the draft so the confirm path marks the agent.
+              const mcpOrigin = mcpOriginForRequest(dispatchOpts.requestId);
+              if (mcpOrigin) draft.mcpIngress = { principal: mcpOrigin.principal, callId: mcpOrigin.callId };
             }
             // Security review H2: "承認なしで実行" only from words the user
             // typed in this chat — a terminal request (`shelly agent add`,
@@ -4759,10 +4765,32 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
           ...(confirmed.roleRef && !editingAgent ? { roleRef: confirmed.roleRef } : {}),
         };
+        // MCP ingress (DEFERRED.md Inc 4): an agent created or changed by an
+        // MCP-originated request is marked BEFORE it exists; if the mark can't
+        // be written, nothing is registered (lib/agent-ingress-taint.ts
+        // invariant). Logged and shown in this draft's own chat line only.
+        const mcpMark = await markMcpAgentBeforePersist({
+          origin: mcpOriginForDraft(originalDraftSnapshot as ParsedAgentDraft | undefined),
+          editingAgentId,
+          existingAgentIds: useAgentStore.getState().agents.map((a) => a.id),
+        });
+        if ('reason' in mcpMark) {
+          logWarn('AgentIngressTaint', `MCP-originated registration refused for ${mcpMark.agentId}: ${mcpMark.reason}`);
+          const refuseLocale = detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt);
+          updateOrFallback({
+            agentCardState: 'cancelled',
+            content: refuseLocale === 'ja'
+              ? 'このエージェントは外部（MCP）からの依頼で作られたため印を付ける必要がありますが、印を保存できなかったので登録しませんでした。'
+              : 'This agent came from an external (MCP) request and must be marked as such, but the mark could not be saved, so it was not registered.',
+          });
+          return;
+        }
+        if (mcpMark.marked) logInfo('AgentIngressTaint', `marked ${mcpMark.agentId} as MCP-originated before registration`);
         const persisted = await persistAgentDraft({
           editingAgentId,
           createParams: {
             ...agentFields,
+            ...(mcpMark.marked && mcpMark.presetId ? { id: mcpMark.presetId } : {}),
             outputPath: confirmed.presetOutput?.outputPath ?? `$HOME/.shelly/agents/${safeName}/output.md`,
             ...(confirmed.presetOutput ? { outputTemplate: confirmed.presetOutput.outputTemplate } : {}),
           },

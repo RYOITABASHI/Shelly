@@ -39,6 +39,17 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
             <Text style={[styles.summary, { color: colors.foreground }]} selectable>
               {current?.summary}
             </Text>
+            {/* MCP ingress (Inc 2): always external; the name is the client's own claim. */}
+            <Text style={[styles.risk, { color: colors.error }]}>{t('mcp.approval_origin')}</Text>
+            {current?.origin ? (
+              <Text style={[styles.detail, { color: colors.muted }]} selectable>
+                {t('mcp.approval_principal', { principal: current.origin.principal })}
+                {'\n'}
+                {current.origin.clientNameSelfReported
+                  ? t('mcp.approval_client_name', { name: current.origin.clientNameSelfReported })
+                  : t('mcp.approval_client_name_none')}
+              </Text>
+            ) : null}
             {current?.riskLevel ? (
               <Text style={[styles.risk, { color: colors.error }]}>
                 {t('mcp.approval_risk_label')}: {current.riskLevel}

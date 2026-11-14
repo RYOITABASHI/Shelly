@@ -796,11 +796,12 @@ class TerminalEmulatorModule : Module() {
 
         // MCP (Model Context Protocol) server — see MCPBridge.kt.
         // exec / readTerminal: settings.mcpExecEnabled / mcpReadTerminalEnabled
-        // at start time (the script hides those tools when off).
-        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean ->
+        // at start time (the script hides those tools when off). bridgeKey:
+        // RN's per-start key that signs queue requests (never logged).
+        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, bridgeKey: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
-            MCPBridge.start(context, token, exec, readTerminal)
+            MCPBridge.start(context, token, exec, readTerminal, bridgeKey)
         }
 
         AsyncFunction("stopMCPServer") {

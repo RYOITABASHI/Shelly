@@ -28,6 +28,7 @@ import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
 import {
   revokePendingMCPRequests,
+  setMCPBridgeKey,
   startMCPPoller,
   startMCPSnapshotPublisher,
   stopMCPPoller,
@@ -69,10 +70,18 @@ async function probeLocalServer(token: string): Promise<number | null> {
   }
 }
 
-/** Starts the native server with the tool settings as they are right now. */
-function startNativeServer(token: string): Promise<boolean> {
+/** Starts the native server with the tool settings as they are right now.
+ *  Every start gets a fresh bridge key (RN memory only): the server signs its
+ *  queue requests with it and the RN poller drops anything else
+ *  (lib/mcp-request-auth.ts). Set before the start so no signed request can
+ *  arrive ahead of it. */
+async function startNativeServer(token: string): Promise<boolean> {
   const { settings } = useSettingsStore.getState();
-  return TerminalEmulator.startMCPServer(token, settings.mcpExecEnabled === true, settings.mcpReadTerminalEnabled === true);
+  const bytes = await Crypto.getRandomBytesAsync(32);
+  if (!bytes || bytes.length !== 32) throw new Error('bridge key generation failed');
+  const bridgeKey = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  setMCPBridgeKey(bridgeKey);
+  return TerminalEmulator.startMCPServer(token, settings.mcpExecEnabled === true, settings.mcpReadTerminalEnabled === true, bridgeKey);
 }
 
 const serverControl: McpServerControl = {
@@ -150,6 +159,7 @@ export function useMCPServerBridge(): void {
       cancelled = true;
       stopMCPPoller();
       stopMCPSnapshotPublisher();
+      setMCPBridgeKey(null);
       void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
     };
   }, [enabled, execEnabled, readTerminalEnabled]);

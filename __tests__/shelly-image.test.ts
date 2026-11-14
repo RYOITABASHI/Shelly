@@ -1152,7 +1152,7 @@ describe('assets and the shelly helper', () => {
     expect(home).toContain("if (args[0] === 'image') {");
     expect(home).toContain("concat([imageJs], args.slice(1))");
     expect(home).toContain("require('child_process').spawnSync(");
-    expect(home).toContain('# SHELLY_HELPER_SHIM v26');
+    expect(Number(home.match(/# SHELLY_HELPER_SHIM v(\d+)/)![1])).toBeGreaterThanOrEqual(26);
     expect(Number(home.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(291);
   });
 });

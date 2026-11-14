@@ -19,6 +19,9 @@ export interface McpApprovalRequest {
   detail: string;
   /** Risk label for run_command (from lib/command-safety.ts), if applicable. */
   riskLevel?: string;
+  /** Who sent it (DEFERRED.md MCP ingress Inc 2): the token principal and the
+   *  client's self-reported, unverified name. Every MCP request is external. */
+  origin?: { principal: string; clientNameSelfReported: string };
   resolve: (approved: boolean) => void;
 }
 

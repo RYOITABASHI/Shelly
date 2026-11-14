@@ -635,9 +635,11 @@ describe('generated shim: shelly agent', () => {
     home = fs.mkdtempSync(path.join(tmp, 'home-'));
   });
 
-  function run(args: string[], app?: (home: string) => void) {
+  function run(args: string[], app?: (home: string) => void, extraEnv: Record<string, string> = {}) {
     return new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
-      const child = spawn(process.execPath, [shimPath, ...args], { env: { ...process.env, HOME: home } });
+      const base = { ...process.env };
+      delete base.SHELLY_INGRESS;
+      const child = spawn(process.execPath, [shimPath, ...args], { env: { ...base, HOME: home, ...extraEnv } });
       let out = '';
       let err = '';
       child.stdout.on('data', (b) => (out += b));
@@ -699,6 +701,32 @@ describe('generated shim: shelly agent', () => {
     expect(r.out).toMatch(/shelly agent confirm [0-9]+-[0-9a-f]{8} abcdef01/);
     expect(fs.existsSync(path.join(home, '.shelly', 'agents'))).toBe(false);
   }, 30_000);
+
+  it('add/confirm: copy SHELLY_INGRESS* as a sanitized marker (MCP ingress Inc 4), none without it', async () => {
+    const seen: string[] = [];
+    const answer = (h: string) => {
+      for (const n of fs.readdirSync(h)) {
+        const m = /^\.shelly-agent-(req|ctl)-([0-9]+-[0-9a-f]{8})$/.exec(n);
+        if (!m) continue;
+        seen.push(fs.readFileSync(path.join(h, n), 'utf8'));
+        fs.unlinkSync(path.join(h, n));
+        const file = m[1] === 'req' ? agentAddResultFileName(m[2]) : agentCtlResultFileName(m[2]);
+        fs.writeFileSync(path.join(h, file), JSON.stringify({ ok: true, code: 'notified', message: 'queued' }));
+      }
+    };
+    const env = { SHELLY_INGRESS: 'mcp', SHELLY_INGRESS_CLIENT: '0123456789abcdef0123456789abcdef', SHELLY_INGRESS_CALL: 'call-1' };
+    await run(['agent', 'add', 'daily news'], answer, env);
+    await run(['agent', 'confirm', REQ, 'abcdef01'], answer, env);
+    await run(['agent', 'add', 'daily news'], answer, { SHELLY_INGRESS: 'mcp', SHELLY_INGRESS_CLIENT: 'a;b c', SHELLY_INGRESS_CALL: '' });
+    await run(['agent', 'add', 'daily news'], answer);
+    expect(seen).toHaveLength(4);
+    expect(seen[0]).toMatch(/^agentadd:[0-9]+-[0-9a-f]{8}:[0-9]+:daily%20news:ingress=mcp\.0123456789abcdef0123456789abcdef\.call-1\n$/);
+    expect(parseAgentAddLine(seen[0], Date.now())).toMatchObject({ ok: true, ingress: { kind: 'mcp', principal: '0123456789abcdef0123456789abcdef', callId: 'call-1' } });
+    expect(seen[1].startsWith('agentctl:')).toBe(true);
+    expect(seen[1]).toContain(':confirm:' + REQ + ':abcdef01:ingress=mcp.0123456789abcdef0123456789abcdef.call-1\n');
+    expect(seen[2]).toMatch(/:ingress=mcp\.unknown\.unknown\n$/);
+    expect(seen[3]).not.toContain('ingress=');
+  }, 60_000);
 
   it('add: background (native "notified") tells the user to open Shelly', async () => {
     const r = await run(['agent', 'add', 'daily summary'], (h) => {

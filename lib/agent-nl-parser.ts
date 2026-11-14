@@ -44,6 +44,10 @@ export interface ParsedAgentDraft {
    *  The approval binding and the shell-readable summary exist only for a
    *  draft carrying it. Absent = an ordinary user draft. */
   terminalRequestId?: string;
+  /** The `shelly agent add` request came in through MCP (marker or MCP
+   *  command window, lib/mcp-ingress-origin.ts): the agent is marked on
+   *  confirm (lib/mcp-agent-ingress.ts). Set only by the dispatch. */
+  mcpIngress?: { principal: string; callId: string };
   /** The actionable instruction fed to the agent (schedule phrase stripped). */
   prompt: string;
   /** Cron in one of the 3 whitelisted shapes, or null when it could not be parsed. */

@@ -71,6 +71,8 @@ import {
   type AgentAddSummary,
 } from '@/lib/agent-add-approval';
 import { handleClosePawShellCtl } from '@/lib/closepaw-shell-approval';
+import { mcpOriginForRequest, type McpRequestOrigin } from '@/lib/mcp-ingress-origin';
+import { mcpOriginForDraft, type McpAgentOrigin } from '@/lib/mcp-agent-ingress';
 import { agentMatchesApprovedDraft, revokeClosePawPreapproval, sealClosePawPreapproval } from '@/lib/agent-closepaw-preapproval';
 
 export type AgentAddPaneHandlers = {
@@ -403,8 +405,37 @@ export async function applyAgentAddDecision(
   return { ok: true, code: 'sent', message: 'Rejected — nothing was registered.' };
 }
 
+/** MCP origin of the agent request a terminal confirm targets: the in-memory
+ *  classification, or the origin stamped on its pending draft. */
+function mcpConfirmTargetOrigin(reqId: string): McpRequestOrigin | McpAgentOrigin | null {
+  const known = mcpOriginForRequest(reqId);
+  if (known) return known;
+  const b = getAgentAddBinding(reqId);
+  const msg = b ? findPendingDraftMessage(b) : null;
+  return mcpOriginForDraft(msg?.agentDraft as ParsedAgentDraft | undefined);
+}
+
 /** `shelly agent confirm <reqId> <hash8>` / `shelly agent reject <reqId>`. */
 export async function handleAgentCtl(ctl: AgentCtlRequest): Promise<AgentAddResult> {
+  // MCP ingress (DEFERRED.md Inc 4): an approval never comes from MCP. A
+  // confirm is refused when the control request itself came in through MCP,
+  // or when the request it would approve did (marker or MCP command window,
+  // lib/mcp-ingress-origin.ts; or the origin stamped on the pending draft).
+  // The owner confirms in Shelly as usual. No prompt, no notification: the
+  // reason goes to the log and back to the caller.
+  if (ctl.op === 'confirm' || ctl.op === 'closepaw-confirm') {
+    const target = ctl.op === 'confirm' ? mcpConfirmTargetOrigin(ctl.reqId) : null;
+    const origin = ctl.mcpOrigin ?? target;
+    if (origin) {
+      const which = ctl.mcpOrigin ? 'the control request' : 'the agent request';
+      logWarn('AgentAddFlow', `${ctl.op} ${ctl.reqId} refused: ${which} came in through MCP (via ${'via' in origin ? origin.via : 'draft'})`);
+      return {
+        ok: false,
+        code: 'invalid',
+        message: `shelly ${ctl.op === 'confirm' ? 'agent' : 'closepaw'} confirm: requests that came in through MCP can only be approved by the user in Shelly itself`,
+      };
+    }
+  }
   if (ctl.op === 'closepaw-confirm') return handleClosePawShellCtl('approve', ctl.reqId, ctl.hashPrefix);
   if (ctl.op === 'closepaw-reject') return handleClosePawShellCtl('reject', ctl.reqId, '');
   if (ctl.op === 'reject') {

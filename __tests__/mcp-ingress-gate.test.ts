@@ -62,7 +62,13 @@ const mockExecCommand = jest.fn(async (cmd: string) => {
 jest.mock('@/hooks/use-native-exec', () => ({ execCommand: (...a: unknown[]) => (mockExecCommand as any)(...a) }));
 jest.mock('@/lib/debug-logger', () => ({ logInfo: () => {}, logError: () => {}, logWarn: () => {} }));
 
-import { startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import { __setMCPRequestSha256ForTests, setMCPBridgeKey, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import { TEST_BRIDGE_KEY, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+
+beforeAll(() => {
+  __setMCPRequestSha256ForTests(nodeSha256);
+  setMCPBridgeKey(TEST_BRIDGE_KEY);
+});
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 import {
   GATE_HOME,
@@ -90,7 +96,7 @@ let seq = 0;
 /** Queue one call and wait for its result file (or for the approval modal). */
 async function call(tool: string, args: Record<string, unknown>, opts: { approve?: boolean } = {}) {
   const callId = `c${++seq}`;
-  mockFiles.set(`${REQUESTS}/${callId}.json`, JSON.stringify({ callId, tool, args }));
+  mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, tool, args));
   startMCPPoller();
   const resultUri = `${RESULTS}/${callId}.json`;
   let shown: string | null = null;
@@ -107,7 +113,8 @@ async function call(tool: string, args: Record<string, unknown>, opts: { approve
 }
 
 function ranExactly(command: string): boolean {
-  return mockExecCommand.mock.calls.some((c) => c[0] === command);
+  // MCP run_command gets the ingress env prefix (Inc 2); compare without it.
+  return mockExecCommand.mock.calls.some((c) => String(c[0]).replace(/^export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=[A-Za-z0-9_-]+ SHELLY_INGRESS_CALL=[A-Za-z0-9_-]+; /, '') === command);
 }
 
 /** Resolution where every existing parent is a plain directory. */
@@ -196,7 +203,7 @@ describe('run_command through the RN bridge', () => {
 
   it('re-checks the exec setting after the tap', async () => {
     const callId = `c${++seq}`;
-    mockFiles.set(`${REQUESTS}/${callId}.json`, JSON.stringify({ callId, tool: 'run_command', args: { command: 'whoami' } }));
+    mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, 'run_command', { command: 'whoami' }));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     mockSettings.mcpExecEnabled = false;

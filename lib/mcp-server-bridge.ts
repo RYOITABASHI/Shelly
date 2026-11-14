@@ -21,6 +21,14 @@
  * Always decided HERE, never by the MCP peer; the node server also hides
  * the tools whose setting is off, but that is not relied on.
  *
+ * Queue requests are authenticated (Inc 2): the server signs each one with
+ * the per-start bridge key (lib/mcp-request-auth.ts); a file without a valid
+ * MAC is dropped and logged, never run and never answered. Every verified
+ * request is external (tainted) input; the approval modal says it came from
+ * MCP, with the principal and the client's self-reported name. An approved
+ * run_command runs with SHELLY_INGRESS* exported and inside a recorded window
+ * (lib/mcp-ingress-origin.ts), so a `shelly agent add` it starts is marked.
+ *
  * Protocol-era agnostic: this side only sees one request file per tool
  * call. Whether the peer is a legacy (initialize/session) client holding
  * one POST open, or a 2026-07-28 client that the server defers via MRTR
@@ -41,21 +49,35 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteTarget, shellQuote, type McpShellRunner } from '@/lib/mcp-ingress-gate';
 import { getCachedUserPolicy, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
 import { logError, logInfo } from '@/lib/debug-logger';
+import { verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
+import { beginMcpExecWindow, endMcpExecWindow, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
 const RESULTS_DIR = `${QUEUE_DIR}/results`;
 const POLL_INTERVAL_MS = 500;
 
-type MCPToolRequest = {
-  callId: string;
-  tool: string;
-  args: Record<string, unknown>;
-};
+type McpIngress = McpVerifiedRequest['ingress'];
 
-function isMCPToolRequest(value: unknown): value is MCPToolRequest {
-  const v = value as MCPToolRequest;
-  return !!v && typeof v === 'object' && typeof v.callId === 'string' && typeof v.tool === 'string';
+// The per-start bridge key (hooks/use-mcp-server-bridge.ts). null = the
+// server is not running from this JS context: every request is refused.
+let bridgeKey: string | null = null;
+
+/** Set before each server start, cleared when it stops. Never logged. */
+export function setMCPBridgeKey(key: string | null): void {
+  bridgeKey = key;
+}
+
+const expoRequestSha256: Sha256 = async (data) => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Crypto = require('expo-crypto');
+  return new Uint8Array(await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, data));
+};
+let requestSha256: Sha256 = expoRequestSha256;
+
+/** Test hook (Jest has no expo-crypto digest). */
+export function __setMCPRequestSha256ForTests(fn: Sha256 | null): void {
+  requestSha256 = fn ?? expoRequestSha256;
 }
 
 const EXEC_DISABLED_ERROR = 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)';
@@ -99,6 +121,7 @@ function requestApproval(request: {
   summary: string;
   detail: string;
   riskLevel?: string;
+  origin: McpIngress;
 }): Promise<boolean> {
   return new Promise((resolve) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -120,6 +143,7 @@ function requestApproval(request: {
     }, APPROVAL_TIMEOUT_MS);
     useMcpApprovalStore.getState().enqueue({
       ...request,
+      origin: { principal: request.origin.principal, clientNameSelfReported: request.origin.clientNameSelfReported },
       id,
       resolve: (approved) => {
         clearTimeout(timer);
@@ -151,7 +175,56 @@ export async function revokePendingMCPRequests(): Promise<void> {
   logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
 }
 
-async function callTool(tool: string, args: Record<string, unknown>, epoch: number = queueEpoch): Promise<ToolResult> {
+const AGENT_REQUEST_FILE_RE = /^\.shelly-agent-(?:req|pending)-([0-9]{10,16}-[0-9a-f]{8})$/;
+
+/** `shelly agent add` request ids currently in $HOME (req or pending). */
+async function agentRequestIdsInHome(): Promise<Set<string> | null> {
+  const names = await FileSystem.readDirectoryAsync(`${FileSystem.documentDirectory}home`).catch(() => null);
+  if (!names) return null;
+  const ids = new Set<string>();
+  for (const n of names) {
+    const m = AGENT_REQUEST_FILE_RE.exec(n);
+    if (m) ids.add(m[1]);
+  }
+  return ids;
+}
+
+/**
+ * Runs an approved MCP run_command with the ingress variables exported and
+ * inside a recorded window: any `shelly agent add` request that appears in
+ * $HOME while it runs is MCP-originated even if the command dropped the
+ * variables (lib/mcp-ingress-origin.ts). Exported for tests.
+ */
+export async function runMcpCommand(
+  full: string,
+  timeoutMs: number,
+  callId: string,
+  ingress: McpIngress,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const before = await agentRequestIdsInHome();
+  beginMcpExecWindow(callId, ingress.principal);
+  try {
+    return await execCommand(`${mcpIngressEnvPrefix(ingress.principal, callId)}${full}`, timeoutMs);
+  } finally {
+    const after = await agentRequestIdsInHome();
+    if (after) {
+      for (const reqId of after) {
+        if (before && before.has(reqId)) continue;
+        noteRequestSeenInWindow(reqId, callId, ingress.principal);
+        logInfo('MCPBridge', `agent request ${reqId} appeared during MCP call ${callId}; marked as MCP-originated`);
+      }
+    }
+    endMcpExecWindow(callId);
+  }
+}
+
+async function callTool(
+  tool: string,
+  args: Record<string, unknown>,
+  epoch: number,
+  ingress: McpIngress,
+  callId: string,
+): Promise<ToolResult> {
   switch (tool) {
     case 'list_agents': {
       return { ok: true, data: agentSummaries() };
@@ -225,6 +298,7 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
         summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
         detail: `${command}\n\nGate: ${gate.summary}`,
         riskLevel: gate.outcome?.verdict.dangerLevel,
+        origin: ingress,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
@@ -234,7 +308,7 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
       if (!execEnabled()) return { ok: false, error: EXEC_DISABLED_ERROR };
       try {
         const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 30_000;
-        const result = await execCommand(full, timeoutMs);
+        const result = await runMcpCommand(full, timeoutMs, callId, ingress);
         return { ok: true, data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -275,6 +349,7 @@ async function callTool(tool: string, args: Record<string, unknown>, epoch: numb
         kind: 'write_file',
         summary: `Write ${content.length} bytes to a file via MCP?`,
         detail: `${shownPath}\n\nGate: ${gates[0].summary}\n\n${preview}`,
+        origin: ingress,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
@@ -315,20 +390,31 @@ async function processRequestFile(name: string): Promise<void> {
   const epoch = queueEpoch;
   try {
     const raw = await FileSystem.readAsStringAsync(requestUri);
-    const parsed: unknown = JSON.parse(raw);
-    if (!isMCPToolRequest(parsed)) {
-      logError('MCPBridge', `rejected malformed request file ${name}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+    // Only requests the server signed with this start's bridge key are MCP
+    // calls; anything else in the queue dir (any same-uid process can write
+    // there) is dropped without an answer. Taint is never read from the file:
+    // every verified request is external input.
+    const check = await verifyMcpRequest(parsed, bridgeKey, requestSha256);
+    if ('reason' in check) {
+      logError('MCPBridge', `rejected unauthenticated request file ${name} (${check.reason})`);
       return;
     }
+    const request = check.request;
     if (epoch !== queueEpoch) return;
-    const result = await callTool(parsed.tool, parsed.args ?? {}, epoch);
+    const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId);
     if (epoch !== queueEpoch) {
-      logInfo('MCPBridge', `dropped call ${parsed.callId} (token regenerated while it was pending)`);
+      logInfo('MCPBridge', `dropped call ${request.callId} (token regenerated while it was pending)`);
       return;
     }
-    const resultUri = `${RESULTS_DIR}/${parsed.callId}.json`;
+    const resultUri = `${RESULTS_DIR}/${request.callId}.json`;
     await FileSystem.writeAsStringAsync(resultUri, JSON.stringify(result));
-    logInfo('MCPBridge', `answered call ${parsed.callId} (tool=${parsed.tool}, ok=${result.ok})`);
+    logInfo('MCPBridge', `answered call ${request.callId} (tool=${request.tool}, ok=${result.ok}, principal=${request.ingress.principal.slice(0, 8)})`);
   } catch (e) {
     logError('MCPBridge', `failed to process request file ${name}`, e);
   } finally {

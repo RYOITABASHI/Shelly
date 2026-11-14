@@ -71,6 +71,8 @@ object AgentAddHandoff {
     private val REQUEST_FILE_RE = Regex("^\\.shelly-agent-req-([0-9]{10,16}-[0-9a-f]{8})$")
     private val PENDING_FILE_RE = Regex("^\\.shelly-agent-pending-([0-9]{10,16}-[0-9a-f]{8})$")
     private val CTL_FILE_RE = Regex("^\\.shelly-agent-ctl-([0-9]{10,16}-[0-9a-f]{8})$")
+    /** Optional last field `ingress=mcp.<principal>.<callId>` (shim v27, lib/agent-add-queue.ts). */
+    private val INGRESS_FIELD_RE = Regex("^ingress=mcp\\.[A-Za-z0-9_-]{1,64}\\.[A-Za-z0-9_-]{1,64}$")
     private val HEX_NONCE_RE = Regex("^[0-9a-f]{32}$")
     const val MSG_CTL_BACKGROUND =
         "Shelly is in the background — open Shelly, then run the command again"
@@ -123,10 +125,18 @@ object AgentAddHandoff {
         data class Bad(val reqId: String?, val reason: String) : Parsed()
     }
 
-    /** Port of lib/agent-add-queue.ts parseAgentAddLine. Never throws. */
+    /** Port of lib/agent-add-queue.ts parseAgentAddLine. Never throws. The
+     *  optional MCP ingress marker is only validated here (the file is renamed
+     *  unchanged, and RN reads it again). */
     fun parseLine(line: String, nowMs: Long): Parsed {
         if (!line.startsWith(QUEUE_PREFIX)) return Parsed.Bad(null, "malformed")
-        val parts = line.substring(QUEUE_PREFIX.length).split(':')
+        val raw = line.substring(QUEUE_PREFIX.length).split(':')
+        val parts = if (raw.size == 4 && raw[3].startsWith("ingress=")) {
+            if (!INGRESS_FIELD_RE.matches(raw[3])) return Parsed.Bad(null, "malformed")
+            raw.subList(0, 3)
+        } else {
+            raw
+        }
         if (parts.size != 3) return Parsed.Bad(null, "malformed")
         val (reqIdRaw, tsRaw, encoded) = parts
         val reqId = if (REQ_ID_RE.matches(reqIdRaw)) reqIdRaw else null

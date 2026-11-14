@@ -531,13 +531,22 @@ export function createAgent(params: {
   /** Agent roles (WP3): the role a single-step routed agent was made with
    *  (display only — the role's instructions are already in `prompt`). */
   roleRef?: Agent['roleRef'];
+  /** Pre-chosen id (lib/mcp-agent-ingress.ts: the ingress mark is written
+   *  under it before the agent exists). Must be createAgent's own format and
+   *  unused; otherwise this throws rather than create an unmarked agent. */
+  id?: string;
 }): Agent {
+  if (params.id !== undefined) {
+    if (!/^agent-[0-9a-z]{1,20}$/.test(params.id) || useAgentStore.getState().agents.some((a) => a.id === params.id)) {
+      throw new Error('createAgent: the pre-chosen agent id is invalid or already used');
+    }
+  }
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
   // sanitize-agent-name.ts for why (shell-comment breakout via interior newline).
   const safeName = sanitizeAgentName(params.name, `agent-${Date.now().toString(36)}`);
   const agent: Agent = {
-    id: `agent-${Date.now().toString(36)}`,
+    id: params.id ?? `agent-${Date.now().toString(36)}`,
     name: safeName,
     description: params.description,
     prompt: params.prompt,
