@@ -66,21 +66,17 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
           <View style={[styles.actions, { borderTopColor: colors.border }]}>
             <Pressable
               onPress={() => current && respond(current.id, false)}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { borderColor: colors.border },
-                pressed && { backgroundColor: withAlpha(colors.muted, 0.12) },
-              ]}
+              // Static style: a style function was dropped here (the buttons rendered as
+              // bare text crammed together on device), so pressed feedback is a ripple.
+              android_ripple={{ color: withAlpha(colors.muted, 0.24) }}
+              style={[styles.actionBtn, { borderColor: colors.border }]}
             >
               <Text style={[styles.actionText, { color: colors.foreground }]}>{t('mcp.approval_deny')}</Text>
             </Pressable>
             <Pressable
               onPress={() => current && respond(current.id, true)}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { borderColor: colors.border },
-                pressed && { backgroundColor: withAlpha(colors.error, 0.12) },
-              ]}
+              android_ripple={{ color: withAlpha(colors.error, 0.24) }}
+              style={[styles.actionBtn, { borderColor: colors.border }]}
             >
               <Text style={[styles.actionText, { color: colors.error, fontWeight: '800' }]}>{t('mcp.approval_approve')}</Text>
             </Pressable>
