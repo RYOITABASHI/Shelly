@@ -2783,7 +2783,8 @@ export default function RootLayout() {
       }
       // Shared with the headless drain (lib/agent-action-approval-headless.ts)
       // so a request is never minted by both.
-      if (!tryAcquireActionApprovalDrain()) return;
+      const drainLease = tryAcquireActionApprovalDrain();
+      if (drainLease === null) return;
       try {
         const requestDirUri = await getActionApprovalRequestDirUri();
         const names = await FileSystem.readDirectoryAsync(requestDirUri).catch(() => null);
@@ -2931,7 +2932,7 @@ export default function RootLayout() {
       } catch (e) {
         logError('AgentActionApproval', 'poll iteration failed', e);
       } finally {
-        releaseActionApprovalDrain();
+        releaseActionApprovalDrain(drainLease);
       }
     };
     const releaseForegroundActionDrain = markForegroundActionDrainMounted();

@@ -38,7 +38,13 @@ import {
 // ── Shared drain coordination ────────────────────────────────────────────
 
 let foregroundMounts = 0;
-let drainBusy = false;
+/** Drain lease: a token + when it was taken. A holder that never returns
+ *  (a destroyed RootLayout's drain stuck on an await) must not block every
+ *  later pass, so the lease can be taken over once it is older than
+ *  DRAIN_LEASE_MS; a release only counts for the current token. */
+export const DRAIN_LEASE_MS = 60_000;
+let lease: { token: number; acquiredAt: number } | null = null;
+let nextLeaseToken = 1;
 
 /** RootLayout calls this when its action-approval drain is set up; the
  *  returned function is called from the effect cleanup. */
@@ -56,15 +62,24 @@ export function isForegroundActionDrainMounted(): boolean {
   return foregroundMounts > 0;
 }
 
-/** One drain pass at a time, across the foreground and headless drains. */
-export function tryAcquireActionApprovalDrain(): boolean {
-  if (drainBusy) return false;
-  drainBusy = true;
-  return true;
+/** One drain pass at a time, across the foreground and headless drains.
+ *  Returns the lease token, or null while another live lease is held. */
+export function tryAcquireActionApprovalDrain(now: number = Date.now()): number | null {
+  if (lease && now - lease.acquiredAt < DRAIN_LEASE_MS) return null;
+  const token = nextLeaseToken++;
+  lease = { token, acquiredAt: now };
+  return token;
 }
 
-export function releaseActionApprovalDrain(): void {
-  drainBusy = false;
+/** True while `token` is still the current lease (not taken over). */
+export function holdsActionApprovalDrain(token: number): boolean {
+  return lease?.token === token;
+}
+
+/** Releases only the caller's own lease; a stale holder's late release
+ *  never frees a lease that was taken over. */
+export function releaseActionApprovalDrain(token: number): void {
+  if (lease?.token === token) lease = null;
 }
 
 // ── Request shape (only what this path reads) ────────────────────────────
@@ -82,6 +97,11 @@ export type HeadlessActionRequest = {
   command?: string | null;
   destinationHost?: string | null;
   safetyLevel?: string | null;
+  /** Same fields the foreground parser hands describeApprovalRequest. */
+  intentMode?: string | null;
+  intentTarget?: string | null;
+  intentShareText?: string | null;
+  dmReplyText?: string | null;
 };
 
 /** Minimal parser. Returns null for anything that is not a well-formed
@@ -109,6 +129,10 @@ export function parseHeadlessActionRequest(raw: unknown): HeadlessActionRequest 
     command: str('command') || null,
     destinationHost: str('destinationHost') || null,
     safetyLevel: str('safetyLevel') || null,
+    intentMode: str('intentMode') || null,
+    intentTarget: str('intentTarget') || null,
+    intentShareText: str('intentShareText') || null,
+    dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
   };
 }
 
@@ -148,9 +172,10 @@ export type HeadlessDrainOutcome = 'foreground' | 'busy' | 'done';
 
 export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainDeps): Promise<HeadlessDrainOutcome> {
   if (isForegroundActionDrainMounted()) return 'foreground';
-  if (!tryAcquireActionApprovalDrain()) return 'busy';
+  const now = deps.now ?? Date.now;
+  const token = tryAcquireActionApprovalDrain(now());
+  if (token === null) return 'busy';
   try {
-    const now = deps.now ?? Date.now;
     let raws: unknown[] = [];
     try {
       raws = await deps.listRequests();
@@ -162,6 +187,8 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
     for (const raw of raws) {
       // The foreground drain may have mounted meanwhile: stop, it owns them.
       if (isForegroundActionDrainMounted()) break;
+      // Lease taken over (this pass outlived DRAIN_LEASE_MS): stop.
+      if (!holdsActionApprovalDrain(token)) break;
       const parsed = parseHeadlessActionRequest(raw);
       if (!parsed) continue;
       const key = requestKey(parsed);
@@ -201,7 +228,7 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
     for (const key of attempted) if (!present.has(key)) attempted.delete(key);
     return 'done';
   } finally {
-    releaseActionApprovalDrain();
+    releaseActionApprovalDrain(token);
   }
 }
 
@@ -230,7 +257,7 @@ export function installHeadlessRunWithoutApprovalDrain(
 /** Test hook. */
 export function __resetHeadlessActionDrainForTests(): void {
   foregroundMounts = 0;
-  drainBusy = false;
+  lease = null;
   attempted.clear();
   installed?.();
   installed = null;

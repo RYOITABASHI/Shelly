@@ -8,7 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   __resetHeadlessActionDrainForTests,
+  DRAIN_LEASE_MS,
   drainHeadlessRunWithoutApproval,
+  holdsActionApprovalDrain,
   installHeadlessRunWithoutApprovalDrain,
   markForegroundActionDrainMounted,
   parseHeadlessActionRequest,
@@ -93,12 +95,92 @@ describe('headless run-without-approval drain', () => {
     expect(h.resolved).toHaveLength(1);
   });
 
-  it('never runs concurrently with another drain pass (shared lock)', async () => {
-    expect(tryAcquireActionApprovalDrain()).toBe(true);
+  it('never runs concurrently with another drain pass (shared lease)', async () => {
+    const token = tryAcquireActionApprovalDrain(NOW);
+    expect(token).not.toBeNull();
     const h = makeDeps();
     expect(await drainHeadlessRunWithoutApproval(h.deps)).toBe('busy');
     expect(h.resolved).toEqual([]);
-    releaseActionApprovalDrain();
+    releaseActionApprovalDrain(token!);
+    expect(await drainHeadlessRunWithoutApproval(h.deps)).toBe('done');
+    expect(h.resolved).toHaveLength(1);
+  });
+
+  it('a stuck holder is taken over after the lease expires; its late release frees nothing', async () => {
+    const stuck = tryAcquireActionApprovalDrain(NOW - DRAIN_LEASE_MS + 1);
+    expect(stuck).not.toBeNull();
+    const h = makeDeps();
+    // Still live (1 ms short of expiry relative to NOW - 1 + LEASE).
+    expect(await drainHeadlessRunWithoutApproval({ ...h.deps, now: () => NOW - 2 })).toBe('busy');
+    // Expired: taken over and answered.
+    expect(await drainHeadlessRunWithoutApproval({ ...h.deps, now: () => NOW + 1 })).toBe('done');
+    expect(h.resolved).toHaveLength(1);
+    expect(holdsActionApprovalDrain(stuck!)).toBe(false);
+    // The new holder is not freed by the stale token.
+    const fresh = tryAcquireActionApprovalDrain(NOW);
+    expect(fresh).not.toBeNull();
+    releaseActionApprovalDrain(stuck!);
+    expect(tryAcquireActionApprovalDrain(NOW + 10)).toBeNull();
+    releaseActionApprovalDrain(fresh!);
+    expect(tryAcquireActionApprovalDrain(NOW + 10)).not.toBeNull();
+  });
+
+  it('releases the lease after an exception in resolve or evaluatePolicy', async () => {
+    const boomResolve = makeDeps({ resolve: async () => { throw new Error('boom'); } });
+    expect(await drainHeadlessRunWithoutApproval(boomResolve.deps)).toBe('done');
+    expect(boomResolve.audits).toEqual([]);
+    const t1 = tryAcquireActionApprovalDrain(NOW);
+    expect(t1).not.toBeNull();
+    releaseActionApprovalDrain(t1!);
+
+    __resetHeadlessActionDrainForTests();
+    const boomPolicy = makeDeps({
+      policyEngineEnabled: () => true,
+      evaluatePolicy: async () => { throw new Error('boom'); },
+    });
+    expect(await drainHeadlessRunWithoutApproval(boomPolicy.deps)).toBe('done');
+    expect(boomPolicy.resolved).toEqual([]);
+    expect(tryAcquireActionApprovalDrain(NOW)).not.toBeNull();
+  });
+
+  it('stops the loop when the foreground drain mounts mid-loop', async () => {
+    let release: (() => void) | null = null;
+    const files = [draftReq({ runId: 'run-1' }), draftReq({ runId: 'run-2', agentId: 'agent-b' })];
+    const h = makeDeps({
+      audit: () => {
+        // RootLayout remounts right after the first accept.
+        if (!release) release = markForegroundActionDrainMounted();
+      },
+    }, files);
+    await drainHeadlessRunWithoutApproval(h.deps);
+    expect(h.resolved.map((r) => r[0])).toEqual(['run-1']);
+    release!();
+  });
+
+  it('refuses an expired minted copy and a minted copy whose origin is event', async () => {
+    const expired = makeDeps({
+      readMinted: async () => ({ ...draftReq({ expiresAt: NOW - 1 }), requestSha256: 's', actionNonce: 'n' }),
+    });
+    await drainHeadlessRunWithoutApproval(expired.deps);
+    expect(expired.resolved).toEqual([]);
+    expect(expired.logs.some((l) => l.includes('reason=minted-expired'))).toBe(true);
+
+    __resetHeadlessActionDrainForTests();
+    let calls = 0;
+    const proactive = makeDeps({
+      // drained copy reads 'user', the minted copy reads 'event'
+      originOf: () => (calls++ === 0 ? 'user' : 'event'),
+    });
+    await drainHeadlessRunWithoutApproval(proactive.deps);
+    expect(proactive.resolved).toEqual([]);
+    expect(proactive.logs.some((l) => l.includes('reason=minted-proactive'))).toBe(true);
+  });
+
+  it('parser carries the policy-description fields the foreground parser passes', () => {
+    const r = parseHeadlessActionRequest(draftReq({
+      intentMode: 'share', intentTarget: 'x', intentShareText: 'y', dmReplyText: ' z ', destinationHost: 'h', safetyLevel: 'LOW',
+    }));
+    expect(r).toMatchObject({ intentMode: 'share', intentTarget: 'x', intentShareText: 'y', dmReplyText: ' z ', destinationHost: 'h', safetyLevel: 'LOW' });
   });
 
   it('leaves OFF / proactive / policy-blocked / expired requests untouched (no decline, no prompt)', async () => {
@@ -182,8 +264,8 @@ describe('app/_layout.tsx wiring', () => {
   });
 
   it('the foreground drain shares the lock and marks itself mounted / unmounted', () => {
-    expect(src).toContain('if (!tryAcquireActionApprovalDrain()) return;');
-    expect(src).toContain('releaseActionApprovalDrain();');
+    expect(src).toContain('const drainLease = tryAcquireActionApprovalDrain();');
+    expect(src).toContain('releaseActionApprovalDrain(drainLease);');
     expect(src).toContain('const releaseForegroundActionDrain = markForegroundActionDrainMounted();');
     expect(src).toContain('releaseForegroundActionDrain();');
     expect(src).not.toContain('isDrainingActionApprovals');
