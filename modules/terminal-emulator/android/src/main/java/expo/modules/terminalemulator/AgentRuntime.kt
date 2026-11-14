@@ -590,7 +590,8 @@ object AgentRuntime {
     // executor passes --tainted to the agent driver, whose gate then declines
     // writes / exec / network sends (attended too, no escalation), and
     // dispatches no action. Native + JS.
-    private const val CURRENT_EXECUTOR_VERSION = 59
+    // v60: article pipeline guards — a research main study already in the series history is retried once with it excluded, the best version only returns to a version its reviewer passed, and full review texts go to logs/<id>/review-full.jsonl. JS-only (executor).
+    private const val CURRENT_EXECUTOR_VERSION = 60
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

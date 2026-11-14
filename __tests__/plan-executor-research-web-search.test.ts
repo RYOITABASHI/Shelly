@@ -287,6 +287,59 @@ describe('a run with the Codex research step', () => {
     expect(readAudit(home).some((e) => e.event === 'cli_branch_refused' && e.reason === 'web search on a tainted run')).toBe(true);
   }, 60000);
 
+  // v60: the main study is one the series history already holds.
+  const URL_C = 'https://example.org/paper-c';
+  const RESEARCH_ANSWER_C = [
+    '1. Paper C: the figure was 17% [1].',
+    '2. Paper B: the sample was 120 people [2].',
+    '',
+    '## Sources',
+    `[1] Paper C — ${URL_C}`,
+    `[2] Paper B — ${URL_B}`,
+  ].join('\n');
+  function writeHistory(home: string) {
+    const file = path.join(home, '.shelly/agents/logs/article-history-example-a.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ version: 1, entries: [{ title: 'An earlier article', url: 'http://www.example.org/paper-a/', date: '2026-11-09' }] }));
+  }
+
+  it('v60: a web-search research on a used main study runs once more through the same driver path', async () => {
+    const home = makeHome();
+    writeHistory(home);
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, RESEARCH_ANSWER_C, ARTICLE, 'VERDICT: PASS']);
+    const status = await runExecutor(writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE))), home, driver, recordDir);
+    expect(status).toBe(0);
+    const calls = readCalls(recordDir);
+    expect(calls).toHaveLength(4);
+    // Same flags as the first research call, --web-search on both, never --tainted on an unmarked run.
+    expect(calls.map((c) => c.argv.includes('--web-search'))).toEqual([true, true, false, false]);
+    for (const call of calls) expect(call.argv).not.toContain('--tainted');
+    expect(calls[0].prompt).not.toContain('Main studies already used by this series');
+    expect(calls[1].prompt).toContain('- http://www.example.org/paper-a/');
+    expect(calls[1].prompt).toContain('Do not use any of these addresses or papers');
+    expect(calls[2].prompt).toContain(URL_C);
+    const audit = readAudit(home);
+    expect(audit.filter((e) => e.event === 'research_history_match')).toMatchObject([{ attempt: 1 }]);
+    expect(audit.filter((e) => e.event === 'research_history_retry')).toHaveLength(1);
+    expect(audit.filter((e) => e.event === 'cli_branch_start').map((e) => e.webSearch === true)).toEqual([true, true, false, false]);
+  }, 60000);
+
+  it('v60: an MCP-marked (ingress-tainted) run never starts the web search, so there is no retry either', async () => {
+    const home = makeHome();
+    writeHistory(home);
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, RESEARCH_ANSWER_C, ARTICLE, 'VERDICT: PASS']);
+    await runExecutor(writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE))), home, driver, recordDir, { SHELLY_INGRESS_TAINTED: '1', SHELLY_INGRESS_TAINTED_REASON: 'mcp' });
+    expect(readCalls(recordDir)).toHaveLength(0);
+    expect(readRunLog(home).status).not.toBe('success');
+    const audit = readAudit(home);
+    expect(audit.some((e) => e.event === 'cli_branch_refused' && /ingress-tainted/.test(e.reason))).toBe(true);
+    expect(audit.filter((e) => /^research_history_/.test(e.event))).toHaveLength(0);
+    // Nothing reached the output folder or the series history.
+    const out = path.join(home, 'agent-output');
+    expect(fs.existsSync(out) ? fs.readdirSync(out) : []).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(home, '.shelly/agents/logs/article-history-example-a.json'), 'utf8')).entries).toHaveLength(1);
+  }, 60000);
+
   it('a hostile plan with webSearch on the write step runs nothing', async () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);

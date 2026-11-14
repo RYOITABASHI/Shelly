@@ -278,6 +278,18 @@ describe('native + .sh wiring (source pins)', () => {
     expect(ts).toContain('if [ "\\${SHELLY_INGRESS_TAINTED:-0}" != "1" ]; then');
   });
 
+  it('v60: the research history retry reuses the step path (same --tainted handling) and never starts a web search on a tainted run', () => {
+    const js = read('scripts/shelly-plan-executor.js');
+    const at = js.indexOf('async function guardResearchHistory(');
+    const body = js.slice(at, js.indexOf('    return retry;', at));
+    expect(at).toBeGreaterThan(-1);
+    expect(body).toContain('const tainted = !!opts.tainted || ingressTainted();');
+    expect(body).toContain("if (tainted && isResearchWebSearchCliStep(plan, i)) skipReason = 'tainted';");
+    // The retry is the ordinary step run: dispatchCliStep adds --tainted for an MCP-marked run.
+    expect(body).toContain('retry = await executeStepWithProgress(i, contextResults, carriedIndexes);');
+    expect(body).not.toContain('dispatchCliStep(');
+  });
+
   it('script and asset mirrors are byte-identical', () => {
     for (const name of ['shelly-plan-executor.js', 'shelly-agent-driver.js']) {
       expect(read(`modules/terminal-emulator/android/src/main/assets/${name}`)).toBe(read(`scripts/${name}`));
