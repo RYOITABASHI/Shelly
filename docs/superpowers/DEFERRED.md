@@ -81,6 +81,19 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### MCP の入口（ingress）に外部入力の印（taint）を付ける — 未実装、書き込み系の外部連携はこれが入るまで開始しない (P1、セキュリティ)
+
+2026-11-14、外部エージェント連携の議論（[#153](https://github.com/RYOITABASHI/Shelly/issues/153)）で合意。`scripts/shelly-mcp-server.js` には taint / provenance（出所）の概念が無く、外部入力（メール・Web 等）を根拠に外部エージェントが投げた要求が、Shelly からは出所不明の通常コマンドに見える。既存の「Codex ワーカーの MCP / アプリ」項目（outbound、ワーカーが MCP を呼ぶ側）とは別件で、こちらは外から Shelly の MCP サーバーに入ってくる側。
+1. **MCP 経由の書き込み系は既定で tainted、ダウングレード不可。** 対象は `run_command` と `write_file`。
+2. **エージェント定義への伝播。** MCP に `agent add` ツールは無いので、MCP 経由の `run_command`（`shelly agent add` 等）が作成・書き換えたエージェント定義に taint を保存する。以後の実行では、「信頼できない入力を読むエージェントは『すべて』にならない」（`runWithoutApprovalAllAllowedFor`）と、「tainted な実行の CLI 書き込み・外部送信は人に聞く」を効かせる。
+3. **聞き方はダイアログで「許可 / 常に許可 / 許可しない」**（オーナー決定）。有人・無人とも同じ。無人の場合は実行を保留して通知で聞き、時間内（30 分の壁の内側で決める）に答えが無ければ拒否。「常に許可」は型付きの操作（例: 将来の `run_agent <id>`）にだけ出し、クライアント（トークン）× 操作 × 対象の単位で保存、設定から一覧・個別取り消し可、トークン失効で消える。生の `run_command` / `write_file` には「常に許可」を出さない（文字列が毎回違い、実質「何でも」になる）。CRITICAL とゲートの deny（POLICY-001 等）はどの選択でも通らない。
+4. **`write_file` も ingress。** エージェントがあとで読むファイルに書けばコマンド無しで後続の実行に入り込む。書いたパスを記録し、エージェントがそれを読んだら tainted にするかは設計時に決める。
+5. **要求元の表示にはクライアントごとのトークン。** 現在はトークン 1 本で principal はそのハッシュ（`shelly-mcp-server.js` `createMcpHandler`）、`clientInfo.name` は自己申告。クライアントごとに別トークンを発行し個別に失効できるようにする（推奨）。それまでは名前を出すなら自己申告と明示する。
+6. **読み取りの最初の段階は `list_agents` / `list_repos` / `git_status` の 3 つ。** `read_terminal_output` は画面にトークンや貼り付けた秘密が映りうるので別トグルにする。
+
+外部エージェントのハブを名乗る順番（#153 で合意）: この項目 → クライアントごとの身元・失効・監査ログ → 生のシェルではない型付きの操作（`run_agent` / `get_run_result` 等）→ 実機で実証 → README。A2A は同じ操作を載せるだけなので後回し。連携は一般形で設計し、個人の接続先・トークン・端末固有の設定・使い方はローカル設定と秘密情報に分ける（既定値・docs・テストに入れない）。
+Why not now: 外部エージェント側の準備（接続・トークン受け渡し）がまだで、端末の MCP サーバーも OFF のまま。読み取りの試作のときだけ一時的に ON にする予定。
+
 ### `tar xf` と `git clone` で symlink を作ると境界チェックを迂回できる (P1、セキュリティ、未修正)
 
 2026-11-07 のレビューで指摘（`feat/claude-install` とは別件、ここでは直さない）。「すべて」レベルなどの境界チェックは**実行時点で存在する symlink** とコマンド中の語を見ているので、`tar xf` や `git clone` が展開時に作る symlink は判定をすり抜ける。例: アーカイブから `l -> $HOME` を作ったあとの `tee -- l/.bashrc` は、ワークスペース内のパスとして通る。`ln`・`cp -s`・`git apply`・`patch` は既に人に回しているが（CLAUDE.md「承認なしで実行」、`allLevelLinkProbe`）、リンクを作れるコマンドの一覧が足りていない。**修正の方向**: `tar`・`unzip`・`git clone`・`git checkout` 等を同じ扱いにするか、書き込み判定で全構成要素の realpath をワークスペースと比較する。
