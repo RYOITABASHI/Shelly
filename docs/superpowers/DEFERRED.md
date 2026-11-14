@@ -83,6 +83,12 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 「承認なしで実行」が画面の破棄後に効かない — draft / notify は修正済み・実機未検証、ゲートのエスカレーションは未対応 (P1)
+
+2026-11-14 実機: 「開発記 記事下書き」（承認なしで実行＝標準）の Run now が、scrcpy の仮想ディスプレイが消えてアクティビティが破棄された後に「draft action approval timed out」（5 分）で終わった。原因は、draft / notify を自動許可するドレインが RootLayout の useEffect（`app/_layout.tsx` `drainAgentActionApprovalRequests`）の中にあり、`ReactHost.onHostDestroy` で root がアンマウントされると cleanup がインターバルとキープアライブ tick の購読を外すこと（JS ランタイム・実行の出所レジストリ・ネイティブの tick は生きている。logcat で `ReactHost{0}.onHostDestroy(activity)` → 再表示時に `RootLayout ⚡ mounted` を確認）。
+**修正（ブランチ `fix/rwa-draft-auto-accept-background`、実機未検証）**: `lib/agent-action-approval-headless.ts` をモジュールスコープで登録し、RootLayout がマウントされていない間だけ、同じキープアライブ tick で draft / notify の要求を `decideActionAutoApproval`（Keystore の設定＋定義ハッシュ、出所は drained / minted の両方、POLICY-001 の deny / draft_only / ask で停止）で判定して署名付き accept を返す。許可しないものには何もしない（decline も通知も出さない。再マウント後に従来のドレインが扱う）。2 つのドレインは共有ロックで同時に動かない。**実機で確認すること**: Run now の直後にアプリのタスクを消す（またはアクティビティを破棄する）→ 下書きが保存され、logcat に `headless run-without-approval auto-accepted` が出る。tick がアクティビティ破棄後も JS に届くこと。
+**未対応**: CLI ワーカーのゲートのエスカレーション（`drainAgentEscalationRequests`、同じ effect 内）も同じ理由で画面の破棄後は自動許可されず、ドライバーのターンのタイムアウトまで待つ。同じ形（モジュールスコープ＋共有ロック）で直す。
+
 ### MCP の入口（ingress）に外部入力の印（taint）を付ける — 未実装、書き込み系の外部連携はこれが入るまで開始しない (P1、セキュリティ)
 
 2026-11-14、外部エージェント連携の議論（[#153](https://github.com/RYOITABASHI/Shelly/issues/153)）で合意。`scripts/shelly-mcp-server.js` には taint / provenance（出所）の概念が無く、外部入力（メール・Web 等）を根拠に外部エージェントが投げた要求が、Shelly からは出所不明の通常コマンドに見える。既存の「Codex ワーカーの MCP / アプリ」項目（outbound、ワーカーが MCP を呼ぶ側）とは別件で、こちらは外から Shelly の MCP サーバーに入ってくる側。

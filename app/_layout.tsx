@@ -26,7 +26,7 @@ import {
   resolveAgentGone,
 } from '@/lib/agent-stale-approval';
 import { reconcileApiKeysToEnv } from "@/lib/agent-env-sync";
-import { useI18n, useTranslation } from '@/lib/i18n';
+import { t as translateStatic, useI18n, useTranslation } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
@@ -137,6 +137,12 @@ import {
   runWithoutApprovalAuditKey,
 } from '@/lib/agent-run-without-approval';
 import { registeredRunOrigin } from '@/lib/agent-run-origin-registry';
+import {
+  installHeadlessRunWithoutApprovalDrain,
+  markForegroundActionDrainMounted,
+  releaseActionApprovalDrain,
+  tryAcquireActionApprovalDrain,
+} from '@/lib/agent-action-approval-headless';
 import { getHomePath } from '@/lib/home-path';
 import { defaultAgentWorkspace } from '@/lib/agent-default-workspace';
 import enStrings from '@/lib/i18n/locales/en';
@@ -182,6 +188,53 @@ const policyShellRunner = async (cmd: string): Promise<string> => {
   if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
   return result.stdout;
 };
+
+// "承認なしで実行" while RootLayout is unmounted (activity destroyed): the
+// action-approval drain lives in RootLayout's effect and is torn down with
+// it, so a flagged agent's draft / notify approval of an attended Run now
+// sat until the executor's 5-minute timeout (2026-11-14). Installed at
+// module scope, driven by the native keep-alive tick (fires only during user
+// runs), and idle whenever the foreground drain is mounted — see
+// lib/agent-action-approval-headless.ts.
+installHeadlessRunWithoutApprovalDrain(onAgentKeepAliveTick, {
+  listRequests: async () => {
+    const paths = await TerminalEmulator.getAgentActionApprovalBridgePaths?.().catch(() => null);
+    const dirUri = (paths?.requestDirUri
+      ?? `${FileSystem.documentDirectory}home/.shelly/agents/action-approvals`).replace(/\/+$/, '');
+    const names = await FileSystem.readDirectoryAsync(dirUri).catch(() => [] as string[]);
+    const out: unknown[] = [];
+    for (const name of names) {
+      if (!/^action-[A-Za-z0-9_.=-]+\.json$/.test(name)) continue;
+      try {
+        out.push(JSON.parse(await FileSystem.readAsStringAsync(`${dirUri}/${name}`)));
+      } catch {
+        // consumed meanwhile / unreadable: the foreground drain reports these
+      }
+    }
+    return out;
+  },
+  readMinted: async (runId) => {
+    if (!TerminalEmulator.readAgentActionApprovalRequest) return null;
+    return TerminalEmulator.readAgentActionApprovalRequest(runId);
+  },
+  resolve: async (runId, decision, requestSha256, actionNonce) => {
+    if (!TerminalEmulator.resolveAgentActionApproval) throw new Error('resolveAgentActionApproval unavailable');
+    return TerminalEmulator.resolveAgentActionApproval(runId, decision, requestSha256, actionNonce);
+  },
+  agentFor: (agentId) => useAgentStore.getState().agents.find((a) => a.id === agentId) ?? null,
+  getSetting: (agent) => getRunWithoutApprovalSetting(agent as Parameters<typeof getRunWithoutApprovalSetting>[0]),
+  originOf: trustedRequestOrigin,
+  policyEngineEnabled: () => useSettingsStore.getState().settings.agentPolicyEngine === true,
+  evaluatePolicy: async (req) => {
+    await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
+    if (!getTrustAllowSeal()) await loadTrustAllowSeal();
+    return evaluateApprovalRequestPolicy(req, getTrustAllowSeal()).decision;
+  },
+  audit: (agentId, setting, what) => {
+    postRunWithoutApprovalAuditLine(agentId, translateStatic(runWithoutApprovalAuditKey(setting), { command: what }));
+  },
+  log: (line) => logInfo('AgentActionApproval', line),
+});
 
 /** Post the trust-ramp proposal as a plain chat turn (never a card/modal). */
 const postTrustRampOffer = (offer: TrustOffer): void => {
@@ -1222,7 +1275,6 @@ export default function RootLayout() {
     const fallbackActionApprovalRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/action-approvals`;
     const notifiedActionApprovals = new Map<string, { runId: string; agentId?: string; seenAt: number }>();
     let actionApprovalRequestDirUri: string | null = null;
-    let isDrainingActionApprovals = false;
     const trimActionFileUri = (uri: string) => uri.replace(/\/+$/, '');
     const joinActionFileUri = (dirUri: string, name: string) => `${trimActionFileUri(dirUri)}/${name}`;
     const safeActionFilePart = (value: string) =>
@@ -2724,13 +2776,14 @@ export default function RootLayout() {
 
     const drainAgentActionApprovalRequests = async () => {
       if (
-        isDrainingActionApprovals ||
         disposed ||
         !TerminalEmulator.notifyAgentActionApprovalNeeded
       ) {
         return;
       }
-      isDrainingActionApprovals = true;
+      // Shared with the headless drain (lib/agent-action-approval-headless.ts)
+      // so a request is never minted by both.
+      if (!tryAcquireActionApprovalDrain()) return;
       try {
         const requestDirUri = await getActionApprovalRequestDirUri();
         const names = await FileSystem.readDirectoryAsync(requestDirUri).catch(() => null);
@@ -2878,9 +2931,10 @@ export default function RootLayout() {
       } catch (e) {
         logError('AgentActionApproval', 'poll iteration failed', e);
       } finally {
-        isDrainingActionApprovals = false;
+        releaseActionApprovalDrain();
       }
     };
+    const releaseForegroundActionDrain = markForegroundActionDrainMounted();
     const actionApprovalInterval = setInterval(drainAgentActionApprovalRequests, 500);
     const actionApprovalTickOff = onAgentKeepAliveTick(() => { void drainAgentActionApprovalRequests(); });
     void drainAgentActionApprovalRequests();
@@ -2918,6 +2972,7 @@ export default function RootLayout() {
       escalationTickOff();
       clearInterval(actionApprovalInterval);
       actionApprovalTickOff();
+      releaseForegroundActionDrain();
       unsubscribeActionReview();
       if (agentLogInterval) clearInterval(agentLogInterval);
     };
