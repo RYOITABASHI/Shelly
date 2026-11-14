@@ -83,6 +83,7 @@ import {
   beginMcpExecWindow,
   classifyTerminalRequest,
   endMcpExecWindow,
+  MCP_SHELLY_LAZY_FN,
   mcpIngressEnvPrefix,
   mcpOriginForRequest,
 } from '@/lib/mcp-ingress-origin';
@@ -151,6 +152,16 @@ describe('queue request authentication', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(useMcpApprovalStore.getState().current).toBeNull();
     expect(mockLogs.join('\n')).toMatch(/rejected unauthenticated request file u1\.json \(missing mac\)/);
+  });
+
+  it('drops non-JSON and non-object queue files: no result, no command, logged', async () => {
+    for (const [callId, content] of [['nj1', 'not json at all'], ['nj2', '42'], ['nj3', '["a"]'], ['nj4', 'null']] as const) {
+      await dropAndDrain(callId, content);
+      expect(mockFiles.has(`${RESULTS}/${callId}.json`)).toBe(false);
+      expect(mockLogs.join('\n')).toMatch(new RegExp(`rejected unauthenticated request file ${callId}\\.json \\(`));
+    }
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(useMcpApprovalStore.getState().current).toBeNull();
   });
 
   it('drops a request signed with another key', async () => {
@@ -288,7 +299,9 @@ describe('run_command ingress labelling', () => {
     useMcpApprovalStore.setState({ current: null, queue: [] });
     await waitFor(() => mockFiles.has(`${RESULTS}/r1.json`));
     const ran = mockExecCommand.mock.calls.map((c) => String(c[0])).find((c) => c.includes('ls -la'))!;
-    expect(ran).toBe(`export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=${TEST_PRINCIPAL} SHELLY_INGRESS_CALL=r1; ls -la`);
+    expect(ran).toBe(`export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=${TEST_PRINCIPAL} SHELLY_INGRESS_CALL=r1; ${MCP_SHELLY_LAZY_FN}ls -la`);
+    // the `shelly` stub only loads ~/.bashrc and re-dispatches; it never runs the command itself
+    expect(MCP_SHELLY_LAZY_FN).toBe('shelly() { unset -f shelly; . "$HOME/.bashrc" >/dev/null 2>&1; shelly "$@"; }; ');
   });
 
   it('the modal component renders the origin lines', () => {

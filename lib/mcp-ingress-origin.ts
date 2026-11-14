@@ -61,6 +61,14 @@ export function mcpIngressEnvPrefix(principal: string, callId: string): string {
   return `export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=${safeIngressValue(principal)} SHELLY_INGRESS_CALL=${safeIngressValue(callId)}; `;
 }
 
+/** `shelly` is a function defined in ~/.bashrc, which a non-interactive
+ *  exec never reads, so an MCP `run_command` saw "shelly: command not
+ *  found" (2026-11-14 on device). This stub loads the real function from
+ *  ~/.bashrc the first time it is called; commands that never call `shelly`
+ *  pay nothing. Goes after the ingress exports so the shim still sees them. */
+export const MCP_SHELLY_LAZY_FN =
+  'shelly() { unset -f shelly; . "$HOME/.bashrc" >/dev/null 2>&1; shelly "$@"; }; ';
+
 type ExecWindow = { callId: string; principal: string; start: number; end: number | null };
 
 const windows: ExecWindow[] = [];

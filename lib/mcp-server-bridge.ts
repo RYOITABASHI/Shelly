@@ -50,7 +50,7 @@ import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteT
 import { getCachedUserPolicy, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
-import { beginMcpExecWindow, endMcpExecWindow, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
+import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -204,7 +204,7 @@ export async function runMcpCommand(
   const before = await agentRequestIdsInHome();
   beginMcpExecWindow(callId, ingress.principal);
   try {
-    return await execCommand(`${mcpIngressEnvPrefix(ingress.principal, callId)}${full}`, timeoutMs);
+    return await execCommand(`${mcpIngressEnvPrefix(ingress.principal, callId)}${MCP_SHELLY_LAZY_FN}${full}`, timeoutMs);
   } finally {
     const after = await agentRequestIdsInHome();
     if (after) {

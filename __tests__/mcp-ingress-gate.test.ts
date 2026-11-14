@@ -64,6 +64,7 @@ jest.mock('@/lib/debug-logger', () => ({ logInfo: () => {}, logError: () => {}, 
 
 import { __setMCPRequestSha256ForTests, setMCPBridgeKey, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
 import { TEST_BRIDGE_KEY, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+import { MCP_SHELLY_LAZY_FN } from '@/lib/mcp-ingress-origin';
 
 beforeAll(() => {
   __setMCPRequestSha256ForTests(nodeSha256);
@@ -114,7 +115,8 @@ async function call(tool: string, args: Record<string, unknown>, opts: { approve
 
 function ranExactly(command: string): boolean {
   // MCP run_command gets the ingress env prefix (Inc 2); compare without it.
-  return mockExecCommand.mock.calls.some((c) => String(c[0]).replace(/^export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=[A-Za-z0-9_-]+ SHELLY_INGRESS_CALL=[A-Za-z0-9_-]+; /, '') === command);
+  // The lazy `shelly` stub (MCP_SHELLY_LAZY_FN) follows the prefix; strip it too.
+  return mockExecCommand.mock.calls.some((c) => String(c[0]).replace(/^export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=[A-Za-z0-9_-]+ SHELLY_INGRESS_CALL=[A-Za-z0-9_-]+; /, '').replace(MCP_SHELLY_LAZY_FN, '') === command);
 }
 
 /** Resolution where every existing parent is a plain directory. */

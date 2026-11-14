@@ -122,6 +122,10 @@ const styles = StyleSheet.create({
   },
   body: {
     maxHeight: 380,
+    // Shrink before the buttons do: in a short window (landscape, split
+    // screen) the card hits its maxHeight and the action row was squeezed
+    // to nothing, leaving the two labels crammed together.
+    flexShrink: 1,
   },
   bodyContent: {
     padding: 14,
@@ -151,9 +155,12 @@ const styles = StyleSheet.create({
   actions: {
     flexDirection: 'row',
     borderTopWidth: 1,
+    flexShrink: 0,
   },
   actionBtn: {
     flex: 1,
+    minHeight: 48,
+    justifyContent: 'center',
     paddingHorizontal: 14,
     paddingVertical: 14,
     alignItems: 'center',
