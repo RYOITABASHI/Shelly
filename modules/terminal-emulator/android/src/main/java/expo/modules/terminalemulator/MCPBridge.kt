@@ -76,6 +76,8 @@ object MCPBridge {
             Log.e(TAG, "no token provided")
             return false
         }
+        // Ingress taint: from the first MCP start on, deleting the taint store reads as "unreadable".
+        AgentIngressTaint.seal(context)
         if (isRunning()) return true
 
         val homeDir = HomeInitializer.getHomeDir(context)

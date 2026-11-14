@@ -1678,6 +1678,42 @@ class TerminalEmulatorModule : Module() {
             ClosePawDraftPreapproval.statusJson(context)
         }
 
+        // Per-agent MCP ingress taint (AgentIngressTaint.kt, DEFERRED.md P1 "MCP の入口").
+        // mark: MCP ingress path only. clear/reset: owner only. remove: owner's explicit delete only.
+        AsyncFunction("markAgentIngress") { agentId: String, source: String, principal: String ->
+            val context = requireReactContext()
+            AgentIngressTaint.mark(context, agentId, source, principal)
+            AgentIngressTaint.statusJson(context, true)
+        }
+
+        AsyncFunction("isAgentIngressTainted") { agentId: String, mcpEverEnabled: Boolean ->
+            val context = requireReactContext()
+            !AgentIngressTaint.isValidAgentId(agentId) || AgentIngressTaint.isTainted(context, agentId, mcpEverEnabled)
+        }
+
+        AsyncFunction("clearAgentIngress") { agentId: String, mcpEverEnabled: Boolean ->
+            val context = requireReactContext()
+            AgentIngressTaint.clear(context, agentId, mcpEverEnabled)
+            AgentIngressTaint.statusJson(context, mcpEverEnabled)
+        }
+
+        AsyncFunction("removeAgentIngress") { agentId: String, mcpEverEnabled: Boolean ->
+            val context = requireReactContext()
+            AgentIngressTaint.remove(context, agentId, mcpEverEnabled)
+            AgentIngressTaint.statusJson(context, mcpEverEnabled)
+        }
+
+        AsyncFunction("resetAgentIngress") {
+            val context = requireReactContext()
+            AgentIngressTaint.reset(context)
+            AgentIngressTaint.statusJson(context, true)
+        }
+
+        AsyncFunction("getAgentIngressStatus") { mcpEverEnabled: Boolean ->
+            val context = requireReactContext()
+            AgentIngressTaint.statusJson(context, mcpEverEnabled)
+        }
+
         AsyncFunction("cancelAgentAddNotification") {
             val context = requireReactContext()
             AgentAddHandoff.cancelNotification(context)

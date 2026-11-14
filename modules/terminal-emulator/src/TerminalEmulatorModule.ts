@@ -479,6 +479,17 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   disableDraftPreapproval?(destinations: string[]): Promise<string>;
   /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
   getDraftPreapproval?(): Promise<string>;
+  /** Per-agent MCP ingress taint (AgentIngressTaint.kt). Use lib/agent-ingress-taint.ts.
+   *  Write methods return status JSON {status: 'empty'|'ok'|'unreadable'|'overflow', overflow, entries}. */
+  markAgentIngress?(agentId: string, source: 'mcp', principal: string): Promise<string>;
+  isAgentIngressTainted?(agentId: string, mcpEverEnabled: boolean): Promise<boolean>;
+  /** Owner only. */
+  clearAgentIngress?(agentId: string, mcpEverEnabled: boolean): Promise<string>;
+  /** Owner's explicit agent delete only. */
+  removeAgentIngress?(agentId: string, mcpEverEnabled: boolean): Promise<string>;
+  /** Owner only: forget every mark (the way out of 'unreadable' / 'overflow'). */
+  resetAgentIngress?(): Promise<string>;
+  getAgentIngressStatus?(mcpEverEnabled: boolean): Promise<string>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If
