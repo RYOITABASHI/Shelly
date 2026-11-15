@@ -3333,12 +3333,23 @@ function assembleArticle(local, ctx) {
   // source is dropped (the sourced-briefing finalize convention). When the body
   // cites every source in ascending order, nothing changes.
   const sourceIds = ctx.sources.map((s) => s.id);
-  const citedOrder = citationIds(body).filter((n) => sourceIds.indexOf(n) !== -1);
+  const bodyIds = citationIds(body);
+  const citedOrder = bodyIds.filter((n) => sourceIds.indexOf(n) !== -1);
   const ascendingIds = sourceIds.slice().sort((a, b) => a - b);
   let citedSources = ctx.sources.map((s) => ({ id: s.id, s }));
   if (!(citedOrder.length === ascendingIds.length && citedOrder.every((n, i) => n === ascendingIds[i]))) {
-    body = remapCitations(body, (n) => citedOrder.indexOf(n) + 1);
+    // remapCitations NFKC-normalizes the whole body, so run it only when a
+    // marker actually moves or drops; a no-op renumber leaves the body
+    // byte-identical (the article text is otherwise never rewritten).
+    if (bodyIds.some((n) => citedOrder.indexOf(n) + 1 !== n)) {
+      body = remapCitations(body, (n) => citedOrder.indexOf(n) + 1);
+    }
     citedSources = citedOrder.map((n, i) => ({ id: i + 1, s: ctx.sources.find((s) => s.id === n) }));
+    // v61: the labelled main study (v56) is provenance: the research step fetched
+    // it first and showed it to the writer, so it stays listed even when the body
+    // never cites it (like the materials below). It has no marker in the body.
+    const mainSource = ctx.mainSourceId ? ctx.sources.find((s) => s.id === ctx.mainSourceId) : undefined;
+    if (mainSource && citedOrder.indexOf(ctx.mainSourceId) === -1) citedSources.push({ id: citedSources.length + 1, s: mainSource });
   }
   const sources = citedSources.map(({ id, s }) =>
     `- [${id}] [${escapeLinkText(s.title) || hostOf(s.url)}](${escapeLinkUrl(s.url)})${s.date ? ` — ${escapeHtml(s.date)}` : ''}`)
@@ -11830,6 +11841,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       results: resultsByStep,
       skipped: skippedByStep,
       sources: evidence.sources,
+      mainSourceId: evidence.mainSourceId || 0,
       today: sourcingToday,
       fallbackTitle: plan.agent.name,
       basePrompt: plan.prompt,
