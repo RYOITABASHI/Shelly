@@ -887,7 +887,9 @@ describe('assembleArticle', () => {
     });
 
     it('flags a redirect-only source URL and keeps the link as it is', () => {
-      const out = withQuality({ minSources: 1 }, '# 記事', [source(REDIRECT)]);
+      // v61: only cited sources are listed, so the body cites the source;
+      // the flag and the untouched redirect link are what this test pins.
+      const out = withQuality({ minSources: 1 }, '# 記事\n\n本文 [1]', [source(REDIRECT)]);
       expect(lintOf(out)[0]).toContain('転送リンク');
       expect(out).toContain(REDIRECT);
     });

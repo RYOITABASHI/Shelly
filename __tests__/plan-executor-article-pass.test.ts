@@ -156,6 +156,12 @@ describe('only cited sources are listed (v61)', () => {
     expect(tailOf(out)).toBe('# 記事\n\n本文です [1]。\n\n## Sources\n\n- [1] [Two](https://example.com/2)\n');
   });
 
+  it('the labelled main study stays listed even when the body never cites it (v56 provenance)', () => {
+    const body = '# 記事\n\n本文です [1]。';
+    const out = assemble(body, three, { mainSourceId: 3 });
+    expect(tailOf(out)).toBe(`${body}\n\n## Sources\n\n- [1] [One](https://example.com/1)\n- [2] [Three](https://example.com/3)\n`);
+  });
+
   it('a body citing every source in order is unchanged', () => {
     const body = '# 記事\n\n一つ目 [1]、二つ目 [2]、三つ目 [3]。';
     const out = assemble(body, three);
@@ -176,6 +182,19 @@ describe('only cited sources are listed (v61)', () => {
   it('no cited web source and no materials means no Sources block', () => {
     const out = assemble('# 記事\n\n引用なし。', three);
     expect(out).not.toContain('## Sources');
+  });
+
+  it('a body with no markers is left byte-identical, full-width text included', () => {
+    const body = '# 記事\n\nこれは ＷＯＲＬＤ と書かれた。';
+    const out = assemble(body, three);
+    expect(tailOf(out)).toBe(`${body}\n`);
+    expect(out).not.toContain('## Sources');
+  });
+
+  it('a body citing a subset in ascending order is left byte-identical and lists only the subset', () => {
+    const body = '# 記事\n\nＷＯＲＬＤ [1] と [2]。';
+    const out = assemble(body, three);
+    expect(tailOf(out)).toBe(`${body}\n\n## Sources\n\n- [1] [One](https://example.com/1)\n- [2] [Two](https://example.com/2)\n`);
   });
 });
 
