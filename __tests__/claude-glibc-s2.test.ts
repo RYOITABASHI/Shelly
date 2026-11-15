@@ -585,10 +585,17 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () =>
       'echo "LEFTOVER=$(ls "$TMPDIR" | grep -c shelly-claude-proxy)"',
       'echo "ARM=$(cat "$TMPDIR/.shelly-claude-login.arm")"',
     ].join('\n');
+    // The parent shell must start without proxy settings, or PARENT_HTTPS_PROXY
+    // reports the host's own proxy (e.g. a sandbox egress proxy) instead of
+    // proving the function's proxy never reached the interactive shell.
+    const hostEnv = { ...process.env };
+    for (const v of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY']) {
+      delete hostEnv[v];
+    }
     const out = await new Promise<string>((res, rej) => {
       const p = spawn('bash', ['-c', script], {
         env: {
-          ...process.env,
+          ...hostEnv,
           HOME: posix(home),
           TMPDIR: posix(path.join(home, 'tmp')),
           SHELLY_LIB_DIR: '/fake/lib',
