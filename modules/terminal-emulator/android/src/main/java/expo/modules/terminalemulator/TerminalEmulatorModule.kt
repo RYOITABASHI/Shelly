@@ -794,15 +794,19 @@ class TerminalEmulatorModule : Module() {
             A2ABridge.isRunning()
         }
 
-        // MCP (Model Context Protocol) server — see MCPBridge.kt.
+        // MCP (Model Context Protocol) server — see MCPBridge.kt and
+        // McpServerSupervisor.kt (which owns the process lifecycle and the
+        // McpServerService foreground service).
         // exec / readTerminal / diagnostics: settings.mcpExecEnabled /
         // mcpReadTerminalEnabled / mcpDiagnosticsEnabled at start time (the
         // script hides those tools when off). bridgeKey: RN's per-start key
-        // that signs queue requests (never logged).
+        // that signs queue requests (never logged). A server started headless
+        // (boot / update) has a native key and is restarted here with RN's
+        // key ("adoption" = clean restart).
         AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
-            MCPBridge.start(context, token, exec, readTerminal, diagnostics, bridgeKey)
+            McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, bridgeKey)
         }
 
         // Device status for the MCP device_status tool (snapshot section,
@@ -813,12 +817,48 @@ class TerminalEmulatorModule : Module() {
             DeviceStatusBridge.mcpDeviceStatus(context)
         }
 
+        // Also invalidates the auto-start mirror: an app stop (setting change,
+        // token regeneration) means nothing may be auto-started until RN
+        // writes the mirror again for the new state, so a process death right
+        // after a stop can never bring back the stopped server's token or
+        // switches. Cleared before stopping, like OFF.
         AsyncFunction("stopMCPServer") {
-            MCPBridge.stop()
+            val context = appContext.reactContext
+            if (context != null) {
+                McpAutostartStore.clear(context, "app stop")
+                McpServerSupervisor.stop(context, "app stop")
+            } else {
+                MCPBridge.stop()
+            }
         }
 
+        // Native-readable mirror of the MCP settings + token for boot /
+        // app-update auto-start (McpAutostartStore.kt: Keystore AES-GCM,
+        // re-keyed per write). enabled=false clears it AND stops the server
+        // and its service (OFF wins). Returns whether the mirror now matches
+        // the request (false = cleared, i.e. auto-start OFF). The token is
+        // never logged.
+        AsyncFunction("setMCPAutostartMirror") { enabled: Boolean, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, token: String? ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            if (!enabled) {
+                // Stop even when the clear is not confirmed (OFF wins); the
+                // result tells RN whether the mirror is verifiably gone.
+                val cleared = McpAutostartStore.clear(context, "settings off")
+                McpServerSupervisor.stop(context, "settings off")
+                cleared
+            } else if (token == null) {
+                McpAutostartStore.clear(context, "no token")
+                false
+            } else {
+                McpAutostartStore.writeOn(context, exec, readTerminal, diagnostics, token)
+            }
+        }
+
+        // Running, or wanted and about to be restarted by the native
+        // watchdog: token regeneration must stop and restart both.
         AsyncFunction("isMCPServerRunning") {
-            MCPBridge.isRunning()
+            McpServerSupervisor.isRunningOrWanted()
         }
 
         AsyncFunction("createSession") { config: Map<String, Any?> ->

@@ -25,11 +25,30 @@
  * background — and every DEVICE_REFRESH_MS while it is open. Every start first revokes what is still
  * pending in the queue — the previous process and its clients are gone, so
  * nothing they asked for may still be approved or run.
+ *
+ * Auto-start (McpServerSupervisor.kt / McpServerService.kt): the native side
+ * brings the server back after a reboot or app update without Shelly being
+ * opened, from a Keystore-encrypted mirror of these settings + the token
+ * (lib/mcp-autostart-mirror.ts). This hook writes the mirror with every
+ * change, before starting; turning the server off clears the mirror, which
+ * also stops the server and its foreground service natively (OFF wins).
+ * Ordering: the mirror is narrowed before anything narrower is committed
+ * (narrower settings on disk: the persist hook below; startup: before the
+ * fallible token work, which only runs once that clear is confirmed; token
+ * replacement: McpTokenDeps.invalidateMirror)
+ * and widened only after the wider state is committed (settings: only to
+ * what is on disk, effectiveMirrorSettings; token: after it is saved).
+ * Adoption of a server the native side started headless = clean restart:
+ * the start below revokes pending requests and passes a fresh bridge key, so
+ * MCPBridge restarts the process (a headless server's key never reaches JS).
+ * When the root merely unmounts with the settings unchanged, the server is
+ * left to the native supervisor instead of being stopped
+ * (mcpCleanupAction).
  */
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import * as Crypto from 'expo-crypto';
-import { useSettingsStore } from '@/store/settings-store';
+import { registerSettingsPersistHook, settingsPersistIdle, useSettingsStore } from '@/store/settings-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
@@ -45,8 +64,23 @@ import {
 } from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
 import {
+  effectiveMirrorSettings,
+  mcpCleanupAction,
+  mirrorMayBeBroaderThan,
+  mirrorStateFromSettings,
+  mirrorTokenChange,
+  noteSettingsLoaded,
+  noteSettingsWriteStarted,
+  noteSettingsWritten,
+  persistNeedsMirrorClear,
+  switchesFromSettings,
+  writeMcpAutostartMirror,
+  type McpMirrorSettings,
+} from '@/lib/mcp-autostart-mirror';
+import {
   MCP_SERVER_PORT,
   getOrCreateToken,
+  getOrCreateTokenInLock,
   regenerateToken,
   withMcpServerLock,
   type McpServerControl,
@@ -58,7 +92,44 @@ const tokenDeps: McpTokenDeps = {
   store: { get: getConnectorSecret, save: saveConnectorSecret },
   randomBytes: (n) => Crypto.getRandomBytesAsync(n),
   encode: base64UrlFromBytes,
+  // A new token must reach the native auto-start mirror too.
+  onSaved: (token) =>
+    mirrorTokenChange(TerminalEmulator, effectiveMirrorSettings(useSettingsStore.getState().settings), token),
+  // ...and the old one must be gone from it before the token is replaced.
+  invalidateMirror: async () => {
+    if (!(await writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))) {
+      throw new Error('could not clear the native MCP auto-start mirror; token left unchanged');
+    }
+  },
 };
+
+/**
+ * Settings persist hook (store/settings-store.ts), called in write order:
+ * a write that would put narrower MCP settings on disk (server OFF, exec OFF,
+ * read-terminal OFF, compared with what disk may hold now) first clears the
+ * native auto-start mirror under the server lock — ordered with every other
+ * mirror write — and the write is skipped unless the clear is confirmed.
+ * Clearing natively also stops the server; the bridge effect restarts it and
+ * writes the matching mirror once the settings are on disk. afterWrite /
+ * loaded keep the disk bounds (lib/mcp-autostart-mirror.ts) the mirror is
+ * widened against. Exported for tests.
+ */
+export const mcpSettingsPersistHook = {
+  beforeWrite(next: McpMirrorSettings): Promise<boolean> | null {
+    // Decide against what disk may hold BEFORE this write, then count the
+    // write as in flight (the mirror may not widen past it from now on).
+    const needsClear = persistNeedsMirrorClear(next);
+    noteSettingsWriteStarted(next);
+    if (!needsClear) return null;
+    return withMcpServerLock(() => writeMcpAutostartMirror(TerminalEmulator, { enabled: false })).then((ok) => {
+      if (!ok) logError('MCPBridge', 'could not clear the native MCP auto-start mirror; narrower MCP settings not saved yet');
+      return ok;
+    });
+  },
+  afterWrite: (next: McpMirrorSettings, ok: boolean) => noteSettingsWritten(next, ok),
+  loaded: (settings: McpMirrorSettings | null) => noteSettingsLoaded(settings),
+};
+registerSettingsPersistHook(mcpSettingsPersistHook);
 
 /** GET /mcp: the script answers 401 for a wrong token and 405 for a
  *  correct one (auth is checked before the method). No side effects. */
@@ -109,7 +180,8 @@ const serverControl: McpServerControl = {
 
 /** Returns the persisted MCP bearer token, generating and saving a fresh
  *  one on first use. Exported so Settings UI can show/copy it without
- *  duplicating the generation logic. */
+ *  duplicating the generation logic. Takes the server lock (creation and
+ *  regeneration are serialized); never call it from inside the lock. */
 export async function getOrCreateMCPToken(): Promise<string> {
   return getOrCreateToken(tokenDeps);
 }
@@ -144,13 +216,64 @@ export function useMCPServerBridge(): void {
   const execEnabled = useSettingsStore((s) => s.settings.mcpExecEnabled === true);
   const readTerminalEnabled = useSettingsStore((s) => s.settings.mcpReadTerminalEnabled === true);
   const diagnosticsEnabled = useSettingsStore((s) => s.settings.mcpDiagnosticsEnabled === true);
+  // Before the persisted settings are applied, mcpServerEnabled is just the
+  // default (false); acting on it would clear the native mirror and stop a
+  // server the native side auto-started.
+  const settingsLoaded = useSettingsStore((s) => s.isBaseSettingsLoaded);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!settingsLoaded) return;
+    if (!enabled) {
+      // OFF wins: clear the native mirror (also stops a server the native
+      // side may have started headless, and its foreground service), and
+      // drop a snapshot a left-running server was still serving from.
+      stopMCPSnapshotPublisher();
+      void withMcpServerLock(() => writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))
+        .then((ok) => {
+          if (!ok) logError('MCPBridge', 'could not clear the native MCP auto-start mirror');
+        })
+        .catch(() => {});
+      return;
+    }
     let cancelled = false;
-    void withMcpServerLock(async () => {
+    const captured = { enabled, exec: execEnabled, readTerminal: readTerminalEnabled, diagnostics: diagnosticsEnabled };
+    // Widen the mirror only to settings already on disk: wait for the queued
+    // settings writes first. Outside the lock — a queued narrowing write
+    // needs the lock for its mirror clear.
+    void settingsPersistIdle().then(() => withMcpServerLock(async () => {
+      if (cancelled) return;
       try {
-        const token = await getOrCreateMCPToken();
+        // Narrow first: the token work below can fail, and a failure must
+        // not leave a mirror broader than these settings (e.g. exec ON from
+        // an earlier process while Settings now say OFF) for a reboot /
+        // update to restore. Clearing also stops a headless server; the
+        // start below brings it back with these switches.
+        // Fail closed: without a CONFIRMED clear nothing else happens — no
+        // token load / create, no mirror write, no start (the native OFF
+        // path still stops a headless server). The mirror ceiling stays
+        // unchanged, so the next run of this effect (app start, or any
+        // MCP switch change written to settings) tries the clear again,
+        // like the settings persist barrier skipping a write it could not
+        // order behind a confirmed clear.
+        if (mirrorMayBeBroaderThan(switchesFromSettings(effectiveMirrorSettings(useSettingsStore.getState().settings)))) {
+          if (!(await writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))) {
+            logError(
+              'MCPBridge',
+              'could not clear a possibly broader native MCP auto-start mirror; server not started (retried on the next start / MCP settings change)',
+            );
+            return;
+          }
+        }
+        if (cancelled) return;
+        const token = await getOrCreateTokenInLock(tokenDeps);
+        if (cancelled) return;
+        // Mirror first, so a reboot after this point auto-starts with exactly
+        // these settings and this token. A failure only disables auto-start.
+        const mirrored = await writeMcpAutostartMirror(
+          TerminalEmulator,
+          mirrorStateFromSettings(effectiveMirrorSettings(useSettingsStore.getState().settings), token),
+        );
+        if (!mirrored) logError('MCPBridge', 'native MCP auto-start mirror not written; auto-start is off');
         if (cancelled) return;
         try {
           await revokePendingMCPRequests();
@@ -170,7 +293,7 @@ export function useMCPServerBridge(): void {
       } catch (e) {
         if (!cancelled) logError('MCPBridge', 'startup failed', e);
       }
-    });
+    }));
     // Device section refresh triggers (refreshMCPDeviceSnapshot is a no-op
     // until the publisher has started).
     const appStateSub = AppState.addEventListener('change', (state) => {
@@ -183,10 +306,23 @@ export function useMCPServerBridge(): void {
       cancelled = true;
       appStateSub.remove();
       clearInterval(deviceTimer);
+      const { settings } = useSettingsStore.getState();
+      const action = mcpCleanupAction(captured, {
+        enabled: settings.mcpServerEnabled === true,
+        exec: settings.mcpExecEnabled === true,
+        readTerminal: settings.mcpReadTerminalEnabled === true,
+        diagnostics: settings.mcpDiagnosticsEnabled === true,
+      });
       stopMCPPoller();
-      stopMCPSnapshotPublisher();
+      // 'keep': the native server keeps answering list_agents / list_repos
+      // from the signed snapshot, so leave the file in place.
+      stopMCPSnapshotPublisher({ keepFile: action === 'keep' });
       setMCPBridgeKey(null);
-      void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
+      if (action === 'stop') {
+        void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
+      } else {
+        logInfo('MCPBridge', 'bridge unmounted with the server still enabled; left to the native supervisor');
+      }
     };
-  }, [enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]);
+  }, [settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]);
 }

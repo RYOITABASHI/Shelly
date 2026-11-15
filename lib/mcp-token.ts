@@ -6,8 +6,9 @@
  * hooks/use-mcp-server-bridge.ts.
  *
  * Why regeneration restarts the server: the native MCPBridge passes the token
- * to scripts/shelly-mcp-server.js once, via the SHELLY_MCP_TOKEN env var, and
- * the script checks every request against that in-process value. Replacing
+ * to scripts/shelly-mcp-server.js once at start, on the process's stdin
+ * (line 1; never in the environment, see MCPBridge.kt), and the script
+ * checks every request against that in-process value. Replacing
  * the stored token alone would leave the running process accepting the old
  * one. Legacy Mcp-Session-Id sessions and MRTR requestState are in-process
  * memory too (and auth is checked before any session lookup), so killing the
@@ -29,6 +30,24 @@ export interface McpTokenDeps {
   store: McpTokenStore;
   randomBytes(n: number): Promise<Uint8Array>;
   encode(bytes: Uint8Array): string;
+  /**
+   * Called after a NEW token was persisted (first creation, regeneration),
+   * so the native auto-start mirror (lib/mcp-autostart-mirror.ts) follows
+   * the token. Creation: best-effort (a failure only means no auto-start;
+   * the mirror clears itself). Regeneration of a running server: a failure
+   * leaves the server off ('failed_server_off'), never restarted while the
+   * native copy might still hold the old token.
+   */
+  onSaved?(token: string): Promise<void>;
+  /**
+   * Durably invalidates the native auto-start mirror (clears it; natively
+   * this also stops the server). Called BEFORE a token is replaced or
+   * created, so a process death between "new token saved" and "mirror
+   * updated" can never leave a mirror that still holds the old token for a
+   * reboot / sticky service restart to bring back. Throws when the mirror
+   * could not be cleared; the token is then left unchanged.
+   */
+  invalidateMirror?(): Promise<void>;
 }
 
 export interface McpServerControl {
@@ -51,9 +70,13 @@ export interface McpServerControl {
   revokePending?(): Promise<void>;
 }
 
-// Serializes server start/stop/regenerate so the bridge hook's startup and a
-// Settings-triggered regeneration can't interleave (e.g. the hook spawning a
-// process with the old token right after regeneration restarted it).
+// Serializes server start/stop, token creation and regeneration, and every
+// native mirror write, so the bridge hook's startup, Settings showing the
+// token (creation) and a Settings-triggered regeneration can't interleave
+// (e.g. the hook spawning a process with the old token right after
+// regeneration restarted it, or a creation paused in random generation
+// resuming after a regeneration and saving / mirroring a stale token).
+// Not re-entrant: code already inside the lock calls the *InLock variants.
 let chain: Promise<unknown> = Promise.resolve();
 export function withMcpServerLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = chain.then(fn, fn);
@@ -71,17 +94,37 @@ async function generateToken(deps: McpTokenDeps): Promise<string> {
   return token;
 }
 
-/** Returns the stored token, generating and saving one on first use. */
-export async function getOrCreateToken(deps: McpTokenDeps): Promise<string> {
+/**
+ * Returns the stored token, generating and saving one on first use. Takes
+ * withMcpServerLock, so it can never interleave with a regeneration. Callers
+ * that already hold the lock use getOrCreateTokenInLock.
+ */
+export function getOrCreateToken(deps: McpTokenDeps): Promise<string> {
+  return withMcpServerLock(() => getOrCreateTokenInLock(deps));
+}
+
+/** getOrCreateToken for code already running inside withMcpServerLock. */
+export async function getOrCreateTokenInLock(deps: McpTokenDeps): Promise<string> {
   const existing = await deps.store.get(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD);
   if (existing) return existing;
   const token = await generateToken(deps);
+  // No stored token, but the native mirror may still hold an older one
+  // (e.g. SecureStore lost it): invalidate first, so only the token saved
+  // below can ever be auto-started. A failure leaves no token (fail closed).
+  if (deps.invalidateMirror) await deps.invalidateMirror();
   await deps.store.save(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD, token);
+  if (deps.onSaved) {
+    try {
+      await deps.onSaved(token);
+    } catch {
+      // Best-effort: the in-app server still works; auto-start stays off.
+    }
+  }
   return token;
 }
 
 export type RegenerateResult = {
-  /** The new token, or null when it could not be saved ('failed_server_off'). */
+  /** The new token, or null when it could not be saved ('failed_server_off' from a save failure). */
   token: string | null;
   /** Set with 'failed_server_off'. */
   error?: string;
@@ -96,10 +139,13 @@ export type RegenerateResult = {
    *  - 'restart_failed'    the new server did not come up
    *  - 'old_token_accepted' something on the port still accepts the old token
    *                        (e.g. an orphaned server from an earlier app process)
-   *  - 'failed_server_off' the server was stopped, then revoking pending
-   *                        requests or saving the new token failed; it was
+   *  - 'failed_server_off' the server was stopped, then invalidating the
+   *                        native mirror, revoking pending requests or
+   *                        saving the new token failed; it was
    *                        left off rather than restarted on a possibly
-   *                        leaked token
+   *                        leaked token. Also when the new token was saved
+   *                        but the native auto-start mirror could not be
+   *                        updated (deps.onSaved threw; token is then set)
    * Both 'restart_failed' and 'failed_server_off' mean the server is now off.
    */
   check: 'verified' | 'unverified' | 'restart_failed' | 'old_token_accepted' | 'not_running' | 'failed_server_off';
@@ -126,8 +172,32 @@ export async function regenerateToken(
     if (oldToken && token === oldToken) throw new Error('random token generation repeated the old token');
 
     const wasRunning = await server.isRunning();
-    // Stop first so the old process is gone before the new token is
-    // persisted; if stop throws, nothing has changed yet.
+    // Invalidate the native auto-start mirror BEFORE anything else changes:
+    // if Shelly dies anywhere after this point, a reboot / sticky restart
+    // finds no mirror instead of one holding the old (revoked) token. The
+    // new mirror is written only after the new token is persisted (onSaved).
+    if (deps.invalidateMirror) {
+      try {
+        await deps.invalidateMirror();
+      } catch (e) {
+        if (!wasRunning) throw e;
+        // The old token is unchanged; a running server is stopped rather
+        // than left serving next to a mirror we could not invalidate.
+        try {
+          await server.stop();
+        } catch {
+          // Best-effort; reported as off either way.
+        }
+        return {
+          token: null,
+          wasRunning,
+          restarted: false,
+          check: 'failed_server_off',
+          error: String((e as any)?.message || e),
+        };
+      }
+    }
+    // Stop so the old process is gone before the new token is persisted.
     if (wasRunning) await server.stop();
     try {
       // Nothing accepted under the old token may survive: pending approvals,
@@ -148,6 +218,25 @@ export async function regenerateToken(
         check: 'failed_server_off',
         error: String((e as any)?.message || e),
       };
+    }
+
+    if (deps.onSaved) {
+      try {
+        await deps.onSaved(token);
+      } catch (e) {
+        // The native auto-start copy could not follow the new token (it
+        // cleared itself). A server that was running stays off rather than
+        // coming back next to a native copy that might hold the old token.
+        if (wasRunning) {
+          return {
+            token,
+            wasRunning,
+            restarted: false,
+            check: 'failed_server_off',
+            error: String((e as any)?.message || e),
+          };
+        }
+      }
     }
 
     if (!wasRunning) return { token, wasRunning, restarted: false, check: 'not_running' };

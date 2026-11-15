@@ -28,6 +28,13 @@ All notable changes to Shelly are documented here. Format loosely follows
   and ClosePaw saves them in the note or Substack web editor. Nothing is
   published. See [docs/article-pipeline-config.md](./docs/article-pipeline-config.md).
 
+- **The MCP server comes back on its own.** With the MCP server enabled in
+  Settings, it now starts after a reboot or an app update without opening
+  Shelly, under a foreground service with a persistent notification, and is
+  restarted if it stops. Turning the setting off stops it and keeps it off.
+  While Shelly is closed, exec/write requests still wait for your approval in
+  the app (and time out); reads from the signed snapshot and `git_status` work.
+
 ### Changed
 
 - **Typed and pasted text stays out of the logs.** The terminal logged the start

@@ -570,8 +570,22 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     app: Record<string, unknown> | null;
     uptime: Record<string, unknown> | null;
   }>;
+  /** Stops the server; nothing is wanted afterwards (the native watchdog
+   *  does not restart it and the MCP foreground service stops). Also clears
+   *  the auto-start mirror; RN rewrites it for the new state. */
   stopMCPServer(): Promise<void>;
+  /** True while the server runs OR is wanted and about to be restarted by
+   *  the native watchdog (McpServerSupervisor.isRunningOrWanted). */
   isMCPServerRunning(): Promise<boolean>;
+  /**
+   * Native-readable copy of the MCP settings + token used by the boot /
+   * app-update auto-start (McpAutostartStore.kt: Keystore-encrypted, re-keyed
+   * on every write). Write it with every settings / token change (use
+   * lib/mcp-autostart-mirror.ts). `enabled: false` clears the mirror AND
+   * stops the server and its foreground service. Resolves whether the mirror
+   * now matches the request (false = cleared, auto-start OFF).
+   */
+  setMCPAutostartMirror(enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, token: string | null): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

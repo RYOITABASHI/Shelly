@@ -50,9 +50,11 @@ describe('front agent setting', () => {
 
   it('persists through updateSettings like every other non-secret setting', () => {
     // updateSettings writes the whole stripApiKeys(updated) blob to
-    // AsyncStorage 'shelly_settings'; frontAgent is a plain AppSettings key.
+    // AsyncStorage 'shelly_settings' (through the serial persist queue, see
+    // registerSettingsPersistHook); frontAgent is a plain AppSettings key.
     const store = read('store/settings-store.ts');
-    expect(store).toContain("AsyncStorage.setItem('shelly_settings', JSON.stringify(forStorage))");
+    expect(store).toContain('persistSettingsBlob(updated, JSON.stringify(stripApiKeys(updated))');
+    expect(store).toContain("await AsyncStorage.setItem('shelly_settings', blob)");
     expect(read('store/types.ts')).toMatch(/frontAgent\?: 'none' \| 'antigravity' \| 'claude';/);
   });
 

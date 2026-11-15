@@ -73,6 +73,38 @@
       android:name=".ClosePawDecisionReceiver"
       android:exported="false" />
 
+    <!-- MCP server auto-start (McpServerService / McpServerSupervisor).
+         Foreground service of the house type specialUse (Android 14+ needs
+         the type, FOREGROUND_SERVICE_SPECIAL_USE — declared in app.config.ts —
+         and the subtype property). stopWithTask=false: the server keeps
+         running when Shelly is swiped from recents. Module manifest, so a
+         clean expo prebuild keeps it. -->
+    <service
+      android:name=".McpServerService"
+      android:exported="false"
+      android:stopWithTask="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="mcp_server" />
+    </service>
+
+    <!-- Starts McpServerService after a reboot / app update, only when the
+         owner enabled the MCP server (Keystore mirror, McpAutostartStore).
+         exported=true like BootCompletedReceiver (verified on device); both
+         actions are system-only protected broadcasts and the receiver
+         ignores anything else. No android:permission attribute (that would
+         require the SENDER to hold it and breaks delivery, see
+         plugins/with-terminal-service.js). -->
+    <receiver
+      android:name=".McpServerAutostartReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">
