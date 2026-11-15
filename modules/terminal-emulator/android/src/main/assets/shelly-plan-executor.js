@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=60
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=61
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -259,7 +259,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // version (v55) goes back only to a version its own reviewer passed, so fixes
 // for review findings are never dropped. (3) Every review's full text goes to
 // logs/<agentId>/review-full.jsonl (redacted, capped, last 200 lines).
-const EXECUTOR_SCRIPT_VERSION = 60;
+// v61 (2026-11-15): the article assemble step lists only the sources the final
+// body actually cites in its programmatic "## Sources" (first-use order, body
+// markers renumbered to match; markers with no listed source are dropped, the
+// sourced-briefing finalize convention). Materials ([M1]) are listed as before.
+const EXECUTOR_SCRIPT_VERSION = 61;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -3320,8 +3324,24 @@ function assembleArticle(local, ctx) {
   // v44: the owner's own materials read this run are sources too, listed by
   // their path under the root, never as links.
   const materials = Array.isArray(ctx.materials) ? ctx.materials : [];
-  const sources = ctx.sources.map((s) =>
-    `- [${s.id}] [${escapeLinkText(s.title) || hostOf(s.url)}](${escapeLinkUrl(s.url)})${s.date ? ` — ${escapeHtml(s.date)}` : ''}`)
+  // v61: the flags and lint read the body before its markers are renumbered
+  // below (the index-page flag matches the body's ids against ctx.sources ids).
+  const qualityFlags = articleQualityFlags(local.quality, body, ctx.sources, materials.length);
+  const lintFlags = articleLint(local, lintText);
+  // v61: "## Sources" lists only the web sources the body cites, in first-use
+  // order, with the body's markers renumbered to match. A marker with no listed
+  // source is dropped (the sourced-briefing finalize convention). When the body
+  // cites every source in ascending order, nothing changes.
+  const sourceIds = ctx.sources.map((s) => s.id);
+  const citedOrder = citationIds(body).filter((n) => sourceIds.indexOf(n) !== -1);
+  const ascendingIds = sourceIds.slice().sort((a, b) => a - b);
+  let citedSources = ctx.sources.map((s) => ({ id: s.id, s }));
+  if (!(citedOrder.length === ascendingIds.length && citedOrder.every((n, i) => n === ascendingIds[i]))) {
+    body = remapCitations(body, (n) => citedOrder.indexOf(n) + 1);
+    citedSources = citedOrder.map((n, i) => ({ id: i + 1, s: ctx.sources.find((s) => s.id === n) }));
+  }
+  const sources = citedSources.map(({ id, s }) =>
+    `- [${id}] [${escapeLinkText(s.title) || hostOf(s.url)}](${escapeLinkUrl(s.url)})${s.date ? ` — ${escapeHtml(s.date)}` : ''}`)
     .concat(materials.map((m) => `- [${m.id}] \`${m.label}\`${m.lang === 'en' ? ' (author\'s own material)' : '（筆者の資料）'}`));
   const sourcesBlock = sources.length ? `\n\n## Sources\n\n${sources.join('\n')}` : '';
   // v57: no footer block when the owner's footer is empty (a fixed voice footer still shows).
@@ -3350,7 +3370,7 @@ function assembleArticle(local, ctx) {
     `material: ${material}`,
     ...(material === 'ghostwritten' ? [`voice_sha: ${voice.sha}`] : []),
     ...editorLines,
-    `lint: ${JSON.stringify(titleFlags.concat(articleQualityFlags(local.quality, body, ctx.sources, materials.length), articleLint(local, lintText)))}`,
+    `lint: ${JSON.stringify(titleFlags.concat(qualityFlags, lintFlags))}`,
     '---',
   ].join('\n');
   return `${frontmatter}\n\n${tail}`;

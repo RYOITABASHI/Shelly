@@ -139,6 +139,46 @@ describe('an empty footer (v57)', () => {
   });
 });
 
+describe('only cited sources are listed (v61)', () => {
+  const steps = [{ instruction: 'r' }, { instruction: 'w' }];
+  const local = executor.normalizeStepLocal({ kind: 'assemble', parts: [[1]], stream: 'example', footer: '' }, 2);
+  const three = [
+    { id: 1, title: 'One', url: 'https://example.com/1' },
+    { id: 2, title: 'Two', url: 'https://example.com/2' },
+    { id: 3, title: 'Three', url: 'https://example.com/3' },
+  ];
+  const assemble = (body: string, sources: unknown[], extra: Record<string, unknown> = {}) =>
+    executor.assembleArticle(local, { steps, results: ['r', body], skipped: [], sources, today: '2026-11-15', fallbackTitle: 'F', ...extra });
+  const tailOf = (out: string) => out.slice(out.indexOf('# 記事'));
+
+  it('a body citing only [2] of two lists that source alone, renumbered to [1]', () => {
+    const out = assemble('# 記事\n\n本文です [2]。', three.slice(0, 2));
+    expect(tailOf(out)).toBe('# 記事\n\n本文です [1]。\n\n## Sources\n\n- [1] [Two](https://example.com/2)\n');
+  });
+
+  it('a body citing every source in order is unchanged', () => {
+    const body = '# 記事\n\n一つ目 [1]、二つ目 [2]、三つ目 [3]。';
+    const out = assemble(body, three);
+    expect(tailOf(out)).toBe(`${body}\n\n## Sources\n\n- [1] [One](https://example.com/1)\n- [2] [Two](https://example.com/2)\n- [3] [Three](https://example.com/3)\n`);
+  });
+
+  it('a body citing [3] before [1] lists them in first-use order and renumbers the markers', () => {
+    const out = assemble('# 記事\n\n先に [3]、次に [1]、また [3] と [1, 3]。', three);
+    expect(tailOf(out)).toBe('# 記事\n\n先に [1]、次に [2]、また [1] と [2][1]。\n\n## Sources\n\n- [1] [Three](https://example.com/3)\n- [2] [One](https://example.com/1)\n');
+  });
+
+  it('a marker with no listed source is dropped; materials stay listed', () => {
+    const materials = [{ id: 'M1', label: 'notes/a.md', lang: 'ja' }];
+    const out = assemble('# 記事\n\n本文 [9] と [2]、資料 [M1]。', three.slice(0, 2), { materials });
+    expect(tailOf(out)).toBe('# 記事\n\n本文  と [1]、資料 [M1]。\n\n## Sources\n\n- [1] [Two](https://example.com/2)\n- [M1] `notes/a.md`（筆者の資料）\n');
+  });
+
+  it('no cited web source and no materials means no Sources block', () => {
+    const out = assemble('# 記事\n\n引用なし。', three);
+    expect(out).not.toContain('## Sources');
+  });
+});
+
 describe('notes to an editor (v42)', () => {
   const steps = [{ instruction: 'r' }, { instruction: 'w' }, { instruction: 'review', handoff: { kind: 'review', of: [0, 1], round: 1 } }];
   const local = { kind: 'assemble', parts: [[1]], stream: 'example', footer: 'F', quality: { selfTalk: true } };
