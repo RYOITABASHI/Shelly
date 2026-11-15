@@ -14,6 +14,7 @@ signing/legacy-debug.keystore :: *
 # --- test the app's own secret redaction. Restricted to __tests__ and to the
 # --- specific fake substrings so a real token in a test still fails the scan.
 __tests__/** :: abcdefghijklmnopqrstuvwx
+__tests__/** :: abcdefgh12345678
 __tests__/** :: ABCDEFGHIJKLMNOPQRSTUVWXYZ
 __tests__/** :: AAAABBBBCCCCDDDD
 __tests__/** :: AKIA1234567890ABCDEF
