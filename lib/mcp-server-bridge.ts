@@ -11,7 +11,11 @@
  *
  * The read-only tools are scoped to data the user already exposed through
  * Shelly's own UI (registered agents, Sidebar repo paths; terminal session
- * transcripts only with mcpReadTerminalEnabled). run_command / write_file
+ * transcripts only with mcpReadTerminalEnabled), non-identifying device
+ * status (device_status), and — only with mcpDiagnosticsEnabled — Shelly's
+ * own redacted log lines (read_logs) and its settings with every
+ * secret-named setting withheld (get_settings). Nothing here writes a
+ * setting: MCP has no settings-write tool. run_command / write_file
  * are gated by mcpExecEnabled, then by the agent gate as an untrusted
  * (tainted) request (lib/mcp-ingress-gate.ts: a deny — policy-write, the
  * strict agents-dir / shared_prefs form, CRITICAL, a POLICY-001 user deny
@@ -49,6 +53,8 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteTarget, shellQuote, type McpShellRunner } from '@/lib/mcp-ingress-gate';
 import { getCachedUserPolicy, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
 import { logError, logInfo } from '@/lib/debug-logger';
+import { getDebugLogEntries } from '@/lib/debug-log-buffer';
+import { redactSecretsText } from '@/lib/redact-secrets';
 import { verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 
@@ -84,6 +90,202 @@ const EXEC_DISABLED_ERROR = 'exec/write tools are disabled (Settings → Agents 
 
 function execEnabled(): boolean {
   return useSettingsStore.getState().settings.mcpExecEnabled === true;
+}
+
+const DIAGNOSTICS_DISABLED_ERROR = 'is disabled (Settings → Agents → MCP: Allow diagnostics)';
+
+function diagnosticsEnabled(): boolean {
+  return useSettingsStore.getState().settings.mcpDiagnosticsEnabled === true;
+}
+
+// ── Redaction for diagnostics output ─────────────────────────────────────
+//
+// redactSecretsText (lib/redact-secrets.ts) only knows a list of key
+// formats. Text leaving the device over MCP gets these extra, shape-based
+// passes too (Codex review, 2026-11-15): credentials in URLs, Bearer /
+// Basic headers, secret-named key=value / key: value / JSON fields, and
+// Telegram bot tokens. Over-redacting a log line is the safe direction.
+// `pass[-_.]?w` also catches pass-word / pass_word / pass.word (2026-11-15
+// Codex review); `pwd` and `passphrase` are listed on their own.
+const SECRET_NAME = '[A-Za-z0-9_.-]*(?:token|key|secret|pass[-_.]?w|pwd|passphrase|credential|auth|cookie|bearer|session|signature)[A-Za-z0-9_.-]*';
+const MCP_EXTRA_REDACTIONS: Array<[RegExp, string]> = [
+  // scheme://user:pass@host
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1<redacted>@'],
+  // "secretName": "value"
+  [new RegExp(`("${SECRET_NAME}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, 'gi'), '$1"<redacted>"'],
+  // Authorization: Bearer xxx / Basic xxx
+  [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, '$1 <redacted>'],
+  // Cookie: / Set-Cookie: — the whole header value to end of line (every
+  // pair after the first `;` too). Runs before the key=value pass so that
+  // pass sees `<redacted>` and leaves it.
+  [/\b((?:Set-)?Cookie[ \t]*:[ \t]*)(?!<redacted)[^\r\n]*/gi, '$1<redacted>'],
+  // secretName=value (query strings, env lines) and secretName: value
+  // (headers). The value is a single- or double-quoted string (an
+  // unterminated quote runs to end of line) or a bare run of characters.
+  // The lookahead skips only a quoted value that is exactly a redaction
+  // marker (an earlier pass's whole output, e.g. the JSON pass above) —
+  // a value that merely STARTS with a marker (a known-format key that
+  // redactSecretsText replaced, with more secret text after it) is still
+  // consumed whole (Codex re-review, 2026-11-15).
+  [new RegExp(`\\b(${SECRET_NAME})(\\s*[=:]\\s*)(?!['"]<redacted(?::[^'">]*)?>['"])(?:'[^'\\r\\n]*'?|"(?:[^"\\\\\\r\\n]|\\\\.)*"?|[^\\s&"',;#)]+)`, 'gi'), '$1$2<redacted>'],
+  // Telegram bot token (123456789:AA…), including inside a URL path
+  // (…/bot123456789:AA…/…): there the digits follow a letter, so a leading
+  // \b would never match — anchor on the start or a non-digit instead.
+  [/(^|[^\d])\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, '$1<redacted:bot token>'],
+];
+
+/** redactSecretsText plus the shape-based passes above. Exported for tests. */
+export function redactForMcp(text: string): string {
+  let out = redactSecretsText(text);
+  for (const [re, replacement] of MCP_EXTRA_REDACTIONS) out = out.replace(re, replacement);
+  return out;
+}
+
+// ── read_logs ────────────────────────────────────────────────────────────
+
+export const READ_LOGS_DEFAULT_LIMIT = 200;
+export const READ_LOGS_MAX_LIMIT = 1000;
+export const READ_LOGS_DEFAULT_BYTES = 32 * 1024;
+/** Hard cap on the text read_logs returns, whatever the caller asks for. */
+export const READ_LOGS_MAX_BYTES = 64 * 1024;
+const LOGCAT_TIMEOUT_MS = 10_000;
+// logcat holds whatever any code in the process printed, so only these
+// Shelly tags are read (`-s` silences every other tag), and ReactNativeJS
+// only for lines debug-logger wrote (`[Shelly][`). Every line is redacted
+// again here. AndroidRuntime is limited to errors (this process's crashes).
+export const LOGCAT_TAGS = [
+  'ReactNativeJS:V',
+  'AndroidRuntime:E',
+  'MCPBridge:V',
+  'HomeInitializer:V',
+  'LibExtractor:V',
+  'ShellyExec:V',
+  'ShellyPTY:V',
+  'TerminalEmulator:V',
+  'TerminalSessionService:V',
+  'AgentRuntime:V',
+  'DeviceStatusBridge:V',
+  'AppInfoSnapshot:V',
+];
+
+function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Newest `limit` lines, then oldest lines dropped until the joined text fits
+ * in `maxBytes` (a single line longer than that is cut). Exported for tests.
+ */
+export function capLogLines(lines: string[], limit: number, maxBytes: number): { text: string; returned: number; truncated: boolean } {
+  let picked = lines.slice(-limit);
+  let truncated = picked.length < lines.length;
+  let size = 0;
+  const kept: string[] = [];
+  for (let i = picked.length - 1; i >= 0; i--) {
+    const add = utf8Length(picked[i]) + (kept.length ? 1 : 0);
+    if (size + add > maxBytes) {
+      truncated = true;
+      if (kept.length === 0) {
+        // Cut the newest line itself (by characters, then re-check bytes).
+        let cut = picked[i].slice(0, maxBytes);
+        while (utf8Length(cut) > maxBytes) cut = cut.slice(0, -1);
+        kept.unshift(cut);
+      }
+      break;
+    }
+    size += add;
+    kept.unshift(picked[i]);
+  }
+  picked = kept;
+  return { text: picked.join('\n'), returned: picked.length, truncated };
+}
+
+/** Keeps the Shelly lines of `logcat -v threadtime` output, redacted. Exported for tests. */
+export function filterLogcatLines(raw: string): string[] {
+  const out: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith('--------- beginning of')) continue;
+    // threadtime: "MM-DD HH:MM:SS.mmm  PID  TID L TAG     : message"
+    const m = /^\S+\s+\S+\s+\d+\s+\d+\s+[VDIWEF]\s+(.+?)\s*:\s(.*)$/.exec(line);
+    if (!m) continue;
+    const tag = m[1];
+    if (tag === 'ReactNativeJS' && !m[2].startsWith('[Shelly][') && !m[2].startsWith("'[Shelly][")) continue;
+    if (!LOGCAT_TAGS.some((t) => t.slice(0, t.indexOf(':')) === tag)) continue;
+    out.push(redactForMcp(line));
+  }
+  return out;
+}
+
+async function readLogs(args: Record<string, unknown>): Promise<ToolResult> {
+  const source = args.source === undefined ? 'app' : args.source;
+  if (source !== 'app' && source !== 'logcat') return { ok: false, error: 'source must be "app" or "logcat"' };
+  const limit = clampInt(args.limit, READ_LOGS_DEFAULT_LIMIT, 1, READ_LOGS_MAX_LIMIT);
+  const maxBytes = clampInt(args.maxBytes, READ_LOGS_DEFAULT_BYTES, 256, READ_LOGS_MAX_BYTES);
+  let lines: string[];
+  if (source === 'app') {
+    // Already redacted when logged (lib/debug-logger.ts); redacted again in
+    // case a pattern was added since.
+    lines = getDebugLogEntries().map((e) => redactForMcp(`${new Date(e.ts).toISOString()} ${e.level.toUpperCase()} ${e.line}`));
+  } else {
+    // Own-process logcat: an app may read its own uid's log without
+    // READ_LOGS. Fetch more than `limit` because the tag filter drops lines.
+    try {
+      const r = await execCommand(`logcat -d -v threadtime -t ${Math.min(limit * 4, 4000)} -s ${LOGCAT_TAGS.join(' ')}`, LOGCAT_TIMEOUT_MS);
+      if (r.exitCode !== 0) {
+        return { ok: false, error: `logcat is not readable from the app (exit ${r.exitCode}): ${redactForMcp((r.stderr || '').slice(0, 300))}` };
+      }
+      lines = filterLogcatLines(r.stdout);
+    } catch (e) {
+      return { ok: false, error: `logcat is not readable from the app: ${redactForMcp(e instanceof Error ? e.message : String(e))}` };
+    }
+  }
+  const capped = capLogLines(lines, limit, maxBytes);
+  return { ok: true, data: { source, lines: capped.returned, truncated: capped.truncated, text: capped.text } };
+}
+
+// ── get_settings ─────────────────────────────────────────────────────────
+
+/** Setting names whose values are never returned (case-insensitive substring).
+ *  A superset of token|key|secret|password|credential, including the
+ *  pass-word / pass_word / pwd / passphrase spellings: over-withholding a
+ *  harmless setting is the safe direction. */
+export const SETTINGS_DENYLIST_RE = /token|key|secret|pass[\s_.-]*w|pwd|passphrase|credential|auth|cookie|bearer/i;
+const SETTINGS_MAX_DEPTH = 8;
+
+/**
+ * Settings with every secret-named key withheld, at any depth (a nested
+ * object such as a per-provider config is filtered the same way). String
+ * values are also passed through redactForMcp (URL credentials, secret-named
+ * query parameters, key formats). Exported for tests.
+ */
+export function redactSettingsForMcp(settings: unknown): { settings: Record<string, unknown>; withheldKeys: string[] } {
+  const withheld: string[] = [];
+  const walk = (value: unknown, pathPrefix: string, depth: number): unknown => {
+    if (typeof value === 'string') return redactForMcp(value);
+    if (value === null || typeof value !== 'object') {
+      return typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint' ? undefined : value;
+    }
+    if (depth >= SETTINGS_MAX_DEPTH) return '[omitted: too deep]';
+    if (Array.isArray(value)) return value.map((v, i) => walk(v, `${pathPrefix}[${i}]`, depth + 1));
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const keyPath = pathPrefix ? `${pathPrefix}.${k}` : k;
+      if (SETTINGS_DENYLIST_RE.test(k)) {
+        withheld.push(keyPath);
+        continue;
+      }
+      const w = walk(v, keyPath, depth + 1);
+      if (w !== undefined) out[k] = w;
+    }
+    return out;
+  };
+  const result = walk(settings, '', 0);
+  return { settings: result && typeof result === 'object' && !Array.isArray(result) ? (result as Record<string, unknown>) : {}, withheldKeys: withheld.sort() };
 }
 
 /** Bare (no file://) app home, the same form list_repos paths use. */
@@ -231,6 +433,21 @@ async function callTool(
     }
     case 'list_repos': {
       return { ok: true, data: useSidebarStore.getState().repoPaths };
+    }
+    case 'device_status': {
+      // Reached only when the server had no verified snapshot (it answers
+      // from the snapshot otherwise): capture a fresh reading right now.
+      const device = await captureDeviceSection();
+      if (!device) return { ok: false, error: 'device status is not available from this build of Shelly' };
+      return { ok: true, data: { ...device, ageMs: 0, stale: false } };
+    }
+    case 'read_logs': {
+      if (!diagnosticsEnabled()) return { ok: false, error: `read_logs ${DIAGNOSTICS_DISABLED_ERROR}` };
+      return readLogs(args);
+    }
+    case 'get_settings': {
+      if (!diagnosticsEnabled()) return { ok: false, error: `get_settings ${DIAGNOSTICS_DISABLED_ERROR}` };
+      return { ok: true, data: redactSettingsForMcp(useSettingsStore.getState().settings) };
     }
     case 'read_terminal_output': {
       // Separate switch: the screen can show tokens or pasted secrets.
@@ -475,10 +692,21 @@ export function stopMCPPoller(): void {
 //
 // RN pauses JS timers while Shelly is in the background, so the poller
 // above stops and queued tool calls hang. scripts/shelly-mcp-server.js
-// answers list_agents / list_repos / git_status itself from this snapshot
-// (see createDirectReadCallTool there). Store subscriptions fire on state
-// changes without timers, so the file stays current. The HMAC key derives
-// from the bearer token; the server ignores a snapshot it can't verify.
+// answers list_agents / list_repos / git_status / device_status itself from
+// this snapshot (see createDirectReadCallTool there). Store subscriptions
+// fire on state changes without timers, so the file stays current. The HMAC
+// key derives from the bearer token; the server ignores a snapshot it can't
+// verify.
+//
+// The `device` section is the one part that is not store state: it is read
+// from native Android APIs (TerminalEmulator.getDeviceStatus →
+// DeviceStatusBridge.mcpDeviceStatus) by refreshMCPDeviceSnapshot(), which
+// runs when the publisher starts, and — wired in
+// hooks/use-mcp-server-bridge.ts — on every AppState change to active or
+// background and every DEVICE_REFRESH_MS while Shelly is open. In the
+// background nothing refreshes it (JS is paused), so the reading taken as
+// Shelly left the screen is what the server serves, with its capturedAt,
+// ageMs and stale (> DEVICE_STALE_AFTER_MS) made explicit.
 
 const SNAPSHOT_URI = `${QUEUE_DIR}/snapshot.json`;
 
@@ -500,8 +728,52 @@ export function agentSummaries(): McpSnapshotAgent[] {
   }));
 }
 
-export function buildSnapshotBody(agents: McpSnapshotAgent[], repoPaths: string[]): string {
-  return JSON.stringify({ v: 1, agents, repoPaths });
+export function buildSnapshotBody(agents: McpSnapshotAgent[], repoPaths: string[], device?: McpDeviceSection | null): string {
+  return JSON.stringify(device ? { v: 1, agents, repoPaths, device } : { v: 1, agents, repoPaths });
+}
+
+/** Must match DEVICE_STALE_AFTER_MS in scripts/shelly-mcp-server.js. */
+export const DEVICE_STALE_AFTER_MS = 15 * 60_000;
+/** Foreground refresh period for the snapshot's device section. */
+export const DEVICE_REFRESH_MS = 5 * 60_000;
+const DEVICE_SECTIONS = ['battery', 'thermal', 'memory', 'storage', 'app', 'uptime'] as const;
+const DEVICE_SECTION_MAX_CHARS = 4096;
+
+export type McpDeviceSection = {
+  capturedAt: string;
+} & Partial<Record<(typeof DEVICE_SECTIONS)[number], Record<string, unknown> | null>>;
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Shapes the native reading into the snapshot's device section: a
+ * capturedAt plus each known section as an object or null (unknown keys
+ * dropped). null when the reading is unusable. Exported for tests.
+ */
+export function deviceSectionFromNative(raw: unknown): McpDeviceSection | null {
+  if (!isPlainRecord(raw)) return null;
+  const capturedAtMs = typeof raw.capturedAtMs === 'number' && Number.isFinite(raw.capturedAtMs) ? raw.capturedAtMs : NaN;
+  if (!Number.isFinite(capturedAtMs)) return null;
+  const out: McpDeviceSection = { capturedAt: new Date(capturedAtMs).toISOString() };
+  for (const key of DEVICE_SECTIONS) {
+    const v = raw[key];
+    if (isPlainRecord(v) && JSON.stringify(v).length <= DEVICE_SECTION_MAX_CHARS) out[key] = v;
+    else out[key] = null;
+  }
+  return out;
+}
+
+async function captureDeviceSection(): Promise<McpDeviceSection | null> {
+  // Optional: an older native build lacks it.
+  if (!TerminalEmulator || typeof TerminalEmulator.getDeviceStatus !== 'function') return null;
+  try {
+    return deviceSectionFromNative(await TerminalEmulator.getDeviceStatus());
+  } catch (e) {
+    logError('MCPBridge', 'device status capture failed', e);
+    return null;
+  }
 }
 
 type Sha256 = (data: Uint8Array) => Promise<Uint8Array>;
@@ -535,21 +807,31 @@ export async function signSnapshot(token: string, body: string, sha256: Sha256 =
   return Array.from(mac, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+let snapshotSha256: Sha256 = expoSha256;
+
+/** Test hook (Jest has no expo-crypto digest). */
+export function __setMCPSnapshotSha256ForTests(fn: Sha256 | null): void {
+  snapshotSha256 = fn ?? expoSha256;
+}
+
 let snapshotToken: string | null = null;
 let lastSnapshotBody = '';
+// Last good device reading; kept across publisher restarts (it is not
+// token-bound) so a token regeneration doesn't blank it.
+let lastDevice: McpDeviceSection | null = null;
 let snapshotUnsubs: (() => void)[] = [];
 let snapshotWrite: Promise<void> = Promise.resolve();
 
 function publishSnapshot(): void {
   const token = snapshotToken;
   if (!token) return;
-  const body = buildSnapshotBody(agentSummaries(), useSidebarStore.getState().repoPaths);
+  const body = buildSnapshotBody(agentSummaries(), useSidebarStore.getState().repoPaths, lastDevice);
   if (body === lastSnapshotBody) return;
   lastSnapshotBody = body;
   snapshotWrite = snapshotWrite
     .then(async () => {
       if (snapshotToken !== token) return;
-      const file = JSON.stringify({ body, mac: await signSnapshot(token, body) });
+      const file = JSON.stringify({ body, mac: await signSnapshot(token, body, snapshotSha256) });
       await FileSystem.makeDirectoryAsync(QUEUE_DIR, { intermediates: true }).catch(() => {});
       const tmp = `${SNAPSHOT_URI}.tmp`;
       await FileSystem.writeAsStringAsync(tmp, file);
@@ -564,11 +846,25 @@ function publishSnapshot(): void {
     });
 }
 
+/**
+ * Re-reads the device section and republishes the snapshot. A failed read
+ * keeps the previous reading (its capturedAt shows its age). No-op while the
+ * publisher is stopped.
+ */
+export async function refreshMCPDeviceSnapshot(): Promise<void> {
+  if (!snapshotToken) return;
+  const device = await captureDeviceSection();
+  if (!snapshotToken) return;
+  if (device) lastDevice = device;
+  publishSnapshot();
+}
+
 export function startMCPSnapshotPublisher(token: string): void {
   stopMCPSnapshotPublisher({ keepFile: true });
   snapshotToken = token;
   lastSnapshotBody = '';
   publishSnapshot();
+  void refreshMCPDeviceSnapshot();
   snapshotUnsubs = [
     useAgentStore.subscribe(() => publishSnapshot()),
     useSidebarStore.subscribe(() => publishSnapshot()),

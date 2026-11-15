@@ -795,13 +795,22 @@ class TerminalEmulatorModule : Module() {
         }
 
         // MCP (Model Context Protocol) server — see MCPBridge.kt.
-        // exec / readTerminal: settings.mcpExecEnabled / mcpReadTerminalEnabled
-        // at start time (the script hides those tools when off). bridgeKey:
-        // RN's per-start key that signs queue requests (never logged).
-        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, bridgeKey: String ->
+        // exec / readTerminal / diagnostics: settings.mcpExecEnabled /
+        // mcpReadTerminalEnabled / mcpDiagnosticsEnabled at start time (the
+        // script hides those tools when off). bridgeKey: RN's per-start key
+        // that signs queue requests (never logged).
+        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
-            MCPBridge.start(context, token, exec, readTerminal, bridgeKey)
+            MCPBridge.start(context, token, exec, readTerminal, diagnostics, bridgeKey)
+        }
+
+        // Device status for the MCP device_status tool (snapshot section,
+        // lib/mcp-server-bridge.ts) — see DeviceStatusBridge.mcpDeviceStatus.
+        AsyncFunction("getDeviceStatus") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            DeviceStatusBridge.mcpDeviceStatus(context)
         }
 
         AsyncFunction("stopMCPServer") {

@@ -12,21 +12,30 @@
  * together on toggle-off or unmount. Token lifecycle logic (create /
  * regenerate + restart) lives in lib/mcp-token.ts.
  *
- * The server reads mcpExecEnabled / mcpReadTerminalEnabled only at start
- * (MCPBridge.kt passes them as SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL and
- * the script hides the matching tools from tools/list), so the effect below
- * also depends on both: a change stops the old process and starts a new one,
- * each step under withMcpServerLock. Every start first revokes what is still
+ * The server reads mcpExecEnabled / mcpReadTerminalEnabled /
+ * mcpDiagnosticsEnabled only at start (MCPBridge.kt passes them as
+ * SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS and the
+ * script hides the matching tools from tools/list), so the effect below also
+ * depends on all three: a change stops the old process and starts a new one,
+ * each step under withMcpServerLock.
+ *
+ * While the server runs, the snapshot's device section (device_status) is
+ * re-read on every AppState change to active or background — the reading
+ * taken as Shelly leaves the screen is the one served while it is in the
+ * background — and every DEVICE_REFRESH_MS while it is open. Every start first revokes what is still
  * pending in the queue — the previous process and its clients are gone, so
  * nothing they asked for may still be approved or run.
  */
 import { useEffect } from 'react';
+import { AppState } from 'react-native';
 import * as Crypto from 'expo-crypto';
 import { useSettingsStore } from '@/store/settings-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
 import {
+  DEVICE_REFRESH_MS,
+  refreshMCPDeviceSnapshot,
   revokePendingMCPRequests,
   setMCPBridgeKey,
   startMCPPoller,
@@ -81,7 +90,13 @@ async function startNativeServer(token: string): Promise<boolean> {
   if (!bytes || bytes.length !== 32) throw new Error('bridge key generation failed');
   const bridgeKey = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   setMCPBridgeKey(bridgeKey);
-  return TerminalEmulator.startMCPServer(token, settings.mcpExecEnabled === true, settings.mcpReadTerminalEnabled === true, bridgeKey);
+  return TerminalEmulator.startMCPServer(
+    token,
+    settings.mcpExecEnabled === true,
+    settings.mcpReadTerminalEnabled === true,
+    settings.mcpDiagnosticsEnabled === true,
+    bridgeKey,
+  );
 }
 
 const serverControl: McpServerControl = {
@@ -128,6 +143,7 @@ export function useMCPServerBridge(): void {
   // change must restart the server: see the module doc.
   const execEnabled = useSettingsStore((s) => s.settings.mcpExecEnabled === true);
   const readTerminalEnabled = useSettingsStore((s) => s.settings.mcpReadTerminalEnabled === true);
+  const diagnosticsEnabled = useSettingsStore((s) => s.settings.mcpDiagnosticsEnabled === true);
 
   useEffect(() => {
     if (!enabled) return;
@@ -147,7 +163,7 @@ export function useMCPServerBridge(): void {
         if (started) {
           startMCPPoller();
           startMCPSnapshotPublisher(token);
-          logInfo('MCPBridge', `server + poller started (exec=${execEnabled}, readTerminal=${readTerminalEnabled})`);
+          logInfo('MCPBridge', `server + poller started (exec=${execEnabled}, readTerminal=${readTerminalEnabled}, diagnostics=${diagnosticsEnabled})`);
         } else {
           logError('MCPBridge', 'native server failed to start');
         }
@@ -155,12 +171,22 @@ export function useMCPServerBridge(): void {
         if (!cancelled) logError('MCPBridge', 'startup failed', e);
       }
     });
+    // Device section refresh triggers (refreshMCPDeviceSnapshot is a no-op
+    // until the publisher has started).
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' || state === 'background') void refreshMCPDeviceSnapshot();
+    });
+    const deviceTimer = setInterval(() => {
+      if (AppState.currentState === 'active') void refreshMCPDeviceSnapshot();
+    }, DEVICE_REFRESH_MS);
     return () => {
       cancelled = true;
+      appStateSub.remove();
+      clearInterval(deviceTimer);
       stopMCPPoller();
       stopMCPSnapshotPublisher();
       setMCPBridgeKey(null);
       void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
     };
-  }, [enabled, execEnabled, readTerminalEnabled]);
+  }, [enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]);
 }

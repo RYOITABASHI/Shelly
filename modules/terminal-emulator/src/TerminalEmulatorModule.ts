@@ -546,14 +546,30 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * like the A2A server, not session-scoped like voice. `token` is the
    * pre-shared bearer token the caller must send as `Authorization: Bearer
    * <token>` — generate and persist it via lib/secure-store.ts, never pass
-   * a hardcoded value. `exec` / `readTerminal` are settings.mcpExecEnabled /
-   * mcpReadTerminalEnabled at start time: the server leaves run_command /
-   * write_file / read_terminal_output out of tools/list when they are off,
-   * so restart the server when either changes. `bridgeKey` (64 hex, new per
+   * a hardcoded value. `exec` / `readTerminal` / `diagnostics` are
+   * settings.mcpExecEnabled / mcpReadTerminalEnabled / mcpDiagnosticsEnabled
+   * at start time: the server leaves run_command / write_file /
+   * read_terminal_output / read_logs / get_settings out of tools/list when
+   * they are off, so restart the server when any of them changes. `bridgeKey` (64 hex, new per
    * start, RN memory only) signs the queue requests the server writes
    * (lib/mcp-request-auth.ts); a server running with another key is restarted.
    */
-  startMCPServer(token: string, exec: boolean, readTerminal: boolean, bridgeKey: string): Promise<boolean>;
+  startMCPServer(token: string, exec: boolean, readTerminal: boolean, diagnostics: boolean, bridgeKey: string): Promise<boolean>;
+  /**
+   * Non-identifying device status for the MCP `device_status` tool
+   * (DeviceStatusBridge.mcpDeviceStatus): battery, thermal, memory, storage,
+   * app version, uptimes, plus capturedAtMs. A section the device can't
+   * report is null. Optional: older native builds lack it.
+   */
+  getDeviceStatus?(): Promise<{
+    capturedAtMs: number;
+    battery: Record<string, unknown> | null;
+    thermal: Record<string, unknown> | null;
+    memory: Record<string, unknown> | null;
+    storage: Record<string, unknown> | null;
+    app: Record<string, unknown> | null;
+    uptime: Record<string, unknown> | null;
+  }>;
   stopMCPServer(): Promise<void>;
   isMCPServerRunning(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };

@@ -328,7 +328,8 @@ object DeviceApi {
 
     // ── battery / info ───────────────────────────────────────────────────
 
-    private fun battery(context: Context): JSONObject {
+    /** Also used by DeviceStatusBridge.mcpDeviceStatus (MCP device_status). */
+    internal fun battery(context: Context): JSONObject {
         val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             ?: throw DeviceApiError("unavailable", "battery status is not available")
         val rawLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
