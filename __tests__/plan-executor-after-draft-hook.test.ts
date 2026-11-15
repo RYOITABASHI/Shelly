@@ -68,6 +68,10 @@ function makeVault(): string {
 function writeHook(home: string, body: string): string {
   const file = path.join(home, HOOK_REL);
   fs.writeFileSync(file, body);
+  // The executor refuses a group/world-writable hook. writeFileSync's mode is
+  // filtered by the umask, which hosts set differently (CI 022, others 002/007
+  // give a group-writable file), so set the mode explicitly; chmod ignores umask.
+  fs.chmodSync(file, 0o644);
   return file;
 }
 
