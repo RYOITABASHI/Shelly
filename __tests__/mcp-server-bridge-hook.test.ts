@@ -117,16 +117,36 @@ import { withMcpServerLock } from '@/lib/mcp-token';
 
 const drain = () => withMcpServerLock(async () => {});
 
+// Every mount's effect cleanup is registered here and drained in afterEach, so
+// the hook's 5-minute device-refresh setInterval never outlives a test (an
+// un-cleared interval keeps jest from exiting in --runInBand mode). Each
+// cleanup is wrapped to run at most once, so tests that call it themselves
+// are unaffected; tests that deliberately skip it run it after their asserts.
+const pendingCleanups: Array<() => void> = [];
+
+afterEach(() => {
+  while (pendingCleanups.length) pendingCleanups.pop()!();
+});
+
 /** Mounts the hook with the current settings and lets the startup finish. */
 async function mount(): Promise<() => void> {
   capturedEffect = null;
   useMCPServerBridge();
   const cleanup = capturedEffect!();
+  // Register the run-once cleanup immediately, before any await, so a rejected
+  // or hung startup still gets its interval cleared in afterEach.
+  let done = false;
+  const once = () => {
+    if (done) return;
+    done = true;
+    if (typeof cleanup === 'function') cleanup();
+  };
+  pendingCleanups.push(once);
   // The startup waits for queued settings writes, then takes the lock.
   await persist.idle;
   await new Promise((r) => setImmediate(r));
   await drain();
-  return typeof cleanup === 'function' ? cleanup : () => {};
+  return once;
 }
 
 beforeEach(() => {
@@ -292,7 +312,8 @@ describe('the mirror widens only to settings already on disk (finding 2, review 
     persist.idle = new Promise<void>((r) => { finishWrite = r; });
     capturedEffect = null;
     useMCPServerBridge();
-    capturedEffect!();
+    const cleanup = capturedEffect!();
+    if (typeof cleanup === 'function') pendingCleanups.push(cleanup);
     await new Promise((r) => setImmediate(r));
     await drain();
     expect(native.log).toEqual([]); // nothing written while the settings write is pending
