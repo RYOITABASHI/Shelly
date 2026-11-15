@@ -572,35 +572,45 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     // The Expo binding passes the flag through in the same position RN sends it.
     const mod = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt'), 'utf8');
     expect(mod).toContain('AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->');
-    expect(mod).toContain('MCPBridge.start(context, token, exec, readTerminal, diagnostics, bridgeKey)');
+    // In-app starts go through the supervisor (auto-start branch), which hands
+    // the flag to MCPBridge.start on every path (app start, headless, watchdog).
+    expect(mod).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, bridgeKey)');
+    const supervisor = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpServerSupervisor.kt'), 'utf8');
+    expect(supervisor).toContain('MCPBridge.start(app, token, exec, readTerminal, diagnostics, bridgeKey)');
+    expect(supervisor).toContain('MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, key)');
+    expect(supervisor).toContain('MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.bridgeKey)');
+    expect(bridge).toMatch(/processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics/);
     const hook = fs.readFileSync(path.join(root, 'hooks/use-mcp-server-bridge.ts'), 'utf8');
     expect(hook).toMatch(/settings\.mcpReadTerminalEnabled === true,\s*settings\.mcpDiagnosticsEnabled === true,\s*bridgeKey/);
-    expect(hook).toContain('[enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]');
+    expect(hook).toContain('[settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]');
   });
 });
 
-describe('main() bridge key on stdin', () => {
+describe('main() token + bridge key on stdin (final gate, item B)', () => {
   const KEY = 'a1'.repeat(32);
-  const scriptPath = path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js');
+  const root = path.resolve(__dirname, '..');
+  const scriptPath = path.join(root, 'scripts', 'shelly-mcp-server.js');
+  const assetPath = path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js');
+  const bridgePath = path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt');
 
-  function spawnServer(port: number, keyInput: string | null) {
+  function spawnServer(port: number, stdinInput: string | null, extraEnv: Record<string, string> = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdin-'));
-    const child = spawn('node', [scriptPath, dir, String(port)], {
-      env: { ...process.env, SHELLY_MCP_TOKEN: TOKEN, SHELLY_MCP_EXEC: '0', SHELLY_MCP_READ_TERMINAL: '0' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    if (keyInput !== null) child.stdin.end(keyInput);
+    const env: NodeJS.ProcessEnv = { ...process.env, SHELLY_MCP_EXEC: '0', SHELLY_MCP_READ_TERMINAL: '0' };
+    delete env.SHELLY_MCP_TOKEN;
+    Object.assign(env, extraEnv);
+    const child = spawn('node', [scriptPath, dir, String(port)], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (stdinInput !== null) child.stdin.end(stdinInput);
     else child.stdin.end();
     return { child, dir };
   }
 
-  /** GET /mcp with the right token answers 405 once the server is up. */
-  async function waitForPort(port: number, ms = 5000): Promise<boolean> {
+  /** GET /mcp: 405 for the right token once the server is up, 401 for a wrong one. */
+  async function waitForStatus(port: number, token: string, want: number, ms = 5000): Promise<boolean> {
     const end = Date.now() + ms;
     while (Date.now() < end) {
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'GET', headers: { authorization: `Bearer ${TOKEN}` } });
-        if (res.status === 405) return true;
+        const res = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'GET', headers: { authorization: `Bearer ${token}` } });
+        if (res.status === want) return true;
       } catch {
         /* not up yet */
       }
@@ -609,21 +619,48 @@ describe('main() bridge key on stdin', () => {
     return false;
   }
 
-  it('starts when the key arrives on stdin (and the key is never an env var)', async () => {
-    const root = path.resolve(__dirname, '..');
-    const script = fs.readFileSync(scriptPath, 'utf8');
-    expect(script).not.toContain('process.env.SHELLY_MCP_BRIDGE_KEY');
-    const bridge = fs.readFileSync(
-      path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'),
-      'utf8',
-    );
-    expect(bridge).not.toMatch(/environment\(\)\["SHELLY_MCP_BRIDGE_KEY"\]/);
-    expect(bridge).toMatch(/outputStream/);
-
-    const port = 18000 + Math.floor(Math.random() * 1000);
-    const { child, dir } = spawnServer(port, `${KEY}\n`);
+  async function expectExitWithoutListening(port: number, stdinInput: string | null, extraEnv: Record<string, string> = {}) {
+    const { child, dir } = spawnServer(port, stdinInput, extraEnv);
     try {
-      expect(await waitForPort(port)).toBe(true);
+      const code = await Promise.race([
+        new Promise<number | null>((r) => child.on('exit', (c) => r(c))),
+        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+      ]);
+      expect(code).toBe(1);
+      expect(await waitForStatus(port, TOKEN, 405, 500)).toBe(false);
+    } finally {
+      child.kill('SIGKILL');
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('neither secret is an env var: the script never reads one and MCPBridge.kt never sets one', () => {
+    const script = fs.readFileSync(scriptPath, 'utf8');
+    expect(script).not.toContain('SHELLY_MCP_TOKEN');
+    expect(script).not.toContain('process.env.SHELLY_MCP_BRIDGE_KEY');
+    const bridge = fs.readFileSync(bridgePath, 'utf8');
+    expect(bridge).not.toContain('SHELLY_MCP_TOKEN');
+    expect(bridge).not.toMatch(/environment\(\)\["SHELLY_MCP_BRIDGE_KEY"\]/);
+    // Framing: line 1 token, line 2 bridge key, '\n' each, then closed (use {}).
+    expect(bridge).toMatch(
+      /outputStream\.bufferedWriter\(Charsets\.US_ASCII\)\.use \{\s*it\.write\(token\)\s*it\.write\("\\n"\)\s*it\.write\(bridgeKey\)\s*it\.write\("\\n"\)/,
+    );
+    // MCPBridge.kt validates the token with the same rule the script applies.
+    expect(bridge).toContain('TOKEN_RE = Regex("^[\\\\x21-\\\\x7e]{1,1024}$")');
+    expect(bridge).toMatch(/if \(!TOKEN_RE\.matches\(token\)\)/);
+    expect(script).toContain('const TOKEN_RE = /^[\\x21-\\x7e]{1,1024}$/;');
+  });
+
+  it('the APK asset copy is byte-identical to scripts/shelly-mcp-server.js', () => {
+    expect(fs.readFileSync(assetPath).equals(fs.readFileSync(scriptPath))).toBe(true);
+  });
+
+  it('starts with the token and key on stdin and authenticates with that token only', async () => {
+    const port = 18000 + Math.floor(Math.random() * 1000);
+    const { child, dir } = spawnServer(port, `${TOKEN}\n${KEY}\n`);
+    try {
+      expect(await waitForStatus(port, TOKEN, 405)).toBe(true);
+      expect(await waitForStatus(port, 'wrong-token', 401, 1000)).toBe(true);
     } finally {
       child.kill('SIGTERM');
       await new Promise((r) => child.on('exit', r));
@@ -631,19 +668,58 @@ describe('main() bridge key on stdin', () => {
     }
   });
 
-  it('exits without listening when stdin carries no key', async () => {
-    const port = 19000 + Math.floor(Math.random() * 1000);
-    const { child, dir } = spawnServer(port, null);
+  it('ignores SHELLY_MCP_TOKEN in the environment (the old transport): key-only stdin exits', async () => {
+    await expectExitWithoutListening(19000 + Math.floor(Math.random() * 500), `${KEY}\n`, { SHELLY_MCP_TOKEN: TOKEN });
+  });
+
+  it('does not listen before EOF, and accepts the framing split across writes', async () => {
+    const port = 17000 + Math.floor(Math.random() * 1000);
+    // stdin held open (spawnServer always ends it).
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdin-'));
+    const env: NodeJS.ProcessEnv = { ...process.env, SHELLY_MCP_EXEC: '0', SHELLY_MCP_READ_TERMINAL: '0' };
+    delete env.SHELLY_MCP_TOKEN;
+    const held = spawn('node', [scriptPath, dir2, String(port)], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     try {
-      const code = await Promise.race([
-        new Promise<number | null>((r) => child.on('exit', (c) => r(c))),
-        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
-      ]);
-      expect(code).toBe(1);
-      expect(await waitForPort(port, 500)).toBe(false);
+      held.stdin.write(TOKEN.slice(0, 3));
+      held.stdin.write(`${TOKEN.slice(3)}\n${KEY.slice(0, 10)}`);
+      held.stdin.write(`${KEY.slice(10)}\n`);
+      expect(await waitForStatus(port, TOKEN, 405, 800)).toBe(false); // both lines in, no EOF yet
+      held.stdin.end();
+      expect(await waitForStatus(port, TOKEN, 405)).toBe(true);
     } finally {
-      child.kill('SIGKILL');
-      fs.rmSync(dir, { recursive: true, force: true });
+      held.kill('SIGTERM');
+      await new Promise((r) => held.on('exit', r));
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it('exits without listening when stdin is oversized', async () => {
+    await expectExitWithoutListening(16000 + Math.floor(Math.random() * 1000), `${'x'.repeat(5000)}\n${KEY}\n`);
+  });
+
+  it('exits without listening when stdin carries nothing', async () => {
+    await expectExitWithoutListening(19500 + Math.floor(Math.random() * 500), null);
+  });
+
+  it('parseStartupSecrets accepts exactly the documented framing', () => {
+    const { parseStartupSecrets } = mcp;
+    expect(parseStartupSecrets(`${TOKEN}\n${KEY}\n`)).toEqual({ token: TOKEN, bridgeKey: KEY });
+    expect(parseStartupSecrets(`${TOKEN}\r\n${KEY}\r\n`)).toEqual({ token: TOKEN, bridgeKey: KEY });
+    expect(parseStartupSecrets(`${TOKEN}\n${KEY}`)).toEqual({ token: TOKEN, bridgeKey: KEY });
+    for (const bad of [
+      '',
+      `${KEY}\n`, // key only (the old framing)
+      `${TOKEN}\n`, // token only
+      `${KEY}\n${TOKEN}\n`, // swapped
+      `${TOKEN}\n${KEY}\nextra\n`, // trailing line
+      `two words\n${KEY}\n`, // space in the token
+      `\n${KEY}\n`, // empty token
+      `${'x'.repeat(1025)}\n${KEY}\n`, // token too long
+      `${TOKEN}\n${KEY.toUpperCase()}\n`, // key not lowercase hex
+      `${TOKEN}\n${KEY.slice(1)}\n`, // key too short
+      null,
+    ]) {
+      expect(parseStartupSecrets(bad)).toBeNull();
     }
   });
 });

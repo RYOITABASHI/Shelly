@@ -90,6 +90,89 @@ function queueEnvSync(cmd: string): void {
   agentStore.setPendingEnvSync(prev ? `${prev}\n${cmd}` : cmd);
 }
 
+/**
+ * Persist hooks: every settings write to AsyncStorage goes through ONE serial
+ * queue, and registered hooks see each write IN QUEUE ORDER, right before it
+ * happens (beforeWrite) and with its outcome (afterWrite), plus the settings
+ * read from disk at load (loaded). beforeWrite may return a promise; the
+ * write waits for it and is SKIPPED (disk left as it was) unless it resolves
+ * true. A skipped write is not retried by itself; the next write carries the
+ * full latest state and asks again.
+ *
+ * Used by hooks/use-mcp-server-bridge.ts: a write that would put narrower MCP
+ * settings on disk (server OFF, exec OFF, read-terminal OFF) first durably
+ * clears the native auto-start mirror (McpAutostartStore), and does not
+ * happen when that clear is not confirmed. The bridge widens the mirror only
+ * from settings already on disk (settingsPersistIdle + afterWrite). So the
+ * durable mirror is never broader than the persisted settings, whatever
+ * moment the process dies at.
+ */
+export interface SettingsPersistHook {
+  beforeWrite?(next: AppSettings): Promise<boolean> | null | undefined;
+  afterWrite?(next: AppSettings, ok: boolean): void;
+  /** The settings read from disk at load, or null when they could not be read. */
+  loaded?(settings: AppSettings | null): void;
+}
+const persistHooks = new Set<SettingsPersistHook>();
+let persistQueue: Promise<void> = Promise.resolve();
+
+export function registerSettingsPersistHook(hook: SettingsPersistHook): () => void {
+  persistHooks.add(hook);
+  return () => {
+    persistHooks.delete(hook);
+  };
+}
+
+/** Resolves once every settings write queued so far has finished (or was skipped). */
+export function settingsPersistIdle(): Promise<void> {
+  return persistQueue;
+}
+
+function notifySettingsLoaded(settings: AppSettings | null): void {
+  for (const hook of persistHooks) {
+    try {
+      hook.loaded?.(settings);
+    } catch (e) {
+      logError('Settings', 'settings persist hook (loaded) failed', e);
+    }
+  }
+}
+
+function persistSettingsBlob(next: AppSettings, blob: string, onError: (e: unknown) => void): void {
+  persistQueue = persistQueue.then(async () => {
+    const hooks = Array.from(persistHooks);
+    for (const hook of hooks) {
+      if (!hook.beforeWrite) continue;
+      let allowed = false;
+      try {
+        const wait = hook.beforeWrite(next);
+        allowed = wait ? (await wait) === true : true;
+      } catch (e) {
+        logError('Settings', 'settings persist hook (beforeWrite) failed', e);
+        allowed = false;
+      }
+      if (!allowed) {
+        logError('Settings', 'settings write held back: a persist hook could not confirm it is safe to save');
+        return;
+      }
+    }
+    let ok = true;
+    try {
+      await AsyncStorage.setItem('shelly_settings', blob);
+    } catch (e) {
+      ok = false;
+      onError(e);
+    }
+    for (const hook of hooks) {
+      try {
+        hook.afterWrite?.(next, ok);
+      } catch (e) {
+        logError('Settings', 'settings persist hook (afterWrite) failed', e);
+      }
+    }
+  });
+}
+
 function persistSocialConnectors(connectors: SocialConnectorMeta[]): void {
   AsyncStorage.setItem(SOCIAL_CONNECTORS_STORAGE_KEY, JSON.stringify(connectors)).catch((e) => {
     console.error('[Settings] social-connector persist failed:', e);
@@ -483,10 +566,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       useSoundStore.getState().setEnabled(sanitized.settings.soundEffects ?? true);
       useSoundStore.getState().setVolume(sanitized.settings.soundVolume ?? 0.6);
       logInfo('Settings', 'Base settings loaded');
+      // What is on disk (migrations above do not touch the MCP switches).
+      notifySettingsLoaded(sanitized.settings);
       set({ settings: sanitized.settings, isBaseSettingsLoaded: true, socialConnectors });
     } catch (err) {
       logError('Settings', 'Failed to load settings', err);
       console.error('[Settings] loadSettings failed, using defaults:', err);
+      notifySettingsLoaded(null);
       set({ settings: DEFAULT_SETTINGS, isBaseSettingsLoaded: true });
     }
     const secureKeys = await secureKeysPromise;
@@ -636,8 +722,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if ('soundVolume' in newSettings) {
         useSoundStore.getState().setVolume(newSettings.soundVolume ?? 0.6);
       }
-      const forStorage = stripApiKeys(updated);
-      AsyncStorage.setItem('shelly_settings', JSON.stringify(forStorage)).catch((e) => {
+      persistSettingsBlob(updated, JSON.stringify(stripApiKeys(updated)), (e) => {
         console.error('[Settings] persist failed — settings may be lost on restart:', e);
       });
       return { settings: updated };
@@ -646,7 +731,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   resetSettings: () => {
     set({ settings: DEFAULT_SETTINGS });
-    AsyncStorage.setItem('shelly_settings', JSON.stringify(DEFAULT_SETTINGS)).catch(() => {});
+    persistSettingsBlob(DEFAULT_SETTINGS, JSON.stringify(DEFAULT_SETTINGS), () => {});
     queueEnvSync(buildEnvSyncCommand([['SHELLY_WEBHOOK_HOST_ALLOWLIST', '']]));
   },
 
