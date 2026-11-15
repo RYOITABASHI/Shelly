@@ -179,6 +179,8 @@ const ja: Record<string, string> = {
   'settings.mcp_exec_desc': 'MCPツールをさらに2つ追加します — run_command と write_file。MCPクライアント（Claude Code、Codex）がこの端末上でコマンド実行やファイル書き込みまでできるようになります（読み取りだけではなくなります）。各呼び出しはまずエージェントの CLI ステップと同じ安全ゲートで判定され、ゲートが拒否するもの（CRITICALレベル、エージェント定義やポリシーファイルの変更、自分で決めた拒否ルール）は確認なしで拒否されます。それ以外はすべて端末上の承認ポップアップで止まります。これは上記のベアラートークンと自分の承認タップだけで守られた、実質的なリモートコード実行の経路です。本当に必要な場合だけオンにしてください。MCP Serverがオフだと効果はありません。既定はオフ。',
   'settings.mcp_read_terminal_label': 'MCP: ターミナル出力の読み取りを許可',
   'settings.mcp_read_terminal_desc': 'MCPツール read_terminal_output を追加します。ターミナルのタブの最近の表示内容を返します。画面にはトークン、見える形で打ったパスワード、貼り付けた秘密が映りうるため、既定はオフで、他の読み取りツールとは別のスイッチです。MCPサーバーがオフだと効果はありません。オン・オフを切り替えるとMCPサーバーが再起動します。',
+  'settings.mcp_diagnostics_label': 'MCP: 診断情報（ログ・設定）の読み取りを許可',
+  'settings.mcp_diagnostics_desc': '読み取り専用のMCPツールを2つ追加します。read_logs はShellyのアプリ自身の最近のログ（秘密はマスク済み）を返し、get_settings はこの設定を返します。名前にトークン・キー・シークレット・パスワード・認証情報を含む設定は返しません。ログにはファイルのパス、エージェント名、実行したコマンドが含まれうるため、既定はオフです。MCPから設定を変更することはできません。MCPサーバーがオフだと効果はありません。オン・オフを切り替えるとMCPサーバーが再起動します。',
   'settings.mcp_token_copied_toast': 'MCPトークンをコピーしました',
   'settings.mcp_token_copy_failed_title': 'MCPトークンのコピーに失敗しました',
   'settings.mcp_token_regenerate_label': 'MCPトークンを再発行',

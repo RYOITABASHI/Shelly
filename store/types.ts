@@ -451,6 +451,12 @@ export type AppSettings = {
    *  pasted secrets. The server hides the tool from tools/list while this is
    *  off (restarted on change) and lib/mcp-server-bridge.ts refuses it too. */
   mcpReadTerminalEnabled?: boolean;
+  /** Offers the MCP tools `read_logs` (Shelly's own redacted log lines) and
+   *  `get_settings` (these settings, every secret-named key withheld)
+   *  (default false). Read-only: MCP has no settings-write tool. The server
+   *  hides both tools while this is off (restarted on change) and
+   *  lib/mcp-server-bridge.ts refuses them too. */
+  mcpDiagnosticsEnabled?: boolean;
   /** Extends the MCP server with two additional tools — `run_command`
    *  (routes through execCommand()) and `write_file` (scoped to
    *  Sidebar repo paths / the home dir, checked on the real path) — listed

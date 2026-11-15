@@ -99,13 +99,14 @@ describe('MCP direct reads', () => {
     expect(fallback).toHaveBeenCalledTimes(5);
   });
 
-  it('never answers terminal, exec or write tools directly', async () => {
+  it('never answers terminal, diagnostics, exec or write tools directly', async () => {
     await writeSnapshot(TOKEN);
     const { callTool, fallback } = make();
-    for (const tool of ['read_terminal_output', 'run_command', 'write_file']) {
+    const queued = ['read_terminal_output', 'read_logs', 'get_settings', 'run_command', 'write_file'];
+    for (const tool of queued) {
       await callTool(tool, {});
     }
-    expect(fallback.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['read_terminal_output', 'run_command', 'write_file']);
+    expect(fallback.mock.calls.map((c) => (c as unknown[])[0])).toEqual(queued);
   });
 
   it('refuses repo config keys that could make git status run a program', () => {
@@ -115,5 +116,74 @@ describe('MCP direct reads', () => {
     for (const key of ['core.bare', 'core.repositoryformatversion', 'remote.origin.url', 'branch.main.remote', 'user.name']) {
       expect(mcp.GIT_REFUSED_CONFIG.test(key)).toBe(false);
     }
+  });
+
+  describe('device_status from the signed snapshot', () => {
+    const CAPTURED = '2026-11-15T10:00:00.000Z';
+    const DEVICE = {
+      capturedAt: CAPTURED,
+      battery: { level: 55, charging: false, plugged: 'none', status: 'discharging' },
+      thermal: { status: 'light' },
+      memory: { availBytes: 1, totalBytes: 2, lowMemory: false },
+      storage: { volume: 'app-internal', freeBytes: 3, totalBytes: 4 },
+      app: { versionName: '1.0.0', versionCode: 1 },
+      uptime: { deviceMs: 10, appProcessMs: 5 },
+    };
+    const makeAt = (nowMs: number) => {
+      const fallback = jest.fn(async () => ({ ok: true, data: 'from-queue' }));
+      const callTool = mcp.createDirectReadCallTool({ queueDir: dir, token: TOKEN, fallback, now: () => nowMs });
+      return { callTool, fallback };
+    };
+
+    it('answers with capturedAt, ageMs and stale, without the queue', async () => {
+      await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
+      const { callTool, fallback } = makeAt(Date.parse(CAPTURED) + 30_000);
+      const res = await callTool('device_status', {});
+      expect(res).toEqual({ ok: true, data: { ...DEVICE, ageMs: 30_000, stale: false } });
+      expect(fallback).not.toHaveBeenCalled();
+    });
+
+    it('marks an old reading stale instead of hiding its age', async () => {
+      await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
+      const { callTool } = makeAt(Date.parse(CAPTURED) + mcp.DEVICE_STALE_AFTER_MS + 1);
+      const res = await callTool('device_status', {});
+      expect(res.ok).toBe(true);
+      expect(res.data.stale).toBe(true);
+      expect(mcp.DEVICE_STALE_AFTER_MS).toBe(bridge.DEVICE_STALE_AFTER_MS);
+    });
+
+    it('refuses a snapshot with a bad MAC (falls back to the queue, never serves the forged reading)', async () => {
+      const forged = bridge.buildSnapshotBody(AGENTS, [REPO], { ...DEVICE, battery: { level: 1 } });
+      fs.writeFileSync(path.join(dir, 'snapshot.json'), JSON.stringify({ body: forged, mac: 'ab'.repeat(32) }));
+      const { callTool, fallback } = makeAt(Date.parse(CAPTURED));
+      expect(await callTool('device_status', {})).toEqual({ ok: true, data: 'from-queue' });
+      expect(fallback).toHaveBeenCalledWith('device_status', {}, undefined);
+      // Same for a snapshot signed with another token.
+      await writeSnapshot('old-token', bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
+      expect(await callTool('device_status', {})).toEqual({ ok: true, data: 'from-queue' });
+    });
+
+    it('degrades to a clear error (no crash) when the device section is missing or malformed', async () => {
+      const { callTool, fallback } = makeAt(Date.parse(CAPTURED));
+      for (const device of [undefined, null, 'x', { battery: {} }, { capturedAt: 'not a date' }, { ...DEVICE, battery: 'full' }, { ...DEVICE, memory: [1, 2] },
+        { ...DEVICE, capturedAt: '2099-01-01T00:00:00.000Z' }]) {
+        const body = JSON.stringify(device === undefined ? { v: 1, agents: AGENTS, repoPaths: [REPO] } : { v: 1, agents: AGENTS, repoPaths: [REPO], device });
+        await writeSnapshot(TOKEN, body);
+        const res = await callTool('device_status', {});
+        expect(res.ok).toBe(false);
+        expect(res.error).toContain('device status unavailable');
+        // The rest of the snapshot is still served.
+        expect(await callTool('list_repos', {})).toEqual({ ok: true, data: [REPO] });
+      }
+      expect(fallback).not.toHaveBeenCalled();
+    });
+
+    it('a null section (the device could not report it) is passed through as null', async () => {
+      await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], { ...DEVICE, thermal: null }));
+      const { callTool } = makeAt(Date.parse(CAPTURED));
+      const res = await callTool('device_status', {});
+      expect(res.ok).toBe(true);
+      expect(res.data.thermal).toBeNull();
+    });
   });
 });

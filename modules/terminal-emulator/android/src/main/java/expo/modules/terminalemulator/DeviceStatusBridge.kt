@@ -7,7 +7,11 @@ import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
+import android.os.Build
+import android.os.PowerManager
+import android.os.Process
 import android.os.StatFs
+import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -308,6 +312,144 @@ object DeviceStatusBridge {
             Log.w(TAG, "network snapshot failed", e)
             file.delete()
         }
+    }
+
+    /**
+     * Read-only device status for the MCP `device_status` tool. RN puts it in
+     * the HMAC-signed MCP snapshot (lib/mcp-server-bridge.ts) so the node
+     * server can answer while JS is paused. Only public, permission-free
+     * APIs of a stock app; nothing identifying (no serial, IMEI, Android ID,
+     * SSID or addresses). Each section is independent: one that fails is
+     * null, never a guess.
+     *   battery  — DeviceApi.battery (sticky ACTION_BATTERY_CHANGED + BatteryManager)
+     *   thermal  — PowerManager.getCurrentThermalStatus (API 29+; null below)
+     *   memory   — ActivityManager.MemoryInfo (system-wide aggregates)
+     *   storage  — StatFs on the app's internal files volume (same as writeStorageSnapshot)
+     *   app      — PackageManager versionName / versionCode
+     *   uptime   — SystemClock.elapsedRealtime (since boot, incl. deep sleep) and
+     *              the app process's age (Process.getStartElapsedRealtime, API 24)
+     */
+    fun mcpDeviceStatus(context: Context): Map<String, Any?> {
+        val battery: Map<String, Any?>? = try {
+            jsonToMap(DeviceApi.battery(context))
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp battery read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        val thermal: Map<String, Any?>? = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                if (pm == null) {
+                    null
+                } else {
+                    val status = when (pm.currentThermalStatus) {
+                        PowerManager.THERMAL_STATUS_NONE -> "none"
+                        PowerManager.THERMAL_STATUS_LIGHT -> "light"
+                        PowerManager.THERMAL_STATUS_MODERATE -> "moderate"
+                        PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+                        PowerManager.THERMAL_STATUS_CRITICAL -> "critical"
+                        PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+                        PowerManager.THERMAL_STATUS_SHUTDOWN -> "shutdown"
+                        else -> "unknown"
+                    }
+                    mapOf("status" to status)
+                }
+            } else {
+                null
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp thermal read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        val memory: Map<String, Any?>? = try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            if (am == null) {
+                null
+            } else {
+                val info = ActivityManager.MemoryInfo()
+                am.getMemoryInfo(info)
+                if (info.totalMem <= 0 || info.availMem < 0 || info.availMem > info.totalMem) {
+                    null
+                } else {
+                    mapOf(
+                        "availBytes" to info.availMem,
+                        "availHuman" to humanBytes(info.availMem),
+                        "totalBytes" to info.totalMem,
+                        "totalHuman" to humanBytes(info.totalMem),
+                        "thresholdBytes" to info.threshold,
+                        "lowMemory" to info.lowMemory,
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp memory read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        val storage: Map<String, Any?>? = try {
+            val stat = StatFs(context.filesDir.path)
+            val freeBytes = stat.blockSizeLong * stat.availableBlocksLong
+            val totalBytes = stat.blockSizeLong * stat.blockCountLong
+            if (freeBytes < 0 || totalBytes <= 0 || freeBytes > totalBytes) {
+                null
+            } else {
+                mapOf(
+                    "volume" to "app-internal",
+                    "freeBytes" to freeBytes,
+                    "freeHuman" to humanBytes(freeBytes),
+                    "totalBytes" to totalBytes,
+                    "totalHuman" to humanBytes(totalBytes),
+                )
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp storage read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        val app: Map<String, Any?>? = try {
+            @Suppress("DEPRECATION")
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            mapOf("versionName" to (info.versionName ?: ""), "versionCode" to versionCode)
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp app version read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        val uptime: Map<String, Any?>? = try {
+            val now = SystemClock.elapsedRealtime()
+            val processStart = Process.getStartElapsedRealtime()
+            mapOf(
+                "deviceMs" to now,
+                "appProcessMs" to (if (processStart in 1L..now) now - processStart else null),
+            )
+        } catch (e: Throwable) {
+            Log.w(TAG, "mcp uptime read failed type=${e.javaClass.simpleName}")
+            null
+        }
+        return mapOf(
+            "capturedAtMs" to System.currentTimeMillis(),
+            "battery" to battery,
+            "thermal" to thermal,
+            "memory" to memory,
+            "storage" to storage,
+            "app" to app,
+            "uptime" to uptime,
+        )
+    }
+
+    /** Flat JSONObject → Map for the Expo bridge (JSONObject.NULL → null). */
+    private fun jsonToMap(json: JSONObject): Map<String, Any?> {
+        val out = LinkedHashMap<String, Any?>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = json.opt(k)
+            out[k] = if (v == null || v == JSONObject.NULL) null else v
+        }
+        return out
     }
 
     /** Shared atomic tmp-file-then-rename write, mirroring

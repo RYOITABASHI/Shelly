@@ -23,8 +23,8 @@ function deferred<T>() {
 }
 
 function makeHandler(callTool: (tool: string, args: Record<string, unknown>) => Promise<ToolResult>, extra: Record<string, unknown> = {}) {
-  // Every tool on by default here; the settings-off cases pass exec / readTerminal: false.
-  return mcp.createMcpHandler({ token: TOKEN, callTool, initialHoldMs: 5, retryHoldMs: 20, exec: true, readTerminal: true, ...extra });
+  // Every tool on by default here; the settings-off cases pass exec / readTerminal / diagnostics: false.
+  return mcp.createMcpHandler({ token: TOKEN, callTool, initialHoldMs: 5, retryHoldMs: 20, exec: true, readTerminal: true, diagnostics: true, ...extra });
 }
 
 function post(handler: { handle: (r: unknown) => Promise<Out> }, body: unknown, headers: Record<string, string> = {}) {
@@ -485,16 +485,30 @@ describe('review follow-ups: era detection, origin, session cap', () => {
   });
 });
 
-describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL)', () => {
+describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS)', () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name);
-  const READ_ONLY = ['git_status', 'list_agents', 'list_repos'];
+  // device_status has no switch: it is listed whenever the server runs.
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status'];
 
   it('availableTools: read-only set by default, each switch adds its tools', () => {
     expect(names(mcp.availableTools({}))).toEqual(READ_ONLY);
     expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file']);
     expect(names(mcp.availableTools({ readTerminal: true }))).toEqual(['read_terminal_output', ...READ_ONLY]);
+    expect(names(mcp.availableTools({ diagnostics: true }))).toEqual([...READ_ONLY, 'read_logs', 'get_settings']);
+    expect(names(mcp.availableTools({ exec: true, readTerminal: true, diagnostics: true })))
+      .toEqual(['read_terminal_output', ...READ_ONLY, 'read_logs', 'get_settings', 'run_command', 'write_file']);
     // Only a real `true` turns a tool on.
-    expect(names(mcp.availableTools({ exec: 'yes', readTerminal: 1 }))).toEqual(READ_ONLY);
+    expect(names(mcp.availableTools({ exec: 'yes', readTerminal: 1, diagnostics: '1' }))).toEqual(READ_ONLY);
+  });
+
+  it('the new tools carry the documented input schemas', () => {
+    const byName = Object.fromEntries(mcp.TOOLS.map((t: { name: string }) => [t.name, t]));
+    expect(byName.device_status.inputSchema).toEqual({ type: 'object', properties: {} });
+    expect(byName.get_settings.inputSchema).toEqual({ type: 'object', properties: {} });
+    expect(Object.keys(byName.read_logs.inputSchema.properties)).toEqual(['source', 'limit', 'maxBytes']);
+    expect(byName.read_logs.inputSchema.properties.source.enum).toEqual(['app', 'logcat']);
+    // Nothing that writes a setting exists.
+    expect(mcp.TOOLS.some((t: { name: string }) => /setting/.test(t.name) && t.name !== 'get_settings')).toBe(false);
   });
 
   it('a handler created without the flags lists only the read-only tools (both eras)', async () => {
@@ -506,9 +520,9 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(names(legacyList.result.tools)).toEqual(READ_ONLY);
   });
 
-  it.each(['run_command', 'write_file', 'read_terminal_output'])('refuses tools/call %s while its setting is off, without calling the bridge', async (tool) => {
+  it.each(['run_command', 'write_file', 'read_terminal_output', 'read_logs', 'get_settings'])('refuses tools/call %s while its setting is off, without calling the bridge', async (tool) => {
     const callTool = jest.fn(async () => ({ ok: true, data: 'should not run' }) as ToolResult);
-    const handler = makeHandler(callTool, { exec: false, readTerminal: false, mrtr: true });
+    const handler = makeHandler(callTool, { exec: false, readTerminal: false, diagnostics: false, mrtr: true });
     const args = tool === 'write_file' ? { path: '/x', content: 'y' } : tool === 'run_command' ? { command: 'id' } : {};
     const modernOut = parse(await modern(handler, 1, 'tools/call', { name: tool, arguments: args }));
     expect(modernOut.error.code).toBe(mcp.INVALID_PARAMS);
@@ -520,23 +534,48 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(handler._pendingApprovalCount()).toBe(0);
   });
 
-  it('keeps answering the read-only tools and "unknown tool" for names it never had', async () => {
-    const callTool = jest.fn(async () => ({ ok: true, data: ['/repo'] }) as ToolResult);
-    const handler = makeHandler(callTool, { exec: false, readTerminal: false });
-    const ok = parse(await modern(handler, 1, 'tools/call', { name: 'list_repos', arguments: {} }));
-    expect(ok.result.isError).toBe(false);
-    const unknown = parse(await modern(handler, 2, 'tools/call', { name: 'rm_everything', arguments: {} }));
-    expect(unknown.error.message).toBe('unknown tool: rm_everything');
+  it('diagnostics on: read_logs / get_settings reach the bridge as plain read-only calls (no MRTR, no approval)', async () => {
+    const callTool = jest.fn(async () => ({ ok: true, data: { text: 'x' } }) as ToolResult);
+    const handler = makeHandler(callTool, { exec: false, readTerminal: false, diagnostics: true, mrtr: true });
+    for (const [i, tool] of ['read_logs', 'get_settings'].entries()) {
+      const out = parse(await modern(handler, i + 1, 'tools/call', { name: tool, arguments: {} }));
+      expect(out.result.resultType).toBe('complete');
+      expect(out.result.isError).toBe(false);
+    }
+    expect(callTool.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['read_logs', 'get_settings']);
+    expect(handler._pendingApprovalCount()).toBe(0);
   });
 
-  it('main() reads the flags from SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL and MCPBridge.kt sets both', () => {
+  it('keeps answering the read-only tools and "unknown tool" for names it never had', async () => {
+    const callTool = jest.fn(async () => ({ ok: true, data: ['/repo'] }) as ToolResult);
+    const handler = makeHandler(callTool, { exec: false, readTerminal: false, diagnostics: false });
+    const ok = parse(await modern(handler, 1, 'tools/call', { name: 'list_repos', arguments: {} }));
+    expect(ok.result.isError).toBe(false);
+    const device = parse(await modern(handler, 3, 'tools/call', { name: 'device_status', arguments: {} }));
+    expect(device.result.isError).toBe(false);
+    const unknown = parse(await modern(handler, 2, 'tools/call', { name: 'rm_everything', arguments: {} }));
+    expect(unknown.error.message).toBe('unknown tool: rm_everything');
+    const setter = parse(await modern(handler, 4, 'tools/call', { name: 'set_settings', arguments: {} }));
+    expect(setter.error.message).toBe('unknown tool: set_settings');
+  });
+
+  it('main() reads the flags from SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS and MCPBridge.kt sets all three', () => {
     const root = path.resolve(__dirname, '..');
     const script = fs.readFileSync(path.join(root, 'scripts/shelly-mcp-server.js'), 'utf8');
     expect(script).toContain("process.env.SHELLY_MCP_EXEC === '1'");
     expect(script).toContain("process.env.SHELLY_MCP_READ_TERMINAL === '1'");
+    expect(script).toContain("process.env.SHELLY_MCP_DIAGNOSTICS === '1'");
     const bridge = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'), 'utf8');
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_EXEC"\] = if \(exec\) "1" else "0"/);
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_READ_TERMINAL"\] = if \(readTerminal\) "1" else "0"/);
+    expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_DIAGNOSTICS"\] = if \(diagnostics\) "1" else "0"/);
+    // The Expo binding passes the flag through in the same position RN sends it.
+    const mod = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt'), 'utf8');
+    expect(mod).toContain('AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->');
+    expect(mod).toContain('MCPBridge.start(context, token, exec, readTerminal, diagnostics, bridgeKey)');
+    const hook = fs.readFileSync(path.join(root, 'hooks/use-mcp-server-bridge.ts'), 'utf8');
+    expect(hook).toMatch(/settings\.mcpReadTerminalEnabled === true,\s*settings\.mcpDiagnosticsEnabled === true,\s*bridgeKey/);
+    expect(hook).toContain('[enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]');
   });
 });
 

@@ -5,13 +5,15 @@
  * Exposes tools so an MCP client on the same network (Claude Code, Claude
  * Desktop) can inspect — and, opt-in, act on — this Shelly instance:
  * read-only (always available once the server is on) — git status,
- * registered agents, configured repos; terminal output only with
- * settings.mcpReadTerminalEnabled (off by default: the screen can show
- * tokens or pasted secrets); exec/write (settings.mcpExecEnabled, off by
- * default) — run_command and write_file. A tool whose setting is off is
- * left out of tools/list and refused in tools/call here (SHELLY_MCP_EXEC /
- * SHELLY_MCP_READ_TERMINAL from MCPBridge.kt), and refused again per call
- * in lib/mcp-server-bridge.ts. This is the ingress-side capability gate:
+ * registered agents, configured repos, device status; terminal output only
+ * with settings.mcpReadTerminalEnabled (off by default: the screen can show
+ * tokens or pasted secrets); Shelly's own logs and settings only with
+ * settings.mcpDiagnosticsEnabled (off by default); exec/write
+ * (settings.mcpExecEnabled, off by default) — run_command and write_file.
+ * A tool whose setting is off is left out of tools/list and refused in
+ * tools/call here (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL /
+ * SHELLY_MCP_DIAGNOSTICS from MCPBridge.kt), and refused again per call in
+ * lib/mcp-server-bridge.ts. This is the ingress-side capability gate:
  * every exec/write call is treated as untrusted input — the agent gate
  * (lib/agent-boundary-policy.ts, strict policy paths + POLICY-001) refuses
  * a deny outright (policy-write, CRITICAL, user deny rules) without asking,
@@ -155,9 +157,10 @@ const META_CLIENT_INFO = 'io.modelcontextprotocol/clientInfo';
 const META_APPROVAL_STATUS = 'dev.shelly/approvalStatus';
 
 // tools/list + server/discover never change while this process runs, so a
-// long TTL is truthful. The list does depend on two settings (exec/write and
-// read_terminal_output, passed in as SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL),
-// but RN restarts this process whenever either changes
+// long TTL is truthful. The list does depend on three settings (exec/write,
+// read_terminal_output and diagnostics, passed in as SHELLY_MCP_EXEC /
+// SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS), but RN restarts this
+// process whenever any of them changes
 // (hooks/use-mcp-server-bridge.ts), so within one process the list is fixed.
 // A client that cached an older list only gets "tool disabled" errors for a
 // tool that was turned off; the RN side refuses it again on its own.
@@ -217,6 +220,31 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'device_status',
+    description: 'Battery, thermal status, memory and storage totals, Shelly\'s version and uptimes, as last captured by the app. '
+      + 'capturedAt / ageMs / stale say how old the reading is (it is refreshed while Shelly is open, not while it is in the background).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'read_logs',
+    description: 'Reads Shelly\'s own recent log lines (secrets redacted). source "app" (default) is the app\'s in-memory [Shelly] log; '
+      + '"logcat" is Shelly\'s own logcat lines from a fixed set of Shelly tags. Output is capped. Disabled unless the user turned on "MCP: Allow diagnostics".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', enum: ['app', 'logcat'], description: 'Log source (default "app")' },
+        limit: { type: 'number', description: 'Return at most this many of the most recent lines (default 200, max 1000)' },
+        maxBytes: { type: 'number', description: 'Output size cap in bytes (default 32768, max 65536); older lines are dropped first' },
+      },
+    },
+  },
+  {
+    name: 'get_settings',
+    description: 'Returns Shelly\'s app settings. Any setting whose name contains token, key, secret, password or credential is withheld (listed in withheldKeys, value never returned). '
+      + 'Read-only. Disabled unless the user turned on "MCP: Allow diagnostics".',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'run_command',
     description: 'Runs a shell command on the device. Disabled unless the user turned on Settings → Agents → "MCP: Allow exec/write", and every call still blocks on an in-app approval tap on the phone — expect this to be slow or to fail with "denied" if nobody is there to approve it.',
     inputSchema: {
@@ -245,16 +273,20 @@ const TOOLS = [
 
 // Tools hidden unless a setting turned them on: run_command / write_file need
 // "MCP: Allow exec/write", read_terminal_output needs "MCP: Allow reading
-// terminal output" (the screen can show tokens or pasted secrets).
+// terminal output" (the screen can show tokens or pasted secrets), read_logs /
+// get_settings need "MCP: Allow diagnostics". device_status has no switch.
 const READ_TERMINAL_TOOL = 'read_terminal_output';
+const DIAGNOSTICS_TOOLS = new Set(['read_logs', 'get_settings']);
 
-/** The tools this process offers, given the two settings it was started with. */
+/** The tools this process offers, given the settings it was started with. */
 function availableTools(flags) {
   const exec = !!(flags && flags.exec === true);
   const readTerminal = !!(flags && flags.readTerminal === true);
+  const diagnostics = !!(flags && flags.diagnostics === true);
   return TOOLS.filter((t) => {
     if (APPROVAL_TOOLS.has(t.name)) return exec;
     if (t.name === READ_TERMINAL_TOOL) return readTerminal;
+    if (DIAGNOSTICS_TOOLS.has(t.name)) return diagnostics;
     return true;
   });
 }
@@ -343,16 +375,50 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
 // that need no live UI state are answered here instead:
 //   list_agents / list_repos — from snapshot.json, which the RN bridge
 //     rewrites whenever the agent list or the Sidebar repos change;
-//   git_status — git run by this process, only for a repo in that snapshot.
+//   git_status — git run by this process, only for a repo in that snapshot;
+//   device_status — the snapshot's `device` section, which RN captures from
+//     native Android APIs (DeviceStatusBridge.mcpDeviceStatus) on server
+//     start, on every foreground / background transition and every few
+//     minutes while Shelly is open. Its `capturedAt` is returned together
+//     with `ageMs` and `stale` so a reading taken before Shelly went to the
+//     background is never mistaken for a live one. A verified snapshot whose
+//     device section is missing or malformed answers a plain error.
 // The snapshot carries an HMAC keyed by the bearer token, so a file planted
 // in the queue dir by anything that doesn't hold the token is ignored and
 // the call falls back to the queue (the old behaviour). read_terminal_output,
-// run_command and write_file always go through the queue.
+// read_logs, get_settings, run_command and write_file always go through the
+// queue.
 
 const SNAPSHOT_FILE = 'snapshot.json';
 const SNAPSHOT_MAX_BYTES = 256 * 1024;
 const GIT_TIMEOUT_MS = 10_000;
-const DIRECT_READ_TOOLS = new Set(['list_agents', 'list_repos', 'git_status']);
+const DIRECT_READ_TOOLS = new Set(['list_agents', 'list_repos', 'git_status', 'device_status']);
+// A device reading older than this is reported with stale: true. Must match
+// DEVICE_STALE_AFTER_MS in lib/mcp-server-bridge.ts.
+const DEVICE_STALE_AFTER_MS = 15 * 60_000;
+// Clock skew tolerated before a capturedAt "from the future" is refused.
+const DEVICE_FUTURE_SKEW_MS = 5 * 60_000;
+const DEVICE_SECTIONS = ['battery', 'thermal', 'memory', 'storage', 'app', 'uptime'];
+const DEVICE_UNAVAILABLE = 'device status unavailable: the app has not captured a valid reading yet (open Shelly once with the MCP server on)';
+
+/**
+ * The device_status answer from a snapshot's `device` section, or an error
+ * when the section is missing or not the expected shape. Never throws.
+ */
+function deviceStatusFromSnapshot(device, nowMs) {
+  if (!isPlainObject(device) || typeof device.capturedAt !== 'string') return { ok: false, error: DEVICE_UNAVAILABLE };
+  const capturedMs = Date.parse(device.capturedAt);
+  if (!Number.isFinite(capturedMs) || capturedMs - nowMs > DEVICE_FUTURE_SKEW_MS) return { ok: false, error: DEVICE_UNAVAILABLE };
+  const out = { capturedAt: device.capturedAt };
+  for (const key of DEVICE_SECTIONS) {
+    const v = device[key];
+    if (v === undefined || v === null) { out[key] = null; continue; }
+    if (!isPlainObject(v)) return { ok: false, error: DEVICE_UNAVAILABLE };
+    out[key] = v;
+  }
+  const ageMs = Math.max(0, nowMs - capturedMs);
+  return { ok: true, data: { ...out, ageMs, stale: ageMs > DEVICE_STALE_AFTER_MS } };
+}
 
 function snapshotMac(token, body) {
   const key = crypto.createHash('sha256').update(`shelly-mcp-snapshot:${token}`).digest();
@@ -440,13 +506,14 @@ async function defaultRunGit(repoPath) {
  * snapshot (RN never published one, or it was signed with an older token)
  * or git can't be spawned from here.
  */
-function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {} }) {
+function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {}, now = () => Date.now() }) {
   return async function callTool(toolName, args, ingress) {
     if (!DIRECT_READ_TOOLS.has(toolName)) return fallback(toolName, args, ingress);
     const snap = readVerifiedSnapshot(queueDir, token);
     if (!snap) return fallback(toolName, args, ingress);
     if (toolName === 'list_agents') return { ok: true, data: snap.agents };
     if (toolName === 'list_repos') return { ok: true, data: snap.repoPaths };
+    if (toolName === 'device_status') return deviceStatusFromSnapshot(snap.device, now());
     const target = args && typeof args.path === 'string' ? args.path : '';
     if (!snap.repoPaths.includes(target)) {
       return { ok: false, error: 'path is not a Shelly-configured repo (see list_repos)' };
@@ -536,6 +603,7 @@ function settlesWithin(promise, ms) {
  *   opts.initialHoldMs / opts.retryHoldMs — MRTR hold windows (tests)
  *   opts.exec      — offer run_command / write_file (SHELLY_MCP_EXEC=1)
  *   opts.readTerminal — offer read_terminal_output (SHELLY_MCP_READ_TERMINAL=1)
+ *   opts.diagnostics — offer read_logs / get_settings (SHELLY_MCP_DIAGNOSTICS=1)
  *   opts.log       — diagnostic sink
  * Returns handle({ method, url, headers, body }) → Promise<{ status, headers, body }>
  * where `headers` are lower-cased request headers and `body` is the raw string.
@@ -551,7 +619,7 @@ function createMcpHandler(opts) {
   const log = opts.log || (() => {});
   if (!token || typeof callTool !== 'function') throw new Error('createMcpHandler: token and callTool are required');
   // Both default to off: a caller that forgets them gets the read-only set.
-  const tools = availableTools({ exec: opts.exec === true, readTerminal: opts.readTerminal === true });
+  const tools = availableTools({ exec: opts.exec === true, readTerminal: opts.readTerminal === true, diagnostics: opts.diagnostics === true });
   const toolNames = new Set(tools.map((t) => t.name));
   /** null when `name` may be called, else the JSON-RPC error message. */
   function toolRefusal(name) {
@@ -976,9 +1044,10 @@ async function main() {
   const log = (...args) => process.stderr.write(`[shelly-mcp] ${args.join(' ')}\n`);
   const mrtr = process.env.SHELLY_MCP_MRTR === '1';
   // Set by MCPBridge.kt from the RN settings at start; RN restarts this
-  // process when either setting changes and refuses the calls itself too.
+  // process when any of these settings changes and refuses the calls itself too.
   const exec = process.env.SHELLY_MCP_EXEC === '1';
   const readTerminal = process.env.SHELLY_MCP_READ_TERMINAL === '1';
+  const diagnostics = process.env.SHELLY_MCP_DIAGNOSTICS === '1';
   const handler = createMcpHandler({
     token,
     callTool: createDirectReadCallTool({ queueDir, token, fallback: createFileQueueCallTool(queueDir, bridgeKey), log }),
@@ -986,6 +1055,7 @@ async function main() {
     mrtr,
     exec,
     readTerminal,
+    diagnostics,
   });
 
   const server = http.createServer((req, res) => {
@@ -1002,7 +1072,7 @@ async function main() {
   });
 
   server.listen(port, '0.0.0.0', () => {
-    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')}; mrtr=${mrtr ? 'on' : 'off'}; exec=${exec ? 'on' : 'off'}; readTerminal=${readTerminal ? 'on' : 'off'})`);
+    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')}; mrtr=${mrtr ? 'on' : 'off'}; exec=${exec ? 'on' : 'off'}; readTerminal=${readTerminal ? 'on' : 'off'}; diagnostics=${diagnostics ? 'on' : 'off'})`);
   });
 
   server.on('error', (err) => {
@@ -1033,6 +1103,8 @@ if (require.main === module) {
     canonicalJson,
     availableTools,
     snapshotMac,
+    deviceStatusFromSnapshot,
+    DEVICE_STALE_AFTER_MS,
     GIT_REFUSED_CONFIG,
     TOOLS,
     MODERN_VERSIONS,
