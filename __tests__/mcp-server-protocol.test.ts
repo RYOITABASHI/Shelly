@@ -621,11 +621,15 @@ describe('main() token + bridge key on stdin (final gate, item B)', () => {
 
   async function expectExitWithoutListening(port: number, stdinInput: string | null, extraEnv: Record<string, string> = {}) {
     const { child, dir } = spawnServer(port, stdinInput, extraEnv);
+    let raceTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const code = await Promise.race([
         new Promise<number | null>((r) => child.on('exit', (c) => r(c))),
-        new Promise<null>((r) => setTimeout(() => r(null), 5000)),
+        new Promise<null>((r) => {
+          raceTimer = setTimeout(() => r(null), 5000);
+        }),
       ]);
+      clearTimeout(raceTimer);
       expect(code).toBe(1);
       expect(await waitForStatus(port, TOKEN, 405, 500)).toBe(false);
     } finally {
