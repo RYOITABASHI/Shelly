@@ -25,7 +25,12 @@ import java.security.SecureRandom
  *    starts; that is intended: exec / write need RN's approval UI and simply
  *    wait (and time out) while Shelly is not open. Snapshot reads
  *    (list_agents / list_repos) and git_status are answered by the script
- *    itself and work headless.
+ *    itself and work headless. Typed ops (PR 6) do not wait for RN: with
+ *    typed ops on, a McpTypedOpConsumer (one per wanted server, bound to its
+ *    bridge key, in both modes) drains `typed-requests/`, runs a request an
+ *    always-allow rule clears, hands a no-match to RN only while RN's bridge
+ *    heartbeat is fresh, and refuses `not_attended` otherwise; get_run_result
+ *    is read by the script itself.
  *
  * RN adoption = clean restart: when RN mounts it revokes pending queue
  * requests and calls startMCPServer with a fresh key (under
@@ -83,10 +88,11 @@ object McpServerSupervisor {
         val exec: Boolean,
         val readTerminal: Boolean,
         val diagnostics: Boolean,
+        val typedOps: Boolean,
         val bridgeKey: String,
         val fromApp: Boolean,
     ) {
-        override fun toString(): String = "Desired(exec=$exec, readTerminal=$readTerminal, diagnostics=$diagnostics, fromApp=$fromApp)"
+        override fun toString(): String = "Desired(exec=$exec, readTerminal=$readTerminal, diagnostics=$diagnostics, typedOps=$typedOps, fromApp=$fromApp)"
     }
 
     private val lock = Object()
@@ -108,12 +114,27 @@ object McpServerSupervisor {
     /** Under [lock]: earliest time the watchdog may request the service again, and how often it did. */
     private var serviceRetryAt = 0L
     private var serviceRestores = 0
+    /**
+     * The one McpTypedOpConsumer (PR 6): exists exactly while a server with
+     * typed ops is wanted, bound to that server's bridge key (app-started or
+     * headless — the script routes run_agent to typed-requests/ either way and
+     * RN never reads it). Replaced / stopped only under [lock]; read without
+     * it (volatile) by the consumer's own epoch check, so the consumer never
+     * takes [lock] and stopping it under [lock] cannot deadlock.
+     */
+    @Volatile private var typedOpConsumer: McpTypedOpConsumer? = null
 
     /** For the notification text: (exec, readTerminal, diagnostics) of the wanted server, or null. */
     fun wantedSwitches(): Triple<Boolean, Boolean, Boolean>? =
         desired?.let { Triple(it.exec, it.readTerminal, it.diagnostics) }
 
     fun isWanted(): Boolean = desired != null
+
+    /** The wanted server has typed ops on (McpTypedOpConsumer step 1, with the mirror). */
+    fun typedOpsWanted(): Boolean = desired?.typedOps == true
+
+    /** McpTypedOpConsumer's native epoch: [c] is still the live consumer. */
+    fun isCurrentTypedOpConsumer(c: McpTypedOpConsumer): Boolean = typedOpConsumer === c
 
     /**
      * Running, or wanted and waiting for the watchdog to restart it. Token
@@ -126,15 +147,19 @@ object McpServerSupervisor {
     // ── Entry points ────────────────────────────────────────────────────
 
     /** In-app start (TerminalEmulatorModule.startMCPServer). Same contract as MCPBridge.start. */
-    fun startFromApp(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String): Boolean {
+    fun startFromApp(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String): Boolean {
         val app = context.applicationContext
         val ok = synchronized(lock) {
             generation += 1
-            val started = MCPBridge.start(app, token, exec, readTerminal, diagnostics, bridgeKey)
+            // A new bridge key is the native queueEpoch: the old consumer stops
+            // (waiting for its request in progress) and its pending typed
+            // requests are cleared before the new server can write any.
+            retireStaleTypedOpConsumerLocked(bridgeKey, typedOps)
+            val started = MCPBridge.start(app, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)
             // Nothing wanted => nothing running: MCPBridge.start can refuse
             // (bad key / blank token) before touching an older process.
             if (!started) MCPBridge.stop()
-            desired = if (started) Desired(token, exec, readTerminal, diagnostics, bridgeKey, fromApp = true) else null
+            desired = if (started) Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true) else null
             resetBackoff()
             if (started) {
                 startedAt = System.currentTimeMillis()
@@ -142,6 +167,7 @@ object McpServerSupervisor {
             } else {
                 stopServiceLocked(app)
             }
+            syncTypedOpConsumerLocked(app)
             lock.notifyAll()
             started
         }
@@ -157,6 +183,8 @@ object McpServerSupervisor {
             desired = null
             resetBackoff()
             MCPBridge.stop()
+            // Server stop / token revoke: consumer stopped, pending typed requests cleared.
+            syncTypedOpConsumerLocked(app)
             stopServiceLocked(app)
             lock.notifyAll()
         }
@@ -236,9 +264,11 @@ object McpServerSupervisor {
                 return false
             }
             val key = newBridgeKey()
-            val ok = MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, key)
+            retireStaleTypedOpConsumerLocked(key, cfg.typedOps)
+            val ok = MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key)
             // Wanted even if this attempt failed: the watchdog retries with backoff.
-            desired = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, key, fromApp = false)
+            desired = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
+            syncTypedOpConsumerLocked(app)
             resetBackoff()
             if (ok) {
                 startedAt = System.currentTimeMillis()
@@ -246,7 +276,7 @@ object McpServerSupervisor {
                 failures = 1
                 nextAttemptAt = System.currentTimeMillis() + MIN_BACKOFF_MS
             }
-            Log.i(TAG, "$reason: headless start ok=$ok exec=${cfg.exec} readTerminal=${cfg.readTerminal} diagnostics=${cfg.diagnostics}")
+            Log.i(TAG, "$reason: headless start ok=$ok exec=${cfg.exec} readTerminal=${cfg.readTerminal} diagnostics=${cfg.diagnostics} typedOps=${cfg.typedOps}")
             lock.notifyAll()
         }
         return true
@@ -298,15 +328,18 @@ object McpServerSupervisor {
                     desired = null
                     resetBackoff()
                     stopServiceLocked(app)
+                    syncTypedOpConsumerLocked(app)
                     Log.i(TAG, "MCP server died and the mirror is OFF/unreadable; not restarting")
                     return POLL_MS
                 }
-                use = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, d.bridgeKey, fromApp = false)
+                use = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, d.bridgeKey, fromApp = false)
                 desired = use
+                // The mirror's typed-ops switch may have changed (same key).
+                syncTypedOpConsumerLocked(app)
             }
             runCatching { ensureRuntime(app) }
                 .onFailure { Log.w(TAG, "runtime extraction before restart failed (${it.javaClass.simpleName})") }
-            val ok = MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.bridgeKey)
+            val ok = MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.typedOps, use.bridgeKey)
             if (ok) startedAt = now
             failures += 1
             nextAttemptAt = now + backoffMs(failures)
@@ -333,6 +366,41 @@ object McpServerSupervisor {
         if (failures <= 0) return 0L
         val shift = (failures - 1).coerceAtMost(10)
         return (MIN_BACKOFF_MS shl shift).coerceAtMost(MAX_BACKOFF_MS)
+    }
+
+    // ── Typed-op consumer (PR 6) ────────────────────────────────────────
+
+    /**
+     * Under [lock]: before a server with [newKey] starts, stop a consumer bound
+     * to another key (or any consumer when typed ops will be off) and clear
+     * the pending typed requests.
+     */
+    private fun retireStaleTypedOpConsumerLocked(newKey: String, typedOps: Boolean) {
+        val c = typedOpConsumer ?: return
+        if (typedOps && c.hasKey(newKey)) return
+        typedOpConsumer = null
+        c.stop(clearPending = true)
+    }
+
+    /**
+     * Under [lock]: exactly one consumer while a server with typed ops is
+     * wanted (bound to its key), none otherwise. A consumer that goes away
+     * clears the pending typed requests (they were signed for a server that
+     * is no longer wanted, or with a key that is no longer valid).
+     */
+    private fun syncTypedOpConsumerLocked(app: Context) {
+        val d = desired
+        val current = typedOpConsumer
+        if (d != null && d.typedOps && current != null && current.hasKey(d.bridgeKey)) return
+        if (current != null) {
+            typedOpConsumer = null
+            current.stop(clearPending = true)
+        }
+        if (d != null && d.typedOps) {
+            val c = McpTypedOpConsumer(app, d.bridgeKey)
+            typedOpConsumer = c
+            c.start()
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

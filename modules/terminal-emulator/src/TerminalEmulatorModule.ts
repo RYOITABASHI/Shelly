@@ -479,6 +479,48 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   disableDraftPreapproval?(destinations: string[]): Promise<string>;
   /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
   getDraftPreapproval?(): Promise<string>;
+  /** MCP always-allow rules for typed ops (McpAlwaysAllowStore.kt). Use lib/mcp-always-allow.ts.
+   *  Status JSON {version, status: 'empty'|'ok'|'unreadable', rules: [{id, principal, op, target, bind?, label, createdAt}]}. */
+  mcpAlwaysAllowList?(): Promise<string>;
+  /** True when a rule allows (principal, op, target) with this binding hash. Never writes. */
+  mcpAlwaysAllowMatch?(principal: string, op: string, target: string, bind: string | null): Promise<boolean>;
+  /** ONLY the MCP bridge after a human "always allow" tap. Returns JSON {ok, code, id?}. */
+  mcpAlwaysAllowAdd?(principal: string, op: string, target: string, bind: string | null, label: string): Promise<string>;
+  /** Settings revoke. Returns status JSON plus `ok`. */
+  mcpAlwaysAllowRemove?(ids: string[]): Promise<string>;
+  /** Token cascade: null removes every rule. Resolves true only when confirmed. */
+  mcpAlwaysAllowPurgeExcept?(principal: string | null): Promise<boolean>;
+  /** MCP `run_agent` launch (McpRunTickets.kt). Writes the `accepted` ticket, then
+   *  starts the run with origin "event" and ingress taint "mcp". runHandle is
+   *  `mr_` + 32 hex; principal is 32 hex. Resolves true when the run was sent. */
+  /** deadlineMs: epoch ms after which native neither writes the ticket nor starts the run
+   *  (null = refused). approvedBind: the agent binding the tap / rule approved; ruleId: the
+   *  always-allow rule that authorized the run without a tap (null = a dialog tap). Native
+   *  re-checks all of them under its ticket lock and again when the service starts the run.
+   *  policyPin: sha256 of the policy.json RN evaluated ('absent' when missing, null = unknown);
+   *  for an agent that declares actions native refuses when the file differs. */
+  runAgentForMcp?(
+    agentId: string,
+    runHandle: string,
+    principal: string,
+    requestId: string | null,
+    deadlineMs: number | null,
+    approvedBind: string,
+    ruleId: string | null,
+    policyPin: string | null,
+  ): Promise<boolean>;
+  /** Ticket JSON {v, handle, principal, requestId?, agentId, state, reason?, acceptedAt,
+   *  startedAt?, finishedAt?, exitCode?, runLog?, outputFile?}, or null. Untrusted data. */
+  readMcpRunTicket?(runHandle: string): Promise<string | null>;
+  /** The run's output snapshot, at most maxBytes (≤ 65536) on a UTF-8 boundary, or null. */
+  readMcpRunOutput?(runHandle: string, maxBytes: number): Promise<string | null>;
+  /** Every ticket of `principal` (stale rule applied) as a JSON array, or null. Untrusted data. */
+  listMcpRunTickets?(principal: string): Promise<string | null>;
+  /** Token revoke: live tickets of `principal` (null = all) become cancelled. Count, or -1. */
+  cancelMcpRunTickets?(principal: string | null): Promise<number>;
+  /** MCP typed-op refusal audit line; `json` holds only kind / event / agentId / principal / code.
+   *  Rebuilt and timestamped natively (IngressAuditWriter.kt). Resolves true when written. */
+  appendMcpIngressAudit?(agentId: string | null, json: string): Promise<boolean>;
   /** Per-agent MCP ingress taint (AgentIngressTaint.kt). Use lib/agent-ingress-taint.ts.
    *  Write methods return status JSON {status: 'empty'|'ok'|'unreadable'|'overflow', overflow, entries}. */
   markAgentIngress?(agentId: string, source: 'mcp', principal: string): Promise<string>;
@@ -546,15 +588,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * like the A2A server, not session-scoped like voice. `token` is the
    * pre-shared bearer token the caller must send as `Authorization: Bearer
    * <token>` — generate and persist it via lib/secure-store.ts, never pass
-   * a hardcoded value. `exec` / `readTerminal` / `diagnostics` are
-   * settings.mcpExecEnabled / mcpReadTerminalEnabled / mcpDiagnosticsEnabled
+   * a hardcoded value. `exec` / `readTerminal` / `diagnostics` / `typedOps` are
+   * settings.mcpExecEnabled / mcpReadTerminalEnabled / mcpDiagnosticsEnabled / mcpTypedOpsEnabled
    * at start time: the server leaves run_command / write_file /
    * read_terminal_output / read_logs / get_settings out of tools/list when
    * they are off, so restart the server when any of them changes. `bridgeKey` (64 hex, new per
    * start, RN memory only) signs the queue requests the server writes
    * (lib/mcp-request-auth.ts); a server running with another key is restarted.
    */
-  startMCPServer(token: string, exec: boolean, readTerminal: boolean, diagnostics: boolean, bridgeKey: string): Promise<boolean>;
+  startMCPServer(token: string, exec: boolean, readTerminal: boolean, diagnostics: boolean, typedOps: boolean, bridgeKey: string): Promise<boolean>;
   /**
    * Non-identifying device status for the MCP `device_status` tool
    * (DeviceStatusBridge.mcpDeviceStatus): battery, thermal, memory, storage,
@@ -585,7 +627,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * stops the server and its foreground service. Resolves whether the mirror
    * now matches the request (false = cleared, auto-start OFF).
    */
-  setMCPAutostartMirror(enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, token: string | null): Promise<boolean>;
+  setMCPAutostartMirror(enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, typedOps: boolean, token: string | null): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

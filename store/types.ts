@@ -457,6 +457,14 @@ export type AppSettings = {
    *  hides both tools while this is off (restarted on change) and
    *  lib/mcp-server-bridge.ts refuses them too. */
   mcpDiagnosticsEnabled?: boolean;
+  /** Offers the MCP typed operations `run_agent` / `get_run_result`
+   *  (default false). Separate from mcpExecEnabled: it lets an MCP client
+   *  start a registered agent (approval tap, or an "always allow" rule the
+   *  owner created by tapping) without raw exec/write. Runs started this way
+   *  are ingress-tainted. The server hides both tools while this is off and
+   *  lib/mcp-server-bridge.ts refuses them too. The server restarts on change
+   *  and mirrors it to the native auto-start store. */
+  mcpTypedOpsEnabled?: boolean;
   /** Extends the MCP server with two additional tools — `run_command`
    *  (routes through execCommand()) and `write_file` (scoped to
    *  Sidebar repo paths / the home dir, checked on the real path) — listed

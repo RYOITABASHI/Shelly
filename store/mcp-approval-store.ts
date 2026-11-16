@@ -1,6 +1,7 @@
 /**
  * store/mcp-approval-store.ts — pending-approval queue for the MCP server's
- * exec/write tools (run_command / write_file, see lib/mcp-server-bridge.ts).
+ * exec/write tools (run_command / write_file) and the typed op run_agent (see
+ * lib/mcp-server-bridge.ts).
  *
  * A remote MCP client can't be trusted to gate itself, so every exec/write
  * call surfaces here and waits for a human tap in components/McpApprovalModal.tsx
@@ -10,9 +11,13 @@
  */
 import { create } from 'zustand';
 
+/** The human's answer. `'always'` is only offered when the request is
+ *  `alwaysAllowable`; writing the rule is the caller's job (never the modal's). */
+export type McpApprovalDecision = 'deny' | 'once' | 'always';
+
 export interface McpApprovalRequest {
   id: string;
-  kind: 'run_command' | 'write_file';
+  kind: 'run_command' | 'write_file' | 'run_agent';
   /** Short one-line description shown as the modal title. */
   summary: string;
   /** Full command / path+content preview shown in the modal body. */
@@ -22,14 +27,18 @@ export interface McpApprovalRequest {
   /** Who sent it (DEFERRED.md MCP ingress Inc 2): the token principal and the
    *  client's self-reported, unverified name. Every MCP request is external. */
   origin?: { principal: string; clientNameSelfReported: string };
-  resolve: (approved: boolean) => void;
+  /** Present only for typed operations that may be remembered: shows the
+   *  "always allow" button and a scope line (op + target label). Raw tools
+   *  (run_command / write_file) never set it. */
+  alwaysAllowable?: { op: string; targetLabel: string };
+  resolve: (decision: McpApprovalDecision) => void;
 }
 
 interface McpApprovalState {
   current: McpApprovalRequest | null;
   queue: McpApprovalRequest[];
   enqueue: (request: McpApprovalRequest) => void;
-  respond: (id: string, approved: boolean) => void;
+  respond: (id: string, decision: McpApprovalDecision) => void;
   /** Denies the shown request and every queued one, closing the modal
    *  (MCP token regeneration: nothing accepted under the old token may
    *  still be approvable). */
@@ -47,10 +56,10 @@ export const useMcpApprovalStore = create<McpApprovalState>((set, get) => ({
       set({ current: request });
     }
   },
-  respond: (id, approved) => {
+  respond: (id, decision) => {
     const { current, queue } = get();
     if (current?.id === id) {
-      current.resolve(approved);
+      current.resolve(decision);
       const [next, ...rest] = queue;
       set({ current: next ?? null, queue: rest });
     } else {
@@ -64,7 +73,7 @@ export const useMcpApprovalStore = create<McpApprovalState>((set, get) => ({
     set({ current: null, queue: [] });
     for (const request of current ? [current, ...queue] : queue) {
       try {
-        request.resolve(false);
+        request.resolve('deny');
       } catch {
         // keep denying the rest
       }

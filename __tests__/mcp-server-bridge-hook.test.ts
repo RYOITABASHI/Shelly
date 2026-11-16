@@ -12,13 +12,13 @@
  * lib/mcp-autostart-mirror.ts are the real modules; the native module keeps
  * an in-memory mirror + server.
  */
-type Mirror = { exec: boolean; readTerminal: boolean; diagnostics: boolean; token: string } | null;
+type Mirror = { exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean; token: string } | null;
 
 const native = {
   mirror: null as Mirror,
-  running: null as { token: string; exec: boolean; readTerminal: boolean; diagnostics: boolean } | null,
+  running: null as { token: string; exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean } | null,
   log: [] as string[],
-  setMCPAutostartMirror: jest.fn(async (enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, token: string | null) => {
+  setMCPAutostartMirror: jest.fn(async (enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, typedOps: boolean, token: string | null) => {
     if (!enabled) {
       native.log.push('mirror:off');
       native.mirror = null;
@@ -26,12 +26,12 @@ const native = {
       return true;
     }
     native.log.push(`mirror:on exec=${exec} read=${readTerminal}`);
-    native.mirror = { exec, readTerminal, diagnostics, token: token! };
+    native.mirror = { exec, readTerminal, diagnostics, typedOps, token: token! };
     return true;
   }),
-  startMCPServer: jest.fn(async (token: string, exec: boolean, readTerminal: boolean, diagnostics: boolean) => {
+  startMCPServer: jest.fn(async (token: string, exec: boolean, readTerminal: boolean, diagnostics: boolean, typedOps: boolean) => {
     native.log.push(`start exec=${exec} read=${readTerminal}`);
-    native.running = { token, exec, readTerminal, diagnostics };
+    native.running = { token, exec, readTerminal, diagnostics, typedOps };
     return true;
   }),
   stopMCPServer: jest.fn(async () => {
@@ -171,7 +171,7 @@ function setPersisted(settings: Record<string, unknown>): void {
 
 describe('bridge startup narrows the mirror before fallible token work (finding 3)', () => {
   it('fresh process, both permissions OFF, token READ fails: the old broader mirror is cleared', async () => {
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, token: 'O'.repeat(43) }; // left by an earlier process
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) }; // left by an earlier process
     secrets.getFails = true;
     await mount();
     expect(native.mirror).toBeNull();
@@ -180,7 +180,7 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
   });
 
   it('fresh process, both permissions OFF, no token and creation fails: the old broader mirror is cleared', async () => {
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, token: 'O'.repeat(43) };
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
     secrets.value = null;
     secrets.saveFails = true;
     await mount();
@@ -208,10 +208,40 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
 
   it('writes exactly the current settings and starts when the token works', async () => {
     setPersisted({ mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: false });
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, token: 'O'.repeat(43) };
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
     await mount();
     expect(native.log).toEqual(['mirror:off', 'mirror:on exec=true read=false', 'start exec=true read=false']);
-    expect(native.mirror).toEqual({ exec: true, readTerminal: false, diagnostics: false, token: 'T'.repeat(43) });
+    expect(native.mirror).toEqual({ exec: true, readTerminal: false, diagnostics: false, typedOps: false, token: 'T'.repeat(43) });
+  });
+
+  it('typed ops turned OFF while every other switch stays ON: the mirror is narrowed before the token read fails', async () => {
+    const all = { mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true, mcpTypedOpsEnabled: true };
+    setPersisted(all);
+    const cleanup = await mount();
+    expect(native.mirror).toMatchObject({ typedOps: true });
+    expect(native.running).toMatchObject({ typedOps: true });
+
+    store.settings = { ...all, mcpTypedOpsEnabled: false };
+    void cleanup;
+    secrets.getFails = true;
+    native.log = [];
+    await mount();
+    expect(native.mirror).toBeNull();
+    expect(native.running).toBeNull();
+  });
+
+  it('typed ops ON is passed through to the mirror and to startMCPServer; OFF by default', async () => {
+    setPersisted({ mcpServerEnabled: true, mcpTypedOpsEnabled: true });
+    await mount();
+    expect(native.mirror).toMatchObject({ exec: false, typedOps: true });
+    expect(native.running).toMatchObject({ exec: false, typedOps: true });
+  });
+
+  it('typed ops default OFF: the server and the mirror start with typedOps=false', async () => {
+    setPersisted({ mcpServerEnabled: true, mcpExecEnabled: true });
+    await mount();
+    expect(native.mirror).toMatchObject({ exec: true, typedOps: false });
+    expect(native.running).toMatchObject({ exec: true, typedOps: false });
   });
 
   it('diagnostics turned OFF while exec / read-terminal stay ON: the mirror is narrowed before the token read fails', async () => {
@@ -296,7 +326,7 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
   });
 
   it('with everything ON nothing can be broader, so a fresh start does not clear first', async () => {
-    setPersisted({ mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true });
+    setPersisted({ mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true, mcpTypedOpsEnabled: true });
     await mount();
     expect(native.log[0]).toBe('mirror:on exec=true read=true');
   });
@@ -338,7 +368,7 @@ describe('the mirror widens only to settings already on disk (finding 2, review 
 });
 
 describe('settings persist hook (finding 2)', () => {
-  const on = { mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true };
+  const on = { mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true, mcpTypedOpsEnabled: true };
 
   it('is registered with the settings store at module load', () => {
     expect(registeredHooks).toContain(mcpSettingsPersistHook);
@@ -351,7 +381,7 @@ describe('settings persist hook (finding 2)', () => {
       { ...on, mcpReadTerminalEnabled: false },
     ]) {
       noteSettingsLoaded(on);
-      native.mirror = { exec: true, readTerminal: true, diagnostics: true, token: 'T'.repeat(43) };
+      native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
       const wait = mcpSettingsPersistHook.beforeWrite(next);
       expect(wait).not.toBeNull();
       await expect(wait).resolves.toBe(true);

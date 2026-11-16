@@ -44,6 +44,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 }));
 // POLICY-001 user rules: one keyword deny rule, already loaded (sealed).
 jest.mock('@/lib/agent-user-policy-store', () => ({
+  getCachedUserPolicyPin: () => null,
   getCachedUserPolicy: () => ({
     unavailable: false,
     data: {
@@ -105,7 +106,7 @@ async function call(tool: string, args: Record<string, unknown>, opts: { approve
     const current = useMcpApprovalStore.getState().current;
     if (current && opts.approve !== undefined) {
       shown = current.detail;
-      current.resolve(opts.approve);
+      current.resolve(opts.approve ? 'once' : 'deny');
       useMcpApprovalStore.setState({ current: null, queue: [] });
     }
     return mockFiles.has(resultUri);
@@ -203,13 +204,38 @@ describe('run_command through the RN bridge', () => {
     expect(ranExactly('ls -la')).toBe(true);
   });
 
+  it("never offers always-allow on raw tools, and treats a stray 'always' as 'once'", async () => {
+    const seen: Array<{ kind: string; has: boolean }> = [];
+    const answer = async (tool: string, args: Record<string, unknown>) => {
+      const callId = `c${++seq}`;
+      mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, tool, args));
+      startMCPPoller();
+      await waitFor(() => {
+        const cur = useMcpApprovalStore.getState().current;
+        if (cur) {
+          seen.push({ kind: cur.kind, has: 'alwaysAllowable' in cur || cur.alwaysAllowable !== undefined });
+          cur.resolve('always');
+          useMcpApprovalStore.setState({ current: null, queue: [] });
+        }
+        return mockFiles.has(`${RESULTS}/${callId}.json`);
+      });
+      return JSON.parse(mockFiles.get(`${RESULTS}/${callId}.json`)!);
+    };
+    const cmd = await answer('run_command', { command: 'ls -la' });
+    expect(cmd.ok).toBe(true);
+    const wr = await answer('write_file', { path: `${HOME}/a.txt`, content: 'x' });
+    expect(wr.ok).toBe(true);
+    expect(seen.map((x) => x.kind)).toEqual(['run_command', 'write_file']);
+    expect(seen.every((x) => x.has === false)).toBe(true);
+  });
+
   it('re-checks the exec setting after the tap', async () => {
     const callId = `c${++seq}`;
     mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, 'run_command', { command: 'whoami' }));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     mockSettings.mcpExecEnabled = false;
-    useMcpApprovalStore.getState().current!.resolve(true);
+    useMcpApprovalStore.getState().current!.resolve('once');
     await waitFor(() => mockFiles.has(`${RESULTS}/${callId}.json`));
     expect(JSON.parse(mockFiles.get(`${RESULTS}/${callId}.json`)!).ok).toBe(false);
     expect(ranExactly('whoami')).toBe(false);

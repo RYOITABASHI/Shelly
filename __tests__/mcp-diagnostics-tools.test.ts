@@ -49,7 +49,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 }));
 const mockExecCommand = jest.fn(async (_cmd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> => ({ stdout: '', stderr: '', exitCode: 0 }));
 jest.mock('@/hooks/use-native-exec', () => ({ execCommand: (...a: unknown[]) => (mockExecCommand as any)(...a) }));
-jest.mock('@/lib/agent-user-policy-store', () => ({ getCachedUserPolicy: () => null, loadUserPolicy: jest.fn() }));
+jest.mock('@/lib/agent-user-policy-store', () => ({ getCachedUserPolicy: () => null, getCachedUserPolicyPin: () => null, loadUserPolicy: jest.fn() }));
 // The real debug-logger: its lines must land in the read_logs ring.
 
 import * as nodeCrypto from 'crypto';

@@ -37,7 +37,8 @@ jest.mock('@/store/settings-store', () => ({
 jest.mock('@/store/terminal-store', () => ({
   useTerminalStore: { getState: () => ({ sessions: [], activeSessionId: null }) },
 }));
-jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({ __esModule: true, default: {} }));
+const mockNative: Record<string, any> = {};
+jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({ __esModule: true, default: mockNative }));
 const mockExecCommand = jest.fn(async () => ({ stdout: 'pwned', stderr: '', exitCode: 0 }));
 jest.mock('@/hooks/use-native-exec', () => ({ execCommand: (...a: unknown[]) => (mockExecCommand as any)(...a) }));
 jest.mock('@/lib/command-safety', () => ({ checkCommandSafety: () => ({ level: 'MEDIUM', reason: '' }) }));
@@ -55,6 +56,7 @@ import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 const QUEUE = 'file:///data/home-root/home/.shelly-mcp-queue';
 const REQUESTS = `${QUEUE}/requests`;
 const RESULTS = `${QUEUE}/results`;
+const HANDOFFS = `${QUEUE}/handoffs`; // PR 6: unconsumed handoff tokens go with the queue
 
 async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
   const end = Date.now() + ms;
@@ -76,6 +78,7 @@ afterEach(() => {
   mockDeleted.length = 0;
   mockExecCommand.mockClear();
   useMcpApprovalStore.setState({ current: null, queue: [] });
+  delete mockNative.mcpAlwaysAllowPurgeExcept;
 });
 
 describe('mcp approval store denyAll', () => {
@@ -86,8 +89,8 @@ describe('mcp approval store denyAll', () => {
     store.enqueue({ id: 'a', kind: 'run_command', summary: '', detail: '', resolve: a });
     store.enqueue({ id: 'b', kind: 'write_file', summary: '', detail: '', resolve: b });
     useMcpApprovalStore.getState().denyAll();
-    expect(a).toHaveBeenCalledWith(false);
-    expect(b).toHaveBeenCalledWith(false);
+    expect(a).toHaveBeenCalledWith('deny');
+    expect(b).toHaveBeenCalledWith('deny');
     expect(useMcpApprovalStore.getState().current).toBeNull();
     expect(useMcpApprovalStore.getState().queue).toEqual([]);
   });
@@ -116,7 +119,7 @@ describe('revokePendingMCPRequests', () => {
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     const pending = useMcpApprovalStore.getState().current!;
     // Approve and revoke in the same tick: the approval resolves first.
-    pending.resolve(true);
+    pending.resolve('once');
     await revokePendingMCPRequests();
     await new Promise((r) => setTimeout(r, 100));
     expect(ranCommand('id')).toEqual([]);
@@ -129,5 +132,44 @@ describe('revokePendingMCPRequests', () => {
     startMCPPoller();
     await waitFor(() => mockFiles.has(`${RESULTS}/c3.json`));
     expect(JSON.parse(mockFiles.get(`${RESULTS}/c3.json`)!)).toEqual({ ok: true, data: [] });
+  });
+});
+
+describe('revokePendingMCPRequests and the always-allow rules (token cascade, step 1)', () => {
+  it('token revoked: removes every rule (purgeExcept(null)) after clearing the queue', async () => {
+    const order: string[] = [];
+    mockNative.mcpAlwaysAllowPurgeExcept = jest.fn(async (p: string | null) => {
+      order.push(`purge:${p}`);
+      return true;
+    });
+    mockFiles.set(`${REQUESTS}/q1.json`, '{}');
+    await revokePendingMCPRequests({ tokenRevoked: true });
+    expect(mockNative.mcpAlwaysAllowPurgeExcept).toHaveBeenCalledTimes(1);
+    expect(mockNative.mcpAlwaysAllowPurgeExcept).toHaveBeenCalledWith(null);
+    expect(order).toEqual(['purge:null']);
+    expect(mockDeleted).toEqual([REQUESTS, RESULTS, HANDOFFS]);
+  });
+
+  it('a plain server start does not touch the rules', async () => {
+    mockNative.mcpAlwaysAllowPurgeExcept = jest.fn(async () => true);
+    await revokePendingMCPRequests();
+    expect(mockNative.mcpAlwaysAllowPurgeExcept).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['resolves false', async () => false],
+    ['throws', async () => { throw new Error('keystore'); }],
+    ['resolves something else', async () => 'true'],
+  ])('an unconfirmed purge (%s) throws, so regeneration fails closed — pending approvals are still denied', async (_name, impl) => {
+    mockNative.mcpAlwaysAllowPurgeExcept = jest.fn(impl as () => Promise<unknown>);
+    const denied = jest.fn();
+    useMcpApprovalStore.getState().enqueue({ id: 'p1', kind: 'run_command', summary: '', detail: '', resolve: denied });
+    await expect(revokePendingMCPRequests({ tokenRevoked: true })).rejects.toThrow(/always-allow rules were removed/);
+    expect(denied).toHaveBeenCalledWith('deny');
+    expect(mockDeleted).toEqual(expect.arrayContaining([REQUESTS, RESULTS]));
+  });
+
+  it('a build without the native store has no rules: the purge counts as confirmed', async () => {
+    await expect(revokePendingMCPRequests({ tokenRevoked: true })).resolves.toBeUndefined();
   });
 });

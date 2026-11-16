@@ -252,6 +252,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mcpExecEnabled: false,
   mcpReadTerminalEnabled: false,
   mcpDiagnosticsEnabled: false,
+  mcpTypedOpsEnabled: false,
   codexRemoteAutostart: false,
   terminalWallpaperTransparency: true,
   // Front agent (窓口): default 'none' = current behaviour (plain bash in the

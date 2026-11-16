@@ -9,7 +9,7 @@
  * the owner edits; this module only copies them, with every change:
  *  - hooks/use-mcp-server-bridge.ts on app start and on every change of
  *    mcpServerEnabled / mcpExecEnabled / mcpReadTerminalEnabled /
- *    mcpDiagnosticsEnabled;
+ *    mcpDiagnosticsEnabled / mcpTypedOpsEnabled;
  *  - lib/mcp-token.ts create / regenerate (McpTokenDeps.invalidateMirror
  *    before the token is replaced, McpTokenDeps.onSaved after it is saved);
  *  - store/settings-store.ts writes narrower MCP settings to disk only after
@@ -33,6 +33,7 @@ export interface McpMirrorNative {
     exec: boolean,
     readTerminal: boolean,
     diagnostics: boolean,
+    typedOps: boolean,
     token: string | null,
   ): Promise<boolean>;
 }
@@ -42,11 +43,12 @@ export type McpMirrorSettings = {
   mcpExecEnabled?: boolean;
   mcpReadTerminalEnabled?: boolean;
   mcpDiagnosticsEnabled?: boolean;
+  mcpTypedOpsEnabled?: boolean;
 };
 
 export type McpMirrorState =
   | { enabled: false }
-  | { enabled: true; exec: boolean; readTerminal: boolean; diagnostics: boolean; token: string };
+  | { enabled: true; exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean; token: string };
 
 /** Only `=== true` counts as on, matching the hook and the native parser. */
 export function mirrorStateFromSettings(settings: McpMirrorSettings, token: string | null): McpMirrorState {
@@ -56,19 +58,21 @@ export function mirrorStateFromSettings(settings: McpMirrorSettings, token: stri
     exec: settings.mcpExecEnabled === true,
     readTerminal: settings.mcpReadTerminalEnabled === true,
     diagnostics: settings.mcpDiagnosticsEnabled === true,
+    typedOps: settings.mcpTypedOpsEnabled === true,
     token,
   };
 }
 
-export type McpBridgeSwitches = { enabled: boolean; exec: boolean; readTerminal: boolean; diagnostics: boolean };
+export type McpBridgeSwitches = { enabled: boolean; exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean };
 
-/** The four switches as the hook / native side read them (`=== true`). */
+/** The five switches as the hook / native side read them (`=== true`). */
 export function switchesFromSettings(settings: McpMirrorSettings): McpBridgeSwitches {
   return {
     enabled: settings.mcpServerEnabled === true,
     exec: settings.mcpExecEnabled === true,
     readTerminal: settings.mcpReadTerminalEnabled === true,
     diagnostics: settings.mcpDiagnosticsEnabled === true,
+    typedOps: settings.mcpTypedOpsEnabled === true,
   };
 }
 
@@ -81,7 +85,7 @@ export function switchesFromSettings(settings: McpMirrorSettings): McpBridgeSwit
  */
 type MirrorCeiling = McpBridgeSwitches | 'unknown';
 let ceiling: MirrorCeiling = 'unknown';
-const OFF_SWITCHES: McpBridgeSwitches = { enabled: false, exec: false, readTerminal: false, diagnostics: false };
+const OFF_SWITCHES: McpBridgeSwitches = { enabled: false, exec: false, readTerminal: false, diagnostics: false, typedOps: false };
 
 function unionCeiling(a: MirrorCeiling, b: McpBridgeSwitches): MirrorCeiling {
   if (a === 'unknown') return 'unknown';
@@ -92,12 +96,13 @@ function unionCeiling(a: MirrorCeiling, b: McpBridgeSwitches): MirrorCeiling {
     exec: a.exec || b.exec,
     readTerminal: a.readTerminal || b.readTerminal,
     diagnostics: a.diagnostics || b.diagnostics,
+    typedOps: a.typedOps || b.typedOps,
   };
 }
 
 /**
  * True when the mirror may allow more than `current` (server ON while
- * `current` is OFF, or exec / readTerminal / diagnostics ON while `current`
+ * `current` is OFF, or exec / readTerminal / diagnostics / typedOps ON while `current`
  * has it OFF).
  * The bridge hook clears the mirror before any fallible token work when this
  * holds, so a failed token load can never leave a broader mirror behind.
@@ -113,18 +118,20 @@ function intersectSwitches(a: McpBridgeSwitches, b: McpBridgeSwitches): McpBridg
     exec: enabled && a.exec && b.exec,
     readTerminal: enabled && a.readTerminal && b.readTerminal,
     diagnostics: enabled && a.diagnostics && b.diagnostics,
+    typedOps: enabled && a.typedOps && b.typedOps,
   };
 }
 
-/** True when `next` allows less than `bound` (OFF, exec OFF, read-terminal OFF, diagnostics OFF). */
+/** True when `next` allows less than `bound` (OFF, exec OFF, read-terminal OFF, diagnostics OFF, typedOps OFF). */
 function isNarrowerThan(next: McpBridgeSwitches, bound: MirrorCeiling): boolean {
-  if (bound === 'unknown') return !(next.enabled && next.exec && next.readTerminal && next.diagnostics);
+  if (bound === 'unknown') return !(next.enabled && next.exec && next.readTerminal && next.diagnostics && next.typedOps);
   if (!bound.enabled) return false;
   return (
     !next.enabled ||
     (bound.exec && !next.exec) ||
     (bound.readTerminal && !next.readTerminal) ||
-    (bound.diagnostics && !next.diagnostics)
+    (bound.diagnostics && !next.diagnostics) ||
+    (bound.typedOps && !next.typedOps)
   );
 }
 
@@ -199,6 +206,7 @@ export function effectiveMirrorSettings(current: McpMirrorSettings): McpMirrorSe
     mcpExecEnabled: s.exec,
     mcpReadTerminalEnabled: s.readTerminal,
     mcpDiagnosticsEnabled: s.diagnostics,
+    mcpTypedOpsEnabled: s.typedOps,
   };
 }
 
@@ -219,7 +227,7 @@ export function resetMcpMirrorCeilingForTests(): void {
 export async function writeMcpAutostartMirror(native: McpMirrorNative, state: McpMirrorState): Promise<boolean> {
   if (!state.enabled) {
     try {
-      const ok = (await native.setMCPAutostartMirror(false, false, false, false, null)) === true;
+      const ok = (await native.setMCPAutostartMirror(false, false, false, false, false, null)) === true;
       if (ok) ceiling = OFF_SWITCHES;
       return ok;
     } catch {
@@ -231,12 +239,13 @@ export async function writeMcpAutostartMirror(native: McpMirrorNative, state: Mc
     exec: state.exec,
     readTerminal: state.readTerminal,
     diagnostics: state.diagnostics,
+    typedOps: state.typedOps,
   };
   // Until the outcome is known the mirror may hold either the old or the new value.
   ceiling = unionCeiling(ceiling, target);
   let ok = false;
   try {
-    ok = (await native.setMCPAutostartMirror(true, state.exec, state.readTerminal, state.diagnostics, state.token)) === true;
+    ok = (await native.setMCPAutostartMirror(true, state.exec, state.readTerminal, state.diagnostics, state.typedOps, state.token)) === true;
   } catch {
     ok = false;
   }
@@ -245,7 +254,7 @@ export async function writeMcpAutostartMirror(native: McpMirrorNative, state: Mc
     return true;
   }
   try {
-    if ((await native.setMCPAutostartMirror(false, false, false, false, null)) === true) ceiling = OFF_SWITCHES;
+    if ((await native.setMCPAutostartMirror(false, false, false, false, false, null)) === true) ceiling = OFF_SWITCHES;
   } catch {
     // The native ON write already cleared on failure; nothing more to do.
   }
@@ -271,7 +280,7 @@ export async function mirrorTokenChange(
 
 /**
  * What the bridge hook's effect cleanup must do with the native server.
- *  - 'stop': the owner changed a switch (OFF, or exec / readTerminal / diagnostics) —
+ *  - 'stop': the owner changed a switch (OFF, or exec / readTerminal / diagnostics / typedOps) —
  *    the old process must not keep serving with the old switches.
  *  - 'keep': nothing changed (the root unmounted, e.g. the activity was
  *    destroyed or JS reloaded) — the native supervisor keeps the server up;
@@ -283,7 +292,8 @@ export function mcpCleanupAction(captured: McpBridgeSwitches, current: McpBridge
   if (
     captured.exec !== current.exec ||
     captured.readTerminal !== current.readTerminal ||
-    captured.diagnostics !== current.diagnostics
+    captured.diagnostics !== current.diagnostics ||
+    captured.typedOps !== current.typedOps
   ) return 'stop';
   return 'keep';
 }

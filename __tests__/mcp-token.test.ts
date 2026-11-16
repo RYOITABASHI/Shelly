@@ -197,6 +197,100 @@ describe('regenerateToken', () => {
   });
 });
 
+describe('always-allow cascade (purge before the save in revokePending, after it in purgeOtherClientRules)', () => {
+  function withPurge(calls: string[], stored: () => string | null, deps: McpTokenDeps) {
+    deps.purgeOtherClientRules = jest.fn(async (token: string) => {
+      // Runs only once the NEW token is persisted.
+      calls.push(`purge-after:${token}:${stored() === token ? 'saved' : 'NOT-SAVED'}`);
+    });
+    deps.onSaved = jest.fn(async (token: string) => {
+      calls.push(`onSaved:${token}`);
+    });
+    return deps;
+  }
+
+  it('regeneration of a running server: revoke (purge-before) → save → purge-after(new token) → mirror → start', async () => {
+    const { deps, stored } = makeDeps('old-token');
+    const { server, calls } = makeServer(true, 'old-token');
+    withPurge(calls, stored, deps);
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('verified');
+    expect(calls).toEqual(['stop', 'revoke', `purge-after:${result.token}:saved`, `onSaved:${result.token}`, `start:${result.token}`]);
+    expect(deps.purgeOtherClientRules).toHaveBeenCalledWith(result.token);
+    expect(deps.purgeOtherClientRules).not.toHaveBeenCalledWith('old-token');
+  });
+
+  it('a stopped server: the same order, and nothing starts', async () => {
+    const { deps, stored } = makeDeps('old-token');
+    const { server, calls } = makeServer(false, 'old-token');
+    withPurge(calls, stored, deps);
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('not_running');
+    expect(calls).toEqual(['revoke', `purge-after:${result.token}:saved`, `onSaved:${result.token}`]);
+  });
+
+  it('an unconfirmed purge-before (revokePending throws) leaves the token and a running server off', async () => {
+    const { deps, save, stored } = makeDeps('old-token');
+    const { server, calls, live } = makeServer(true, 'old-token');
+    withPurge(calls, stored, deps);
+    (server.revokePending as jest.Mock).mockRejectedValueOnce(new Error('could not confirm that the MCP always-allow rules were removed'));
+    const result = await regenerateToken(deps, server);
+    expect(result).toMatchObject({ token: null, check: 'failed_server_off' });
+    expect(result.error).toMatch(/always-allow/);
+    expect(save).not.toHaveBeenCalled();
+    expect(stored()).toBe('old-token');
+    expect(deps.purgeOtherClientRules).not.toHaveBeenCalled();
+    expect(live()).toBeNull();
+  });
+
+  it('an unconfirmed purge-after leaves a running server off (token saved, mirror not rewritten)', async () => {
+    const { deps, stored } = makeDeps('old-token');
+    const { server, calls, live } = makeServer(true, 'old-token');
+    withPurge(calls, stored, deps);
+    (deps.purgeOtherClientRules as jest.Mock).mockRejectedValueOnce(new Error('purge not confirmed'));
+    const result = await regenerateToken(deps, server);
+    expect(result).toMatchObject({ wasRunning: true, restarted: false, check: 'failed_server_off' });
+    expect(result.token).toBe(stored());
+    expect(result.error).toContain('purge not confirmed');
+    expect(deps.onSaved).not.toHaveBeenCalled();
+    expect(server.start).not.toHaveBeenCalled();
+    expect(live()).toBeNull();
+  });
+
+  it('an unconfirmed purge-after with the server off is not fatal (old-principal rules cannot match the new token)', async () => {
+    const { deps, stored } = makeDeps('old-token');
+    const { server, calls } = makeServer(false, 'old-token');
+    withPurge(calls, stored, deps);
+    (deps.purgeOtherClientRules as jest.Mock).mockRejectedValueOnce(new Error('purge not confirmed'));
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('not_running');
+    expect(stored()).toBe(result.token);
+    expect(deps.onSaved).toHaveBeenCalledWith(result.token);
+  });
+
+  it('first creation: purge-after runs with the new token, best-effort', async () => {
+    const calls: string[] = [];
+    const { deps, stored } = makeDeps(null);
+    withPurge(calls, stored, deps);
+    (deps.purgeOtherClientRules as jest.Mock).mockRejectedValueOnce(new Error('purge not confirmed'));
+    const token = await getOrCreateToken(deps);
+    expect(stored()).toBe(token);
+    expect(deps.purgeOtherClientRules).toHaveBeenCalledWith(token);
+    expect(deps.onSaved).toHaveBeenCalledWith(token);
+    // An existing token is reused without another purge.
+    await getOrCreateToken(deps);
+    expect(deps.purgeOtherClientRules).toHaveBeenCalledTimes(1);
+  });
+
+  it('the hook wires both steps: revokePending purges (tokenRevoked) and purgeOtherClientRules purges by the new principal', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'hooks/use-mcp-server-bridge.ts'), 'utf8');
+    expect(src).toMatch(/revokePending: \(\) => revokePendingMCPRequests\(\{ tokenRevoked: true \}\)/);
+    expect(src).toMatch(/purgeOtherClientRules: \(token\) => purgeMcpAlwaysAllowRulesForNewToken\(token, expoSha256\)/);
+    // The plain server start must not wipe the rules.
+    expect(src).toMatch(/await revokePendingMCPRequests\(\);/);
+  });
+});
+
 describe('native/script wiring', () => {
   const root = path.resolve(__dirname, '..');
   const read = (f: string) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');

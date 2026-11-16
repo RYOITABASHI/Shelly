@@ -19,14 +19,14 @@ import org.json.JSONObject
  * before RN and so cannot read the zustand settings or expo-secure-store.
  *
  * One source of truth: the RN settings (mcpServerEnabled / mcpExecEnabled /
- * mcpReadTerminalEnabled / mcpDiagnosticsEnabled) and the SecureStore token stay the owner's UI. RN
+ * mcpReadTerminalEnabled / mcpDiagnosticsEnabled / mcpTypedOpsEnabled) and the SecureStore token stay the owner's UI. RN
  * writes this mirror together with every change (hooks/use-mcp-server-bridge.ts
  * on each settings change and app start, and the lib/mcp-token.ts create /
  * regenerate paths). Native code only ever reads it, except that turning
  * the server OFF clears it ([clear]).
  *
  * Storage: SharedPreferences holding ONE AES-256-GCM blob (IV + ciphertext)
- * of {v, enabled, exec, readTerminal, diagnostics, token}, encrypted with a non-exportable
+ * of {v, enabled, exec, readTerminal, diagnostics, typedOps, token}, encrypted with a non-exportable
  * Android Keystore key. The token is therefore never in plaintext prefs, and
  * the flags cannot be edited or forged without the Keystore key (GCM
  * authenticates the whole blob; a domain string is bound as AAD). Like
@@ -52,16 +52,19 @@ object McpAutostartStore {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val GCM_TAG_BITS = 128
-    private const val VERSION = 1
+    // v2 adds typedOps. Writes are always v2; a v1 blob (written before typedOps
+    // existed) still reads, with typedOps = OFF (fail closed).
+    private const val VERSION = 2
+    private const val VERSION_V1 = 1
     private val AAD = "shelly-mcp-autostart-v1".toByteArray(Charsets.UTF_8)
     // Same alphabet/length bounds the RN token generator produces
     // (base64url of 32 bytes = 43 chars); a little slack, no controls/spaces.
     private val TOKEN_RE = Regex("^[A-Za-z0-9_-]{16,256}$")
 
     /** What the native auto-start path may use. Never toString()'d into logs. */
-    class Config(val exec: Boolean, val readTerminal: Boolean, val diagnostics: Boolean, val token: String) {
+    class Config(val exec: Boolean, val readTerminal: Boolean, val diagnostics: Boolean, val typedOps: Boolean, val token: String) {
         override fun toString(): String =
-            "McpAutostartStore.Config(exec=$exec, readTerminal=$readTerminal, diagnostics=$diagnostics)"
+            "McpAutostartStore.Config(exec=$exec, readTerminal=$readTerminal, diagnostics=$diagnostics, typedOps=$typedOps)"
     }
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -90,7 +93,7 @@ object McpAutostartStore {
      * the mirror cleared, i.e. OFF) when anything fails.
      */
     @Synchronized
-    fun writeOn(context: Context, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, token: String): Boolean {
+    fun writeOn(context: Context, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, token: String): Boolean {
         if (!isValidToken(token)) {
             Log.w(TAG, "refusing to mirror a malformed token; mirror cleared")
             clearLocked(context)
@@ -103,6 +106,7 @@ object McpAutostartStore {
                 .put("exec", exec)
                 .put("readTerminal", readTerminal)
                 .put("diagnostics", diagnostics)
+                .put("typedOps", typedOps)
                 .put("token", token)
                 .toString()
                 .toByteArray(Charsets.UTF_8)
@@ -122,7 +126,7 @@ object McpAutostartStore {
                 Log.w(TAG, "mirror commit failed; mirror cleared (auto-start OFF)")
                 false
             } else {
-                Log.i(TAG, "mirror written: enabled exec=$exec readTerminal=$readTerminal diagnostics=$diagnostics")
+                Log.i(TAG, "mirror written: enabled exec=$exec readTerminal=$readTerminal diagnostics=$diagnostics typedOps=$typedOps")
                 true
             }
         } catch (e: Exception) {
@@ -195,16 +199,23 @@ object McpAutostartStore {
 
     /** Strict: exact version, enabled === true, booleans only, valid token. */
     private fun parse(json: JSONObject): Config? {
-        if (json.optInt("v", -1) != VERSION) return null
+        val version = json.optInt("v", -1)
+        if (version != VERSION && version != VERSION_V1) return null
         val enabled = json.opt("enabled")
         val exec = json.opt("exec")
         val readTerminal = json.opt("readTerminal")
         val diagnostics = json.opt("diagnostics")
+        val typedOpsRaw = json.opt("typedOps")
         val token = json.opt("token")
         if (enabled != true) return null
         if (exec !is Boolean || readTerminal !is Boolean || diagnostics !is Boolean || token !is String) return null
         if (!isValidToken(token)) return null
-        return Config(exec, readTerminal, diagnostics, token)
+        // v1 has no typedOps: read as OFF. v2 requires a boolean (anything else is unreadable).
+        val typedOps = if (version == VERSION_V1) false else {
+            if (typedOpsRaw !is Boolean) return null
+            typedOpsRaw
+        }
+        return Config(exec, readTerminal, diagnostics, typedOps, token)
     }
 
     fun isOn(context: Context): Boolean = read(context) != null

@@ -1,0 +1,184 @@
+{
+  "comment": "Shared TS/Kotlin fixture for the run_agent binding hash: bind = sha256(canonicalJson(projection of the agent JSON on disk)). lib/mcp-typed-ops.ts agentBindingHash and McpAgentBinding.kt must both reproduce every case. Generated from the TS implementation; dummy values only.",
+  "fields": [
+    "prompt",
+    "tool",
+    "toolPinned",
+    "autonomous",
+    "requireActionApproval",
+    "autonomyLevel",
+    "workspaceRoot",
+    "outputPath",
+    "action",
+    "actions",
+    "orchestration",
+    "skillId",
+    "notificationTrigger",
+    "runOn",
+    "memory"
+  ],
+  "cases": [
+    {
+      "name": "minimal",
+      "agent": {
+        "id": "a1",
+        "name": "A",
+        "enabled": true,
+        "prompt": "Summarize the morning feeds.",
+        "tool": {
+          "type": "auto"
+        },
+        "outputPath": "~/out"
+      },
+      "canonical": "{\"action\":null,\"actions\":null,\"autonomous\":null,\"autonomyLevel\":null,\"memory\":null,\"notificationTrigger\":null,\"orchestration\":null,\"outputPath\":\"~/out\",\"prompt\":\"Summarize the morning feeds.\",\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":{\"type\":\"auto\"},\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "32dfe07a5645ba6aed379cd8c10bc930182c15980bed542b160bb8cfacd293f0"
+    },
+    {
+      "name": "runtime fields are ignored",
+      "agent": {
+        "id": "a1",
+        "name": "Renamed",
+        "enabled": false,
+        "lastRun": 1731650000000,
+        "lastResult": "ok",
+        "nextExpectedAt": 5,
+        "prompt": "Summarize the morning feeds.",
+        "tool": {
+          "type": "auto"
+        },
+        "outputPath": "~/out"
+      },
+      "canonical": "{\"action\":null,\"actions\":null,\"autonomous\":null,\"autonomyLevel\":null,\"memory\":null,\"notificationTrigger\":null,\"orchestration\":null,\"outputPath\":\"~/out\",\"prompt\":\"Summarize the morning feeds.\",\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":{\"type\":\"auto\"},\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "32dfe07a5645ba6aed379cd8c10bc930182c15980bed542b160bb8cfacd293f0"
+    },
+    {
+      "name": "all fields, nested, key order and types",
+      "agent": {
+        "prompt": "Line one\nLine \"two\"\t\\ tab",
+        "tool": {
+          "type": "cli",
+          "cli": "codex",
+          "textOnly": true
+        },
+        "toolPinned": true,
+        "autonomous": false,
+        "requireActionApproval": true,
+        "autonomyLevel": 2,
+        "workspaceRoot": "/sdcard/demo",
+        "outputPath": "~/out/日本語.md",
+        "action": {
+          "type": "draft",
+          "webhookUrl": null
+        },
+        "actions": [
+          {
+            "type": "notify"
+          },
+          {
+            "type": "draft",
+            "intentMode": "share"
+          }
+        ],
+        "orchestration": {
+          "steps": [
+            {
+              "id": "s1",
+              "prompt": "p",
+              "minScore": 3.5,
+              "weights": [
+                0.1,
+                0.25,
+                1e-7,
+                1e+21,
+                123456789012,
+                -0.5,
+                0
+              ]
+            }
+          ],
+          "longform": {
+            "z": 1,
+            "a": 2,
+            "M": 3,
+            "_": 4
+          }
+        },
+        "skillId": "skill-x",
+        "notificationTrigger": {
+          "packageName": "com.example",
+          "keywords": [
+            "a",
+            "b"
+          ]
+        },
+        "runOn": "wifi",
+        "memory": {
+          "enabled": true,
+          "maxItems": 20
+        }
+      },
+      "canonical": "{\"action\":{\"type\":\"draft\",\"webhookUrl\":null},\"actions\":[{\"type\":\"notify\"},{\"intentMode\":\"share\",\"type\":\"draft\"}],\"autonomous\":false,\"autonomyLevel\":2,\"memory\":{\"enabled\":true,\"maxItems\":20},\"notificationTrigger\":{\"keywords\":[\"a\",\"b\"],\"packageName\":\"com.example\"},\"orchestration\":{\"longform\":{\"M\":3,\"_\":4,\"a\":2,\"z\":1},\"steps\":[{\"id\":\"s1\",\"minScore\":3.5,\"prompt\":\"p\",\"weights\":[0.1,0.25,1e-7,1e+21,123456789012,-0.5,0]}]},\"outputPath\":\"~/out/日本語.md\",\"prompt\":\"Line one\\nLine \\\"two\\\"\\t\\\\ tab\",\"requireActionApproval\":true,\"runOn\":\"wifi\",\"skillId\":\"skill-x\",\"tool\":{\"cli\":\"codex\",\"textOnly\":true,\"type\":\"cli\"},\"toolPinned\":true,\"workspaceRoot\":\"/sdcard/demo\"}",
+      "bind": "b7de2e94f6b2e75733ac02d80f9092e7afc81a1f65cefd76f395658e8331fef6"
+    },
+    {
+      "name": "unicode and control characters",
+      "agent": {
+        "prompt": "emoji 😀 / slash   sep \u0001 ctl  del é",
+        "outputPath": "/data/é"
+      },
+      "canonical": "{\"action\":null,\"actions\":null,\"autonomous\":null,\"autonomyLevel\":null,\"memory\":null,\"notificationTrigger\":null,\"orchestration\":null,\"outputPath\":\"/data/é\",\"prompt\":\"emoji 😀 / slash   sep \\u0001 ctl  del é\",\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":null,\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "4dbc5300d18ffc09a9308d7f306fcf53e39b30e58ab079abdc53426ec540b95c"
+    },
+    {
+      "name": "numbers",
+      "agent": {
+        "autonomyLevel": 3,
+        "memory": {
+          "a": 0.1,
+          "b": 100,
+          "c": 1.5e-7,
+          "d": 2.5e+25,
+          "e": 0.000001,
+          "f": 123.456,
+          "g": 1e+21,
+          "h": 999999999999999900000,
+          "i": -1e-7,
+          "j": 5e-324
+        }
+      },
+      "canonical": "{\"action\":null,\"actions\":null,\"autonomous\":null,\"autonomyLevel\":3,\"memory\":{\"a\":0.1,\"b\":100,\"c\":1.5e-7,\"d\":2.5e+25,\"e\":0.000001,\"f\":123.456,\"g\":1e+21,\"h\":999999999999999900000,\"i\":-1e-7,\"j\":5e-324},\"notificationTrigger\":null,\"orchestration\":null,\"outputPath\":null,\"prompt\":null,\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":null,\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "7d15f32f2dce8aaf70b638523034a727adcf0ec420de2e3997aaed7b28938bdd"
+    },
+    {
+      "name": "empty containers and nulls",
+      "agent": {
+        "action": null,
+        "actions": [],
+        "orchestration": {},
+        "memory": {
+          "list": [
+            null,
+            [],
+            {}
+          ]
+        }
+      },
+      "canonical": "{\"action\":null,\"actions\":[],\"autonomous\":null,\"autonomyLevel\":null,\"memory\":{\"list\":[null,[],{}]},\"notificationTrigger\":null,\"orchestration\":{},\"outputPath\":null,\"prompt\":null,\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":null,\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "99f4643ead45d47201379e140caa9ac0bb355f62656c789dafc98c71e4374b63"
+    },
+    {
+      "name": "cli action",
+      "agent": {
+        "prompt": "x",
+        "actions": [
+          {
+            "type": "cli",
+            "command": "rm -rf ~/tmp/x"
+          }
+        ]
+      },
+      "canonical": "{\"action\":null,\"actions\":[{\"command\":\"rm -rf ~/tmp/x\",\"type\":\"cli\"}],\"autonomous\":null,\"autonomyLevel\":null,\"memory\":null,\"notificationTrigger\":null,\"orchestration\":null,\"outputPath\":null,\"prompt\":\"x\",\"requireActionApproval\":null,\"runOn\":null,\"skillId\":null,\"tool\":null,\"toolPinned\":null,\"workspaceRoot\":null}",
+      "bind": "2d9a56f02aee657d8b81c24394a8dc0f2a62c40ab1fd745eabcd62534e0900e7"
+    }
+  ]
+}

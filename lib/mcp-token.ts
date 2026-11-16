@@ -40,6 +40,17 @@ export interface McpTokenDeps {
    */
   onSaved?(token: string): Promise<void>;
   /**
+   * The always-allow cascade's second step (lib/mcp-always-allow.ts
+   * purgeMcpAlwaysAllowRulesForNewToken): called right after a NEW token was
+   * persisted and read back, before onSaved, to remove every rule not keyed to
+   * the new token's principal (e.g. one added under the old token by a call
+   * that raced the lock; the first step is revokePending, before the save).
+   * Throws when not confirmed. Regeneration of a running server: a failure
+   * leaves it off ('failed_server_off'). Creation / a stopped server:
+   * best-effort (old-principal rules can never match the new token anyway).
+   */
+  purgeOtherClientRules?(token: string): Promise<void>;
+  /**
    * Durably invalidates the native auto-start mirror (clears it; natively
    * this also stops the server). Called BEFORE a token is replaced or
    * created, so a process death between "new token saved" and "mirror
@@ -64,8 +75,10 @@ export interface McpServerControl {
   /**
    * Cancels everything accepted under the old token: denies/closes pending
    * approvals, invalidates in-flight calls and clears the file queue
-   * (lib/mcp-server-bridge.ts revokePendingMCPRequests). Runs inside the
-   * lock, after stop() and before start(newToken).
+   * (lib/mcp-server-bridge.ts revokePendingMCPRequests), and removes every
+   * MCP always-allow rule (the cascade's first step). Runs inside the lock,
+   * after stop() and before the new token is saved; a throw leaves the token
+   * unchanged and a running server off.
    */
   revokePending?(): Promise<void>;
 }
@@ -113,6 +126,13 @@ export async function getOrCreateTokenInLock(deps: McpTokenDeps): Promise<string
   // below can ever be auto-started. A failure leaves no token (fail closed).
   if (deps.invalidateMirror) await deps.invalidateMirror();
   await deps.store.save(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD, token);
+  if (deps.purgeOtherClientRules) {
+    try {
+      await deps.purgeOtherClientRules(token);
+    } catch {
+      // Best-effort: a rule keyed to another principal never matches this token.
+    }
+  }
   if (deps.onSaved) {
     try {
       await deps.onSaved(token);
@@ -145,7 +165,10 @@ export type RegenerateResult = {
    *                        left off rather than restarted on a possibly
    *                        leaked token. Also when the new token was saved
    *                        but the native auto-start mirror could not be
-   *                        updated (deps.onSaved threw; token is then set)
+   *                        updated (deps.onSaved threw; token is then set),
+   *                        or the always-allow rules of other tokens could not
+   *                        be confirmed removed (deps.purgeOtherClientRules
+   *                        threw; token is then set)
    * Both 'restart_failed' and 'failed_server_off' mean the server is now off.
    */
   check: 'verified' | 'unverified' | 'restart_failed' | 'old_token_accepted' | 'not_running' | 'failed_server_off';
@@ -218,6 +241,25 @@ export async function regenerateToken(
         check: 'failed_server_off',
         error: String((e as any)?.message || e),
       };
+    }
+
+    if (deps.purgeOtherClientRules) {
+      try {
+        await deps.purgeOtherClientRules(token);
+      } catch (e) {
+        // Rules from the old token might remain (they can't match the new
+        // principal, but the cascade is not confirmed): a server that was
+        // running stays off, like a mirror that could not follow.
+        if (wasRunning) {
+          return {
+            token,
+            wasRunning,
+            restarted: false,
+            check: 'failed_server_off',
+            error: String((e as any)?.message || e),
+          };
+        }
+      }
     }
 
     if (deps.onSaved) {

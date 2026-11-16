@@ -23,8 +23,8 @@ function deferred<T>() {
 }
 
 function makeHandler(callTool: (tool: string, args: Record<string, unknown>) => Promise<ToolResult>, extra: Record<string, unknown> = {}) {
-  // Every tool on by default here; the settings-off cases pass exec / readTerminal / diagnostics: false.
-  return mcp.createMcpHandler({ token: TOKEN, callTool, initialHoldMs: 5, retryHoldMs: 20, exec: true, readTerminal: true, diagnostics: true, ...extra });
+  // Every tool on by default here; the settings-off cases pass exec / readTerminal / diagnostics / typedOps: false.
+  return mcp.createMcpHandler({ token: TOKEN, callTool, initialHoldMs: 5, retryHoldMs: 20, exec: true, readTerminal: true, diagnostics: true, typedOps: true, ...extra });
 }
 
 function post(handler: { handle: (r: unknown) => Promise<Out> }, body: unknown, headers: Record<string, string> = {}) {
@@ -498,7 +498,7 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(names(mcp.availableTools({ exec: true, readTerminal: true, diagnostics: true })))
       .toEqual(['read_terminal_output', ...READ_ONLY, 'read_logs', 'get_settings', 'run_command', 'write_file']);
     // Only a real `true` turns a tool on.
-    expect(names(mcp.availableTools({ exec: 'yes', readTerminal: 1, diagnostics: '1' }))).toEqual(READ_ONLY);
+    expect(names(mcp.availableTools({ exec: 'yes', readTerminal: 1, diagnostics: '1', typedOps: 'yes' }))).toEqual(READ_ONLY);
   });
 
   it('the new tools carry the documented input schemas', () => {
@@ -559,30 +559,113 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(setter.error.message).toBe('unknown tool: set_settings');
   });
 
-  it('main() reads the flags from SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS and MCPBridge.kt sets all three', () => {
+  it('main() reads the flags from SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS / SHELLY_MCP_TYPED_OPS and MCPBridge.kt sets all four', () => {
     const root = path.resolve(__dirname, '..');
     const script = fs.readFileSync(path.join(root, 'scripts/shelly-mcp-server.js'), 'utf8');
     expect(script).toContain("process.env.SHELLY_MCP_EXEC === '1'");
     expect(script).toContain("process.env.SHELLY_MCP_READ_TERMINAL === '1'");
     expect(script).toContain("process.env.SHELLY_MCP_DIAGNOSTICS === '1'");
+    expect(script).toContain("process.env.SHELLY_MCP_TYPED_OPS === '1'");
+    expect(script).toMatch(/const TYPED_OP_TOOLS = new Set\(\['run_agent', 'get_run_result'\]\);/);
+    // The script and its APK asset stay byte-identical.
+    expect(fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js', ), 'utf8')).toBe(script);
     const bridge = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'), 'utf8');
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_EXEC"\] = if \(exec\) "1" else "0"/);
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_READ_TERMINAL"\] = if \(readTerminal\) "1" else "0"/);
     expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_DIAGNOSTICS"\] = if \(diagnostics\) "1" else "0"/);
+    expect(bridge).toMatch(/environment\(\)\["SHELLY_MCP_TYPED_OPS"\] = if \(typedOps\) "1" else "0"/);
     // The Expo binding passes the flag through in the same position RN sends it.
     const mod = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt'), 'utf8');
-    expect(mod).toContain('AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->');
+    expect(mod).toContain('AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String ->');
     // In-app starts go through the supervisor (auto-start branch), which hands
     // the flag to MCPBridge.start on every path (app start, headless, watchdog).
-    expect(mod).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, bridgeKey)');
+    expect(mod).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
     const supervisor = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpServerSupervisor.kt'), 'utf8');
-    expect(supervisor).toContain('MCPBridge.start(app, token, exec, readTerminal, diagnostics, bridgeKey)');
-    expect(supervisor).toContain('MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, key)');
-    expect(supervisor).toContain('MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.bridgeKey)');
-    expect(bridge).toMatch(/processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics/);
+    expect(supervisor).toContain('MCPBridge.start(app, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
+    expect(supervisor).toContain('MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key)');
+    expect(supervisor).toContain('MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.typedOps, use.bridgeKey)');
+    expect(bridge).toMatch(/processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics && processTypedOps == typedOps/);
     const hook = fs.readFileSync(path.join(root, 'hooks/use-mcp-server-bridge.ts'), 'utf8');
-    expect(hook).toMatch(/settings\.mcpReadTerminalEnabled === true,\s*settings\.mcpDiagnosticsEnabled === true,\s*bridgeKey/);
-    expect(hook).toContain('[settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]');
+    expect(hook).toMatch(/settings\.mcpReadTerminalEnabled === true,\s*settings\.mcpDiagnosticsEnabled === true,\s*settings\.mcpTypedOpsEnabled === true,\s*bridgeKey/);
+    expect(hook).toContain('[settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled, typedOpsEnabled]');
+  });
+});
+
+describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', () => {
+  const names = (tools: { name: string }[]) => tools.map((t) => t.name);
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status'];
+  const HANDLE = `mr_${'a'.repeat(32)}`;
+
+  it('listed only with typedOps (exec alone does not list them; typedOps alone does not list raw exec)', async () => {
+    expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file']);
+    expect(names(mcp.availableTools({ typedOps: true }))).toEqual([...READ_ONLY, 'run_agent', 'get_run_result']);
+    expect(names(mcp.availableTools({ typedOps: 'yes' }))).toEqual(READ_ONLY);
+    const off = makeHandler(async () => ({ ok: true, data: [] }), { typedOps: false });
+    expect(names(parse(await modern(off, 1, 'tools/list')).result.tools)).not.toContain('run_agent');
+    const on = makeHandler(async () => ({ ok: true, data: [] }), { typedOps: true });
+    const listed = names(parse(await modern(on, 2, 'tools/list')).result.tools);
+    expect(listed).toEqual(expect.arrayContaining(['run_agent', 'get_run_result']));
+    const { sessionId } = await legacySession(on);
+    const legacy = parse(await post(on, { jsonrpc: '2.0', id: 3, method: 'tools/list' }, { 'mcp-session-id': sessionId }));
+    expect(names(legacy.result.tools)).toEqual(expect.arrayContaining(['run_agent', 'get_run_result']));
+  });
+
+  it('schemas: strict objects, documented patterns, no free-text input', () => {
+    const byName = Object.fromEntries(mcp.TOOLS.map((t: { name: string }) => [t.name, t]));
+    expect(byName.run_agent.inputSchema.additionalProperties).toBe(false);
+    expect(Object.keys(byName.run_agent.inputSchema.properties)).toEqual(['agentId', 'requestId']);
+    expect(byName.run_agent.inputSchema.properties.agentId.pattern).toBe('^[A-Za-z0-9_-]{1,128}$');
+    expect(byName.run_agent.inputSchema.required).toEqual(['agentId']);
+    expect(byName.get_run_result.inputSchema.additionalProperties).toBe(false);
+    expect(Object.keys(byName.get_run_result.inputSchema.properties)).toEqual(['runHandle', 'waitMs', 'maxBytes']);
+    expect(mcp.TYPED_OP_TOOLS.has('run_agent') && mcp.TYPED_OP_TOOLS.has('get_run_result')).toBe(true);
+    expect(mcp.APPROVAL_TOOLS.has('run_agent')).toBe(true);
+    expect(mcp.APPROVAL_TOOLS.has('get_run_result')).toBe(false);
+  });
+
+  it('refused while typedOps is off, without calling the bridge (even with exec on)', async () => {
+    const callTool = jest.fn(async () => ({ ok: true, data: {} }) as ToolResult);
+    const handler = makeHandler(callTool, { typedOps: false, mrtr: true });
+    for (const [i, tool] of ['run_agent', 'get_run_result'].entries()) {
+      const out = parse(await modern(handler, i + 1, 'tools/call', { name: tool, arguments: tool === 'run_agent' ? { agentId: 'a' } : { runHandle: HANDLE } }));
+      expect(out.error.code).toBe(mcp.INVALID_PARAMS);
+      expect(out.error.message).toContain('tool disabled on the device');
+    }
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('run_agent uses MRTR while the approval is pending, one bridge call per logical call', async () => {
+    const approval = deferred<ToolResult>();
+    const callTool = jest.fn(() => approval.promise);
+    const handler = makeHandler(callTool, { typedOps: true, mrtr: true });
+    const RUN = { name: 'run_agent', arguments: { agentId: 'daily' } };
+    const first = parse(await modern(handler, 1, 'tools/call', RUN));
+    expect(first.result.resultType).toBe('input_required');
+    approval.resolve({ ok: true, data: { runHandle: HANDLE, agentId: 'daily', state: 'accepted', untrusted: true } });
+    const done = parse(await modern(handler, 2, 'tools/call', { ...RUN, requestState: first.result.requestState }));
+    expect(done.result.resultType).toBe('complete');
+    expect(JSON.parse(done.result.content[0].text).runHandle).toBe(HANDLE);
+    expect(callTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('get_run_result: never MRTR, waitMs capped at 20000 before the bridge sees it (both eras)', async () => {
+    const callTool = jest.fn(async () => ({ ok: true, data: { state: 'running' } }) as ToolResult);
+    const handler = makeHandler(callTool, { typedOps: true, mrtr: true });
+    const out = parse(await modern(handler, 1, 'tools/call', { name: 'get_run_result', arguments: { runHandle: HANDLE, waitMs: 90_000, maxBytes: 10 } }));
+    expect(out.result.resultType).toBe('complete');
+    expect((callTool.mock.calls[0] as unknown[])[1]).toEqual({ runHandle: HANDLE, waitMs: 20_000, maxBytes: 10 });
+    const { sessionId } = await legacySession(handler);
+    await post(handler, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_run_result', arguments: { runHandle: HANDLE, waitMs: 1e9 } } }, { 'mcp-session-id': sessionId });
+    expect((callTool.mock.calls[1] as unknown[])[1]).toEqual({ runHandle: HANDLE, waitMs: 20_000 });
+    expect(mcp.GET_RUN_RESULT_MAX_WAIT_MS).toBe(20_000);
+    expect(handler._pendingApprovalCount()).toBe(0);
+  });
+
+  it('error results carry the code as `Error: [<code>] <message>`', async () => {
+    const handler = makeHandler(async () => ({ ok: false, error: 'denied on the phone', code: 'denied_by_user' }) as ToolResult, { typedOps: true });
+    const out = parse(await modern(handler, 1, 'tools/call', { name: 'run_agent', arguments: { agentId: 'daily' } }));
+    expect(out.result.isError).toBe(true);
+    expect(out.result.content[0].text).toBe('Error: [denied_by_user] denied on the phone');
   });
 });
 

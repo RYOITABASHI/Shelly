@@ -181,8 +181,16 @@ describe('AgentIngressTaint.kt (source pins)', () => {
     expect(src).toContain('must NEVER be read to decide taint');
   });
 
-  it('audits with the shared ingress_taint kind and opens the file O_NOFOLLOW', () => {
+  it('audits with the shared ingress_taint kind and opens the file O_NOFOLLOW (through IngressAuditWriter)', () => {
     expect(src).toContain('private const val AUDIT_KIND = "ingress_taint"');
-    expect(src).toContain('OsConstants.O_NOFOLLOW');
+    // The safe writer was factored out (MCP typed ops, PR 5) so the two can't drift.
+    expect(src).toContain('IngressAuditWriter.append(context, agentId, "ingress-taint-audit.jsonl", line)');
+    const writer = fs.readFileSync(
+      path.join(__dirname, '../modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/IngressAuditWriter.kt'),
+      'utf8',
+    );
+    expect(writer).toContain('OsConstants.O_NOFOLLOW');
+    expect(writer).toContain('parent.canonicalFile.path != parent.absoluteFile.path');
+    expect(writer).toContain('File(context.filesDir, "home").canonicalFile');
   });
 });

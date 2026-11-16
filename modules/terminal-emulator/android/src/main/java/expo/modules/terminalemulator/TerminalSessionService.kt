@@ -70,6 +70,13 @@ class TerminalSessionService : Service() {
         // POLICY-001: positive "a human pressed Run now in the app" marker, set
         // ONLY by TerminalEmulatorModule.runAgent(). Absent ⇒ never "user".
         const val EXTRA_RUN_ORIGIN = "run_origin"
+        // MCP typed ops (McpRunTickets.kt): set ONLY by
+        // TerminalEmulatorModule.runAgentForMcp(), together with NO
+        // EXTRA_RUN_ORIGIN / EXTRA_TAINTED / schedule / widget / notification
+        // extras. The run then maps to origin "event" (proactive) below, runs
+        // with ingress-taint reason "mcp", and reports into its run ticket.
+        const val EXTRA_MCP_RUN_HANDLE = "mcp_run_handle"
+        const val EXTRA_MCP_PRINCIPAL = "mcp_principal"
         // Mirrors ShellyNotificationListener.MAX_INBOUND_NOTIFICATION_TEXT /
         // lib/telegram-inbound.ts MAX_INBOUND_TEXT — defensive re-bound at the
         // service boundary (the service is not exported, but bounding twice is
@@ -234,15 +241,42 @@ class TerminalSessionService : Service() {
                     // native trigger — so it must fail closed here too rather than
                     // rely on each caller remembering to check upstream.
                     Log.i(TAG, "RUN_AGENT for $agentId suppressed: globally halted (STOP-ALL)")
+                    val haltedMcpHandle = intent.getStringExtra(EXTRA_MCP_RUN_HANDLE)
+                    val haltedMcpPrincipal = intent.getStringExtra(EXTRA_MCP_PRINCIPAL)
                     // Continuous mode: record why the loop did not continue (the
                     // agent stays enabled so RESUME brings it back).
                     Thread {
+                        // An MCP run_agent launch: its ticket ends as skipped/halted.
+                        if (haltedMcpHandle != null) {
+                            McpRunTickets.markEndedWithoutRun(
+                                applicationContext, haltedMcpHandle, agentId, haltedMcpPrincipal,
+                                McpRunTickets.STATE_SKIPPED, McpRunTickets.REASON_HALTED
+                            )
+                        }
                         runCatching {
                             if (ContinuousLoop.configFor(applicationContext, agentId) != null) {
                                 ContinuousLoop.finalizeStop(applicationContext, agentId, ContinuousStopReason.HALTED)
                             }
                         }
                     }.start()
+                    if (!hasProtectedWork()) {
+                        startForegroundWithNotification(null)
+                        stopForegroundAndMark()
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
+                // MCP run_agent (McpRunTickets.kt). An extra that is present but
+                // malformed refuses the run (fail closed); the ticket, if any,
+                // goes lost by the stale rule.
+                val mcpRunHandle = intent.getStringExtra(EXTRA_MCP_RUN_HANDLE)
+                val mcpPrincipal = intent.getStringExtra(EXTRA_MCP_PRINCIPAL)
+                if (intent.hasExtra(EXTRA_MCP_RUN_HANDLE) &&
+                    (!McpRunTickets.isValidHandle(mcpRunHandle) || !McpRunTickets.isValidPrincipal(mcpPrincipal))
+                ) {
+                    Log.w(TAG, "RUN_AGENT for $agentId refused: malformed MCP run extras")
                     if (!hasProtectedWork()) {
                         startForegroundWithNotification(null)
                         stopForegroundAndMark()
@@ -349,6 +383,12 @@ class TerminalSessionService : Service() {
                 // always carries EXTRA_INTERVAL_MS (even 0 for a one-shot), and
                 // any other/future caller without the marker falls through to
                 // "event" (proactive), never to "user" (fail-closed).
+                // MCP run_agent launches (EXTRA_MCP_RUN_HANDLE) carry none of
+                // these extras, so they MUST land on the final `else -> "event"`:
+                // never "user" (no POLICY-001 owner bypass), never tainted via
+                // EXTRA_TAINTED (that would stall broker credential calls), and
+                // never registered with markUserRunStarted. Their taint is the
+                // per-run ingress reason "mcp" passed to AgentRuntime instead.
                 val origin = when {
                     notificationTriggered || notificationText != null -> "notification"
                     scheduled || intent.hasExtra(EXTRA_INTERVAL_MS) || intent.hasExtra(EXTRA_CRON) -> "schedule"
@@ -357,7 +397,7 @@ class TerminalSessionService : Service() {
                     intent.getStringExtra(EXTRA_RUN_ORIGIN) == "user" -> "user"
                     else -> "event"
                 }
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal)
                 return START_STICKY
             }
         }
@@ -522,7 +562,10 @@ class TerminalSessionService : Service() {
         notificationPackage: String? = null,
         intervalMs: Long = 0L,
         cron: String? = null,
-        origin: String = "event"
+        origin: String = "event",
+        /** MCP run_agent (McpRunTickets.kt): the run ticket to report into. */
+        mcpRunHandle: String? = null,
+        mcpPrincipal: String? = null
     ) {
         activeAgentRuns.incrementAndGet()
         // Fable5 review (2026-08-29): recorded before the run starts so
@@ -539,24 +582,49 @@ class TerminalSessionService : Service() {
             val approvalObserver = startAgentActionApprovalObserver()
             var runResult: AgentRunResult? = null
             var crashType: String? = null
+            // MCP run_agent: only an `accepted` ticket of this agent and principal
+            // may start the run (accepted -> running), and only while the launch
+            // grant still holds (signed deadline, approved binding, enabled
+            // target, rule; McpRunLauncher.authorizeStart, under the ticket lock
+            // shared with token revoke). Anything else skips it.
+            var mcpStarted = false
+            // Taken the moment the run returns (before any cleanup): bounds which
+            // run log / result file belong to this MCP run.
+            var runEndMs = 0L
             try {
-                // AgentRuntime announces the run outcome itself (agent-result /
-                // error notification); we don't need its return value here.
-                runResult = AgentRuntime.runAgent(
-                    applicationContext,
-                    agentId,
-                    tainted = tainted,
-                    unattended = unattended,
-                    notificationText = notificationText,
-                    notificationPackage = notificationPackage,
-                    origin = origin
-                )
+                if (mcpRunHandle != null) {
+                    mcpStarted = McpRunTickets.markRunning(applicationContext, mcpRunHandle, agentId, mcpPrincipal) {
+                        McpRunLauncher.authorizeStart(applicationContext, mcpRunHandle, agentId, mcpPrincipal)
+                    }
+                }
+                if (mcpRunHandle != null && !mcpStarted) {
+                    Log.w(TAG, "MCP run of $agentId not started: its run ticket does not allow it")
+                } else {
+                    // AgentRuntime announces the run outcome itself (agent-result /
+                    // error notification); we don't need its return value here.
+                    runResult = AgentRuntime.runAgent(
+                        applicationContext,
+                        agentId,
+                        tainted = tainted,
+                        unattended = unattended,
+                        notificationText = notificationText,
+                        notificationPackage = notificationPackage,
+                        origin = origin,
+                        ingressRunReason = if (mcpRunHandle != null) AgentIngressTaint.RUN_REASON_MCP else null
+                    )
+                    runEndMs = System.currentTimeMillis()
+                }
             } catch (e: Exception) {
+                if (runEndMs == 0L) runEndMs = System.currentTimeMillis()
                 Log.e(TAG, "Agent $agentId crashed while running", e)
                 crashType = e.javaClass.simpleName
             } finally {
                 runCatching { approvalObserver?.stopWatching() }
                 releaseAgentWakeLock(wakeLock, agentId)
+            }
+            // A crash or a null result ends the ticket failed/crashed.
+            if (mcpRunHandle != null && mcpStarted) {
+                McpRunTickets.markFinished(applicationContext, mcpRunHandle, runResult, runStartMs, runEndMs)
             }
 
             // Decide the next alarm only after the unattended run outcome is
