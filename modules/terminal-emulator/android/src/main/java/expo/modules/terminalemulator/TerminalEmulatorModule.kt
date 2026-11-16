@@ -797,16 +797,16 @@ class TerminalEmulatorModule : Module() {
         // MCP (Model Context Protocol) server — see MCPBridge.kt and
         // McpServerSupervisor.kt (which owns the process lifecycle and the
         // McpServerService foreground service).
-        // exec / readTerminal / diagnostics: settings.mcpExecEnabled /
-        // mcpReadTerminalEnabled / mcpDiagnosticsEnabled at start time (the
+        // exec / readTerminal / diagnostics / typedOps: settings.mcpExecEnabled /
+        // mcpReadTerminalEnabled / mcpDiagnosticsEnabled / mcpTypedOpsEnabled at start time (the
         // script hides those tools when off). bridgeKey: RN's per-start key
         // that signs queue requests (never logged). A server started headless
         // (boot / update) has a native key and is restarted here with RN's
         // key ("adoption" = clean restart).
-        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String ->
+        AsyncFunction("startMCPServer") { token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
-            McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, bridgeKey)
+            McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)
         }
 
         // Device status for the MCP device_status tool (snapshot section,
@@ -838,7 +838,7 @@ class TerminalEmulatorModule : Module() {
         // and its service (OFF wins). Returns whether the mirror now matches
         // the request (false = cleared, i.e. auto-start OFF). The token is
         // never logged.
-        AsyncFunction("setMCPAutostartMirror") { enabled: Boolean, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, token: String? ->
+        AsyncFunction("setMCPAutostartMirror") { enabled: Boolean, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, token: String? ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
             if (!enabled) {
@@ -851,7 +851,7 @@ class TerminalEmulatorModule : Module() {
                 McpAutostartStore.clear(context, "no token")
                 false
             } else {
-                McpAutostartStore.writeOn(context, exec, readTerminal, diagnostics, token)
+                McpAutostartStore.writeOn(context, exec, readTerminal, diagnostics, typedOps, token)
             }
         }
 
@@ -1164,6 +1164,81 @@ class TerminalEmulatorModule : Module() {
                 context.startService(intent)
             }
             null
+        }
+
+        // MCP typed ops (McpRunTickets.kt): an agent run started through MCP
+        // `run_agent`. NOT runAgent above: that is the only producer of origin
+        // "user", which an MCP run must never get. Writes the `accepted` ticket
+        // BEFORE the intent (a lost intent then shows up as `lost`), then sends
+        // RUN_AGENT with the MCP extras and NO EXTRA_RUN_ORIGIN / EXTRA_TAINTED,
+        // so the service maps it to origin "event" and taints it with reason
+        // "mcp". Resolves true when the intent was sent. [deadlineMs] (epoch ms,
+        // the signed receivedAt + 100 s; null = refused), [approvedBind] (the
+        // binding the tap / rule approved) and [ruleId] (the always-allow rule
+        // of a run without a tap; null = a tap) form the launch grant: checked
+        // under the ticket lock right before the ticket is written and again
+        // when the service actually starts the run (McpRunLauncher), so a call
+        // that waited past the client's timeout, an agent disabled or edited,
+        // or a rule removed in between never starts a run. [policyPin] (the
+        // policy.json hash RN evaluated, "absent" when missing, null = unknown)
+        // must still match the file for an agent that declares actions.
+        AsyncFunction("runAgentForMcp") { agentId: String, runHandle: String, principal: String, requestId: String?, deadlineMs: Double?, approvedBind: String?, ruleId: String?, policyPin: String? ->
+            // Shared with the headless McpTypedOpConsumer (McpRunLauncher): the
+            // accepted ticket before the intent, no origin / tainted extras, and
+            // one requestId create-if-absent across both paths. RN already
+            // checked idempotency and the busy limit under its own lock; a
+            // duplicate or busy seen here (a concurrent headless launch) is a
+            // refusal (false = launch_failed), never a second run.
+            if (deadlineMs == null || deadlineMs.isNaN() || deadlineMs <= 0.0 || deadlineMs > Long.MAX_VALUE.toDouble() || approvedBind == null) {
+                false
+            } else {
+                val grant = McpRunAuthorization.Grant(
+                    agentId = agentId,
+                    principal = principal,
+                    deadlineMs = deadlineMs.toLong(),
+                    bind = approvedBind,
+                    ruleId = ruleId,
+                    target = if (ruleId != null) "agent:$agentId" else null,
+                    policyPin = policyPin,
+                )
+                McpRunLauncher.launch(requireReactContext(), agentId, runHandle, principal, requestId, grant) {
+                    System.currentTimeMillis().toDouble() <= deadlineMs
+                } == McpRunLauncher.Result.Started
+            }
+        }
+
+        // Ticket JSON for a run_agent handle (stale rule applied), or null. The
+        // caller checks the ticket's principal; the content is untrusted data.
+        AsyncFunction("readMcpRunTicket") { runHandle: String ->
+            McpRunTickets.readTicketJson(requireReactContext(), runHandle)
+        }
+
+        // The run's output snapshot cut to maxBytes (at most 64 KiB) on a UTF-8
+        // boundary, or null. Untrusted data; the caller redacts it.
+        AsyncFunction("readMcpRunOutput") { runHandle: String, maxBytes: Double ->
+            val cap = if (maxBytes.isNaN()) 0 else maxBytes.coerceIn(0.0, McpRunTickets.MAX_OUTPUT_BYTES.toDouble()).toInt()
+            McpRunTickets.readOutput(requireReactContext(), runHandle, cap)
+        }
+
+        // Every run_agent ticket of one principal (stale rule applied) as a JSON
+        // array, or null. The bridge's requestId lookup and busy count. Untrusted data.
+        AsyncFunction("listMcpRunTickets") { principal: String ->
+            McpRunTickets.listForPrincipalJson(requireReactContext(), principal)
+        }
+
+        // Token revoke: live tickets of `principal` (null = all) become
+        // cancelled/revoked. The count, or -1 when not confirmed.
+        AsyncFunction("cancelMcpRunTickets") { principal: String? ->
+            McpRunTickets.cancelLive(requireReactContext(), principal)
+        }
+
+        // MCP typed-op refusal audit line (IngressAuditWriter.kt). The line is
+        // rebuilt natively from a closed set of short fields (kind, event,
+        // agentId, principal, code) and timestamped here. Per-agent lines go to
+        // logs/<id>/agent-driver-audit.jsonl (or the audits/ mirror), agent-less
+        // ones to audits/mcp-ingress-audit.jsonl. True when written.
+        AsyncFunction("appendMcpIngressAudit") { agentId: String?, json: String ->
+            IngressAuditWriter.appendMcpLine(requireReactContext(), agentId, json)
         }
 
         // Attended-run keep-alive (lib/agent-keepalive.ts): while the app is
@@ -1726,6 +1801,32 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("getDraftPreapproval") {
             val context = requireReactContext()
             ClosePawDraftPreapproval.statusJson(context)
+        }
+
+        // MCP always-allow rules for typed operations (McpAlwaysAllowStore.kt).
+        // Add: ONLY RN's MCP bridge after a human "always allow" tap won the
+        // approval; nothing in the shell, the queue or a file reaches it.
+        // List / match read; remove / purge only narrow and are safe from anywhere.
+        AsyncFunction("mcpAlwaysAllowList") {
+            McpAlwaysAllowStore.list(requireReactContext())
+        }
+
+        AsyncFunction("mcpAlwaysAllowMatch") { principal: String, op: String, target: String, bind: String? ->
+            McpAlwaysAllowStore.match(requireReactContext(), principal, op, target, bind)
+        }
+
+        AsyncFunction("mcpAlwaysAllowAdd") { principal: String, op: String, target: String, bind: String?, label: String ->
+            McpAlwaysAllowStore.add(requireReactContext(), principal, op, target, bind, label)
+        }
+
+        AsyncFunction("mcpAlwaysAllowRemove") { ids: List<String> ->
+            McpAlwaysAllowStore.remove(requireReactContext(), ids)
+        }
+
+        // null removes every rule (MCP token revoked); a principal keeps only its rules.
+        // Resolves true only when the purge is confirmed.
+        AsyncFunction("mcpAlwaysAllowPurgeExcept") { principal: String? ->
+            McpAlwaysAllowStore.purgeExcept(requireReactContext(), principal)
         }
 
         // Per-agent MCP ingress taint (AgentIngressTaint.kt, DEFERRED.md P1 "MCP の入口").

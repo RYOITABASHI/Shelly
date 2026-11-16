@@ -54,6 +54,13 @@ import {
   getDraftPreapprovalEntries,
   type DraftPreapprovalEntry,
 } from '@/lib/closepaw-draft-preapproval';
+import {
+  clientIdLabel,
+  listMcpAlwaysAllowRules,
+  purgeMcpAlwaysAllowRulesExcept,
+  removeMcpAlwaysAllowRules,
+  type AlwaysAllowStatus,
+} from '@/lib/mcp-always-allow';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { useAgentStore } from '@/store/agent-store';
@@ -198,6 +205,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <FrontAgentSection />
             <AgentsSection visible={visible} />
             <DraftPreapprovalSection visible={visible} />
+            <McpAlwaysAllowSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
             <SocialConnectorsSection />
@@ -2555,6 +2563,118 @@ const DraftPreapprovalSection = React.memo(function DraftPreapprovalSection({ vi
       <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
         {t(on ? 'draft_preapproval.settings_hint_on' : 'draft_preapproval.settings_hint_off')}
       </Text>
+    </Section>
+  );
+});
+
+// MCP "always allow" rules (lib/mcp-always-allow.ts). The native store
+// (McpAlwaysAllowStore.kt) is the truth and is re-read every time Settings
+// opens. This section only lists and revokes: a rule is created only by the
+// owner's "always allow" tap on an MCP approval, never here. Regenerating the
+// MCP token removes every rule.
+const McpAlwaysAllowSection = React.memo(function McpAlwaysAllowSection({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  const [state, setState] = React.useState<AlwaysAllowStatus>({ status: 'empty', rules: [] });
+  const [busy, setBusy] = React.useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    listMcpAlwaysAllowRules()
+      .then((s) => { if (!cancelled) setState(s); })
+      .catch((e) => logError('SettingsDropdown', 'Failed to load MCP always-allow rules', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  // ids: those rules; null: every rule in the store, including any added after
+  // this list was read and an unreadable state (one native purge, not the ids shown).
+  const revoke = React.useCallback(async (ids: string[] | null) => {
+    setBusy(true);
+    try {
+      let ok: boolean;
+      if (ids === null) {
+        ok = await purgeMcpAlwaysAllowRulesExcept(null);
+        setState(await listMcpAlwaysAllowRules());
+      } else {
+        const res = await removeMcpAlwaysAllowRules(ids);
+        setState({ status: res.status, rules: res.rules });
+        ok = res.ok;
+      }
+      if (ok) {
+        ToastAndroid.show(t('mcp_always_allow.revoked_toast'), ToastAndroid.SHORT);
+      } else {
+        Alert.alert(t('mcp_always_allow.settings_title'), t('mcp_always_allow.revoke_failed'));
+      }
+    } catch (e: any) {
+      Alert.alert(t('mcp_always_allow.settings_title'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to revoke MCP always-allow rules', e);
+    } finally {
+      setBusy(false);
+    }
+  }, [t]);
+
+  const confirmRevokeAll = React.useCallback(() => {
+    Alert.alert(t('mcp_always_allow.revoke_all'), t('mcp_always_allow.revoke_all_confirm'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('mcp_always_allow.revoke_all'), style: 'destructive', onPress: () => void revoke(null) },
+    ]);
+  }, [revoke, t]);
+
+  const hasRules = state.rules.length > 0;
+  return (
+    <Section title={t('mcp_always_allow.settings_title')}>
+      {state.rules.map((r) => (
+        <View key={r.id} style={{ marginBottom: 6 }}>
+          <View style={styles.apiKeyActions}>
+            <Text style={[styles.apiKeyHint, { color: C.text1, flexShrink: 1 }]}>
+              {t('mcp_always_allow.row_title', {
+                op: t(`mcp_always_allow.op.${r.op}`),
+                label: r.label || r.target,
+              })}
+            </Text>
+            <View style={{ flex: 1 }} />
+            <Pressable
+              onPress={() => void revoke([r.id])}
+              disabled={busy}
+              style={[styles.apiKeyBtn, { borderColor: C.border }, busy && styles.integrationRowDisabled]}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={t('mcp_always_allow.revoke_a11y', { label: r.label || r.target })}
+            >
+              <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('mcp_always_allow.revoke')}</Text>
+            </Pressable>
+          </View>
+          <Text style={[styles.apiKeyHint, { color: C.text3 }]}>
+            {t('mcp_always_allow.row_meta', {
+              target: r.target,
+              client: clientIdLabel(r.principal),
+              date: new Date(r.createdAt).toLocaleDateString(),
+            })}
+          </Text>
+        </View>
+      ))}
+      {state.status === 'unreadable' && (
+        <Text style={[styles.apiKeyHint, { marginTop: 2, color: C.text2 }]}>{t('mcp_always_allow.settings_unreadable')}</Text>
+      )}
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t(hasRules ? 'mcp_always_allow.settings_hint' : 'mcp_always_allow.settings_empty')}
+      </Text>
+      {(hasRules || state.status === 'unreadable') && (
+        <View style={[styles.apiKeyActions, { marginBottom: 6 }]}>
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={confirmRevokeAll}
+            disabled={busy}
+            style={[styles.apiKeyBtn, { borderColor: C.border }, busy && styles.integrationRowDisabled]}
+            hitSlop={6}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('mcp_always_allow.revoke_all')}</Text>
+          </Pressable>
+        </View>
+      )}
     </Section>
   );
 });

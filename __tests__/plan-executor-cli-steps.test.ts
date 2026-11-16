@@ -830,17 +830,26 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     for (const [stepIndex, activity] of [[0, 'command'], [1, 'Bash']] as const) {
       const beats = events.filter((e) => e.kind === 'heartbeat' && e.stepIndex === stepIndex);
       expect(beats.length).toBeGreaterThanOrEqual(2);
-      for (const b of beats) {
+      // The heartbeat timer starts at spawn, but the driver prints its
+      // item_started line only once node is up; on a loaded host (full
+      // runInBand suite) a beat can fire before that line arrives. Such
+      // leading beats correctly carry no activity. Once the activity is
+      // known, every later beat must carry it.
+      const firstLabeled = beats.findIndex((b) => b.activity !== undefined);
+      expect(firstLabeled).toBeGreaterThanOrEqual(0);
+      expect(beats.length - firstLabeled).toBeGreaterThanOrEqual(2);
+      beats.forEach((b, i) => {
         expect(b.branchId).toBe(`${b.runId}#${stepIndex}`);
         expect(b.groupId).toBe(events.find((e) => e.kind === 'branch_state' && e.stepIndex === stepIndex && e.groupId)?.groupId);
         expect(typeof b.elapsedMs).toBe('number');
         expect(typeof b.quietMs).toBe('number');
-        expect(b.activity).toBe(activity);
+        expect(b.activity).toBe(i < firstLabeled ? undefined : activity);
         expect(b.tail).toBeUndefined();
         expect(JSON.stringify(b)).not.toContain('secret.txt');
-      }
-      // The driver printed only at start: its quiet time grows.
-      expect(beats[beats.length - 1].quietMs).toBeGreaterThan(beats[0].quietMs);
+      });
+      // The driver printed only at start: its quiet time grows (measured from
+      // the first labeled beat; a leading beat predates the driver's output).
+      expect(beats[beats.length - 1].quietMs).toBeGreaterThan(beats[firstLabeled].quietMs);
       // Nothing after the step settled (the timer stops with the driver).
       const settled = events.find((e) => e.kind === 'branch_state' && e.stepIndex === stepIndex && e.state === 'DONE');
       expect(settled).toBeDefined();

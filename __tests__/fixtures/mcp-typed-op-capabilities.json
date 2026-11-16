@@ -1,0 +1,536 @@
+{
+  "comment": "Shared TS/Kotlin fixture for the headless run_agent step-7 subset (McpTypedOpPolicy.kt). For each declared action, `capabilities` is lib/agent-action-policy.ts actionTypeCapabilities (omitted for cli: the native side never rates commands, it treats every cli action as side-effecting) and `sideEffecting` is hasSideEffect(capabilities). Only agents whose every declared action is NOT side-effecting can run headless; anything else goes to the RN path. Unknown types are side-effecting (exec). Dummy values only.",
+  "readOnlyCapabilities": [
+    "read",
+    "draft",
+    "notify"
+  ],
+  "cases": [
+    {
+      "actionType": "draft",
+      "capabilities": [
+        "draft"
+      ],
+      "sideEffecting": false
+    },
+    {
+      "actionType": "__suppressed__",
+      "capabilities": [
+        "draft"
+      ],
+      "sideEffecting": false
+    },
+    {
+      "actionType": "notify",
+      "capabilities": [
+        "notify"
+      ],
+      "sideEffecting": false
+    },
+    {
+      "actionType": "webhook",
+      "capabilities": [
+        "network",
+        "post"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "api-call",
+      "capabilities": [
+        "network",
+        "post"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "social-post",
+      "capabilities": [
+        "network",
+        "post"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "dm-reply",
+      "capabilities": [
+        "network",
+        "message"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "browser-pane",
+      "capabilities": [
+        "network",
+        "post"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "intent",
+      "intentMode": "launch",
+      "capabilities": [
+        "exec"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "intent",
+      "intentMode": "closepaw",
+      "capabilities": [
+        "exec"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "intent",
+      "intentMode": "share",
+      "capabilities": [
+        "message"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "intent",
+      "capabilities": [
+        "message"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "cli",
+      "command": "ls ~/notes",
+      "sideEffecting": true
+    },
+    {
+      "actionType": "cli",
+      "command": "echo hi",
+      "sideEffecting": true
+    },
+    {
+      "actionType": "unknown-type",
+      "capabilities": [
+        "exec"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "",
+      "capabilities": [
+        "exec"
+      ],
+      "sideEffecting": true
+    },
+    {
+      "actionType": "Draft",
+      "capabilities": [
+        "exec"
+      ],
+      "sideEffecting": true
+    }
+  ],
+  "policyComment": "Native step-7 subset (McpTypedOpPolicy.decide). Native cannot verify the policy file seal (RN SecureStore) and cannot see RN cached policy, so it never clears an agent that declares ANY action: only an agent with no declared action is clearable (RN never refuses those at step 7 either). A deny rule {capability} the agents read-only actions have, in a policy file native can parse, refuses policy_denied (the safe direction). Everything else is undecidable: native treats it as no rule match (hand off to RN when RN is live, else not_attended). Changed after the Codex review 2026-11-15 (a deleted / replaced unsealed policy.json must not let native clear what RN cached policy denies).",
+  "policyCases": [
+    {
+      "name": "no actions, any policy",
+      "actions": [],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "exec"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "clearable"
+    },
+    {
+      "name": "draft, no policy file",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": null,
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, empty rules",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": []
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, deny draft",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "draft"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "policy_denied"
+    },
+    {
+      "name": "notify, deny draft",
+      "actions": [
+        {
+          "type": "notify"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "draft"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft+notify, deny notify",
+      "actions": [
+        {
+          "type": "draft"
+        },
+        {
+          "type": "notify"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "notify"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "policy_denied"
+    },
+    {
+      "name": "draft, deny network (subcaps only)",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "network"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, draft_only draft (needs a side effect)",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "draft_only",
+              "match": {
+                "capability": "draft"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, ask draft (not a step-7 refusal)",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "ask",
+              "match": {
+                "capability": "draft"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, deny draft with keywords",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "draft",
+                "keywords": [
+                  "x"
+                ]
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, deny by keywords only",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "keywords": [
+                  "money"
+                ]
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, deny by domain only",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "domain": "example.com"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, deny exec with a path (capability cannot match)",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "deny",
+              "match": {
+                "capability": "exec",
+                "pathPrefix": "~/work"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, unknown effect",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": [
+            {
+              "id": "p1",
+              "effect": "allow",
+              "match": {
+                "capability": "draft"
+              },
+              "source": "test rule",
+              "createdAt": 1
+            }
+          ]
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, wrong file kind",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "other",
+        "userPolicy": {
+          "rules": []
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "draft, rules not an array",
+      "actions": [
+        {
+          "type": "draft"
+        }
+      ],
+      "policy": {
+        "kind": "shelly.user-policy",
+        "userPolicy": {
+          "rules": {}
+        }
+      },
+      "expected": "undecidable"
+    },
+    {
+      "name": "webhook",
+      "actions": [
+        {
+          "type": "webhook",
+          "webhookUrl": "https://example.com/h"
+        }
+      ],
+      "policy": null,
+      "expected": "undecidable"
+    },
+    {
+      "name": "cli",
+      "actions": [
+        {
+          "type": "cli",
+          "command": "ls"
+        }
+      ],
+      "policy": null,
+      "expected": "undecidable"
+    },
+    {
+      "name": "unknown action type",
+      "actions": [
+        {
+          "type": "teleport"
+        }
+      ],
+      "policy": null,
+      "expected": "undecidable"
+    },
+    {
+      "name": "action without a type",
+      "actions": [
+        {}
+      ],
+      "policy": null,
+      "expected": "undecidable"
+    }
+  ]
+}

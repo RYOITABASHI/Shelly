@@ -25,7 +25,7 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
   const respond = useMcpApprovalStore((s) => s.respond);
 
   return (
-    <Modal visible={current !== null} transparent animationType="fade" onRequestClose={() => current && respond(current.id, false)}>
+    <Modal visible={current !== null} transparent animationType="fade" onRequestClose={() => current && respond(current.id, 'deny')}>
       <View style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.85)' }]}>
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.error }]}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -58,6 +58,14 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
             <Text style={[styles.detail, { color: colors.muted }]} selectable>
               {current?.detail}
             </Text>
+            {current?.alwaysAllowable ? (
+              <Text style={[styles.risk, { color: colors.foreground }]} selectable>
+                {t('mcp.approval_always_scope', {
+                  op: current.alwaysAllowable.op,
+                  target: current.alwaysAllowable.targetLabel,
+                })}
+              </Text>
+            ) : null}
             <Text style={[styles.hint, { color: colors.muted }]}>
               {t('mcp.approval_hint')}
             </Text>
@@ -65,7 +73,7 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
 
           <View style={[styles.actions, { borderTopColor: colors.border }]}>
             <Pressable
-              onPress={() => current && respond(current.id, false)}
+              onPress={() => current && respond(current.id, 'deny')}
               // Static style: a style function was dropped here (the buttons rendered as
               // bare text crammed together on device), so pressed feedback is a ripple.
               android_ripple={{ color: withAlpha(colors.muted, 0.24) }}
@@ -73,8 +81,17 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
             >
               <Text style={[styles.actionText, { color: colors.foreground }]}>{t('mcp.approval_deny')}</Text>
             </Pressable>
+            {current?.alwaysAllowable ? (
+              <Pressable
+                onPress={() => current && respond(current.id, 'always')}
+                android_ripple={{ color: withAlpha(colors.error, 0.24) }}
+                style={[styles.actionBtn, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.actionText, { color: colors.foreground }]}>{t('mcp.approval_always')}</Text>
+              </Pressable>
+            ) : null}
             <Pressable
-              onPress={() => current && respond(current.id, true)}
+              onPress={() => current && respond(current.id, 'once')}
               android_ripple={{ color: withAlpha(colors.error, 0.24) }}
               style={[styles.actionBtn, { borderColor: colors.border }]}
             >

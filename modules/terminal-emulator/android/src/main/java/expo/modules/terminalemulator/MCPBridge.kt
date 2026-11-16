@@ -43,6 +43,7 @@ object MCPBridge {
     private var processExec = false
     private var processReadTerminal = false
     private var processDiagnostics = false
+    private var processTypedOps = false
     private val BRIDGE_KEY_RE = Regex("^[0-9a-f]{64}$")
     /** Same rule as the script's TOKEN_RE: one stdin line, no spaces / controls. */
     private val TOKEN_RE = Regex("^[\\x21-\\x7e]{1,1024}$")
@@ -80,7 +81,8 @@ object MCPBridge {
 
     /**
      * [exec] / [readTerminal] / [diagnostics] mirror the RN settings
-     * mcpExecEnabled / mcpReadTerminalEnabled / mcpDiagnosticsEnabled. The
+     * mcpExecEnabled / mcpReadTerminalEnabled / mcpDiagnosticsEnabled, and
+     * [typedOps] mirrors mcpTypedOpsEnabled. The
      * script only reads them at startup (it hides run_command / write_file /
      * read_terminal_output / read_logs / get_settings from tools/list when
      * off), so RN restarts the server whenever any of them changes
@@ -101,7 +103,7 @@ object MCPBridge {
      * each terminated by '\n', then stdin is closed (EOF). Neither is logged.
      */
     @Synchronized
-    fun start(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, bridgeKey: String): Boolean {
+    fun start(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String): Boolean {
         if (!TOKEN_RE.matches(token)) {
             // Also guarantees the token can't break the stdin line framing.
             Log.e(TAG, "no or malformed token provided")
@@ -120,7 +122,7 @@ object MCPBridge {
             // never keep serving.
             if (processBridgeKey == bridgeKey && processToken == token &&
                 processExec == exec && processReadTerminal == readTerminal &&
-                processDiagnostics == diagnostics
+                processDiagnostics == diagnostics && processTypedOps == typedOps
             ) return true
             Log.i(TAG, "restarting the MCP server (new bridge key or changed settings)")
             stop()
@@ -149,6 +151,7 @@ object MCPBridge {
         pb.environment()["SHELLY_MCP_EXEC"] = if (exec) "1" else "0"
         pb.environment()["SHELLY_MCP_READ_TERMINAL"] = if (readTerminal) "1" else "0"
         pb.environment()["SHELLY_MCP_DIAGNOSTICS"] = if (diagnostics) "1" else "0"
+        pb.environment()["SHELLY_MCP_TYPED_OPS"] = if (typedOps) "1" else "0"
         pb.directory(homeDir)
         pb.redirectErrorStream(false)
         return try {
@@ -176,6 +179,7 @@ object MCPBridge {
             processExec = exec
             processReadTerminal = readTerminal
             processDiagnostics = diagnostics
+            processTypedOps = typedOps
             Thread {
                 try {
                     proc.errorStream.bufferedReader().forEachLine { Log.i(TAG, it) }

@@ -3,11 +3,7 @@ package expo.modules.terminalemulator
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
-import java.io.File
-import java.io.FileOutputStream
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -436,35 +432,18 @@ object AgentIngressTaint {
     }
 
     /**
-     * Appends one line, best effort. The live per-agent file if `logs/<id>/` exists,
-     * otherwise the deletion mirror under `audits/` (never re-creates a deleted
-     * agent's log directory). Reset (no agent) goes to `audits/ingress-taint-audit.jsonl`.
-     * The parent must resolve to itself under the canonical home (no symlinked
-     * directory), and the file is opened O_NOFOLLOW.
+     * Appends one line, best effort, through [IngressAuditWriter] (the live
+     * per-agent file if `logs/<id>/` exists, otherwise the deletion mirror under
+     * `audits/`; never re-creates a deleted agent's log directory). Reset (no
+     * agent) goes to `audits/ingress-taint-audit.jsonl`. The parent must resolve
+     * to itself under the canonical home (no symlinked directory), and the file
+     * is opened O_NOFOLLOW.
      */
     private fun audit(context: Context, action: String, agentId: String?, source: String, principal: String, extra: String? = null) {
         try {
-            val home = File(context.filesDir, "home").canonicalFile
-            val agentsDir = File(home, ".shelly/agents")
-            if (!agentsDir.isDirectory) return
-            val liveDir = agentId?.let { File(agentsDir, "logs/$it") }
-            val target = if (liveDir != null && liveDir.isDirectory) {
-                File(liveDir, "agent-driver-audit.jsonl")
-            } else {
-                val audits = File(agentsDir, "audits")
-                if (!audits.isDirectory && !audits.mkdirs()) return
-                File(audits, if (agentId != null) "$agentId-agent-driver-audit.jsonl" else "ingress-taint-audit.jsonl")
-            }
-            val parent = target.parentFile ?: return
-            if (parent.canonicalFile.path != parent.absoluteFile.path) {
-                Log.w(TAG, "audit directory is a link - skipped")
-                return
-            }
-            val flags = OsConstants.O_WRONLY or OsConstants.O_APPEND or OsConstants.O_CREAT or
-                OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC
-            val fd = Os.open(target.path, flags, 384 /* 0600 */)
-            FileOutputStream(fd).use { out ->
-                out.write((auditLine(System.currentTimeMillis(), action, agentId, source, principal, extra) + "\n").toByteArray(Charsets.UTF_8))
+            val line = auditLine(System.currentTimeMillis(), action, agentId, source, principal, extra)
+            if (!IngressAuditWriter.append(context, agentId, "ingress-taint-audit.jsonl", line)) {
+                Log.w(TAG, "ingress taint audit line not written")
             }
         } catch (e: Exception) {
             Log.w(TAG, "ingress taint audit line not written type=${e.javaClass.simpleName}")

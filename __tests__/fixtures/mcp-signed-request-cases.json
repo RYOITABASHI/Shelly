@@ -1,0 +1,121 @@
+{
+  "comment": "Shared TS/Kotlin fixture: queue requests signed the way scripts/shelly-mcp-server.js signs them (mac = HMAC-SHA256(utf8(bridgeKey), canonicalJson(request without mac))). lib/mcp-request-auth.ts and McpTypedOpConsumer.verifyMac must agree on macValid. Dummy key and values only.",
+  "bridgeKey": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "cases": [
+    {
+      "name": "plain run_agent",
+      "request": {
+        "callId": "11111111-1111-4111-8111-111111111111",
+        "tool": "run_agent",
+        "args": {
+          "agentId": "morning-digest"
+        },
+        "ingress": {
+          "kind": "mcp",
+          "principal": "0123456789abcdef0123456789abcdef",
+          "clientNameSelfReported": "test-client"
+        },
+        "receivedAt": "2026-11-15T12:00:00.000Z",
+        "mac": "ed517e3e92a1087f7f801484e67fee20e1962250c5a61176c81eaa6bcc00d5b4"
+      },
+      "macValid": true
+    },
+    {
+      "name": "with requestId and unicode client name",
+      "request": {
+        "callId": "22222222-2222-4222-8222-222222222222",
+        "tool": "run_agent",
+        "args": {
+          "agentId": "a_b-C",
+          "requestId": "req-12345678"
+        },
+        "ingress": {
+          "kind": "mcp",
+          "principal": "0123456789abcdef0123456789abcdef",
+          "clientNameSelfReported": "クライアント 😀"
+        },
+        "receivedAt": "2026-11-15T12:00:00.000Z",
+        "mac": "16a4efcf92950ba1b77addd2334057c843f387c47cdec83cfe6652a1e4b40b10"
+      },
+      "macValid": true
+    },
+    {
+      "name": "odd extra args (numbers, nesting, escapes)",
+      "request": {
+        "callId": "33333333-3333-4333-8333-333333333333",
+        "tool": "run_agent",
+        "args": {
+          "agentId": "x",
+          "n": 1.5,
+          "big": 1e+21,
+          "tiny": 1e-7,
+          "neg": -0.25,
+          "arr": [
+            true,
+            null,
+            "q\"\\\n"
+          ],
+          "o": {
+            "z": 1,
+            "a": 2
+          }
+        },
+        "ingress": {
+          "kind": "mcp",
+          "principal": "0123456789abcdef0123456789abcdef",
+          "clientNameSelfReported": "test-client"
+        },
+        "receivedAt": "2026-11-15T12:00:00.000Z",
+        "mac": "8d7e1f6e313302a58115d10f001e4f7a350fdb9278d97fa9f801033e0a0e709b"
+      },
+      "macValid": true
+    },
+    {
+      "name": "args changed after signing",
+      "request": {
+        "callId": "44444444-4444-4444-8444-444444444444",
+        "tool": "run_agent",
+        "args": {
+          "agentId": "other-agent"
+        },
+        "ingress": {
+          "kind": "mcp",
+          "principal": "0123456789abcdef0123456789abcdef",
+          "clientNameSelfReported": "test-client"
+        },
+        "receivedAt": "2026-11-15T12:00:00.000Z",
+        "mac": "18bc21eb983fb8a41ee574aeede39548f2c194146134308315c9d9a710b847fa"
+      },
+      "macValid": false
+    },
+    {
+      "name": "signed with another key",
+      "request": {
+        "callId": "55555555-5555-4555-8555-555555555555",
+        "tool": "run_agent",
+        "args": {
+          "agentId": "x"
+        },
+        "ingress": {
+          "kind": "mcp",
+          "principal": "0123456789abcdef0123456789abcdef",
+          "clientNameSelfReported": ""
+        },
+        "receivedAt": "2026-11-15T12:00:00.000Z",
+        "mac": "0b2ae236b96c380b691613c0488c6f344ef31fc58d7b6a6836ca1a39e7e3bb36"
+      },
+      "macValid": false
+    }
+  ],
+  "handoffTokenComment": "hex(HMAC-SHA256(utf8(bridgeKey), utf8(\"shelly-mcp-handoff-v1:\" + callId))): lib/mcp-request-auth.ts mcpHandoffToken and McpTypedOpDecision.handoffToken must agree.",
+  "handoffTokens": [
+    {
+      "callId": "11111111-1111-4111-8111-111111111111",
+      "token": "11c62b997a5e3abf981810c73339f6b8d55ba850ff2b4bcdcedb2c5c83a313c6"
+    },
+    {
+      "callId": "22222222-2222-4222-8222-222222222222",
+      "token": "ddcfdb7ef7dce541611dbf1594a288896234dec0f8826510ca4ac959192c132e"
+    }
+  ]
+}

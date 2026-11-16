@@ -31,11 +31,35 @@ function utf8Bytes(text: string): Uint8Array {
   return Uint8Array.from(out);
 }
 
+/**
+ * JNI "modified UTF-8" (GetStringUTFChars): each UTF-16 code unit on its own,
+ * so a supplementary character is two 3-byte surrogates (CESU-8) and U+0000
+ * is C0 80. What a string passed through shelly-exec.c reaches the shell as.
+ */
+function modifiedUtf8Bytes(text: string): Uint8Array {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const u = text.charCodeAt(i);
+    if (u !== 0 && u < 0x80) out.push(u);
+    else if (u < 0x800) out.push(0xc0 | (u >> 6), 0x80 | (u & 63));
+    else out.push(0xe0 | (u >> 12), 0x80 | ((u >> 6) & 63), 0x80 | (u & 63));
+  }
+  return Uint8Array.from(out);
+}
+
 const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
 
 /** Lowercase hex SHA-256 of the UTF-8 encoding of `text`. */
 export function sha256Hex(text: string): string {
-  const msg = utf8Bytes(text);
+  return sha256HexOfBytes(utf8Bytes(text));
+}
+
+/** Lowercase hex SHA-256 of the JNI modified-UTF-8 encoding of `text` (see modifiedUtf8Bytes). */
+export function sha256HexModifiedUtf8(text: string): string {
+  return sha256HexOfBytes(modifiedUtf8Bytes(text));
+}
+
+function sha256HexOfBytes(msg: Uint8Array): string {
   const bitLen = msg.length * 8;
   const padded = new Uint8Array(((msg.length + 9 + 63) >> 6) << 6);
   padded.set(msg);

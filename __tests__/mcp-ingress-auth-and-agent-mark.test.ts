@@ -46,6 +46,7 @@ jest.mock('@/store/terminal-store', () => ({
 }));
 jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({ __esModule: true, default: {} }));
 jest.mock('@/lib/agent-user-policy-store', () => ({
+  getCachedUserPolicyPin: () => null,
   getCachedUserPolicy: () => ({ unavailable: false, data: { rules: [], trust: { allows: [], counts: {} } } }),
   loadUserPolicy: jest.fn(),
 }));
@@ -295,7 +296,7 @@ describe('run_command ingress labelling', () => {
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     const cur = useMcpApprovalStore.getState().current!;
     expect(cur.origin).toEqual({ principal: TEST_PRINCIPAL, clientNameSelfReported: 'Example Client' });
-    cur.resolve(true);
+    cur.resolve('once');
     useMcpApprovalStore.setState({ current: null, queue: [] });
     await waitFor(() => mockFiles.has(`${RESULTS}/r1.json`));
     const ran = mockExecCommand.mock.calls.map((c) => String(c[0])).find((c) => c.includes('ls -la'))!;

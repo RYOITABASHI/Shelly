@@ -40,6 +40,15 @@
  * scripts/shelly-mcp-server.js — an MRTR retry re-attaches to the same
  * pending call and never writes a second request file, so the approval
  * modal can't be shown (or a command run) twice for one logical call.
+ *
+ * Typed operations (run_agent / get_run_result, mcpTypedOpsEnabled): see
+ * runAgentTool below for the deny order (plan "typed MCP operations",
+ * section (b)) and lib/mcp-typed-ops.ts for the pure parts. A run_agent
+ * always-allow rule (lib/mcp-always-allow.ts) is consulted only after every
+ * deny class, is written only here after an "always allow" tap that won the
+ * settle race with the epoch unchanged, and never relaxes the run's taint.
+ * This is the foreground path: it still needs RN to drain the queue (the
+ * headless bypass is a later PR).
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
@@ -47,15 +56,45 @@ import { useAgentStore } from '@/store/agent-store';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
-import { useMcpApprovalStore } from '@/store/mcp-approval-store';
+import { useMcpApprovalStore, type McpApprovalDecision } from '@/store/mcp-approval-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { execCommand } from '@/hooks/use-native-exec';
 import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteTarget, shellQuote, type McpShellRunner } from '@/lib/mcp-ingress-gate';
-import { getCachedUserPolicy, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
+import { getCachedUserPolicy, getCachedUserPolicyPin, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { getDebugLogEntries } from '@/lib/debug-log-buffer';
 import { redactSecretsText } from '@/lib/redact-secrets';
-import { verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
+import { recordMcpHandoffConsumed, verifyMcpHandoffToken, verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
+import {
+  addMcpAlwaysAllowRule,
+  findAlwaysAllowMatch,
+  listMcpAlwaysAllowRules,
+  mcpAlwaysAllowMatches,
+  normalizeTarget,
+  purgeMcpAlwaysAllowRulesExcept,
+} from '@/lib/mcp-always-allow';
+import {
+  agentBindingHash,
+  buildRunResultResponse,
+  classifyRunAgentDeny,
+  declaredActions,
+  findIdempotentTicket,
+  isTerminalRunState,
+  liveRunCount,
+  MAX_LIVE_RUNS_PER_PRINCIPAL,
+  parseRunTicket,
+  parseRunTicketList,
+  RUN_OUTPUT_MAX_BYTES,
+  RUN_RESULT_POLL_MS,
+  TYPED_OPS_DISABLED_MESSAGE,
+  TYPED_REQUEST_DEADLINE_MS,
+  validateGetRunResultArgs,
+  validateRunAgentArgs,
+  type McpRunTicket,
+  type TypedOpErrorCode,
+  type TypedOpRefusal,
+} from '@/lib/mcp-typed-ops';
+import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
@@ -311,27 +350,47 @@ async function userPolicy(): Promise<LoadedUserPolicy | null> {
   }
 }
 
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
+/** `code` (typed ops only) is shown by the server as `Error: [<code>] <message>`. */
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode };
 
-const APPROVAL_TIMEOUT_MS = 90_000;
+const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
+let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
 
-/** Surfaces a McpApprovalModal request and waits for a tap or a timeout
- *  (auto-denied — fail closed, matching every other unattended-action gate
- *  in this codebase). See store/mcp-approval-store.ts for the queueing. */
-function requestApproval(request: {
-  kind: 'run_command' | 'write_file';
+/** Test hook: a shorter approval timeout (null restores the default). */
+export function __setMCPApprovalTimeoutForTests(ms: number | null): void {
+  approvalTimeoutMs = ms ?? DEFAULT_APPROVAL_TIMEOUT_MS;
+}
+
+type ApprovalRequestInput = {
+  kind: 'run_command' | 'write_file' | 'run_agent';
   summary: string;
   detail: string;
   riskLevel?: string;
   origin: McpIngress;
-}): Promise<boolean> {
+  /** Typed ops only: offers "always allow". Raw tools never pass it. */
+  alwaysAllowable?: { op: string; targetLabel: string };
+};
+
+/** Surfaces a McpApprovalModal request and waits for a tap or a timeout
+ *  (auto-denied — fail closed, matching every other unattended-action gate
+ *  in this codebase). See store/mcp-approval-store.ts for the queueing. */
+async function requestApproval(request: Omit<ApprovalRequestInput, 'alwaysAllowable'>): Promise<McpApprovalDecision> {
+  return (await requestApprovalDetailed(request)).decision;
+}
+
+/** requestApproval plus whether the answer was the timeout (exactly one
+ *  resolution wins: a tap after the timeout is a no-op). */
+function requestApprovalDetailed(
+  request: ApprovalRequestInput,
+  timeoutMs: number = approvalTimeoutMs,
+): Promise<{ decision: McpApprovalDecision; timedOut: boolean }> {
   return new Promise((resolve) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let settled = false;
-    const settle = (approved: boolean) => {
+    const settle = (decision: McpApprovalDecision, timedOut = false) => {
       if (settled) return;
       settled = true;
-      resolve(approved);
+      resolve({ decision, timedOut });
     };
     // On-device found 2026-09-17: a timeout used to only resolve this
     // promise, never touching the store — so the modal stayed stuck on
@@ -340,16 +399,16 @@ function requestApproval(request: {
     // instead of ever being shown. respond() here clears/advances the
     // store the same way a real tap would, so the queue can't back up.
     const timer = setTimeout(() => {
-      settle(false);
-      useMcpApprovalStore.getState().respond(id, false);
-    }, APPROVAL_TIMEOUT_MS);
+      settle('deny', true);
+      useMcpApprovalStore.getState().respond(id, 'deny');
+    }, Math.max(0, Math.min(approvalTimeoutMs, timeoutMs)));
     useMcpApprovalStore.getState().enqueue({
       ...request,
       origin: { principal: request.origin.principal, clientNameSelfReported: request.origin.clientNameSelfReported },
       id,
-      resolve: (approved) => {
+      resolve: (decision) => {
         clearTimeout(timer);
-        settle(approved);
+        settle(decision);
       },
     });
   });
@@ -368,13 +427,31 @@ const REVOKED_ERROR = 'cancelled: the MCP token was regenerated';
  * approval (the modal closes), invalidate in-flight requests, and delete
  * the queue's request/result files so nothing accepted under the old token
  * is picked up later. The new server recreates both dirs on startup.
+ *
+ * `tokenRevoked` (token regeneration only — the plain server start calls this
+ * too, and must not wipe the rules): also removes every always-allow rule
+ * (lib/mcp-always-allow.ts), before the new token exists. Throws when that
+ * can't be confirmed, so regenerateToken leaves the server off
+ * ('failed_server_off') instead of serving next to rules it could not clear.
  */
-export async function revokePendingMCPRequests(): Promise<void> {
+export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } = {}): Promise<void> {
   queueEpoch += 1;
   useMcpApprovalStore.getState().denyAll();
+  abortRunResultWaits();
   await FileSystem.deleteAsync(REQUESTS_DIR, { idempotent: true });
   await FileSystem.deleteAsync(RESULTS_DIR, { idempotent: true });
+  await FileSystem.deleteAsync(HANDOFFS_DIR, { idempotent: true });
   logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
+  if (opts.tokenRevoked) {
+    // run_agent tickets of the old token: live ones become `cancelled`
+    // (an accepted one then never starts). Best effort — tickets are
+    // principal-scoped, so the new token can't read them anyway.
+    await cancelLiveRunTickets();
+    if (!(await purgeMcpAlwaysAllowRulesExcept(null))) {
+      throw new Error('could not confirm that the MCP always-allow rules were removed');
+    }
+    logInfo('MCPBridge', 'always-allow rules removed (MCP token revoked)');
+  }
 }
 
 const AGENT_REQUEST_FILE_RE = /^\.shelly-agent-(?:req|pending)-([0-9]{10,16}-[0-9a-f]{8})$/;
@@ -426,6 +503,8 @@ async function callTool(
   epoch: number,
   ingress: McpIngress,
   callId: string,
+  /** Typed ops: the signed request's deadline (receivedAt + TYPED_REQUEST_DEADLINE_MS). */
+  deadlineMs: number = Number.POSITIVE_INFINITY,
 ): Promise<ToolResult> {
   switch (tool) {
     case 'list_agents': {
@@ -510,7 +589,7 @@ async function callTool(
         logInfo('MCPBridge', `run_command refused by the gate (${gate.summary})`);
         return { ok: false, error: `refused by Shelly's agent gate — ${gate.summary}` };
       }
-      const approved = await requestApproval({
+      const decision = await requestApproval({
         kind: 'run_command',
         summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
         detail: `${command}\n\nGate: ${gate.summary}`,
@@ -518,7 +597,9 @@ async function callTool(
         origin: ingress,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
-      if (!approved) {
+      // Raw tools never offer "always allow" (no alwaysAllowable); a stray
+      // 'always' is treated as 'once'. Rule writing is not done here.
+      if (decision === 'deny') {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
       // The setting may have been turned off while the modal was open.
@@ -562,14 +643,16 @@ async function callTool(
       }
       const preview = content.length > 400 ? `${content.slice(0, 400)}\n… (${content.length} bytes total)` : content;
       const shownPath = realPath === targetPath ? realPath : `${targetPath}\n→ ${realPath}`;
-      const approved = await requestApproval({
+      const decision = await requestApproval({
         kind: 'write_file',
         summary: `Write ${content.length} bytes to a file via MCP?`,
         detail: `${shownPath}\n\nGate: ${gates[0].summary}\n\n${preview}`,
         origin: ingress,
       });
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
-      if (!approved) {
+      // Raw tools never offer "always allow" (no alwaysAllowable); a stray
+      // 'always' is treated as 'once'. Rule writing is not done here.
+      if (decision === 'deny') {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
       if (!execEnabled()) return { ok: false, error: EXEC_DISABLED_ERROR };
@@ -590,8 +673,506 @@ async function callTool(
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     }
+    case 'run_agent':
+      return runAgentTool(args, epoch, ingress, deadlineMs);
+    case 'get_run_result':
+      return getRunResultTool(args, epoch, ingress);
     default:
       return { ok: false, error: `unknown tool: ${tool}` };
+  }
+}
+
+// ── Typed operations: run_agent / get_run_result ─────────────────────────
+
+const AGENTS_DIR = `${FileSystem.documentDirectory}home/.shelly/agents`;
+
+function typedOpsEnabled(): boolean {
+  return useSettingsStore.getState().settings.mcpTypedOpsEnabled === true;
+}
+
+function refuse(r: TypedOpRefusal): ToolResult {
+  return { ok: false, error: r.message, code: r.code };
+}
+
+const DISABLED: TypedOpRefusal = { code: 'disabled', message: TYPED_OPS_DISABLED_MESSAGE };
+const REVOKED: TypedOpRefusal = { code: 'revoked', message: REVOKED_ERROR };
+const UNKNOWN_AGENT: TypedOpRefusal = { code: 'unknown_agent', message: 'no enabled agent with that id (see list_agents)' };
+const UNKNOWN_HANDLE: TypedOpRefusal = { code: 'unknown_handle', message: 'no run with that handle for this client' };
+const EXPIRED: TypedOpRefusal = { code: 'approval_timeout', message: 'the request expired before the run could start' };
+/** Room left after a dialog for the launch and the result write. */
+const DIALOG_DEADLINE_MARGIN_MS = 2_000;
+
+/**
+ * Step 4: the agent must be in the store AND in ~/.shelly/agents/<id>.json
+ * with a matching id and enabled — the check native AgentRuntime.isAgentEnabled
+ * makes. Null otherwise (unreadable counts as missing).
+ */
+async function resolveRunAgentTarget(agentId: string): Promise<Agent | null> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (!agent || agent.enabled !== true) return null;
+  const raw = await FileSystem.readAsStringAsync(`${AGENTS_DIR}/${agentId}.json`).catch(() => null);
+  if (typeof raw !== 'string') return null;
+  try {
+    const onDisk = JSON.parse(raw);
+    if (!onDisk || onDisk.id !== agentId || onDisk.enabled !== true) return null;
+  } catch {
+    return null;
+  }
+  return agent;
+}
+
+/** STOP-ALL: the store flag or the `.halted` sentinel. An unreadable sentinel counts as halted. */
+async function stopAllActive(): Promise<boolean> {
+  if (useAgentStore.getState().halted) return true;
+  try {
+    const info = await FileSystem.getInfoAsync(`${AGENTS_DIR}/.halted`);
+    return info.exists === true;
+  } catch {
+    return true;
+  }
+}
+
+/** isAgentIngressTainted (true when the mark store is unreadable / overflows,
+ *  and on any error). Required lazily: lib/agent-ingress-taint pulls in
+ *  expo-secure-store, which the bridge's other callers never need. */
+async function agentIngressTainted(agentId: string): Promise<boolean> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { isAgentIngressTainted } = require('@/lib/agent-ingress-taint') as typeof import('@/lib/agent-ingress-taint');
+    return (await isAgentIngressTainted(agentId)) !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Steps 5–7 for `agent` (re-run after the dialog too). Writes the taint audit line. */
+async function runAgentDenyCheck(agentId: string, agent: Agent, ingress: McpIngress) {
+  const halted = await stopAllActive();
+  // Only consulted when not halted (classify checks halted first anyway).
+  const tainted = halted ? false : await agentIngressTainted(agentId);
+  const policy = halted || tainted ? null : await userPolicy();
+  // Synchronously after the policy itself: the file state it was read from.
+  const policyPin = policyPinFor(policy);
+  const result = classifyRunAgentDeny({
+    agentId,
+    agent,
+    halted,
+    tainted,
+    policy,
+    homeDir: homeDir(),
+  });
+  if (result.refusal?.code === 'tainted') {
+    await appendTypedOpAudit(agentId, {
+      kind: 'ingress_tainted_refused',
+      event: 'mcp_run_agent',
+      agentId,
+      principal: ingress.principal,
+      code: 'tainted',
+    });
+  }
+  return { ...result, policyPin };
+}
+
+/**
+ * The policy.json state a deny check used, for native's launch grant: the
+ * file's sha256, 'absent' when it did not exist, null when unknown (not read,
+ * unreadable, or hash and content not tied to each other). For an agent that declares actions native refuses to
+ * accept / start the run unless the file on disk is still exactly this.
+ */
+function policyPinFor(policy: LoadedUserPolicy | null): string | null {
+  // Only the pin of this very snapshot (the loader sets both together).
+  if (!policy || policy !== getCachedUserPolicy()) return null;
+  return getCachedUserPolicyPin();
+}
+
+/** Writes one fixed, short audit line through native (IngressAuditWriter.kt). Best effort. */
+async function appendTypedOpAudit(
+  agentId: string | null,
+  line: { kind: 'ingress_tainted_refused' | 'mcp_typed_op_refused'; event: 'mcp_run_agent'; agentId?: string; principal: string; code: TypedOpErrorCode },
+): Promise<void> {
+  if (typeof TerminalEmulator.appendMcpIngressAudit !== 'function') {
+    logError('MCPBridge', `audit line not written (no native writer): ${line.kind} ${line.code}`);
+    return;
+  }
+  try {
+    const ok = await TerminalEmulator.appendMcpIngressAudit(agentId, JSON.stringify(line));
+    if (!ok) logError('MCPBridge', `audit line not written: ${line.kind} ${line.code}`);
+  } catch (e) {
+    logError('MCPBridge', `audit line not written: ${line.kind} ${line.code}`, e);
+  }
+}
+
+/** Step 9: someone can answer a dialog only while Shelly is in the foreground. */
+function appIsForeground(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { AppState } = require('react-native');
+    return AppState?.currentState === 'active';
+  } catch {
+    return false;
+  }
+}
+
+function showToast(key: string, fallback: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ToastAndroid } = require('react-native');
+    let text = fallback;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      text = require('@/lib/i18n').t(key);
+    } catch {
+      // keep the fallback
+    }
+    ToastAndroid?.show?.(text, ToastAndroid.LONG);
+  } catch {
+    // no toast on this platform
+  }
+}
+
+type RandomBytes = (n: number) => Uint8Array;
+const expoRandomBytes: RandomBytes = (n) => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('expo-crypto').getRandomBytes(n);
+};
+let randomBytes: RandomBytes = expoRandomBytes;
+
+/** Test hook (Jest has no expo-crypto). */
+export function __setMCPRandomBytesForTests(fn: RandomBytes | null): void {
+  randomBytes = fn ?? expoRandomBytes;
+}
+
+function newRunHandle(): string {
+  const b = randomBytes(16);
+  if (!b || b.length !== 16) throw new Error('random handle generation failed');
+  return `mr_${Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')}`;
+}
+
+// Same set as McpAlwaysAllowStore / lib/mcp-always-allow.ts UNSAFE_LABEL_CHARS.
+// eslint-disable-next-line no-control-regex
+const UNSAFE_LABEL_CHARS_G = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/g;
+
+/** The agent name as a rule label: unsafe characters replaced, at most 64 characters. */
+function ruleLabel(name: string): string {
+  return Array.from(name.replace(UNSAFE_LABEL_CHARS_G, ' ')).slice(0, 64).join('');
+}
+
+async function listRunTickets(principal: string): Promise<McpRunTicket[] | null> {
+  if (typeof TerminalEmulator.listMcpRunTickets !== 'function') return null;
+  try {
+    return parseRunTicketList(await TerminalEmulator.listMcpRunTickets(principal));
+  } catch {
+    return null;
+  }
+}
+
+async function readRunTicket(handle: string): Promise<McpRunTicket | null> {
+  if (typeof TerminalEmulator.readMcpRunTicket !== 'function') return null;
+  try {
+    const raw = await TerminalEmulator.readMcpRunTicket(handle);
+    return typeof raw === 'string' ? parseRunTicket(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cancelLiveRunTickets(): Promise<void> {
+  if (typeof TerminalEmulator.cancelMcpRunTickets !== 'function') return;
+  try {
+    const n = await TerminalEmulator.cancelMcpRunTickets(null);
+    if (n < 0) logError('MCPBridge', 'could not confirm that live run_agent tickets were cancelled');
+    else logInfo('MCPBridge', `cancelled ${n} live run_agent ticket(s) (MCP token revoked)`);
+  } catch (e) {
+    logError('MCPBridge', 'cancelling live run_agent tickets failed', e);
+  }
+}
+
+function existingRunResult(t: McpRunTicket, agentId: string): ToolResult {
+  if (t.agentId !== agentId) {
+    return refuse({ code: 'invalid_params', message: 'requestId was already used for another agent' });
+  }
+  return { ok: true, data: { runHandle: t.handle, agentId: t.agentId, state: t.state, requestId: t.requestId, existing: true, untrusted: true } };
+}
+
+// One check-then-launch section per principal at a time: the requestId
+// lookup, the busy count and the ticket write must not interleave between
+// two concurrent calls (drainOnce runs request files concurrently).
+const launchLocks = new Map<string, Promise<void>>();
+
+async function withLaunchLock<T>(principal: string, fn: () => Promise<T>): Promise<T> {
+  const prev = launchLocks.get(principal) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((r) => {
+    release = r;
+  });
+  const tail = prev.then(() => mine);
+  launchLocks.set(principal, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (launchLocks.get(principal) === tail) launchLocks.delete(principal);
+  }
+}
+
+/**
+ * How a run_agent call was authorized: a tap on the dialog (once / always), or
+ * the always-allow rule `ruleId` (for `target`) without a tap. A rule-based
+ * authorization is re-matched at the execution boundary, and native re-checks
+ * the same rule under its ticket lock and again when the run actually starts.
+ */
+type RunAuthorization = { via: 'dialog' } | { via: 'rule'; ruleId: string; target: string };
+
+const RULE_GONE: TypedOpRefusal = {
+  code: 'target_changed',
+  message: 'the always-allow rule no longer applies (removed, changed or the safety rules became unreadable); call run_agent again',
+};
+
+/**
+ * Step 11: requestId idempotency, the busy limit, then the native launch.
+ * `approvedBind` is the binding the tap or the rule approved: right before the
+ * launch (after every await of this path) the setting, the target, the deny
+ * classes 5–7 and the binding are checked once more, so an agent edited,
+ * marked or stopped while the rule lookup / lock / ticket list was pending
+ * never starts under the earlier authorization. A rule-based `authorization`
+ * must still be rule-eligible and the very same rule must still match.
+ */
+async function launchRunAgent(
+  agentId: string,
+  requestId: string | null,
+  epoch: number,
+  ingress: McpIngress,
+  approvedBind: string,
+  deadlineMs: number,
+  authorization: RunAuthorization,
+): Promise<ToolResult> {
+  return withLaunchLock(ingress.principal, async () => {
+    if (epoch !== queueEpoch) return refuse(REVOKED);
+    const tickets = await listRunTickets(ingress.principal);
+    if (!tickets) return refuse({ code: 'launch_failed', message: 'run tickets are not readable on this build of Shelly' });
+    if (requestId) {
+      const existing = findIdempotentTicket(tickets, ingress.principal, requestId, Date.now());
+      if (existing) {
+        logInfo('MCPBridge', `run_agent requestId repeated; returning the existing run (principal=${ingress.principal.slice(0, 8)})`);
+        return existingRunResult(existing, agentId);
+      }
+    }
+    if (liveRunCount(tickets, ingress.principal) >= MAX_LIVE_RUNS_PER_PRINCIPAL) {
+      return refuse({ code: 'busy', message: `this client already has ${MAX_LIVE_RUNS_PER_PRINCIPAL} runs queued or running; poll get_run_result and retry later` });
+    }
+    if (typeof TerminalEmulator.runAgentForMcp !== 'function') {
+      return refuse({ code: 'launch_failed', message: 'run_agent is not available on this build of Shelly' });
+    }
+    let handle: string;
+    try {
+      handle = newRunHandle();
+    } catch {
+      return refuse({ code: 'launch_failed', message: 'could not create a run handle' });
+    }
+    // Execution boundary: re-validate everything the approval relied on.
+    if (!typedOpsEnabled()) return refuse(DISABLED);
+    const current = await resolveRunAgentTarget(agentId);
+    if (!current) return refuse(UNKNOWN_AGENT);
+    const denyNow = await runAgentDenyCheck(agentId, current, ingress);
+    if (denyNow.refusal) return refuse(denyNow.refusal);
+    if ((await agentBindingHash(current, requestSha256)) !== approvedBind) {
+      return refuse({ code: 'target_changed', message: 'the agent was edited before the run could start; call run_agent again' });
+    }
+    if (authorization.via === 'rule') {
+      // No tap: the run rests on the rule alone. It must still be allowed to
+      // (policy readable and verified when the agent declares actions) and the
+      // same rule must still match this principal, target and binding.
+      if (!denyNow.ruleEligible) return refuse(RULE_GONE);
+      if (!(await mcpAlwaysAllowMatches(ingress.principal, 'run_agent', authorization.target, approvedBind))) return refuse(RULE_GONE);
+      const still = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, 'run_agent', authorization.target, approvedBind);
+      if (!still || still.id !== authorization.ruleId) return refuse(RULE_GONE);
+    }
+    // Last check, synchronous with the native call below (no await in
+    // between): the store must still hold the very object that was just
+    // validated (updateAgent replaces it, so an edit during the awaits above
+    // shows up here), the setting must still be on, STOP-ALL off, epoch same.
+    const finalStore = useAgentStore.getState();
+    if (epoch !== queueEpoch) return refuse(REVOKED);
+    if (!typedOpsEnabled()) return refuse(DISABLED);
+    if (finalStore.halted) return refuse({ code: 'halted', message: 'all agents are stopped (STOP-ALL is on)' });
+    if (finalStore.agents.find((a) => a.id === agentId) !== current) {
+      return refuse({ code: 'target_changed', message: 'the agent was edited before the run could start; call run_agent again' });
+    }
+    // The client stops waiting at the signed deadline: never start a run after it.
+    if (Date.now() > deadlineMs) return refuse(EXPIRED);
+    let sent = false;
+    try {
+      // The native call is issued synchronously here, before the first await.
+      // Native re-checks the deadline, the binding and (rule-based) the rule
+      // under its ticket lock (the call may wait there), keeps them with the
+      // ticket and checks them again when the service actually starts the run.
+      const nativeDeadline = Number.isFinite(deadlineMs) ? deadlineMs : null;
+      const ruleId = authorization.via === 'rule' ? authorization.ruleId : null;
+      sent = (await TerminalEmulator.runAgentForMcp(agentId, handle, ingress.principal, requestId, nativeDeadline, approvedBind, ruleId, denyNow.policyPin)) === true;
+    } catch (e) {
+      logError('MCPBridge', 'run_agent launch failed', e);
+    }
+    if (!sent) return refuse({ code: 'launch_failed', message: 'the run could not be started' });
+    logInfo('MCPBridge', `run_agent started ${agentId} (principal=${ingress.principal.slice(0, 8)})`);
+    const data: Record<string, unknown> = { runHandle: handle, agentId, state: 'accepted', untrusted: true };
+    if (requestId) data.requestId = requestId;
+    return { ok: true, data };
+  });
+}
+
+/**
+ * run_agent, in the order of the plan's section (b). Each step refuses or
+ * falls through; the always-allow rule (step 8) is consulted only after every
+ * deny class (1–7), and the run itself starts in exactly one place (step 11).
+ */
+async function runAgentTool(
+  args: Record<string, unknown>,
+  epoch: number,
+  ingress: McpIngress,
+  deadlineMs: number = Number.POSITIVE_INFINITY,
+): Promise<ToolResult> {
+  // 1. setting
+  if (!typedOpsEnabled()) return refuse(DISABLED);
+  // 2. arguments (strict)
+  const parsed = validateRunAgentArgs(args);
+  if ('refusal' in parsed) return refuse(parsed.refusal);
+  const { agentId, requestId } = parsed.args;
+  // 3. epoch
+  if (epoch !== queueEpoch) return refuse(REVOKED);
+  // 4. target
+  const agent = await resolveRunAgentTarget(agentId);
+  if (!agent) return refuse(UNKNOWN_AGENT);
+  // 5–7. STOP-ALL, taint (audited), policy / CRITICAL — never rescued by a rule.
+  const deny = await runAgentDenyCheck(agentId, agent, ingress);
+  if (deny.refusal) {
+    logInfo('MCPBridge', `run_agent refused (${deny.refusal.code})`);
+    return refuse(deny.refusal);
+  }
+  if (epoch !== queueEpoch) return refuse(REVOKED);
+  // A repeated requestId returns the existing run without a dialog (checked
+  // again under the launch lock).
+  if (requestId) {
+    const tickets = await listRunTickets(ingress.principal);
+    const existing = tickets ? findIdempotentTicket(tickets, ingress.principal, requestId, Date.now()) : null;
+    if (existing) return existingRunResult(existing, agentId);
+  }
+  const target = normalizeTarget('run_agent', { agentId });
+  if (!target) return refuse({ code: 'invalid_params', message: 'agentId is not a valid target' });
+  const bind = await agentBindingHash(agent, requestSha256);
+  // 8. always-allow rule (only after every deny class; not when the policy
+  // rules are unreadable and the agent declares side effects).
+  // The rule must be identifiable (its id is carried into the launch and
+  // re-matched there); a match whose id can't be listed is not used.
+  if (deny.ruleEligible && (await mcpAlwaysAllowMatches(ingress.principal, 'run_agent', target, bind))) {
+    const rule = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, 'run_agent', target, bind);
+    if (rule) {
+      logInfo('MCPBridge', `always-allow rule ${rule.id} matched run_agent ${agentId} (principal=${ingress.principal.slice(0, 8)})`);
+      return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'rule', ruleId: rule.id, target });
+    }
+    logError('MCPBridge', `always-allow rule matched run_agent ${agentId} but could not be listed; asking instead`);
+  }
+  // 9. nobody to ask: refuse at once, never queue a dialog in the background.
+  if (!appIsForeground()) {
+    await appendTypedOpAudit(agentId, { kind: 'mcp_typed_op_refused', event: 'mcp_run_agent', agentId, principal: ingress.principal, code: 'not_attended' });
+    logInfo('MCPBridge', `run_agent refused (not_attended) ${agentId}`);
+    return refuse({ code: 'not_attended', message: 'Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now' });
+  }
+  // 10. dialog (three buttons when a rule may be written), never longer than
+  // the client waits (a late answer would start a run nobody receives).
+  const dialogBudgetMs = Math.min(approvalTimeoutMs, deadlineMs - Date.now() - DIALOG_DEADLINE_MARGIN_MS);
+  if (!(dialogBudgetMs > 0)) return refuse(EXPIRED);
+  const actions = declaredActions(agent).map((a) => a.type).join(', ') || 'none';
+  const { decision, timedOut } = await requestApprovalDetailed({
+    kind: 'run_agent',
+    summary: `Run agent "${agent.name}" via MCP?`,
+    detail: `Agent: ${agent.name} (${agentId})\nDeclared actions: ${actions}\n\nThis run is treated as external input: it may read and call models, but its file writes, sends and actions are refused.`,
+    origin: ingress,
+    alwaysAllowable: deny.ruleEligible ? { op: 'run_agent', targetLabel: ruleLabel(agent.name) } : undefined,
+  }, dialogBudgetMs);
+  if (epoch !== queueEpoch) return refuse(REVOKED);
+  if (decision === 'deny') {
+    return timedOut
+      ? refuse({ code: 'approval_timeout', message: 'nobody answered the approval on the phone in time' })
+      : refuse({ code: 'denied_by_user', message: 'denied on the phone' });
+  }
+  if (!typedOpsEnabled()) return refuse(DISABLED);
+  const again = await resolveRunAgentTarget(agentId);
+  if (!again) return refuse(UNKNOWN_AGENT);
+  const denyAgain = await runAgentDenyCheck(agentId, again, ingress);
+  if (denyAgain.refusal) return refuse(denyAgain.refusal);
+  if ((await agentBindingHash(again, requestSha256)) !== bind) {
+    return refuse({ code: 'target_changed', message: 'the agent was edited while the approval was open; call run_agent again' });
+  }
+  if (epoch !== queueEpoch) return refuse(REVOKED);
+  if (decision === 'always' && deny.ruleEligible && denyAgain.ruleEligible) {
+    const added = await addMcpAlwaysAllowRule(ingress.principal, 'run_agent', target, bind, ruleLabel(agent.name));
+    if (added.ok) {
+      logInfo('MCPBridge', `always-allow rule ${added.id} ${added.code} for run_agent ${agentId} (principal=${ingress.principal.slice(0, 8)})`);
+    } else {
+      logError('MCPBridge', `always-allow rule not saved (${added.code}); running once`);
+      showToast('mcp.always_allow_not_saved', 'The "always allow" rule could not be saved. The agent runs this once.');
+    }
+  }
+  // 11. execute (exactly once).
+  return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'dialog' });
+}
+
+// get_run_result long-poll waits. Each one is a single cleared setTimeout;
+// abortRunResultWaits ends them all (poller stop, token revoke) so no timer
+// outlives its request.
+const runResultWaits = new Set<() => void>();
+// Bumped by abortRunResultWaits: a get_run_result whose generation is older
+// stops waiting even if the abort landed while it was reading the ticket.
+let runResultGeneration = 0;
+
+function pollSleep(ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (aborted: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      runResultWaits.delete(abort);
+      resolve(aborted);
+    };
+    const abort = () => finish(true);
+    const timer = setTimeout(() => finish(false), Math.max(0, ms));
+    runResultWaits.add(abort);
+  });
+}
+
+function abortRunResultWaits(): void {
+  runResultGeneration += 1;
+  for (const abort of [...runResultWaits]) abort();
+}
+
+async function getRunResultTool(args: Record<string, unknown>, epoch: number, ingress: McpIngress): Promise<ToolResult> {
+  if (!typedOpsEnabled()) return refuse(DISABLED);
+  const parsed = validateGetRunResultArgs(args);
+  if ('refusal' in parsed) return refuse(parsed.refusal);
+  const { runHandle, waitMs, maxBytes } = parsed.args;
+  if (epoch !== queueEpoch) return refuse(REVOKED);
+  const deadline = Date.now() + waitMs;
+  const generation = runResultGeneration;
+  let stopWaiting = stopped;
+  for (;;) {
+    const ticket = await readRunTicket(runHandle);
+    if (generation !== runResultGeneration || stopped) stopWaiting = true;
+    if (epoch !== queueEpoch) return refuse(REVOKED);
+    // Another client's handle reads exactly like a missing one.
+    if (!ticket || ticket.principal !== ingress.principal || ticket.handle !== runHandle) return refuse(UNKNOWN_HANDLE);
+    const left = deadline - Date.now();
+    if (isTerminalRunState(ticket.state) || left <= 0 || stopWaiting) {
+      let output: string | null = null;
+      if (ticket.outputFile && typeof TerminalEmulator.readMcpRunOutput === 'function') {
+        output = await TerminalEmulator.readMcpRunOutput(runHandle, RUN_OUTPUT_MAX_BYTES).catch(() => null);
+      }
+      if (epoch !== queueEpoch) return refuse(REVOKED);
+      return { ok: true, data: buildRunResultResponse(ticket, typeof output === 'string' ? output : null, maxBytes, redactForMcp) };
+    }
+    if (await pollSleep(Math.min(RUN_RESULT_POLL_MS, left))) stopWaiting = true;
+    if (generation !== runResultGeneration || stopped) stopWaiting = true;
   }
 }
 
@@ -601,6 +1182,34 @@ let stopped = true;
 // Files currently being processed — see the note in drainOnce below for why
 // this exists. Cleared as soon as a file's own processing settles.
 const inFlightRequestFiles = new Set<string>();
+
+/** Typed ops arrive in requests/ only through the native consumer's handoff. */
+const TYPED_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_agent']);
+export const HANDOFFS_DIR = `${QUEUE_DIR}/handoffs`;
+
+/**
+ * Reads and deletes handoffs/<callId>; true only for this bridge key's token
+ * that was not consumed before. Deleting the file alone is not consumption:
+ * a same-uid process can copy the token and restore it, so every consumed
+ * token is also recorded in memory (recordMcpHandoffConsumed) for the whole
+ * validity window of its signed request, and a restored copy is refused.
+ */
+async function consumeHandoffToken(callId: string, receivedAtMs: number): Promise<boolean> {
+  const uri = `${HANDOFFS_DIR}/${callId}`;
+  let token: string | null = null;
+  try {
+    token = await FileSystem.readAsStringAsync(uri);
+  } catch {
+    return false;
+  }
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    return false; // not consumed: refuse rather than leave it reusable
+  }
+  if (!(await verifyMcpHandoffToken(token, bridgeKey, callId, requestSha256))) return false;
+  return recordMcpHandoffConsumed(callId, receivedAtMs);
+}
 
 async function processRequestFile(name: string): Promise<void> {
   const requestUri = `${REQUESTS_DIR}/${name}`;
@@ -624,8 +1233,24 @@ async function processRequestFile(name: string): Promise<void> {
       return;
     }
     const request = check.request;
+    let deadlineMs = Number.POSITIVE_INFINITY;
+    if (TYPED_REQUEST_TOOLS.has(request.tool)) {
+      // A typed op reaches requests/ only by the native consumer's handoff
+      // (PR 6). Its single-use token is consumed first, so a copied signed
+      // request (native owns or ran the original) is never run here.
+      if (!(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
+        logError('MCPBridge', `rejected typed request file ${name} (no valid handoff token)`);
+        return;
+      }
+      deadlineMs = request.receivedAtMs + TYPED_REQUEST_DEADLINE_MS;
+      // Stranded handoff: the client gave up; never run it late.
+      if (Date.now() > deadlineMs) {
+        logError('MCPBridge', `dropped expired typed request file ${name}`);
+        return;
+      }
+    }
     if (epoch !== queueEpoch) return;
-    const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId);
+    const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId, deadlineMs);
     if (epoch !== queueEpoch) {
       logInfo('MCPBridge', `dropped call ${request.callId} (token regenerated while it was pending)`);
       return;
@@ -641,7 +1266,43 @@ async function processRequestFile(name: string): Promise<void> {
   }
 }
 
+// RN liveness for the native typed-op consumer (McpTypedOpConsumer.kt, PR 6):
+// it hands a run_agent that no always-allow rule clears to this bridge (by
+// moving the request into requests/) only while this file holds a time less
+// than 2 s old; otherwise it refuses `not_attended` at once instead of letting
+// the call stall. Written every drain cycle (no timer of its own); RN pauses
+// its timers in the background, so the value goes stale there by itself.
+// Only while Shelly is in the foreground (step 9 would refuse anyway): any
+// other AppState writes 0, at once on the transition (listener) and on every
+// drain cycle, so a backgrounded app is not live even before its timers pause.
+export const BRIDGE_HEARTBEAT_FILE = `${QUEUE_DIR}/bridge-heartbeat`;
+
+async function writeBridgeHeartbeat(): Promise<void> {
+  try {
+    await FileSystem.writeAsStringAsync(BRIDGE_HEARTBEAT_FILE, appIsForeground() ? String(Date.now()) : '0');
+  } catch {
+    // Best effort: a missing / stale heartbeat only makes native fail fast.
+  }
+}
+
+let appStateSubscription: { remove: () => void } | null = null;
+
+function watchAppStateForHeartbeat(): void {
+  if (appStateSubscription) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { AppState } = require('react-native');
+    const sub = AppState?.addEventListener?.('change', () => {
+      if (!stopped) void writeBridgeHeartbeat();
+    });
+    appStateSubscription = sub && typeof sub.remove === 'function' ? sub : null;
+  } catch {
+    appStateSubscription = null;
+  }
+}
+
 async function drainOnce(): Promise<void> {
+  await writeBridgeHeartbeat();
   const names = await FileSystem.readDirectoryAsync(REQUESTS_DIR).catch(() => null);
   if (!names || names.length === 0) return;
 
@@ -677,11 +1338,19 @@ async function pollLoop(): Promise<void> {
 export function startMCPPoller(): void {
   if (!stopped) return;
   stopped = false;
+  watchAppStateForHeartbeat();
   void pollLoop();
 }
 
 export function stopMCPPoller(): void {
   stopped = true;
+  abortRunResultWaits();
+  appStateSubscription?.remove();
+  appStateSubscription = null;
+  // Not live from now on (best effort; a stale value means the same after 2 s).
+  void Promise.resolve()
+    .then(() => FileSystem.writeAsStringAsync(BRIDGE_HEARTBEAT_FILE, '0'))
+    .catch(() => {});
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;

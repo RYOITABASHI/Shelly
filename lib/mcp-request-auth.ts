@@ -82,6 +82,8 @@ export type McpVerifiedRequest = {
   /** Who sent it. Every verified request is tainted (external input); the
    *  file carries no taint field and none would be read. */
   ingress: { kind: 'mcp'; principal: string; clientNameSelfReported: string };
+  /** The signed `receivedAt` (epoch ms): when the server wrote the request. */
+  receivedAtMs: number;
 };
 
 export type McpRequestCheck = { ok: true; request: McpVerifiedRequest } | { ok: false; reason: string };
@@ -110,21 +112,88 @@ function timingSafeEqualHex(a: string, b: string): boolean {
  *  covers a clock step, not a different device (same clock here). */
 export const MCP_REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
 export const MCP_REQUEST_FUTURE_TOLERANCE_MS = 60 * 1000;
-/** Accepted callIds, remembered so a copied file can't run twice. Capped:
- *  one entry per MCP call, oldest evicted first. */
-const MAX_SEEN_CALL_IDS = 1000;
-const seenCallIds = new Set<string>();
+/** Extra time a callId is kept past the end of its request's validity. */
+export const MCP_REPLAY_SAFETY_MARGIN_MS = 5_000;
+/** A callId is kept until signed receivedAt + this (never evicted earlier). */
+export const MCP_REPLAY_RETAIN_AFTER_RECEIVED_MS = MCP_REQUEST_MAX_AGE_MS + MCP_REPLAY_SAFETY_MARGIN_MS;
+/** Far above what a client can produce in one window; mirrors McpReplayGuard.DEFAULT_CAPACITY. */
+export const MCP_REPLAY_GUARD_CAPACITY = 4096;
 
-/** Test hook: forget every accepted callId (fresh state per test). */
+/**
+ * Replay set mirroring McpReplayGuard.kt (native typed-op consumer). Every
+ * id it admits is remembered until the signed request it came from can no
+ * longer pass the freshness check — `receivedAt + MCP_REQUEST_MAX_AGE_MS +
+ * MCP_REPLAY_SAFETY_MARGIN_MS`, keyed by the signed receivedAt, not by when
+ * it was seen — and never evicted by count. When `capacity` entries are all
+ * still inside their window a new id is NOT admitted (fail closed): evicting
+ * a live entry would make its captured request replayable. A wall clock
+ * moved backwards only lengthens retention.
+ */
+export class McpReplaySet {
+  /** id -> the moment it may be forgotten. */
+  private readonly expiresAt = new Map<string, number>();
+
+  constructor(private readonly capacity: number = MCP_REPLAY_GUARD_CAPACITY) {}
+
+  get size(): number {
+    return this.expiresAt.size;
+  }
+
+  has(id: string): boolean {
+    return this.expiresAt.has(id);
+  }
+
+  /** Forgets only the ids whose request can no longer be fresh at nowMs. */
+  prune(nowMs: number): void {
+    for (const [id, until] of this.expiresAt) if (until < nowMs) this.expiresAt.delete(id);
+  }
+
+  /** Remembers id (signed receivedAt receivedAtMs). True when remembered now
+   *  (or already was); false when the set is full of live entries. */
+  admit(id: string, receivedAtMs: number, nowMs: number): boolean {
+    const until = receivedAtMs + MCP_REPLAY_RETAIN_AFTER_RECEIVED_MS;
+    const known = this.expiresAt.get(id);
+    if (known !== undefined) {
+      if (until > known) this.expiresAt.set(id, until);
+      return true;
+    }
+    this.prune(nowMs);
+    if (this.expiresAt.size >= this.capacity) return false;
+    this.expiresAt.set(id, until);
+    return true;
+  }
+
+  clear(): void {
+    this.expiresAt.clear();
+  }
+}
+
+/** Accepted callIds, so a copied (or captured and restored) file can't run twice. */
+const seenCallIds = new McpReplaySet();
+/** callIds whose handoff token was consumed; a restored token file never revives one. */
+const consumedHandoffs = new McpReplaySet();
+
+/** Test hook: forget every accepted callId and consumed handoff (fresh state per test). */
 export function __resetMcpSeenCallIdsForTests(): void {
+  seenCallIds.clear();
+  consumedHandoffs.clear();
+}
+
+/** Test hook: forget accepted callIds only, keeping the consumed-handoff
+ *  record — isolates the handoff record in the replay tests. */
+export function __forgetMcpCallIdsOnlyForTests(): void {
   seenCallIds.clear();
 }
 
-function noteCallIdSeen(callId: string): void {
-  seenCallIds.add(callId);
-  while (seenCallIds.size > MAX_SEEN_CALL_IDS) {
-    seenCallIds.delete(seenCallIds.values().next().value as string);
-  }
+/**
+ * Records that the handoff token for callId (signed receivedAt receivedAtMs)
+ * was consumed. False when it already was consumed — a restored token file
+ * must not be honoured — or when the record is full of live entries (fail
+ * closed). Synchronous, so check and record cannot interleave.
+ */
+export function recordMcpHandoffConsumed(callId: string, receivedAtMs: number, nowMs: number = Date.now()): boolean {
+  if (consumedHandoffs.has(callId)) return false;
+  return consumedHandoffs.admit(callId, receivedAtMs, nowMs);
 }
 
 export type VerifyMcpRequestOpts = {
@@ -140,8 +209,9 @@ export type VerifyMcpRequestOpts = {
  * no key, a missing / malformed / wrong MAC, or a malformed field — and,
  * after the MAC: a file name that is not `${callId}.json`, a receivedAt
  * older than 10 minutes (or implausibly in the future), or a callId that
- * was already accepted (replay). A callId is recorded only once its
- * request fully verifies, so a refused file never consumes its id.
+ * was already accepted (replay; kept until its request can no longer be
+ * fresh), or a full replay set (fail closed). A callId is recorded only
+ * once its request fully verifies, so a refused file never consumes its id.
  */
 export async function verifyMcpRequest(
   parsed: unknown,
@@ -174,7 +244,9 @@ export async function verifyMcpRequest(
   if (typeof ingress.principal !== 'string' || !MCP_PRINCIPAL_RE.test(ingress.principal)) {
     return { ok: false, reason: 'bad principal' };
   }
-  noteCallIdSeen(callId);
+  // Remembered for the request's whole validity window; at capacity with
+  // every entry still live, refuse rather than evict (fail closed).
+  if (!seenCallIds.admit(callId, receivedMs, nowMs)) return { ok: false, reason: 'replay guard full' };
   return {
     ok: true,
     request: {
@@ -182,8 +254,38 @@ export async function verifyMcpRequest(
       tool,
       args: (args as Record<string, unknown> | undefined) ?? {},
       ingress: { kind: 'mcp', principal: ingress.principal, clientNameSelfReported: cleanClientName(ingress.clientNameSelfReported) },
+      receivedAtMs: receivedMs,
     },
   };
+}
+
+/**
+ * Handoff token (PR 6, headless typed ops). A typed-op request reaches RN's
+ * requests/ only when the native McpTypedOpConsumer hands it over; native
+ * then writes `handoffs/<callId>` = hex(HMAC-SHA256(utf8(bridgeKey),
+ * utf8("shelly-mcp-handoff-v1:" + callId))) (McpTypedOpDecision.handoffToken).
+ * RN runs a typed op from requests/ only with that token, consuming it first,
+ * so a same-uid copy of a signed run_agent request dropped into requests/
+ * while native owns (or already ran) the original is never run a second time.
+ */
+export const MCP_HANDOFF_DOMAIN = 'shelly-mcp-handoff-v1:';
+
+export function mcpHandoffToken(bridgeKey: string, callId: string, sha256: Sha256): Promise<string> {
+  return hmacSha256Hex(utf8(bridgeKey), utf8(`${MCP_HANDOFF_DOMAIN}${callId}`), sha256);
+}
+
+/** Constant-time check of a handoff token file's content. */
+export async function verifyMcpHandoffToken(
+  token: unknown,
+  bridgeKey: string | null,
+  callId: string,
+  sha256: Sha256,
+): Promise<boolean> {
+  if (!bridgeKey || !MCP_BRIDGE_KEY_RE.test(bridgeKey)) return false;
+  if (typeof token !== 'string') return false;
+  const t = token.trim();
+  if (!MAC_RE.test(t)) return false;
+  return timingSafeEqualHex(await mcpHandoffToken(bridgeKey, callId, sha256), t);
 }
 
 /** Test/helper: sign a request the way the server does. */

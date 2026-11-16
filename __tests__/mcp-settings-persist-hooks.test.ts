@@ -124,6 +124,32 @@ describe('settings persist hooks', () => {
     }
   });
 
+  it('mcpTypedOpsEnabled defaults OFF and is held back / persisted like the other MCP switches', async () => {
+    expect(useSettingsStore.getState().settings.mcpTypedOpsEnabled).toBe(false);
+    useSettingsStore.getState().updateSettings({ mcpServerEnabled: true, mcpTypedOpsEnabled: true });
+    await settingsPersistIdle();
+    setItemCalls.length = 0;
+
+    let release!: (ok: boolean) => void;
+    const after = jest.fn();
+    const unregister = registerSettingsPersistHook({
+      beforeWrite: (next) => (next.mcpTypedOpsEnabled === false ? new Promise<boolean>((r) => { release = r; }) : null),
+      afterWrite: after,
+    });
+    try {
+      useSettingsStore.getState().updateSettings({ mcpTypedOpsEnabled: false });
+      expect(useSettingsStore.getState().settings.mcpTypedOpsEnabled).toBe(false); // memory at once
+      await flush();
+      expect(setItemCalls).toEqual([]); // disk write waits for the hook
+      release(true);
+      await settingsPersistIdle();
+      expect(JSON.parse(setItemCalls[0])).toMatchObject({ mcpTypedOpsEnabled: false });
+      expect(after).toHaveBeenCalledWith(expect.objectContaining({ mcpTypedOpsEnabled: false }), true);
+    } finally {
+      unregister();
+    }
+  });
+
   it('tells hooks what was loaded from disk', async () => {
     const loaded = jest.fn();
     const unregister = registerSettingsPersistHook({ loaded });

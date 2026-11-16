@@ -87,11 +87,19 @@ import {
   type McpTokenDeps,
   type RegenerateResult,
 } from '@/lib/mcp-token';
+import { purgeMcpAlwaysAllowRulesForNewToken } from '@/lib/mcp-always-allow';
+import type { Sha256 } from '@/lib/mcp-request-auth';
+
+const expoSha256: Sha256 = async (data) =>
+  new Uint8Array(await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, new Uint8Array(data)));
 
 const tokenDeps: McpTokenDeps = {
   store: { get: getConnectorSecret, save: saveConnectorSecret },
   randomBytes: (n) => Crypto.getRandomBytesAsync(n),
   encode: base64UrlFromBytes,
+  // Always-allow cascade, step 2: only rules of the new token's principal may
+  // remain (step 1, before the save, removed all: revokePending below).
+  purgeOtherClientRules: (token) => purgeMcpAlwaysAllowRulesForNewToken(token, expoSha256),
   // A new token must reach the native auto-start mirror too.
   onSaved: (token) =>
     mirrorTokenChange(TerminalEmulator, effectiveMirrorSettings(useSettingsStore.getState().settings), token),
@@ -166,6 +174,7 @@ async function startNativeServer(token: string): Promise<boolean> {
     settings.mcpExecEnabled === true,
     settings.mcpReadTerminalEnabled === true,
     settings.mcpDiagnosticsEnabled === true,
+    settings.mcpTypedOpsEnabled === true,
     bridgeKey,
   );
 }
@@ -175,7 +184,8 @@ const serverControl: McpServerControl = {
   start: startNativeServer,
   stop: () => TerminalEmulator.stopMCPServer(),
   probe: probeLocalServer,
-  revokePending: revokePendingMCPRequests,
+  // Token regeneration: also removes every always-allow rule (cascade step 1).
+  revokePending: () => revokePendingMCPRequests({ tokenRevoked: true }),
 };
 
 /** Returns the persisted MCP bearer token, generating and saving a fresh
@@ -216,6 +226,7 @@ export function useMCPServerBridge(): void {
   const execEnabled = useSettingsStore((s) => s.settings.mcpExecEnabled === true);
   const readTerminalEnabled = useSettingsStore((s) => s.settings.mcpReadTerminalEnabled === true);
   const diagnosticsEnabled = useSettingsStore((s) => s.settings.mcpDiagnosticsEnabled === true);
+  const typedOpsEnabled = useSettingsStore((s) => s.settings.mcpTypedOpsEnabled === true);
   // Before the persisted settings are applied, mcpServerEnabled is just the
   // default (false); acting on it would clear the native mirror and stop a
   // server the native side auto-started.
@@ -236,7 +247,7 @@ export function useMCPServerBridge(): void {
       return;
     }
     let cancelled = false;
-    const captured = { enabled, exec: execEnabled, readTerminal: readTerminalEnabled, diagnostics: diagnosticsEnabled };
+    const captured = { enabled, exec: execEnabled, readTerminal: readTerminalEnabled, diagnostics: diagnosticsEnabled, typedOps: typedOpsEnabled };
     // Widen the mirror only to settings already on disk: wait for the queued
     // settings writes first. Outside the lock — a queued narrowing write
     // needs the lock for its mirror clear.
@@ -286,7 +297,7 @@ export function useMCPServerBridge(): void {
         if (started) {
           startMCPPoller();
           startMCPSnapshotPublisher(token);
-          logInfo('MCPBridge', `server + poller started (exec=${execEnabled}, readTerminal=${readTerminalEnabled}, diagnostics=${diagnosticsEnabled})`);
+          logInfo('MCPBridge', `server + poller started (exec=${execEnabled}, readTerminal=${readTerminalEnabled}, diagnostics=${diagnosticsEnabled}, typedOps=${typedOpsEnabled})`);
         } else {
           logError('MCPBridge', 'native server failed to start');
         }
@@ -312,6 +323,7 @@ export function useMCPServerBridge(): void {
         exec: settings.mcpExecEnabled === true,
         readTerminal: settings.mcpReadTerminalEnabled === true,
         diagnostics: settings.mcpDiagnosticsEnabled === true,
+        typedOps: settings.mcpTypedOpsEnabled === true,
       });
       stopMCPPoller();
       // 'keep': the native server keeps answering list_agents / list_repos
@@ -324,5 +336,5 @@ export function useMCPServerBridge(): void {
         logInfo('MCPBridge', 'bridge unmounted with the server still enabled; left to the native supervisor');
       }
     };
-  }, [settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled]);
+  }, [settingsLoaded, enabled, execEnabled, readTerminalEnabled, diagnosticsEnabled, typedOpsEnabled]);
 }

@@ -33,13 +33,13 @@ import {
   type McpTokenDeps,
 } from '../lib/mcp-token';
 
-type Call = [boolean, boolean, boolean, boolean, string | null];
+type Call = [boolean, boolean, boolean, boolean, boolean, string | null];
 
 function makeNative(results: Array<boolean | Error> = []) {
   const calls: Call[] = [];
   const native: McpMirrorNative = {
-    setMCPAutostartMirror: jest.fn(async (enabled, exec, readTerminal, diagnostics, token) => {
-      calls.push([enabled, exec, readTerminal, diagnostics, token]);
+    setMCPAutostartMirror: jest.fn(async (enabled, exec, readTerminal, diagnostics, typedOps, token) => {
+      calls.push([enabled, exec, readTerminal, diagnostics, typedOps, token]);
       const r = results.length ? results.shift()! : true;
       if (r instanceof Error) throw r;
       return r;
@@ -59,16 +59,21 @@ describe('mirrorStateFromSettings', () => {
 
   it('copies the tool switches exactly (never broader than Settings)', () => {
     expect(mirrorStateFromSettings({ mcpServerEnabled: true }, 'tok')).toEqual({
-      enabled: true, exec: false, readTerminal: false, diagnostics: false, token: 'tok',
+      enabled: true, exec: false, readTerminal: false, diagnostics: false, typedOps: false, token: 'tok',
     });
     expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: false }, 'tok'))
-      .toEqual({ enabled: true, exec: true, readTerminal: false, diagnostics: false, token: 'tok' });
+      .toEqual({ enabled: true, exec: true, readTerminal: false, diagnostics: false, typedOps: false, token: 'tok' });
     expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpExecEnabled: 1 as any, mcpReadTerminalEnabled: true }, 'tok'))
-      .toEqual({ enabled: true, exec: false, readTerminal: true, diagnostics: false, token: 'tok' });
+      .toEqual({ enabled: true, exec: false, readTerminal: true, diagnostics: false, typedOps: false, token: 'tok' });
     expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpDiagnosticsEnabled: true }, 'tok'))
-      .toEqual({ enabled: true, exec: false, readTerminal: false, diagnostics: true, token: 'tok' });
+      .toEqual({ enabled: true, exec: false, readTerminal: false, diagnostics: true, typedOps: false, token: 'tok' });
     expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpDiagnosticsEnabled: 'yes' as any }, 'tok'))
-      .toEqual({ enabled: true, exec: false, readTerminal: false, diagnostics: false, token: 'tok' });
+      .toEqual({ enabled: true, exec: false, readTerminal: false, diagnostics: false, typedOps: false, token: 'tok' });
+    expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpTypedOpsEnabled: true }, 'tok'))
+      .toEqual({ enabled: true, exec: false, readTerminal: false, diagnostics: false, typedOps: true, token: 'tok' });
+    // Typed ops are separate from exec: neither implies the other.
+    expect(mirrorStateFromSettings({ mcpServerEnabled: true, mcpExecEnabled: true, mcpTypedOpsEnabled: 'yes' as any }, 'tok'))
+      .toEqual({ enabled: true, exec: true, readTerminal: false, diagnostics: false, typedOps: false, token: 'tok' });
   });
 });
 
@@ -76,20 +81,20 @@ describe('writeMcpAutostartMirror', () => {
   it('writes OFF as a clear with no token', async () => {
     const { native, calls } = makeNative();
     expect(await writeMcpAutostartMirror(native, { enabled: false })).toBe(true);
-    expect(calls).toEqual([[false, false, false, false, null]]);
+    expect(calls).toEqual([[false, false, false, false, false, null]]);
   });
 
   it('writes ON with the switches and token', async () => {
     const { native, calls } = makeNative();
-    expect(await writeMcpAutostartMirror(native, { enabled: true, exec: true, readTerminal: false, diagnostics: true, token: 't' })).toBe(true);
-    expect(calls).toEqual([[true, true, false, true, 't']]);
+    expect(await writeMcpAutostartMirror(native, { enabled: true, exec: true, readTerminal: false, diagnostics: true, typedOps: true, token: 't' })).toBe(true);
+    expect(calls).toEqual([[true, true, false, true, true, 't']]);
   });
 
   it('clears the mirror when the ON write fails or throws (fail closed)', async () => {
     for (const failure of [false, new Error('keystore')]) {
       const { native, calls } = makeNative([failure]);
-      expect(await writeMcpAutostartMirror(native, { enabled: true, exec: false, readTerminal: false, diagnostics: false, token: 't' })).toBe(false);
-      expect(calls).toEqual([[true, false, false, false, 't'], [false, false, false, false, null]]);
+      expect(await writeMcpAutostartMirror(native, { enabled: true, exec: false, readTerminal: false, diagnostics: false, typedOps: false, token: 't' })).toBe(false);
+      expect(calls).toEqual([[true, false, false, false, false, 't'], [false, false, false, false, false, null]]);
     }
   });
 
@@ -109,18 +114,20 @@ describe('mirrorTokenChange', () => {
   it('writes the new token with the current switches when enabled', async () => {
     const { native, calls } = makeNative();
     await mirrorTokenChange(native, { mcpServerEnabled: true, mcpReadTerminalEnabled: true }, 'new');
-    expect(calls).toEqual([[true, false, true, false, 'new']]);
+    expect(calls).toEqual([[true, false, true, false, false, 'new']]);
+    await mirrorTokenChange(native, { mcpServerEnabled: true, mcpTypedOpsEnabled: true }, 'new2');
+    expect(calls[calls.length - 1]).toEqual([true, false, false, false, true, 'new2']);
   });
 
   it('throws (after clearing) when an enabled mirror cannot follow the token', async () => {
     const { native, calls } = makeNative([false]);
     await expect(mirrorTokenChange(native, { mcpServerEnabled: true }, 'new')).rejects.toThrow(/auto-start is now off/);
-    expect(calls[calls.length - 1]).toEqual([false, false, false, false, null]);
+    expect(calls[calls.length - 1]).toEqual([false, false, false, false, false, null]);
   });
 });
 
 describe('mcpCleanupAction', () => {
-  const on = { enabled: true, exec: false, readTerminal: false, diagnostics: false };
+  const on = { enabled: true, exec: false, readTerminal: false, diagnostics: false, typedOps: false };
   it('keeps the server when the root unmounts with unchanged settings', () => {
     expect(mcpCleanupAction(on, { ...on })).toBe('keep');
   });
@@ -131,6 +138,9 @@ describe('mcpCleanupAction', () => {
     expect(mcpCleanupAction(on, { ...on, readTerminal: true })).toBe('stop');
     expect(mcpCleanupAction(on, { ...on, diagnostics: true })).toBe('stop');
     expect(mcpCleanupAction({ ...on, diagnostics: true }, on)).toBe('stop');
+    expect(mcpCleanupAction(on, { ...on, typedOps: true })).toBe('stop');
+    expect(mcpCleanupAction({ ...on, typedOps: true }, on)).toBe('stop');
+    expect(mcpCleanupAction({ ...on, typedOps: true }, { ...on, typedOps: true })).toBe('keep');
   });
 });
 
@@ -312,23 +322,25 @@ describe('token creation vs regeneration race (finding 4: one lock for all token
 
 describe('mirror ceiling (what the durable mirror may still hold)', () => {
   beforeEach(() => resetMcpMirrorCeilingForTests());
-  const sw = (enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics = false) => ({ enabled, exec, readTerminal, diagnostics });
+  const sw = (enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics = false, typedOps = false) => ({ enabled, exec, readTerminal, diagnostics, typedOps });
 
   it('is unknown at JS start: anything short of everything ON may be narrower', () => {
-    expect(mirrorMayBeBroaderThan(sw(true, true, true, true))).toBe(false);
-    expect(mirrorMayBeBroaderThan(sw(true, true, true, false))).toBe(true);
-    expect(mirrorMayBeBroaderThan(sw(true, false, true, true))).toBe(true);
+    expect(mirrorMayBeBroaderThan(sw(true, true, true, true, true))).toBe(false);
+    expect(mirrorMayBeBroaderThan(sw(true, true, true, true, false))).toBe(true);
+    expect(mirrorMayBeBroaderThan(sw(true, true, true, false, true))).toBe(true);
+    expect(mirrorMayBeBroaderThan(sw(true, false, true, true, true))).toBe(true);
     expect(mirrorMayBeBroaderThan(sw(false, false, false))).toBe(true);
   });
 
   it('tracks successful writes exactly, and a failed ON write as possibly-either', async () => {
     const { native } = makeNative();
-    await writeMcpAutostartMirror(native, { enabled: true, exec: true, readTerminal: false, diagnostics: false, token: 't' });
+    await writeMcpAutostartMirror(native, { enabled: true, exec: true, readTerminal: false, diagnostics: false, typedOps: false, token: 't' });
     expect(mirrorMayBeBroaderThan(sw(true, true, false))).toBe(false);
     expect(mirrorMayBeBroaderThan(sw(true, false, false))).toBe(true);
-    await writeMcpAutostartMirror(native, { enabled: true, exec: false, readTerminal: false, diagnostics: true, token: 't' });
-    expect(mirrorMayBeBroaderThan(sw(true, false, false, true))).toBe(false);
-    expect(mirrorMayBeBroaderThan(sw(true, false, false, false))).toBe(true);
+    await writeMcpAutostartMirror(native, { enabled: true, exec: false, readTerminal: false, diagnostics: true, typedOps: true, token: 't' });
+    expect(mirrorMayBeBroaderThan(sw(true, false, false, true, true))).toBe(false);
+    expect(mirrorMayBeBroaderThan(sw(true, false, false, true, false))).toBe(true); // typedOps may still be ON
+    expect(mirrorMayBeBroaderThan(sw(true, false, false, false, true))).toBe(true);
     await writeMcpAutostartMirror(native, { enabled: false });
     expect(mirrorMayBeBroaderThan(sw(true, false, false))).toBe(false);
     expect(mirrorMayBeBroaderThan(sw(false, false, false))).toBe(false);
@@ -336,7 +348,7 @@ describe('mirror ceiling (what the durable mirror may still hold)', () => {
     // ON write fails AND the follow-up clear throws: the mirror may hold the
     // attempted (broader) value.
     const broken = makeNative([false, new Error('gone')]).native;
-    await writeMcpAutostartMirror(broken, { enabled: true, exec: false, readTerminal: true, diagnostics: false, token: 't' });
+    await writeMcpAutostartMirror(broken, { enabled: true, exec: false, readTerminal: true, diagnostics: false, typedOps: false, token: 't' });
     expect(mirrorMayBeBroaderThan(sw(true, false, false))).toBe(true);
     // A failed OFF write keeps the bound.
     await writeMcpAutostartMirror(makeNative([new Error('gone')]).native, { enabled: false });
@@ -346,14 +358,14 @@ describe('mirror ceiling (what the durable mirror may still hold)', () => {
 
 describe('disk bounds (persisted settings vs the mirror)', () => {
   beforeEach(() => resetMcpMirrorCeilingForTests());
-  const all = { mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true };
-  const plain = { mcpServerEnabled: true, mcpExecEnabled: false, mcpReadTerminalEnabled: false, mcpDiagnosticsEnabled: false };
+  const all = { mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: true, mcpDiagnosticsEnabled: true, mcpTypedOpsEnabled: true };
+  const plain = { mcpServerEnabled: true, mcpExecEnabled: false, mcpReadTerminalEnabled: false, mcpDiagnosticsEnabled: false, mcpTypedOpsEnabled: false };
 
   it('before load nothing is known: every write short of all-ON clears first, and nothing widens', () => {
     expect(persistNeedsMirrorClear(plain)).toBe(true);
     expect(persistNeedsMirrorClear(all)).toBe(false);
     expect(effectiveMirrorSettings(all)).toEqual({
-      mcpServerEnabled: false, mcpExecEnabled: false, mcpReadTerminalEnabled: false, mcpDiagnosticsEnabled: false,
+      mcpServerEnabled: false, mcpExecEnabled: false, mcpReadTerminalEnabled: false, mcpDiagnosticsEnabled: false, mcpTypedOpsEnabled: false,
     });
   });
 
@@ -363,6 +375,7 @@ describe('disk bounds (persisted settings vs the mirror)', () => {
     expect(persistNeedsMirrorClear({ ...all, mcpExecEnabled: false })).toBe(true);
     expect(persistNeedsMirrorClear({ ...all, mcpReadTerminalEnabled: false })).toBe(true);
     expect(persistNeedsMirrorClear({ ...all, mcpDiagnosticsEnabled: false })).toBe(true);
+    expect(persistNeedsMirrorClear({ ...all, mcpTypedOpsEnabled: false })).toBe(true);
     expect(persistNeedsMirrorClear(all)).toBe(false);
     noteSettingsWritten({ mcpServerEnabled: false }, true);
     expect(persistNeedsMirrorClear({ mcpServerEnabled: false, mcpExecEnabled: false })).toBe(false);
@@ -474,7 +487,24 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
   });
 
   it('MCPBridge never reuses a process started with other settings or token', () => {
-    expect(bridge).toMatch(/processBridgeKey == bridgeKey && processToken == token &&\s*processExec == exec && processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics/);
+    expect(bridge).toMatch(/processBridgeKey == bridgeKey && processToken == token &&\s*processExec == exec && processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics && processTypedOps == typedOps/);
+  });
+
+  it('the store writes v2 with typedOps and reads a v1 blob (no typedOps) as typedOps OFF', () => {
+    expect(store).toMatch(/private const val VERSION = 2/);
+    expect(store).toMatch(/private const val VERSION_V1 = 1/);
+    expect(store).toContain('.put("typedOps", typedOps)');
+    expect(store).toMatch(/if \(version != VERSION && version != VERSION_V1\) return null/);
+    // v1: OFF without looking at any field; v2: a non-boolean is unreadable.
+    expect(store).toMatch(/val typedOps = if \(version == VERSION_V1\) false else \{\s*if \(typedOpsRaw !is Boolean\) return null\s*typedOpsRaw\s*\}/);
+  });
+
+  it('the supervisor carries typedOps through Desired and every start path', () => {
+    expect(supervisor).toMatch(/val typedOps: Boolean,\s*val bridgeKey/);
+    expect(supervisor).toContain('Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true)');
+    expect(supervisor).toContain('Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)');
+    expect(supervisor).toContain('Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, d.bridgeKey, fromApp = false)');
+    expect(moduleKt).toContain('McpAutostartStore.writeOn(context, exec, readTerminal, diagnostics, typedOps, token)');
   });
 
   it('"is running" includes a wanted-but-dead server, so regeneration restarts it on the new token', () => {
@@ -484,7 +514,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
   });
 
   it('the module routes start/stop through the supervisor and OFF clears + stops', () => {
-    expect(moduleKt).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, bridgeKey)');
+    expect(moduleKt).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
     const mirror = moduleKt.slice(moduleKt.indexOf('AsyncFunction("setMCPAutostartMirror")'));
     expect(mirror.slice(0, 900)).toMatch(/if \(!enabled\) \{[\s\S]*?val cleared = McpAutostartStore\.clear\(context, "settings off"\)\s*McpServerSupervisor\.stop\(context, "settings off"\)\s*cleared\s*\}/);
     // No API hands a bridge key to JS.

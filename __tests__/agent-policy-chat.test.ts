@@ -4,6 +4,7 @@
  * in-memory stand-in for the SecureStore seals.
  */
 import { execFileSync } from 'node:child_process';
+import * as nodeCrypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -18,6 +19,8 @@ import {
 import {
   __resetUserPolicyCacheForTests,
   configureUserPolicySealPort,
+  getCachedUserPolicy,
+  getCachedUserPolicyPin,
   loadUserPolicy,
   mutateUserPolicy,
   parseUserPolicyFile,
@@ -27,6 +30,7 @@ import { evaluateApprovalRequestPolicy, recordHumanApprovalDecision } from '@/li
 import { __resetRunOriginRegistryForTests, markUserRunStarted } from '@/lib/agent-run-origin-registry';
 import { describeApprovalRequest } from '@/lib/agent-action-policy';
 import { trustKeyOf } from '@/lib/agent-trust-ramp';
+import { sha256Hex, sha256HexModifiedUtf8 } from '@/lib/sha256';
 
 jest.setTimeout(60_000);
 
@@ -201,6 +205,105 @@ describe('fail-closed persistence + seal (M1, L5)', () => {
     }));
     expect((await loadUserPolicy(run)).unavailable).toBe(false);
   }
+
+  // MCP run_agent hands this pin to native, which compares it with its own
+  // SHA-256 of the file: it must be the hash of exactly the evaluated bytes.
+  it('the cached pin is the SHA-256 of the evaluated file bytes, or "absent"', async () => {
+    const loaded0 = await loadUserPolicy(run);
+    expect(loaded0.unavailable).toBe(false);
+    expect(getCachedUserPolicyPin()).toBe('absent');
+    await seedRule();
+    const onDisk = nodeCrypto.createHash('sha256').update(fs.readFileSync(policyFile())).digest('hex');
+    expect(getCachedUserPolicyPin()).toBe(onDisk);
+    expect(getCachedUserPolicy()?.unavailable).toBe(false);
+  });
+
+  it('a failed reload after a good load leaves no pin (never the earlier file\'s hash)', async () => {
+    await seedRule();
+    expect(getCachedUserPolicyPin()).toMatch(/^[0-9a-f]{64}$/);
+    const loaded = await loadUserPolicy(async () => {
+      throw new Error('exec failed');
+    });
+    expect(loaded.unavailable).toBe(true);
+    expect(getCachedUserPolicyPin()).toBeNull();
+  });
+
+  it('a hash taken of one file and content read from another is unavailable, with no pin', async () => {
+    await seedRule();
+    const sealedHash = nodeCrypto.createHash('sha256').update(fs.readFileSync(policyFile())).digest('hex');
+    // A writer swapped the file between `sha256sum` and `cat`: sealed rules
+    // hashed, permissive rules read.
+    const permissive = serializeUserPolicyFile({ rules: [], trust: { counters: {}, allows: [] } }, 2);
+    const loaded = await loadUserPolicy(async () => `P${sealedHash}\n${permissive}`);
+    expect(loaded.unavailable).toBe(true);
+    expect(loaded.data.rules).toEqual([]);
+    expect(getCachedUserPolicyPin()).toBeNull();
+    // The same output with matching content (stdout without its final newline) still loads.
+    const sealed = fs.readFileSync(policyFile(), 'utf8');
+    const ok = await loadUserPolicy(async () => `P${sealedHash}\n${sealed.replace(/\n$/, '')}`);
+    expect(ok.unavailable).toBe(false);
+    expect(getCachedUserPolicyPin()).toBe(sealedHash);
+  });
+
+  // Codex round 3: the heredoc in writeCommand reaches the shell through JNI
+  // GetStringUTFChars (modified UTF-8), so a rule with an emoji is stored as
+  // CESU-8 bytes and its sealed hash is of those bytes.
+  function jniModifiedUtf8(text: string): Buffer {
+    const out: number[] = [];
+    for (let i = 0; i < text.length; i += 1) {
+      const u = text.charCodeAt(i);
+      if (u !== 0 && u < 0x80) out.push(u);
+      else if (u < 0x800) out.push(0xc0 | (u >> 6), 0x80 | (u & 63));
+      else out.push(0xe0 | (u >> 12), 0x80 | ((u >> 6) & 63), 0x80 | (u & 63));
+    }
+    return Buffer.from(out);
+  }
+
+  it('sha256HexModifiedUtf8 is node SHA-256 of the JNI encoding; equal to sha256Hex for BMP text', () => {
+    for (const t of ['', 'plain', '日本語の規則', '🔒 never post 👍', 'a\u0000b']) {
+      expect(sha256HexModifiedUtf8(t)).toBe(nodeCrypto.createHash('sha256').update(jniModifiedUtf8(t)).digest('hex'));
+    }
+    expect(sha256HexModifiedUtf8('日本語の規則')).toBe(sha256Hex('日本語の規則'));
+    expect(sha256HexModifiedUtf8('🔒')).not.toBe(sha256Hex('🔒'));
+  });
+
+  it('a sealed policy with an emoji, written through JNI (CESU-8 bytes), still loads with its pin', async () => {
+    const content = serializeUserPolicyFile(
+      { rules: [{ id: 'r1', effect: 'deny', match: { capability: 'post' }, source: '🔒 never post', createdAt: 1 }], trust: { counters: {}, allows: [] } },
+      1,
+    );
+    const onDisk = nodeCrypto.createHash('sha256').update(jniModifiedUtf8(content)).digest('hex');
+    fileSeal = [onDisk];
+    // stdout decoded back by NewStringUTF: the original string.
+    const loaded = await loadUserPolicy(async () => `P${onDisk}\n${content}`);
+    expect(loaded.unavailable).toBe(false);
+    expect(loaded.data.rules).toHaveLength(1);
+    expect(getCachedUserPolicyPin()).toBe(onDisk);
+    // Standard UTF-8 bytes of the same text are accepted too (written another way).
+    const utf8 = nodeCrypto.createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex');
+    fileSeal = [utf8];
+    expect((await loadUserPolicy(async () => `P${utf8}\n${content}`)).unavailable).toBe(false);
+    expect(getCachedUserPolicyPin()).toBe(utf8);
+  });
+
+  it('a lone surrogate standing in for U+FFFD (same UTF-8 hash, different rules) is unavailable', async () => {
+    // Codex round 4: sealed keyword "\uFFFDpay" vs read-back "\uD800pay".
+    const sealedContent = serializeUserPolicyFile(
+      { rules: [{ id: 'r1', effect: 'deny', match: { keywords: ['\uFFFDpay'] }, source: 'never pay', createdAt: 1 }], trust: { counters: {}, allows: [] } },
+      1,
+    );
+    const sealedHash = nodeCrypto.createHash('sha256').update(Buffer.from(sealedContent, 'utf8')).digest('hex');
+    fileSeal = [sealedHash];
+    expect((await loadUserPolicy(async () => `P${sealedHash}\n${sealedContent}`)).unavailable).toBe(false);
+    const forged = sealedContent.split('\uFFFD').join('\uD800');
+    expect(forged).not.toBe(sealedContent);
+    expect(sha256Hex(forged)).toBe(sealedHash);
+    const loaded = await loadUserPolicy(async () => `P${sealedHash}\n${forged}`);
+    expect(loaded.unavailable).toBe(true);
+    expect(getCachedUserPolicyPin()).toBeNull();
+    // A lone low surrogate too.
+    expect((await loadUserPolicy(async () => `P${sealedHash}\n${sealedContent.split('\uFFFD').join('\uDC00')}`)).unavailable).toBe(true);
+  });
 
   it('an unparseable policy.json is "unavailable" and is never overwritten', async () => {
     fs.mkdirSync(path.dirname(policyFile()), { recursive: true });

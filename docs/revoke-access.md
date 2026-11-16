@@ -63,11 +63,22 @@ What it is: an HTTP server on the phone, port 8767. MCP clients such as Claude C
 
 - Settings > Agents > **MCP Server**: turn it off. The server is stopped when this is off. It is off by default.
 - Settings > Agents > **MCP: Allow exec/write (dangerous)**: turn it off. It is off by default. It adds the `run_command` and `write_file` tools. Each call still needs an approval popup on the phone, and CRITICAL-risk commands are refused.
+- Settings > Agents > **MCP: Allow typed operations (run agents)**: turn it off. It is off by default. It adds the `run_agent` and `get_run_result` tools. Turning it off refuses both at once, even for agents with an always-allow rule (the rules stay until revoked).
 
 ### Token
 
 - The bearer token is generated the first time it is needed and stored in SecureStore. **Copy MCP Token** in the same Settings section copies it.
-- **There is no regenerate or reset button for this token.** I found no code that replaces or deletes it once it exists. If a client has the token, turning the server off is the only revocation inside the app. A new token would only be created if the stored one is gone (for example after clearing Shelly's app data or reinstalling). I did not test that.
+- **Regenerate MCP Token** in the same Settings section replaces it with a new one, after a confirmation. If the server is running, it restarts at once and the old token is rejected. Requests still waiting under the old token (including an open approval popup) are cancelled. Every MCP client then needs the new token in its MCP config.
+- If regeneration cannot finish, Shelly turns **MCP Server** off rather than keep serving, and tells you so.
+- Turning the server off also stops every client, but it does not change the token: a client that has it can connect again once the server is back on.
+
+### Always-allow rules
+
+- An "always allow" rule lets one MCP client run one kind of request on one target (for example, running one agent) without the approval popup. Rules can never cover `run_command` or `write_file`. A rule is created only when you tap **Always allow** on the `run_agent` approval popup. It covers that agent as it was defined then: editing the agent's prompt, tool, actions or other run settings brings the popup back. A rule never lets a run start while all agents are stopped, for an agent created or changed over MCP, or against your own deny rules, and the run is still treated as external input.
+- Settings > **MCP: always allowed** lists every rule: what it allows, the target, the client (the first 8 characters of its ID), and when it was added. **Revoke** removes one rule; **Revoke all** removes them all. A rule cannot be added from Settings.
+- **Regenerating the MCP token removes every rule**, before the new token is saved. If Shelly cannot confirm that, the token is not changed and the server is left off. After the new token is saved, Shelly removes any rule that is not for the new token once more; if that second pass cannot be confirmed, a running server is left off. A stopped server stays off and the new token is kept, because a rule made for the old token never applies to the new one.
+- Turning the MCP server off does not remove rules.
+- Regenerating the token also marks every run that MCP started and that is still queued or running as `cancelled`; a queued one never starts. A run that already started keeps running to its end.
 
 ### Check it is off
 
@@ -94,7 +105,7 @@ With the toggle off, a connection to port 8767 from another device on the same n
 - Anything already sent to ChatGPT, OpenAI or another AI provider (prompts, command output, files Codex read) stays with them. Delete it in your account there, under their rules.
 - A phone task that ClosePaw already ran is not rolled back. Messages sent and lists changed stay changed.
 - Files that a command already wrote or changed on the phone stay changed.
-- An MCP client that already copied the token still knows it (section 3).
+- An MCP client that already copied the token still knows it until you regenerate the token (section 3).
 - Shelly has no telemetry, so there is nothing on a Shelly server to delete. See the Privacy section of the README.
 
 If something here is wrong or missing, please open an issue: https://github.com/RYOITABASHI/Shelly/issues

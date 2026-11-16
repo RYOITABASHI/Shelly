@@ -130,9 +130,10 @@ describe('shelly-plan-executor.js parity', () => {
       'val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground())',
     );
     // NOTIFY-001 Increment 3 extended the call with notification text/package
-    // params (null for widget/alarm runs) — extended in lockstep.
+    // params (null for widget/alarm runs) — extended in lockstep. MCP typed
+    // ops added the run ticket handle/principal (null unless runAgentForMcp).
     expect(terminalSessionService).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal)',
     );
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');

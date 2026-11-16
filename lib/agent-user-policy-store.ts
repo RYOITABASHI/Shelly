@@ -40,7 +40,7 @@ import {
   parseStoredRules,
 } from '@/lib/agent-action-policy';
 import { TrustState, parseTrustState } from '@/lib/agent-trust-ramp';
-import { sha256Hex } from '@/lib/sha256';
+import { sha256Hex, sha256HexModifiedUtf8 } from '@/lib/sha256';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 
 export type ShellRunner = (cmd: string) => Promise<string>;
@@ -173,6 +173,46 @@ function writeCommand(content: string): string {
 
 let cache: LoadedUserPolicy | null = null;
 let lastFileHash: string | null = null;
+/**
+ * The file state `cache` was evaluated from, assigned together with `cache`:
+ * the sha256 of the very bytes evaluated, 'absent' when there was no file,
+ * null when unknown (read failed, or hash and content could not be tied).
+ */
+let cachePin: string | null = null;
+
+/** An unpaired UTF-16 surrogate anywhere in `text`. */
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const u = text.charCodeAt(i);
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i += 1;
+        continue;
+      }
+      return true;
+    }
+    if (u >= 0xdc00 && u <= 0xdfff) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `text` (as read back, maybe without its final newline) is the
+ * content `hash` was taken of. The file's bytes are standard UTF-8 or — when
+ * writeCommand's heredoc went through JNI (shelly-exec.c GetStringUTFChars) —
+ * modified UTF-8, which differs only for supplementary characters (emoji).
+ */
+function contentMatchesHash(text: string, hash: string): boolean {
+  if (!SEAL_HASH_RE.test(hash)) return false;
+  // sha256Hex maps a lone surrogate to U+FFFD, so two different texts would
+  // share one UTF-8 hash. RN never writes one (JSON.stringify escapes them).
+  if (hasLoneSurrogate(text)) return false;
+  for (const t of [text, `${text}\n`]) {
+    if (sha256Hex(t) === hash || sha256HexModifiedUtf8(t) === hash) return true;
+  }
+  return false;
+}
 let chain: Promise<unknown> = Promise.resolve();
 
 /** Last loaded/written state, or null before the first load. */
@@ -180,10 +220,20 @@ export function getCachedUserPolicy(): LoadedUserPolicy | null {
   return cache;
 }
 
+/**
+ * The policy.json state behind `getCachedUserPolicy()` (same snapshot): the
+ * sha256 of the evaluated bytes, 'absent' when there was no file, null when
+ * unknown. Callers check they still hold that very cached object.
+ */
+export function getCachedUserPolicyPin(): string | null {
+  return cachePin;
+}
+
 /** Test hook. */
 export function __resetUserPolicyCacheForTests(): void {
   cache = null;
   lastFileHash = null;
+  cachePin = null;
   chain = Promise.resolve();
 }
 
@@ -194,9 +244,20 @@ export async function loadUserPolicy(run: ShellRunner): Promise<LoadedUserPolicy
   } catch (e) {
     logWarn('Policy', 'policy.json read failed — treating as unavailable', e);
     cache = { data: emptyUserPolicy(), unavailable: true };
+    cachePin = null;
     return cache;
   }
   const { exists, hash, text } = parsePolicyReadOutput(out);
+  // The shell hashes and prints the file in two steps: a writer swapping the
+  // file in between would get content B evaluated under file A's (sealed)
+  // hash. The text evaluated must be what the hash was taken of.
+  if (exists && !contentMatchesHash(text, hash)) {
+    logWarn('Policy', 'policy.json changed while it was read (hash and content differ) — treating as unavailable');
+    lastFileHash = null;
+    cache = { data: emptyUserPolicy(), unavailable: true };
+    cachePin = null;
+    return cache;
+  }
   let seal: string[] | null = null;
   try {
     seal = sealPort ? await sealPort.read() : null;
@@ -207,12 +268,15 @@ export async function loadUserPolicy(run: ShellRunner): Promise<LoadedUserPolicy
   }
   const parsed = parseUserPolicyFile(text);
   lastFileHash = exists && SEAL_HASH_RE.test(hash) ? hash : null;
+  const pin = exists ? hash : 'absent';
   if (!isSealedPolicyState(exists, text, hash, seal)) {
     logWarn('Policy', `policy.json does not match its seal (exists=${exists}, seal=${seal ? seal.length : 'unreadable'}) — escalating side effects`);
     cache = { data: parsed.data, unavailable: true };
+    cachePin = pin;
     return cache;
   }
   cache = parsed;
+  cachePin = pin;
   if (cache.unavailable) logWarn('Policy', 'policy.json is present but invalid — escalating side effects until fixed');
   return cache;
 }
@@ -243,6 +307,7 @@ export function mutateUserPolicy(
     await sealPort.write([actualHash]);
     lastFileHash = actualHash;
     cache = { data: bounded, unavailable: false };
+    cachePin = actualHash;
     logInfo('Policy', `policy.json written rules=${bounded.rules.length} allows=${bounded.trust.allows.length}`);
     return bounded;
   });
@@ -269,6 +334,7 @@ export function resetUserPolicy(run: ShellRunner, now: number = Date.now()): Pro
     await sealPort.write([actual]);
     lastFileHash = actual;
     cache = { data, unavailable: false };
+    cachePin = actual;
     logInfo('Policy', 'policy.json reset to an empty, freshly sealed policy (user-confirmed)');
     return data;
   });

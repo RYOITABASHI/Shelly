@@ -638,7 +638,12 @@ object AgentRuntime {
          *  Exported to the run as SHELLY_RUN_ORIGIN. Normalized by
          *  [normalizeRunOrigin]; anything unrecognized becomes "event", which
          *  every consumer treats as PROACTIVE (fail-closed). */
-        origin: String = "event"
+        origin: String = "event",
+        /** MCP typed ops (McpRunTickets): a per-run ingress-taint reason for a
+         *  run started through MCP `run_agent` — only ever
+         *  AgentIngressTaint.RUN_REASON_MCP. Used when the agent itself is not
+         *  marked; it can only add the taint, never clear it. */
+        ingressRunReason: String? = null
     ): AgentRunResult {
         // MONITOR widget hook (push-only updates; never throws). Counted per
         // call, paired with runEnded in the finally below.
@@ -648,7 +653,7 @@ object AgentRuntime {
         // run's ClosePaw approval request from a forged request file.
         val runToken = NativeAgentRunRegistry.begin(agentId)
         try {
-            return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin)
+            return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason)
         } finally {
             NativeAgentRunRegistry.end(agentId, runToken)
             expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runEnded(context, agentId)
@@ -662,7 +667,8 @@ object AgentRuntime {
         unattended: Boolean,
         notificationText: String?,
         notificationPackage: String?,
-        origin: String
+        origin: String,
+        ingressRunReason: String?
     ): AgentRunResult {
         val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
@@ -676,7 +682,9 @@ object AgentRuntime {
         // tainted call with a credential into an approval (rc 41), which would
         // stop every cloud model call. The driver refuses writes / sends, the
         // dispatch refuses actions. Fails closed.
-        val ingressReason = AgentIngressTaint.runTaintReason(appContext, agentId)
+        // The agent's own mark (or an untrusted store) wins; otherwise a per-run
+        // reason from the caller (an MCP `run_agent` launch) taints this run only.
+        val ingressReason = AgentIngressTaint.runTaintReason(appContext, agentId) ?: ingressRunReason
         val tainted = callerTainted
         if (ingressReason != null) {
             Log.i(TAG, "Agent $agentId runs ingress-tainted reason=$ingressReason (writes and external sends are refused)")
