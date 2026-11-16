@@ -53,12 +53,17 @@ export function TypewriterText({ text, style, active, cursorColor }: Props) {
   }, [active]);
 
   const shown = active ? text.slice(0, revealed) : text;
-  const showCursor = active && revealed < text.length;
+  // While streaming the glyph is ALWAYS laid out so its footprint never
+  // changes (it takes part in line breaking; toggling it made the last line
+  // wrap/unwrap at the reveal's catch-up rate and the pane jitter). Once the
+  // reveal has caught up it is merely transparent.
+  const showCursor = active;
+  const caughtUp = revealed >= text.length;
 
   return (
     <Text style={style} selectable>
       {shown}
-      {showCursor ? <Text style={{ color: cursorColor ?? undefined }}>{'▋'}</Text> : null}
+      {showCursor ? <Text style={{ color: caughtUp ? 'transparent' : (cursorColor ?? undefined) }}>{'▋'}</Text> : null}
     </Text>
   );
 }
