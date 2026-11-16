@@ -60,4 +60,13 @@ object ShellyJNI {
      */
     @JvmStatic
     external fun readDir(path: String): String
+
+    /**
+     * renameat2(src, dst, RENAME_NOREPLACE) (shelly-exec.c): an atomic move
+     * that never replaces an existing [dst]. 0 on success, else the errno
+     * (EEXIST = dst taken). Call only on API 30+ (see McpHandoffMove).
+     * Never throws.
+     */
+    @JvmStatic
+    external fun renameNoReplace(src: String, dst: String): Int
 }

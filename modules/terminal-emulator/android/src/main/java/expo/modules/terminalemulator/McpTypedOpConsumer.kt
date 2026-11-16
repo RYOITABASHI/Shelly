@@ -45,13 +45,21 @@ import org.json.JSONObject
  *       a same-uid copy of the signed file can never run twice), then the
  *       ORIGINAL file is moved from claimed/ into `requests/` without
  *       overwriting. One way: after the move this class never writes that
- *       request's result. If the move fails while the file is still in
- *       claimed/, the token is removed and the request refused `not_attended`;
- *       if the file is gone, nothing is written (ambiguous = no second writer).
- *  Nothing is ever replaced: a result file is created in place with O_EXCL
- *  (the script retries a torn read until its deadline), and the handoff is
- *  Os.link + unlink (EEXIST = not handed off). Where the kernel / SELinux
- *  refuses the hard link, the handoff fails closed (`not_attended`).
+ *       request's result. If the move (or the token write) fails while the
+ *       file is still in claimed/ and nothing is at the destination, the token
+ *       is removed and the request refused with its own code `handoff_failed`
+ *       (logcat + an `mcp_typed_op_handoff_failed` audit line carry the errno
+ *       name) — never `not_attended`, which means nobody was there to approve;
+ *       otherwise nothing is written (ambiguous = no second writer).
+ *  A result file is created in place with O_EXCL and never replaces one (the
+ *  script retries a torn read until its deadline). The handoff move is
+ *  McpHandoffMove: renameat2(RENAME_NOREPLACE) (atomic, EEXIST = not handed
+ *  off). It used to be Os.link + unlink, which SELinux refuses to apps on
+ *  app_data_file, so every handoff on device failed (build 2964). Only where
+ *  renameat2 is unavailable (API < 30, ENOSYS, EINVAL) it is lstat-absent then
+ *  rename — a same-uid-only check-then-rename window; the moved file still
+ *  needs a valid bridge-key MAC and the single-use handoff token before RN
+ *  acts on it (see McpHandoffMove).
  *
  * Commit vs. retirement: the last re-check, the audit line, the ticket and the
  * intent happen inside [commitLock]; [stop] sets `stopped` and then takes
@@ -108,21 +116,39 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         private fun lexists(f: File): Boolean = lstatOrNull(f) != null
 
         /**
-         * Moves [src] to [dst] without ever replacing an existing [dst]:
-         * link + unlink (link fails with EEXIST). No fallback: when the link
-         * is refused for any reason the move did not happen (false) — fail
-         * closed. True when [dst] now holds the bytes of [src].
+         * The device file system for McpHandoffMove (see its doc for the two
+         * routes). renameat2 only on API 30+: below that bionic has no
+         * renameat2 and the app seccomp filter may not allow the syscall.
          */
-        internal fun publishNoOverwrite(src: File, dst: File): Boolean {
-            try {
-                Os.link(src.path, dst.path)
-            } catch (e: Exception) {
-                val errno = (e as? android.system.ErrnoException)?.errno
-                if (errno != OsConstants.EEXIST) Log.w(TAG, "no-overwrite move refused errno=${errno ?: -1}; not moved")
-                return false
+        internal val handoffFs = object : McpHandoffMove.Fs {
+            override fun renameNoReplace(src: String, dst: String): Int {
+                if (Build.VERSION.SDK_INT < 30) return McpHandoffMove.UNAVAILABLE
+                return try {
+                    ShellyJNI.renameNoReplace(src, dst)
+                } catch (e: Throwable) {
+                    // UnsatisfiedLinkError / ExceptionInInitializerError: no native route.
+                    Log.w(TAG, "renameNoReplace unavailable type=${e.javaClass.simpleName}")
+                    McpHandoffMove.UNAVAILABLE
+                }
             }
-            runCatching { Os.remove(src.path) }
-            return true
+
+            override fun exists(path: String): Boolean = try {
+                Os.lstat(path)
+                true
+            } catch (e: android.system.ErrnoException) {
+                e.errno != OsConstants.ENOENT
+            } catch (e: Exception) {
+                true
+            }
+
+            override fun rename(src: String, dst: String): Int = try {
+                Os.rename(src, dst)
+                0
+            } catch (e: android.system.ErrnoException) {
+                e.errno
+            } catch (e: Exception) {
+                McpHandoffMove.EIO
+            }
         }
 
         fun agentsDir(context: Context): File = File(HomeInitializer.getHomeDir(context), ".shelly/agents")
@@ -523,16 +549,23 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         val token = File(handoffsDir, request.callId)
         // The line first: a line without a move is harmless, a move without a line is not.
         audit("mcp_typed_op_handed_off", agentId, request.principal, null)
-        val moved = writeHandoffToken(token, request.callId) && publishNoOverwrite(claimed, dest)
-        if (moved) {
+        val result = if (writeHandoffToken(token, request.callId)) McpHandoffMove.move(claimed.path, dest.path, handoffFs) else null
+        if (result is McpHandoffMove.Result.Moved) {
             // One way: from here on RN alone answers this request.
-            Log.i(TAG, "run_agent handed to RN (no rule match)")
+            Log.i(TAG, "run_agent handed to RN (no rule match) route=${result.route}")
             return
         }
-        if (lexists(claimed) && !lexists(dest)) {
+        // Its own code and errno, never `not_attended` (that hid this on device, build 2964).
+        val why = McpHandoffMove.failureCode(result)
+        val errno = (result as? McpHandoffMove.Result.Failed)?.errno ?: -1
+        val route = (result as? McpHandoffMove.Result.Failed)?.route ?: "-"
+        Log.w(TAG, "handoff move failed code=$why errno=$errno route=$route")
+        audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
+        val refusal = McpHandoffMove.refusalAfterFailure(lexists(claimed), lexists(dest))
+        if (refusal != null) {
             // Still ours and not in RN's queue: refuse instead (and void the token).
             runCatching { Os.remove(token.path) }
-            refuse(request, claimed, McpTypedOpDecision.NOT_ATTENDED, agentId, false)
+            refuse(request, claimed, refusal, agentId, false)
         } else {
             Log.w(TAG, "handoff state unknown; not answering (no second writer)")
         }
