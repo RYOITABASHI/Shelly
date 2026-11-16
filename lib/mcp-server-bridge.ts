@@ -44,9 +44,10 @@
  * Typed operations (run_agent / get_run_result, mcpTypedOpsEnabled): see
  * runAgentTool below for the deny order (plan "typed MCP operations",
  * section (b)) and lib/mcp-typed-ops.ts for the pure parts. A run_agent
- * always-allow rule (lib/mcp-always-allow.ts) is consulted only after every
- * deny class, is written only here after an "always allow" tap that won the
- * settle race with the epoch unchanged, and never relaxes the run's taint.
+ * always-allow rule is written only after the explicit action-consent tap.
+ * New rules bind both the definition and RN-evaluated sealed policy snapshot;
+ * native verifies them again at acceptance and start. Legacy rules remain
+ * dialog-only. See docs/mcp-agent-action-consent.md.
  * This is the foreground path: it still needs RN to drain the queue (the
  * headless bypass is a later PR).
  */
@@ -922,7 +923,7 @@ async function withLaunchLock<T>(principal: string, fn: () => Promise<T>): Promi
  * authorization is re-matched at the execution boundary, and native re-checks
  * the same rule under its ticket lock and again when the run actually starts.
  */
-type RunAuthorization = { via: 'dialog' } | { via: 'rule'; ruleId: string; target: string };
+type RunAuthorization = { via: 'dialog' } | { via: 'rule'; ruleId: string; target: string; actionPolicyPin?: string };
 
 const RULE_GONE: TypedOpRefusal = {
   code: 'target_changed',
@@ -986,7 +987,7 @@ async function launchRunAgent(
       if (!denyNow.ruleEligible) return refuse(RULE_GONE);
       if (!(await mcpAlwaysAllowMatches(ingress.principal, 'run_agent', authorization.target, approvedBind))) return refuse(RULE_GONE);
       const still = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, 'run_agent', authorization.target, approvedBind);
-      if (!still || still.id !== authorization.ruleId) return refuse(RULE_GONE);
+      if (!still || still.id !== authorization.ruleId || still.actionPolicyPin !== authorization.actionPolicyPin || (authorization.actionPolicyPin !== undefined && authorization.actionPolicyPin !== denyNow.policyPin)) return refuse(RULE_GONE);
     }
     // Last check, synchronous with the native call below (no await in
     // between): the store must still hold the very object that was just
@@ -1026,6 +1027,13 @@ async function launchRunAgent(
  * falls through; the always-allow rule (step 8) is consulted only after every
  * deny class (1–7), and the run itself starts in exactly one place (step 11).
  */
+function actionConsentText(): string {
+  // Lazy, like agentIngressTainted: read-only/raw callers do not load native UI modules.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { t } = require('@/lib/i18n') as typeof import('@/lib/i18n');
+  return t('mcp.agent_action_consent');
+}
+
 async function runAgentTool(
   args: Record<string, unknown>,
   epoch: number,
@@ -1066,9 +1074,9 @@ async function runAgentTool(
   // re-matched there); a match whose id can't be listed is not used.
   if (deny.ruleEligible && (await mcpAlwaysAllowMatches(ingress.principal, 'run_agent', target, bind))) {
     const rule = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, 'run_agent', target, bind);
-    if (rule) {
+    if (rule && (rule.actionPolicyPin === undefined || rule.actionPolicyPin === deny.policyPin)) {
       logInfo('MCPBridge', `always-allow rule ${rule.id} matched run_agent ${agentId} (principal=${ingress.principal.slice(0, 8)})`);
-      return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'rule', ruleId: rule.id, target });
+      return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'rule', ruleId: rule.id, target, actionPolicyPin: rule.actionPolicyPin });
     }
     logError('MCPBridge', `always-allow rule matched run_agent ${agentId} but could not be listed; asking instead`);
   }
@@ -1086,9 +1094,9 @@ async function runAgentTool(
   const { decision, timedOut } = await requestApprovalDetailed({
     kind: 'run_agent',
     summary: `Run agent "${agent.name}" via MCP?`,
-    detail: `Agent: ${agent.name} (${agentId})\nDeclared actions: ${actions}\n\nThis run is treated as external input: it may read and call models, but its file writes, sends and actions are refused.`,
+    detail: `Agent: ${agent.name} (${agentId})\nDeclared actions: ${actions}\n\n${actionConsentText()}`,
     origin: ingress,
-    alwaysAllowable: deny.ruleEligible ? { op: 'run_agent', targetLabel: ruleLabel(agent.name) } : undefined,
+    alwaysAllowable: deny.ruleEligible && deny.policyPin !== null ? { op: 'run_agent', targetLabel: ruleLabel(agent.name) } : undefined,
   }, dialogBudgetMs);
   if (epoch !== queueEpoch) return refuse(REVOKED);
   if (decision === 'deny') {
@@ -1105,10 +1113,14 @@ async function runAgentTool(
     return refuse({ code: 'target_changed', message: 'the agent was edited while the approval was open; call run_agent again' });
   }
   if (epoch !== queueEpoch) return refuse(REVOKED);
-  if (decision === 'always' && deny.ruleEligible && denyAgain.ruleEligible) {
-    const added = await addMcpAlwaysAllowRule(ingress.principal, 'run_agent', target, bind, ruleLabel(agent.name));
+  if (decision === 'always' && denyAgain.policyPin !== deny.policyPin) {
+    return refuse({ code: 'target_changed', message: 'the safety policy changed while the approval was open; call run_agent again' });
+  }
+  if (decision === 'always' && deny.ruleEligible && denyAgain.ruleEligible && deny.policyPin !== null && denyAgain.policyPin === deny.policyPin) {
+    const added = await addMcpAlwaysAllowRule(ingress.principal, 'run_agent', target, bind, ruleLabel(agent.name), denyAgain.policyPin);
     if (added.ok) {
       logInfo('MCPBridge', `always-allow rule ${added.id} ${added.code} for run_agent ${agentId} (principal=${ingress.principal.slice(0, 8)})`);
+      if (added.id) return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'rule', ruleId: added.id, target, actionPolicyPin: denyAgain.policyPin });
     } else {
       logError('MCPBridge', `always-allow rule not saved (${added.code}); running once`);
       showToast('mcp.always_allow_not_saved', 'The "always allow" rule could not be saved. The agent runs this once.');

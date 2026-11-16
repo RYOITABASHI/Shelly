@@ -491,6 +491,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             bind = x.bind,
             ruleId = x.ruleId,
             target = x.target,
+            policyPin = McpRunLauncher.actionRule(app, request.principal, x.target, x.bind)?.actionPolicyPin,
         )
         val result = synchronized(commitLock) {
             McpRunLauncher.launch(app, x.agentId, handle, request.principal, x.requestId, grant) {
@@ -533,14 +534,15 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         val agent = steps.resolveAgent(x.agentId) ?: return McpTypedOpDecision.UNKNOWN_AGENT
         if (steps.halted()) return McpTypedOpDecision.HALTED
         if (steps.tainted(x.agentId)) return McpTypedOpDecision.TAINTED
-        when (steps.step7(agent)) {
+        val approved = steps.actionRule(principal, x.target, x.bind) == x.ruleId
+        if (!approved) when (steps.step7(agent)) {
             McpTypedOpPolicy.Decision.POLICY_DENIED -> return McpTypedOpDecision.POLICY_DENIED
             McpTypedOpPolicy.Decision.UNDECIDABLE -> return McpTypedOpDecision.TARGET_CHANGED
             McpTypedOpPolicy.Decision.CLEARABLE -> Unit
         }
         val bind = try { McpAgentBinding.bindingHash(agent) } catch (e: Exception) { null }
         if (bind != x.bind) return McpTypedOpDecision.TARGET_CHANGED
-        if (steps.matchRule(principal, x.target, x.bind) != x.ruleId) return McpTypedOpDecision.TARGET_CHANGED
+        if (!approved && steps.matchRule(principal, x.target, x.bind) != x.ruleId) return McpTypedOpDecision.TARGET_CHANGED
         return null
     }
 
@@ -590,13 +592,17 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
 
         override fun tainted(agentId: String): Boolean = AgentIngressTaint.runTaintReason(app, agentId) != null
 
+        override fun actionRule(principal: String, target: String, bind: String): String? = try {
+            McpRunLauncher.actionRule(app, principal, target, bind)?.id
+        } catch (e: Exception) { null }
+
         override fun step7(agent: JSONObject): McpTypedOpPolicy.Decision = policyDecisionOnDisk(agentsDir, agent)
 
         override fun existingTicket(principal: String, requestId: String): McpRunTickets.Ticket? =
             McpRunTickets.findIdempotentForMcp(app, principal, requestId)
 
         override fun matchRule(principal: String, target: String, bind: String): String? = try {
-            McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(app).rules, principal, "run_agent", target, bind)?.id
+            McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(app).rules, principal, "run_agent", target, bind)?.takeIf { it.actionPolicyPin == null }?.id
         } catch (e: Exception) {
             null
         }

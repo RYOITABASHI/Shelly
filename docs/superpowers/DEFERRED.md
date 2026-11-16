@@ -16,6 +16,8 @@
 
 ## History
 
+- 2026-11-16: Codex (`fix/mcp-agent-action-preapproval`) が MCP の「常に許可」を、旧ルールを拡張せずに定義と安全設定に束縛したアクション事前許可へ拡張。APK・Keystore・実機は未検証。下記「MCP アクション事前許可」参照。
+
 - 2026-11-15: CC（feat/mcp-typed-diagnostics、未push）が MCP の読み取り専用ツール `device_status` / `read_logs` / `get_settings` を追加。実機未検証、MCP 経由の設定の書き込みは範囲外として記録（下記 P2「MCP の診断ツール」）。
 - 2026-11-14: 音声 ingress（inbox 方式、ネイティブ前景サービス）を P2 として登録（#153 で合意）。
 - 2026-11-14: 外部エージェント連携の議論（#153）で合意した「MCP の入口に外部入力の印を付ける」を登録し、読み取りプロトタイプで `tools/call` が Shelly の背面で返らないことを確認して同項目の 7 に追記（下記 P1「MCP の入口」）。
@@ -89,6 +91,14 @@
 2026-11-14 実機: 「開発記 記事下書き」（承認なしで実行＝標準）の Run now が、scrcpy の仮想ディスプレイが消えてアクティビティが破棄された後に「draft action approval timed out」（5 分）で終わった。原因は、draft / notify を自動許可するドレインが RootLayout の useEffect（`app/_layout.tsx` `drainAgentActionApprovalRequests`）の中にあり、`ReactHost.onHostDestroy` で root がアンマウントされると cleanup がインターバルとキープアライブ tick の購読を外すこと（JS ランタイム・実行の出所レジストリ・ネイティブの tick は生きている。logcat で `ReactHost{0}.onHostDestroy(activity)` → 再表示時に `RootLayout ⚡ mounted` を確認）。
 **修正（ブランチ `fix/rwa-draft-auto-accept-background`、実機未検証）**: `lib/agent-action-approval-headless.ts` をモジュールスコープで登録し、RootLayout がマウントされていない間だけ、同じキープアライブ tick で draft / notify の要求を `decideActionAutoApproval`（Keystore の設定＋定義ハッシュ、出所は drained / minted の両方、POLICY-001 の deny / draft_only / ask で停止）で判定して署名付き accept を返す。許可しないものには何もしない（decline も通知も出さない。再マウント後に従来のドレインが扱う）。2 つのドレインは共有ロックで同時に動かない。**実機で確認すること**: Run now の直後にアプリのタスクを消す（またはアクティビティを破棄する）→ 下書きが保存され、logcat に `headless run-without-approval auto-accepted` が出る。tick がアクティビティ破棄後も JS に届くこと。
 **未対応**: CLI ワーカーのゲートのエスカレーション（`drainAgentEscalationRequests`、同じ effect 内）も同じ理由で画面の破棄後は自動許可されず、ドライバーのターンのタイムアウトまで待つ。同じ形（モジュールスコープ＋共有ロック）で直す。
+
+### MCP アクション事前許可 — 実装済み、APK・実機未検証（2026-11-16、P1）
+
+新しい「常に許可」はクライアント × 定義ハッシュ × 検証済み安全設定のハッシュへの明示同意。最初の実行から適用し、背面では従来の保守的 step 7 より前にこの証明を確認する。旧ルールは起動ダイアログ省略のまま。新しい権限にするには設定で旧ルールを取り消し、前景で再承認する。今回だけ許可・raw 操作・定義 taint・STOP-ALL・CRITICAL の制限は維持。アクション実行時の deny/draft_only/ask も維持し、音声・記事入力を一括で信頼しない。詳細・制限・検証手順は `docs/mcp-agent-action-consent.md`。
+
+**残る確認**: Android APK ビルド、実機で新しい同意→背面の draft/notify 完走、定義編集・安全設定編集・ルール取消し・トークン再発行・STOP-ALL で新規/保留中の起動が止まること、今回だけ許可ではアクションが拒否されること。Keystore の実動作はホストテストの対象外。画面依存 intent/DM/browser の無人実装は追加しない。開始済みのプロセスはルール取消しだけでは中断しない（従来どおり STOP-ALL を使う）。
+
+→ sync: README Status 2 言語、MANUAL、revoke-access を更新。
 
 ### MCP の入口（ingress）に外部入力の印（taint）を付ける — 未実装、書き込み系の外部連携はこれが入るまで開始しない (P1、セキュリティ)
 

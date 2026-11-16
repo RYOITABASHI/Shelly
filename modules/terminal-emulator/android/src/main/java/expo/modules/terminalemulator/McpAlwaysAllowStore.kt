@@ -21,8 +21,10 @@ import org.json.JSONObject
  * bearer token: sha256("shelly-mcp-principal:" + token)[:32]) for this typed
  * operation on this one target run without the approval tap. Raw operations
  * (`run_command`, `write_file`) can never have a rule: [decode] rejects them and
- * [add] refuses them. A rule only ever removes a dialog; every deny class
- * (STOP-ALL, taint, policy, CRITICAL) is checked before a rule is consulted.
+ * [add] refuses them. Legacy rules only remove the launch dialog. New action
+ * consent carries actionPolicyPin: RN evaluated the full deny/CRITICAL policy
+ * for this binding; native verifies that exact sealed snapshot before launch.
+ * STOP-ALL and agent-definition taint always win.
  *
  * Who can add a rule: only TerminalEmulatorModule's `mcpAlwaysAllowAdd`, which
  * RN's MCP bridge calls after a human "always allow" tap won the approval
@@ -71,7 +73,7 @@ object McpAlwaysAllowStore {
     private val TARGET_RES: Map<String, Regex> = mapOf(
         "run_agent" to Regex("^agent:[A-Za-z0-9_-]{1,128}$"),
     )
-    private val RULE_KEYS = setOf("id", "principal", "op", "target", "bind", "label", "createdAt")
+    private val RULE_KEYS = setOf("id", "principal", "op", "target", "bind", "label", "createdAt", "actionPolicyPin")
     private val ROOT_KEYS = setOf("version", "rules")
     // Control, bidi and zero-width characters (the same set as lib/mcp-request-auth.ts
     // UNSAFE_NAME_CHARS): the label is shown in Settings.
@@ -86,6 +88,8 @@ object McpAlwaysAllowStore {
         val bind: String?,
         val label: String,
         val createdAt: Long,
+        /** RN evaluated this definition against this exact sealed policy after action consent. */
+        val actionPolicyPin: String? = null,
     )
 
     enum class Status { EMPTY, OK, UNREADABLE }
@@ -123,12 +127,16 @@ object McpAlwaysAllowStore {
 
     fun isValidRule(r: Rule): Boolean =
         ID_RE.matches(r.id) && isValidPrincipal(r.principal) && isTypedOp(r.op) && isValidTarget(r.op, r.target) &&
-            isValidBind(r.bind) && isValidLabel(r.label) && r.createdAt >= 0
+            isValidBind(r.bind) && isValidLabel(r.label) && r.createdAt >= 0 &&
+            (r.actionPolicyPin == null || (r.bind != null && isValidPolicyPin(r.actionPolicyPin)))
+
+    fun isValidPolicyPin(pin: String?): Boolean = pin == "absent" || (pin != null && BIND_RE.matches(pin))
 
     private fun ruleJson(r: Rule): JSONObject {
         val o = JSONObject().put("id", r.id).put("principal", r.principal).put("op", r.op).put("target", r.target)
             .put("label", r.label).put("createdAt", r.createdAt)
         if (r.bind != null) o.put("bind", r.bind)
+        if (r.actionPolicyPin != null) o.put("actionPolicyPin", r.actionPolicyPin)
         return o
     }
 
@@ -175,6 +183,7 @@ object McpAlwaysAllowStore {
                     bind = bind,
                     label = o.get("label") as? String ?: return null,
                     createdAt = (created as Number).toLong(),
+                    actionPolicyPin = if (o.has("actionPolicyPin")) o.get("actionPolicyPin") as? String ?: return null else null,
                 )
                 if (!isValidRule(r)) return null
                 if (!ids.add(r.id) || !keys.add(ruleKey(r))) return null
@@ -378,12 +387,13 @@ object McpAlwaysAllowStore {
         bind: String?,
         label: String,
         now: Long = System.currentTimeMillis(),
+        actionPolicyPin: String? = null,
     ): String {
         val out = JSONObject()
         if (!isTypedOp(op)) return out.put("ok", false).put("code", "invalid").toString()
         val current = read(context).rules
         // bind is taken as given: null is the only "any definition"; "" or anything malformed is refused.
-        val rule = Rule(newRuleId(current.map { it.id }), principal, op, target, bind, sanitizeLabel(label), now)
+        val rule = Rule(newRuleId(current.map { it.id }), principal, op, target, bind, sanitizeLabel(label), now, actionPolicyPin)
         return when (val r = withAdded(current, rule)) {
             is AddResult.Refused -> out.put("ok", false).put("code", r.code).toString()
             is AddResult.Added -> try {

@@ -45,6 +45,18 @@ class McpAlwaysAllowStoreTest {
         JSONObject().put("version", 1).put("rules", JSONArray().also { a -> rules.forEach { a.put(it) } }).toString()
 
     @Test
+    fun actionConsentIsExplicitBoundMetadataAndLegacyRulesStayLegacy() {
+        val legacy = rule()
+        assertNull(McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(listOf(legacy)))!![0].actionPolicyPin)
+        for (pin in listOf("absent", "c".repeat(64))) {
+            val approved = legacy.copy(actionPolicyPin = pin)
+            assertEquals(listOf(approved), McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(listOf(approved))))
+        }
+        assertFalse(McpAlwaysAllowStore.isValidRule(legacy.copy(bind = null, actionPolicyPin = "absent")))
+        assertFalse(McpAlwaysAllowStore.isValidRule(legacy.copy(actionPolicyPin = "unavailable")))
+    }
+
+    @Test
     fun encodeDecodeRoundTrip() {
         val rules = listOf(rule(), rule(id = "r_0000000000000002", target = "agent:other", bind = null, label = ""))
         assertEquals(rules, McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(rules)))

@@ -14,17 +14,10 @@ import org.json.JSONObject
  * the run_agent decision order. No Android dependency, so the JVM tests
  * (McpTypedOpDecisionTest) cover all of it.
  *
- * Decision order = lib/mcp-server-bridge.ts runAgentTool (plan section (b)):
- *  1 setting · 2 arguments · 3 epoch · 4 target · 5 STOP-ALL · 6 taint ·
- *  7 policy / CRITICAL (the conservative native subset, McpTypedOpPolicy) ·
- *  (repeated requestId → the existing run, as RN) · 8 always-allow rule.
- * Every step is a lazy [Steps] call, so a later step is never consulted once
- * an earlier one refused: the always-allow store in particular is read only
- * after every deny class passed. Anything native cannot decide (step 7
- * UNDECIDABLE, a binding that cannot be computed) is "no rule match", never a
- * match: the no-match branch hands the request to RN when RN is live (RN then
- * runs the whole order itself, with its dialog) and refuses `not_attended`
- * otherwise.
+ * After setting / arguments / epoch / target / STOP-ALL / definition taint,
+ * first check action consent bound to the exact verified policy snapshot.
+ * Without it, use the conservative legacy step 7 and dialog-only rule path.
+ * A changed/unverified policy cannot use action consent; RN may ask again.
  */
 object McpTypedOpDecision {
     // ── Request verification (lib/mcp-request-auth.ts verifyMcpRequest) ────
@@ -231,6 +224,7 @@ object McpTypedOpDecision {
         fun resolveAgent(agentId: String): JSONObject?
         fun halted(): Boolean
         fun tainted(agentId: String): Boolean
+        fun actionRule(principal: String, target: String, bind: String): String? = null
         fun step7(agent: JSONObject): McpTypedOpPolicy.Decision
         /** McpRunTickets.findIdempotent for this principal (read only), or null. */
         fun existingTicket(principal: String, requestId: String): McpRunTickets.Ticket?
@@ -271,7 +265,16 @@ object McpTypedOpDecision {
         if (s.halted()) return Outcome.Refuse(HALTED, agentId)
         // 6. taint (audited as ingress_tainted_refused)
         if (s.tainted(agentId)) return Outcome.Refuse(TAINTED, agentId, taint = true)
-        // 7. policy / CRITICAL — the native subset; undecidable = no match.
+        // RN already evaluated this exact binding against this exact sealed policy.
+        // STOP-ALL and definition taint still precede every kind of consent.
+        val target = "agent:$agentId"
+        val bind = try { McpAgentBinding.bindingHash(agent) } catch (e: Exception) { return noMatch(agentId) }
+        val actionRuleId = s.actionRule(req.principal, target, bind)
+        if (actionRuleId != null) {
+            if (args.requestId != null) s.existingTicket(req.principal, args.requestId)?.let { return Outcome.Existing(agentId, it) }
+            return Outcome.Execute(agentId, args.requestId, actionRuleId, target, bind)
+        }
+        // 7. Legacy dialog-only rule: conservative native evaluation.
         when (s.step7(agent)) {
             McpTypedOpPolicy.Decision.POLICY_DENIED -> return Outcome.Refuse(POLICY_DENIED, agentId)
             McpTypedOpPolicy.Decision.UNDECIDABLE -> return noMatch(agentId)
@@ -282,8 +285,6 @@ object McpTypedOpDecision {
             s.existingTicket(req.principal, args.requestId)?.let { return Outcome.Existing(agentId, it) }
         }
         // 8. always-allow rule — only now, after every deny class.
-        val target = "agent:$agentId"
-        val bind = try { McpAgentBinding.bindingHash(agent) } catch (e: Exception) { return noMatch(agentId) }
         val ruleId = s.matchRule(req.principal, target, bind) ?: return noMatch(agentId)
         return Outcome.Execute(agentId, args.requestId, ruleId, target, bind)
     }

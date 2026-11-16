@@ -33,6 +33,7 @@ class McpTypedOpDecisionTest {
         var existing: McpRunTickets.Ticket? = null,
         var rule: String? = "r_0123456789abcdef",
         var live: Boolean = false,
+        var approved: String? = null,
     ) : McpTypedOpDecision.Steps {
         val calls = ArrayList<String>()
         override fun typedOpsOn(): Boolean { calls.add("typedOps"); return typedOps }
@@ -40,6 +41,7 @@ class McpTypedOpDecisionTest {
         override fun resolveAgent(agentId: String): JSONObject? { calls.add("agent"); return agent }
         override fun halted(): Boolean { calls.add("halted"); return halted }
         override fun tainted(agentId: String): Boolean { calls.add("tainted"); return tainted }
+        override fun actionRule(principal: String, target: String, bind: String): String? = approved
         override fun step7(agent: JSONObject): Decision { calls.add("step7"); return step7 }
         override fun existingTicket(principal: String, requestId: String): McpRunTickets.Ticket? { calls.add("existing"); return existing }
         override fun matchRule(principal: String, target: String, bind: String): String? { calls.add("rule"); return rule }
@@ -50,6 +52,24 @@ class McpTypedOpDecisionTest {
         McpTypedOpDecision.Request("11111111-1111-4111-8111-111111111111", tool, args, principal, now - ageMs)
 
     private fun refusalCode(o: Outcome): String? = (o as? Outcome.Refuse)?.refusal?.code
+
+    @Test
+    fun sealedActionConsentStartsHeadlessWithoutTheConservativePolicySubset() {
+        val s = FakeSteps(step7 = Decision.UNDECIDABLE, approved = "r_0123456789abcdef")
+        s.agent!!.put("action", JSONObject().put("type", "draft"))
+        assertTrue(McpTypedOpDecision.decide(request(), s, now) is Outcome.Execute)
+        assertFalse("step7" in s.calls)
+        assertFalse("live" in s.calls)
+        val changed = FakeSteps(step7 = Decision.UNDECIDABLE, approved = null)
+        assertEquals("not_attended", refusalCode(McpTypedOpDecision.decide(request(), changed, now)))
+    }
+
+    @Test
+    fun actionConsentCannotRescueStoppedOrTaintedAgents() {
+        for (s in listOf(FakeSteps(halted = true, approved = "r_0123456789abcdef"), FakeSteps(tainted = true, approved = "r_0123456789abcdef"))) {
+            assertTrue(McpTypedOpDecision.decide(request(), s, now) is Outcome.Refuse)
+        }
+    }
 
     // ── Decision order ────────────────────────────────────────────────────
 

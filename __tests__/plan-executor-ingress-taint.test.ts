@@ -16,6 +16,7 @@ jest.mock('@/lib/home-path', () => ({
 
 import * as fs from 'fs';
 import * as http from 'http';
+import { createHash } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
@@ -100,9 +101,10 @@ function writePlan(home: string, port: number, steps: Step[] | null, actionType 
   return planFile;
 }
 
-function runExecutor(planFile: string, home: string, driver: string, recordDir: string, extraEnv: Record<string, string> = {}, brokerPath = broker) {
+function runExecutor(planFile: string, home: string, driver: string, recordDir: string, extraEnv: Record<string, string> = {}, brokerPath = broker, unattended = false) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
     const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', brokerPath, '--agent-driver', driver];
+    if (unattended) args.push('--unattended', '1');
     const env: Record<string, string | undefined> = {
       ...process.env,
       HOME: home,
@@ -234,7 +236,40 @@ describe('shelly-plan-executor.js MCP ingress taint (v59)', () => {
     expect(readAudit(home).find((e) => e.kind === 'ingress_tainted_refused')).toMatchObject({ event: 'suppressed_draft', actionType: '__suppressed__' });
   }, 30000);
 
-  it('untainted regression: the same notify agent dispatches as before', async () => {
+  it('explicit MCP action consent completes a manual-review notify agent headlessly', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    const file = writePlan(home, port, null);
+    const plan = JSON.parse(fs.readFileSync(file, 'utf8'));
+    plan.agent.requireActionApproval = true;
+    fs.writeFileSync(file, JSON.stringify(plan));
+    const result = await runExecutor(file, home, driver, recordDir, { SHELLY_MCP_ACTIONS_PREAPPROVED: '1', SHELLY_RUN_ORIGIN: 'event' }, broker, true);
+    expect(result.status).toBe(0);
+    expect(readRunLog(home).status).toBe('success');
+    expect(fs.existsSync(path.join(logDir(home), 'native-result-notification.json'))).toBe(true);
+    expect(fs.existsSync(path.join(home, '.shelly/agents/action-approvals')) ? fs.readdirSync(path.join(home, '.shelly/agents/action-approvals')) : []).toEqual([]);
+  }, 30000);
+
+  it.each(['deny', 'ask'])('MCP action consent cannot bypass a content-dependent %s rule even with the policy switch off', async (effect) => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    const file = writePlan(home, port, null);
+    const text = JSON.stringify({ kind: 'shelly.user-policy', userPolicy: { rules: [] }, compiledActionRules: [`${effect}|notify||digest`] });
+    fs.writeFileSync(path.join(home, '.shelly/agents/policy.json'), text);
+    await runExecutor(file, home, driver, recordDir, { SHELLY_MCP_ACTIONS_PREAPPROVED: '1', SHELLY_RUN_ORIGIN: 'event', SHELLY_AGENT_POLICY_SEAL: createHash('sha256').update(text).digest('hex') }, broker, true);
+    expect(readRunLog(home).status).toBe('skipped');
+    expect(JSON.stringify(readRunLog(home))).toContain('policy');
+  }, 30000);
+
+  it('a taint mark still refuses actions even when an MCP consent flag is present', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    await runExecutor(writePlan(home, port, null), home, driver, recordDir, { SHELLY_MCP_ACTIONS_PREAPPROVED: '1', SHELLY_INGRESS_TAINTED: '1' });
+    expect(readRunLog(home).status).toBe('skipped');
+    expect(readAudit(home).find((e) => e.kind === 'ingress_tainted_refused')).toBeDefined();
+  }, 30000);
+
+  it('untainted regression: the same notify agent dispatches as before' , async () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver();
     const result = await runExecutor(writePlan(home, port, null), home, driver, recordDir);
@@ -255,7 +290,7 @@ describe('native + .sh wiring (source pins)', () => {
     expect(kt).not.toContain('callerTainted || ');
     expect(kt.match(/append\(ingressTaintExports\(ingressReason\)\)/g)).toHaveLength(2);
     expect(kt).toContain('" && readonly SHELLY_INGRESS_TAINTED SHELLY_INGRESS_TAINTED_REASON"');
-    expect(kt).toContain('runOrigin, ingressReason)');
+    expect(kt).toContain('runOrigin, ingressReason, mcpActionsPreapproved)');
   });
 
   it('runTaintReason fails closed, never throws, and reads the native mcp-ever marker seal() writes', () => {

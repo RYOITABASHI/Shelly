@@ -2652,6 +2652,7 @@ const McpAlwaysAllowSection = React.memo(function McpAlwaysAllowSection({ visibl
               client: clientIdLabel(r.principal),
               date: new Date(r.createdAt).toLocaleDateString(),
             })}
+            {' · '}{t(r.actionPolicyPin === undefined ? 'mcp_always_allow.scope_legacy' : 'mcp_always_allow.scope_actions')}
           </Text>
         </View>
       ))}

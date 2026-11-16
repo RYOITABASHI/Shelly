@@ -485,7 +485,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** True when a rule allows (principal, op, target) with this binding hash. Never writes. */
   mcpAlwaysAllowMatch?(principal: string, op: string, target: string, bind: string | null): Promise<boolean>;
   /** ONLY the MCP bridge after a human "always allow" tap. Returns JSON {ok, code, id?}. */
-  mcpAlwaysAllowAdd?(principal: string, op: string, target: string, bind: string | null, label: string): Promise<string>;
+  mcpAlwaysAllowAdd?(principal: string, op: string, target: string, bind: string | null, label: string, actionPolicyPin?: string | null): Promise<string>;
   /** Settings revoke. Returns status JSON plus `ok`. */
   mcpAlwaysAllowRemove?(ids: string[]): Promise<string>;
   /** Token cascade: null removes every rule. Resolves true only when confirmed. */

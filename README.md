@@ -564,6 +564,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 
 | Area | State |
 |---|---|
+| MCP agent action consent | Implemented; host tests only, APK/device verification pending. New consent binds the agent and verified safety policy; legacy rules stay dialog-only. [Contract and limits](docs/mcp-agent-action-consent.md). |
 | Core terminal — native PTY, multi-pane layout, AI Edit golden path, FileTree/git, Command Palette | ✅ shipping, broadly on-device verified |
 | Background/autonomous agents — `@agent` registration → unattended AlarmManager fire → notify | ✅ wired; unattended firing confirmed end-to-end on one real device (Z Fold6, N=1) |
 | Sub-agent fan-out (`parallelGroup`) — isolated branch context, concurrent unattended dispatch | ✅ on-device verified 2026-08-17 via a real 3-branch concurrent AlarmManager fire |
