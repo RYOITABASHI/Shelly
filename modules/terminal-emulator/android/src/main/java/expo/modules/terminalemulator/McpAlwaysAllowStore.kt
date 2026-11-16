@@ -240,7 +240,11 @@ object McpAlwaysAllowStore {
         val next: List<Rule>
         val stored: Rule
         if (idx >= 0) {
-            stored = rules[idx].copy(bind = rule.bind, label = rule.label, createdAt = rule.createdAt)
+            // The new grant replaces the whole rule except its id, including
+            // actionPolicyPin: RN just evaluated that pin. Keeping the old pin
+            // froze a rule granted before the first policy write at "absent",
+            // so no later grant could ever match (build 2968 device report).
+            stored = rule.copy(id = rules[idx].id)
             next = rules.toMutableList().also { it[idx] = stored }
         } else {
             if (rules.any { it.id == rule.id }) return AddResult.Refused("invalid")

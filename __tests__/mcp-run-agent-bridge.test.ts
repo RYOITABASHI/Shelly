@@ -123,10 +123,21 @@ describe('the dialog and the "always allow" tap', () => {
     expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: false, code: 'not_attended' });
     expect(h.launches).toHaveLength(0);
     h.appState.currentState = 'active';
+    const firstId = h.rules[0].id;
     const fresh = await startWithDialog({ agentId: 'a1' });
     useMcpApprovalStore.getState().respond(fresh.request.id, 'always');
     expect(await fresh.pending).toMatchObject({ ok: true });
+    // Native replaces the same-key rule in place (same id) with the new pin.
+    expect(h.rules).toHaveLength(1);
+    expect(h.rules[0].id).toBe(firstId);
     expect(h.rules[0].actionPolicyPin).toBe('d'.repeat(64));
+    expect(h.launches).toHaveLength(1);
+    // Re-granted consent sticks: the next background call matches without a dialog.
+    h.tickets.clear();
+    h.appState.currentState = 'background';
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: true });
+    expect(useMcpApprovalStore.getState().current).toBeNull();
+    expect(h.launches).toHaveLength(2);
   });
 
   it('a policy edit while the action consent dialog is open refuses the stale consent', async () => {

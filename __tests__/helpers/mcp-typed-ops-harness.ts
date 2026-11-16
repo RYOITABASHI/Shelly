@@ -121,11 +121,17 @@ export const nativeMock = {
     mcpAlwaysAllowAdd: async (p: string, op: string, t: string, b: string | null, label: string, actionPolicyPin: string | null) => {
       h.addCalls += 1;
       if (h.addAnswer) return JSON.stringify(h.addAnswer);
-      const id = `r_${nodeCrypto.randomBytes(8).toString('hex')}`;
+      // Mirrors native McpAlwaysAllowStore.withAdded: a grant for an existing
+      // (principal, op, target) replaces that rule in place and keeps its id.
+      const idx = h.rules.findIndex((r) => r.principal === p && r.op === op && r.target === t);
+      const id = idx >= 0 ? h.rules[idx].id : `r_${nodeCrypto.randomBytes(8).toString('hex')}`;
       const rule: Rule = { id, principal: p, op, target: t, label, createdAt: Date.now() };
       if (b !== null) rule.bind = b;
       if (actionPolicyPin !== null && actionPolicyPin !== undefined) rule.actionPolicyPin = actionPolicyPin;
-      h.rules = h.rules.filter((r) => !(r.principal === p && r.op === op && r.target === t));
+      if (idx >= 0) {
+        h.rules[idx] = rule;
+        return JSON.stringify({ ok: true, code: 'replaced', id });
+      }
       h.rules.push(rule);
       return JSON.stringify({ ok: true, code: 'added', id });
     },

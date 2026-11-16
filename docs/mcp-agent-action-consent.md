@@ -5,8 +5,8 @@ Implemented on `fix/mcp-agent-action-preapproval`, 2026-11-16. Android build and
 ## Contract
 
 - **Allow once**: the existing ingress-tainted run; reads and model calls only. No action privilege is added.
-- **Always allow**: explicit consent to this client's execution of this exact agent definition and its declared actions. New rules carry `actionPolicyPin`, the hash of the verified policy snapshot RN evaluated (or `absent`). This applies to the first run too.
-- **Legacy rules**: retain dialog-only behavior. They never acquire `actionPolicyPin` automatically. Revoke the old rule in Settings and call `run_agent` while Shelly is in the foreground to grant the new scope. Settings shows which scope a rule has.
+- **Always allow**: explicit consent to this client's execution of this exact agent definition and its declared actions. New rules carry `actionPolicyPin`, the hash of the verified policy snapshot RN evaluated (or `absent`). This applies to the first run too. Granting again for the same client and agent replaces the stored rule in place (same id) with the new bind, label and `actionPolicyPin`, so re-authorizing after a policy edit takes effect.
+- **Legacy rules**: retain dialog-only behavior. They never acquire `actionPolicyPin` automatically; only an explicit "always allow" tap on the action consent dialog does. Revoke the old rule in Settings and call `run_agent` while Shelly is in the foreground to grant the new scope. Settings shows which scope a rule has.
 - The definition binding includes prompts, tools, actions and run settings. A definition edit invalidates the match. Editing the safety policy invalidates new action consent, even if the edit is less restrictive; authorize again in the foreground.
 
 ## Native background path
