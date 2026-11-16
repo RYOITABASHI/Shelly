@@ -777,7 +777,7 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // every action when SHELLY_INGRESS_TAINTED=1 (native exports it for an agent
 // marked by MCP ingress; generateRunScript bakes it for that agent too) and
 // writes an ingress_tainted_refused audit line. Lockstep with AgentRuntime.kt.
-const AGENT_SCRIPT_VERSION = 79;
+const AGENT_SCRIPT_VERSION = 80;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3491,7 +3491,7 @@ shelly_policy_action_effect() {
   pa_type="$1"
   SHELLY_POLICY_EFFECT=""
   SHELLY_POLICY_REASON=""
-  [ "\${SHELLY_AGENT_POLICY:-0}" = "1" ] || return 0
+  [ "\${SHELLY_AGENT_POLICY:-0}" = "1" ] || [ "\${SHELLY_MCP_ACTIONS_PREAPPROVED:-0}" = "1" ] || return 0
   [ "$pa_type" = "__suppressed__" ] && return 0
   SHELLY_POLICY_FOLD_NODE=0
   shelly_policy_node_ok && SHELLY_POLICY_FOLD_NODE=1
@@ -3574,7 +3574,7 @@ POLICYEOF
     SHELLY_POLICY_REASON="$pa_type action blocked by a user policy rule ($pa_best)"
     return 0
   fi
-  if [ "$pa_side" = "1" ]; then
+  if [ "$pa_side" = "1" ] && [ "\${SHELLY_MCP_ACTIONS_PREAPPROVED:-0}" != "1" ]; then
     case "\${SHELLY_RUN_ORIGIN:-}" in
       user|widget) ;;
       *)
@@ -3589,7 +3589,7 @@ POLICYEOF
     SHELLY_POLICY_REASON="$pa_type action needs approval: user policy rule"
     return 0
   fi
-  if [ "$pa_side" = "1" ] && [ "$pa_unavailable" = "1" ]; then
+  if { [ "$pa_side" = "1" ] || [ "\${SHELLY_MCP_ACTIONS_PREAPPROVED:-0}" = "1" ]; } && [ "$pa_unavailable" = "1" ]; then
     SHELLY_POLICY_EFFECT="ask"
     SHELLY_POLICY_REASON="$pa_type action needs approval: user policy file is unreadable"
   fi
@@ -3634,6 +3634,13 @@ request_and_wait_approval() {
       SHELLY_POLICY_FORCE_MANUAL=1
       ;;
   esac
+  if [ "\${SHELLY_MCP_ACTIONS_PREAPPROVED:-0}" = "1" ] && [ "\${SHELLY_INGRESS_TAINTED:-0}" != "1" ] && [ "$SHELLY_POLICY_FORCE_MANUAL" != "1" ]; then
+    case "$approval_type" in
+      draft|notify) SHELLY_UNATTENDED_LOCAL_BYPASS=1; return 0 ;;
+      webhook|api-call|social-post) return 0 ;;
+      cli) [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ] || return 0 ;;
+    esac
+  fi
   # Owner decision 2026-10-09 (option A, v64): on an UNATTENDED run the
   # local-only actions (draft = scoped file write, notify = local
   # notification) skip the manual approval tap — nobody is there to tap, so

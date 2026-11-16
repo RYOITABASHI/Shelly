@@ -44,7 +44,7 @@ const BIND_RE = /^[0-9a-f]{64}$/;
 // Same set as lib/mcp-request-auth.ts UNSAFE_NAME_CHARS / McpAlwaysAllowStore.
 // eslint-disable-next-line no-control-regex
 const UNSAFE_LABEL_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/;
-const RULE_KEYS = new Set(['id', 'principal', 'op', 'target', 'bind', 'label', 'createdAt']);
+const RULE_KEYS = new Set(['id', 'principal', 'op', 'target', 'bind', 'label', 'createdAt', 'actionPolicyPin']);
 
 export type AlwaysAllowRule = {
   id: string;
@@ -56,6 +56,8 @@ export type AlwaysAllowRule = {
   /** Display only, never used for matching. */
   label: string;
   createdAt: number;
+  /** Present only after explicit consent to actions, pinned to the verified policy. */
+  actionPolicyPin?: string;
 };
 
 export type AlwaysAllowStatus = {
@@ -102,6 +104,7 @@ function isValidRule(r: AlwaysAllowRule): boolean {
     && MCP_PRINCIPAL_RE.test(r.principal)
     && isValidAlwaysAllowTarget(r.op, r.target)
     && (r.bind === undefined || BIND_RE.test(r.bind))
+    && (r.actionPolicyPin === undefined || (r.bind !== undefined && (r.actionPolicyPin === 'absent' || BIND_RE.test(r.actionPolicyPin))))
     && r.label.length <= MAX_LABEL_CHARS
     && !UNSAFE_LABEL_CHARS.test(r.label)
     && Number.isSafeInteger(r.createdAt)
@@ -129,12 +132,16 @@ export function parseAlwaysAllowStatus(raw: unknown): AlwaysAllowStatus {
     for (const r of rules) {
       if (!r || typeof r !== 'object' || Array.isArray(r)) return UNREADABLE;
       if (Object.keys(r).some((k) => !RULE_KEYS.has(k))) return UNREADABLE;
-      const { id, principal, op, target, bind, label, createdAt } = r as Record<string, unknown>;
+      const { id, principal, op, target, bind, label, createdAt, actionPolicyPin } = r as Record<string, unknown>;
       if (typeof id !== 'string' || typeof principal !== 'string' || typeof target !== 'string') return UNREADABLE;
       if (typeof label !== 'string' || typeof createdAt !== 'number' || !isTypedOp(op)) return UNREADABLE;
       if (bind !== undefined && typeof bind !== 'string') return UNREADABLE;
       const rule: AlwaysAllowRule = { id, principal, op, target, label, createdAt };
       if (bind !== undefined) rule.bind = bind as string;
+      if (actionPolicyPin !== undefined) {
+        if (typeof actionPolicyPin !== 'string') return UNREADABLE;
+        rule.actionPolicyPin = actionPolicyPin;
+      }
       if (!isValidRule(rule)) return UNREADABLE;
       const key = ruleKey(principal, op, target);
       if (ids.has(id) || keys.has(key)) return UNREADABLE;
@@ -228,12 +235,13 @@ export async function addMcpAlwaysAllowRule(
   target: string,
   bind: string | null,
   label: string,
+  actionPolicyPin: string | null = null,
 ): Promise<AlwaysAllowAddResult> {
   if (!TerminalEmulator.mcpAlwaysAllowAdd) return { ok: false, code: 'unavailable' };
   if (!MCP_PRINCIPAL_RE.test(principal) || !isValidAlwaysAllowTarget(op, target)) return { ok: false, code: 'invalid' };
   if (bind !== null && !BIND_RE.test(bind)) return { ok: false, code: 'invalid' };
   try {
-    const res = JSON.parse(await TerminalEmulator.mcpAlwaysAllowAdd(principal, op, target, bind, label));
+    const res = JSON.parse(await TerminalEmulator.mcpAlwaysAllowAdd(principal, op, target, bind, label, actionPolicyPin));
     const codes = ['added', 'replaced', 'invalid', 'full', 'failed'];
     const code = codes.includes(res?.code) ? res.code : 'failed';
     const ok = res?.ok === true && (code === 'added' || code === 'replaced') && typeof res.id === 'string';

@@ -110,11 +110,26 @@ object McpRunLauncher {
      * use) and decides it against the current state. Null = may start; else
      * the ticket reason. Never throws.
      */
-    fun authorizeStart(context: Context, handle: String, agentId: String, principal: String?): String? = try {
+    fun authorizeStart(context: Context, handle: String, agentId: String, principal: String?, onAuthorized: (Boolean) -> Unit = {}): String? = try {
         val grant = McpRunAuthorization.take(handle)
-        if (grant == null) McpRunAuthorization.REASON_UNAUTHORIZED else authorizeNow(context, grant, agentId, principal)
+        if (grant == null) McpRunAuthorization.REASON_UNAUTHORIZED else {
+            val refusal = authorizeNow(context, grant, agentId, principal)
+            if (refusal == null) onAuthorized(grant.ruleId != null && actionRule(context, grant.principal, "agent:$agentId", grant.bind)?.id == grant.ruleId)
+            refusal
+        }
     } catch (e: Exception) {
         McpRunAuthorization.REASON_UNAUTHORIZED
+    }
+
+    /** Exact RN-evaluated snapshot, not a native approximation of policy. */
+    fun actionRule(context: Context, principal: String, target: String, bind: String): McpAlwaysAllowStore.Rule? {
+        val rule = McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(context).rules, principal, "run_agent", target, bind) ?: return null
+        if (rule.bind != bind || rule.actionPolicyPin == null) return null
+        val file = McpTypedOpConsumer.policyFileOnDisk(McpTypedOpConsumer.agentsDir(context)) ?: return null
+        if (file.malformed || file.pin != rule.actionPolicyPin) return null
+        val seal = AgentPolicySeal.read(context)
+        if (!McpRunAuthorization.isSealed(seal.valid, seal.everSealed, seal.seal, file.pin, file.blank)) return null
+        return rule
     }
 
     private fun authorizeNow(context: Context, grant: McpRunAuthorization.Grant, agentId: String, principal: String?): String? = try {
@@ -145,7 +160,7 @@ object McpRunLauncher {
         val typedOpsOn = try { McpAutostartStore.read(context)?.typedOps == true } catch (e: Exception) { false }
         val matched = if (ruleBased && bind != null && grant.target != null) {
             try {
-                McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(context).rules, grant.principal, "run_agent", grant.target, bind)?.id
+                McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(context).rules, grant.principal, "run_agent", grant.target, bind)
             } catch (e: Exception) {
                 null
             }
@@ -163,7 +178,8 @@ object McpRunLauncher {
             policyPin = policyFile?.pin,
             policyVerified = policyVerified,
             typedOpsOn = typedOpsOn,
-            matchedRuleId = matched,
+            matchedRuleId = matched?.id,
+            matchedActionPolicyPin = matched?.actionPolicyPin,
         )
     }
 }

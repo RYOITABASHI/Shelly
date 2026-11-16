@@ -32,7 +32,8 @@ class McpAlwaysAllowStoreTest {
         bind: String? = bindA,
         label: String = "Daily",
         createdAt: Long = 1_731_650_000_000L,
-    ) = Rule(id, principal, op, target, bind, label, createdAt)
+        actionPolicyPin: String? = null,
+    ) = Rule(id, principal, op, target, bind, label, createdAt, actionPolicyPin)
 
     private fun ruleObj(r: Rule): JSONObject {
         val o = JSONObject().put("id", r.id).put("principal", r.principal).put("op", r.op).put("target", r.target)
@@ -43,6 +44,18 @@ class McpAlwaysAllowStoreTest {
 
     private fun state(vararg rules: JSONObject): String =
         JSONObject().put("version", 1).put("rules", JSONArray().also { a -> rules.forEach { a.put(it) } }).toString()
+
+    @Test
+    fun actionConsentIsExplicitBoundMetadataAndLegacyRulesStayLegacy() {
+        val legacy = rule()
+        assertNull(McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(listOf(legacy)))!![0].actionPolicyPin)
+        for (pin in listOf("absent", "c".repeat(64))) {
+            val approved = legacy.copy(actionPolicyPin = pin)
+            assertEquals(listOf(approved), McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(listOf(approved))))
+        }
+        assertFalse(McpAlwaysAllowStore.isValidRule(legacy.copy(bind = null, actionPolicyPin = "absent")))
+        assertFalse(McpAlwaysAllowStore.isValidRule(legacy.copy(actionPolicyPin = "unavailable")))
+    }
 
     @Test
     fun encodeDecodeRoundTrip() {
@@ -165,6 +178,28 @@ class McpAlwaysAllowStoreTest {
         // Another principal is another rule.
         val other = McpAlwaysAllowStore.withAdded(again.rules, rule(id = "r_0000000000000003", principal = p2)) as AddResult.Added
         assertEquals(2, other.rules.size)
+    }
+
+    @Test
+    fun aReplacingGrantStoresTheNewActionPolicyPin() {
+        val h2 = "c".repeat(64)
+        // Granted before any policy write: pin "absent".
+        val first = McpAlwaysAllowStore.withAdded(emptyList(), rule(actionPolicyPin = "absent")) as AddResult.Added
+        // Re-granted after a policy edit: RN evaluated h2, so the rule must carry h2.
+        val again = McpAlwaysAllowStore.withAdded(
+            first.rules,
+            rule(id = "r_0000000000000002", createdAt = 7, actionPolicyPin = h2),
+        ) as AddResult.Added
+        assertTrue(again.replaced)
+        assertEquals(1, again.rules.size)
+        assertEquals("r_0000000000000001", again.rule.id)
+        assertEquals(h2, again.rule.actionPolicyPin)
+        assertEquals(rule(createdAt = 7, actionPolicyPin = h2), again.rules[0])
+        // A legacy rule (no pin) re-granted with action consent becomes a pinned rule.
+        val legacy = McpAlwaysAllowStore.withAdded(emptyList(), rule()) as AddResult.Added
+        val pinned = McpAlwaysAllowStore.withAdded(legacy.rules, rule(id = "r_0000000000000002", actionPolicyPin = h2)) as AddResult.Added
+        assertEquals("r_0000000000000001", pinned.rule.id)
+        assertEquals(h2, pinned.rules[0].actionPolicyPin)
     }
 
     @Test

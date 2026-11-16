@@ -81,6 +81,7 @@ object McpRunAuthorization {
         val typedOpsOn: Boolean,
         /** The id of the always-allow rule matching (principal, run_agent, target, bind) now; null = none. */
         val matchedRuleId: String?,
+        val matchedActionPolicyPin: String? = null,
     )
 
     /** Well-formed: fields in shape, deadline finite and positive. */
@@ -107,6 +108,8 @@ object McpRunAuthorization {
         if (!f.agentEnabled) return McpRunTickets.REASON_DISABLED
         if (f.currentBind == null || f.currentBind != grant.bind) return REASON_TARGET_CHANGED
         if (f.tainted || f.policyDenied) return McpRunTickets.REASON_REFUSED
+        if (grant.ruleId != null && f.matchedActionPolicyPin != null &&
+            (grant.policyPin != f.matchedActionPolicyPin || f.policyPin != f.matchedActionPolicyPin || !f.policyVerified)) return McpRunTickets.REASON_REFUSED
         if (f.declaresActions) {
             if (grant.policyPin == null || f.policyPin == null || f.policyPin != grant.policyPin) return McpRunTickets.REASON_REFUSED
             if (grant.ruleId != null && !f.policyVerified) return McpRunTickets.REASON_REFUSED

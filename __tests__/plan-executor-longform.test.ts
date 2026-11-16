@@ -1279,7 +1279,7 @@ describe('the draft lands in the vault with no mirror copy', () => {
   it('REGRESSION: the .sh save path keeps its mirror and its script version', () => {
     const src = fs.readFileSync(path.join(root, 'lib', 'agent-executor.ts'), 'utf8');
     expect(src).not.toContain('OBSIDIAN_VAULT_PATH%/}');
-    expect(src).toContain('const AGENT_SCRIPT_VERSION = 79;');
+    expect(src).toContain('const AGENT_SCRIPT_VERSION = 80;');
   });
 
   it('a sibling folder that only shares the prefix is not inside the vault', () => {

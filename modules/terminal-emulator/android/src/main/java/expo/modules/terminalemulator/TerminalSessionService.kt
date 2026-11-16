@@ -588,13 +588,14 @@ class TerminalSessionService : Service() {
             // target, rule; McpRunLauncher.authorizeStart, under the ticket lock
             // shared with token revoke). Anything else skips it.
             var mcpStarted = false
+            var mcpActionsPreapproved = false
             // Taken the moment the run returns (before any cleanup): bounds which
             // run log / result file belong to this MCP run.
             var runEndMs = 0L
             try {
                 if (mcpRunHandle != null) {
                     mcpStarted = McpRunTickets.markRunning(applicationContext, mcpRunHandle, agentId, mcpPrincipal) {
-                        McpRunLauncher.authorizeStart(applicationContext, mcpRunHandle, agentId, mcpPrincipal)
+                        McpRunLauncher.authorizeStart(applicationContext, mcpRunHandle, agentId, mcpPrincipal) { mcpActionsPreapproved = it }
                     }
                 }
                 if (mcpRunHandle != null && !mcpStarted) {
@@ -606,11 +607,12 @@ class TerminalSessionService : Service() {
                         applicationContext,
                         agentId,
                         tainted = tainted,
-                        unattended = unattended,
+                        unattended = unattended || mcpActionsPreapproved,
+                        mcpActionsPreapproved = mcpActionsPreapproved,
                         notificationText = notificationText,
                         notificationPackage = notificationPackage,
                         origin = origin,
-                        ingressRunReason = if (mcpRunHandle != null) AgentIngressTaint.RUN_REASON_MCP else null
+                        ingressRunReason = if (mcpRunHandle != null && !mcpActionsPreapproved) AgentIngressTaint.RUN_REASON_MCP else null
                     )
                     runEndMs = System.currentTimeMillis()
                 }

@@ -215,7 +215,7 @@ describe('headless consumer wiring (structural)', () => {
     const service = kt('TerminalSessionService.kt');
     const module = kt('TerminalEmulatorModule.kt');
     const tickets = kt('McpRunTickets.kt');
-    expect(service).toMatch(/McpRunTickets\.markRunning\(applicationContext, mcpRunHandle, agentId, mcpPrincipal\) \{\s*McpRunLauncher\.authorizeStart\(applicationContext, mcpRunHandle, agentId, mcpPrincipal\)\s*\}/);
+    expect(service).toMatch(/McpRunTickets\.markRunning\(applicationContext, mcpRunHandle, agentId, mcpPrincipal\) \{\s*McpRunLauncher\.authorizeStart\(applicationContext, mcpRunHandle, agentId, mcpPrincipal\) \{ mcpActionsPreapproved = it \}\s*\}/);
     expect(tickets).toMatch(/fun markRunning\(context: Context, handle: String, agentId: String, principal: String\?, authorize: \(\) -> String\?\): Boolean/);
     const mark = tickets.slice(tickets.indexOf('fun markRunning('), tickets.indexOf('fun markEndedWithoutRun('));
     expect(mark.indexOf('authorize()')).toBeGreaterThan(mark.indexOf('mayStart('));

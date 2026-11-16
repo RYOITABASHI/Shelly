@@ -134,6 +134,13 @@ describe('pure helpers', () => {
 });
 
 describe('parseAlwaysAllowStatus (fails to empty)', () => {
+  it('keeps legacy consent distinct and strictly validates the action consent snapshot', () => {
+    expect(parseAlwaysAllowStatus(status([rule()])).rules[0].actionPolicyPin).toBeUndefined();
+    expect(parseAlwaysAllowStatus(status([rule({ actionPolicyPin: 'absent' })])).rules[0].actionPolicyPin).toBe('absent');
+    for (const over of [{ actionPolicyPin: 'bad' }, { bind: undefined, actionPolicyPin: 'absent' }]) {
+      expect(parseAlwaysAllowStatus(status([rule(over)])).status).toBe('unreadable');
+    }
+  });
   it('parses a well-formed status', () => {
     const r = rule();
     const u = rule({ id: 'r_0000000000000002', target: 'agent:free', bind: undefined, label: '' });

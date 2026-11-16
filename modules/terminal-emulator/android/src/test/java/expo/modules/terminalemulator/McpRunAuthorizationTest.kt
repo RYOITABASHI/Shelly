@@ -48,6 +48,14 @@ class McpRunAuthorizationTest {
     fun clear() = McpRunAuthorization.clearForTests()
 
     @Test
+    fun actionConsentRequiresTheExactVerifiedPolicySnapshotAtStart() {
+        val current = facts().copy(matchedActionPolicyPin = pin)
+        assertNull(McpRunAuthorization.refusal(ruleGrant(), "daily", p1, current))
+        assertEquals(McpRunTickets.REASON_REFUSED, McpRunAuthorization.refusal(ruleGrant(), "daily", p1, current.copy(matchedActionPolicyPin = "d".repeat(64))))
+        assertEquals(McpRunTickets.REASON_REFUSED, McpRunAuthorization.refusal(ruleGrant(), "daily", p1, current.copy(policyVerified = false)))
+    }
+
+    @Test
     fun currentGrantsMayStart() {
         assertNull(McpRunAuthorization.refusal(tapGrant(), "daily", p1, facts(matched = null)))
         assertNull(McpRunAuthorization.refusal(ruleGrant(), "daily", p1, facts()))

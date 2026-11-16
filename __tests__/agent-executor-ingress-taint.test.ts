@@ -51,7 +51,7 @@ describe('generateRunScript: MCP ingress taint', () => {
   it('a marked agent exports SHELLY_INGRESS_TAINTED (+ reason) readonly, never SHELLY_CAP_TAINTED (the broker would stop model calls)', () => {
     for (const line of HEADER) expect(marked).toContain(`\n${line}\n`);
     expect(marked).not.toContain('export SHELLY_CAP_TAINTED=1');
-    expect(marked).toContain('SHELLY_AGENT_SCRIPT_VERSION=79');
+    expect(marked).toContain('SHELLY_AGENT_SCRIPT_VERSION=80');
     bashParses(marked);
   });
 

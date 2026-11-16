@@ -1815,8 +1815,8 @@ class TerminalEmulatorModule : Module() {
             McpAlwaysAllowStore.match(requireReactContext(), principal, op, target, bind)
         }
 
-        AsyncFunction("mcpAlwaysAllowAdd") { principal: String, op: String, target: String, bind: String?, label: String ->
-            McpAlwaysAllowStore.add(requireReactContext(), principal, op, target, bind, label)
+        AsyncFunction("mcpAlwaysAllowAdd") { principal: String, op: String, target: String, bind: String?, label: String, actionPolicyPin: String? ->
+            McpAlwaysAllowStore.add(requireReactContext(), principal, op, target, bind, label, actionPolicyPin = actionPolicyPin)
         }
 
         AsyncFunction("mcpAlwaysAllowRemove") { ids: List<String> ->

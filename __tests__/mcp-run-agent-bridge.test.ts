@@ -110,7 +110,59 @@ describe('the dialog and the "always allow" tap', () => {
     expect(h.addCalls).toBe(1);
   });
 
-  it('a rule that cannot be saved still runs once, with a toast', async () => {
+  it('new action consent pins the verified policy; a policy edit requires another approval', async () => {
+    addAgent('a1', { action: { type: 'draft' } });
+    const { pending, request } = await startWithDialog({ agentId: 'a1' });
+    useMcpApprovalStore.getState().respond(request.id, 'always');
+    expect(await pending).toMatchObject({ ok: true });
+    expect(h.rules[0].actionPolicyPin).toBe('absent');
+    h.tickets.clear();
+    h.launches = [];
+    h.policyPin = 'd'.repeat(64);
+    h.appState.currentState = 'background';
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: false, code: 'not_attended' });
+    expect(h.launches).toHaveLength(0);
+    h.appState.currentState = 'active';
+    const firstId = h.rules[0].id;
+    const fresh = await startWithDialog({ agentId: 'a1' });
+    useMcpApprovalStore.getState().respond(fresh.request.id, 'always');
+    expect(await fresh.pending).toMatchObject({ ok: true });
+    // Native replaces the same-key rule in place (same id) with the new pin.
+    expect(h.rules).toHaveLength(1);
+    expect(h.rules[0].id).toBe(firstId);
+    expect(h.rules[0].actionPolicyPin).toBe('d'.repeat(64));
+    expect(h.launches).toHaveLength(1);
+    // Re-granted consent sticks: the next background call matches without a dialog.
+    h.tickets.clear();
+    h.appState.currentState = 'background';
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: true });
+    expect(useMcpApprovalStore.getState().current).toBeNull();
+    expect(h.launches).toHaveLength(2);
+  });
+
+  it('a policy edit while the action consent dialog is open refuses the stale consent', async () => {
+    addAgent('a1', { action: { type: 'notify' } });
+    const { pending, request } = await startWithDialog({ agentId: 'a1' });
+    h.policyPin = 'e'.repeat(64);
+    useMcpApprovalStore.getState().respond(request.id, 'always');
+    expect(await pending).toMatchObject({ ok: false, code: 'target_changed' });
+    expect(h.rules).toHaveLength(0);
+    expect(h.launches).toHaveLength(0);
+  });
+
+  it('legacy rules remain dialog-only and are never silently given action consent', async () => {
+    addAgent('a1');
+    const { pending, request } = await startWithDialog({ agentId: 'a1' });
+    useMcpApprovalStore.getState().respond(request.id, 'always');
+    await pending;
+    delete h.rules[0].actionPolicyPin;
+    h.tickets.clear();
+    h.appState.currentState = 'background';
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: true });
+    expect(h.rules[0].actionPolicyPin).toBeUndefined();
+  });
+
+  it('a rule that cannot be saved still runs once, with a toast' , async () => {
     addAgent('a1');
     h.addAnswer = { ok: false, code: 'full' };
     const { pending, request } = await startWithDialog({ agentId: 'a1' });
@@ -281,14 +333,14 @@ describe('the execution boundary re-checks what the approval relied on', () => {
     expect(h.launches).toHaveLength(0);
   });
 
-  it('a rule-based launch tells native the rule id and binding; a tapped one passes no rule id', async () => {
+  it('the always tap and subsequent rule launches both carry the action consent rule', async () => {
     addAgent('a1');
     const { pending, request } = await startWithDialog({ agentId: 'a1' });
     useMcpApprovalStore.getState().respond(request.id, 'always');
     expect(await pending).toMatchObject({ ok: true });
     expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: true });
     expect(h.launchAuth).toHaveLength(2);
-    expect(h.launchAuth[0].ruleId).toBeNull();
+    expect(h.launchAuth[0].ruleId).toBe(h.rules[0].id);
     expect(h.launchAuth[1].ruleId).toBe(h.rules[0].id);
     expect(h.launchAuth[1].bind).toBe(h.rules[0].bind);
     expect(h.launchAuth[0].bind).toMatch(/^[0-9a-f]{64}$/);

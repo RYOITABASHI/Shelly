@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=61
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=62
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -263,7 +263,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // body actually cites in its programmatic "## Sources" (first-use order, body
 // markers renumbered to match; markers with no listed source are dropped, the
 // sourced-briefing finalize convention). Materials ([M1]) are listed as before.
-const EXECUTOR_SCRIPT_VERSION = 61;
+const EXECUTOR_SCRIPT_VERSION = 62;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -9295,7 +9295,7 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
 const POLICY_READ_ONLY_ACTION_TYPES = new Set(['draft', 'notify', '__suppressed__']);
 
 function agentPolicyEnabled(config) {
-  return String((config && config.SHELLY_AGENT_POLICY) || process.env.SHELLY_AGENT_POLICY || '').trim() === '1';
+  return process.env.SHELLY_MCP_ACTIONS_PREAPPROVED === '1' || String((config && config.SHELLY_AGENT_POLICY) || process.env.SHELLY_AGENT_POLICY || '').trim() === '1';
 }
 
 function isProactiveRunOrigin(origin) {
@@ -9387,11 +9387,11 @@ function policyActionEffect(paths, plan, config, actionType, text) {
   if (ruleEffect === 'deny' || (ruleEffect === 'draft_only' && sideEffect)) {
     return { effect: ruleEffect, reason: `${actionType} action blocked by a user policy rule (${ruleEffect})` };
   }
-  if (sideEffect && isProactiveRunOrigin(process.env.SHELLY_RUN_ORIGIN)) {
+  if (sideEffect && isProactiveRunOrigin(process.env.SHELLY_RUN_ORIGIN) && process.env.SHELLY_MCP_ACTIONS_PREAPPROVED !== '1') {
     return { effect: 'ask', reason: `${actionType} action needs approval: proactive run (origin=${process.env.SHELLY_RUN_ORIGIN || 'unknown'}) may only read/draft/notify` };
   }
   if (ruleEffect === 'ask') return { effect: 'ask', reason: `${actionType} action needs approval: user policy rule` };
-  if (sideEffect && unavailable) return { effect: 'ask', reason: `${actionType} action needs approval: user policy file is unreadable` };
+  if ((sideEffect || process.env.SHELLY_MCP_ACTIONS_PREAPPROVED === '1') && unavailable) return { effect: 'ask', reason: `${actionType} action needs approval: user policy file is unreadable` };
   return { effect: '', reason: '' };
 }
 
@@ -9496,6 +9496,7 @@ function isUnattendedLocalOnlyAction(actionType) {
 // this script (still running the old fail-open read) is detected and
 // refreshed rather than silently kept.
 function requireActionApprovalTap(plan, config) {
+  if (process.env.SHELLY_MCP_ACTIONS_PREAPPROVED === '1' && !ingressTainted() && !plan.__policyForcedApproval) return false;
   if (typeof plan.agent.requireActionApproval === 'boolean') return plan.agent.requireActionApproval;
   return !argFalsy(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL);
 }
@@ -9576,7 +9577,7 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   }
   if (policy.effect === 'ask') {
     if (argTruthy(args && args.unattended)) throw new ActionSkipped(`${policy.reason} and cannot run unattended`);
-    plan = Object.assign({}, plan, { agent: Object.assign({}, plan.agent, { requireActionApproval: true }) });
+    plan = Object.assign({}, plan, { agent: Object.assign({}, plan.agent, { requireActionApproval: true }), __policyForcedApproval: true });
     policyForcedApproval = true;
   }
   // draft/notify have no per-type validation branch below (unlike
