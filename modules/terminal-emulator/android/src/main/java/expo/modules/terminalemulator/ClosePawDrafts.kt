@@ -285,6 +285,9 @@ object ClosePawDrafts {
         // That file is same-uid writable (see the class comment), so a process that
         // writes it directly can add a host that is then fetched with the owner's
         // cookies without anyone seeing it first: accepted by the owner.
+        // ClosePaw without Shelly's approval (owner decision 2026-11-16): every
+        // draft goes, with no per-destination switch and no daily cap.
+        if (ClosePawShellPreapproval.isOn(app)) return items
         val keys = items.map { destinationKey(it.draft) }
         if (keys.none { ClosePawDraftPreapproval.isOn(app, it) }) return emptyList()
         val mask = ClosePawDraftPreapproval.reserve(app, keys)
@@ -321,7 +324,7 @@ object ClosePawDrafts {
             // A later unlock resumes from here.
             if (isHalted(app) || !ClosePawDecisionReceiver.isUnlocked(app)) return
             if (!ClosePawHandoff.isTrustedVariantInstalled(app)) return
-            if (open.auto && !ClosePawDraftPreapproval.isOn(app, destinationKey(draft))) {
+            if (open.auto && !ClosePawShellPreapproval.isOn(app) && !ClosePawDraftPreapproval.isOn(app, destinationKey(draft))) {
                 // Turned off since: the item stays queued and is asked for as usual.
                 open.drafts.removeFirst()
                 open.labels.remove(draft.reqId)

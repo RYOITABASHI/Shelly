@@ -1803,6 +1803,18 @@ class TerminalEmulatorModule : Module() {
             ClosePawDraftPreapproval.statusJson(context)
         }
 
+        // "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt).
+        // ON only from RN's handler for words the owner typed in the AI pane
+        // composer (lib/closepaw-shell-preapproval.ts); nothing in the shell,
+        // the queue or a file reaches this. OFF is safe from anywhere.
+        AsyncFunction("setClosePawShellPreapproval") { on: Boolean ->
+            ClosePawShellPreapproval.setFromRn(requireReactContext(), on)
+        }
+
+        AsyncFunction("getClosePawShellPreapproval") {
+            ClosePawShellPreapproval.statusJson(requireReactContext())
+        }
+
         // MCP always-allow rules for typed operations (McpAlwaysAllowStore.kt).
         // Add: ONLY RN's MCP bridge after a human "always allow" tap won the
         // approval; nothing in the shell, the queue or a file reaches it.

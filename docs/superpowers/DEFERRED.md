@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-16: CC（feat/closepaw-shell-preapproval）が「ClosePaw を Shelly の承認なしで実行」（オーナー決定。Muse → Shelly → `shelly closepaw` の経路で毎回の承認を不要にする）を実装（`ClosePawShellPreapproval.kt`、`lib/closepaw-shell-preapproval.ts`、設定の「ClosePaw」）。Kotlin はローカルでは未コンパイル（CI のビルドで確認）、実機未検証（下記 P1）。
 - 2026-11-16: Codex (`fix/mcp-agent-action-preapproval`) が MCP の「常に許可」を、旧ルールを拡張せずに定義と安全設定に束縛したアクション事前許可へ拡張。APK・Keystore・実機は未検証。下記「MCP アクション事前許可」参照。
 
 - 2026-11-15: CC（feat/mcp-typed-diagnostics、未push）が MCP の読み取り専用ツール `device_status` / `read_logs` / `get_settings` を追加。実機未検証、MCP 経由の設定の書き込みは範囲外として記録（下記 P2「MCP の診断ツール」）。
@@ -91,6 +92,12 @@
 2026-11-14 実機: 「開発記 記事下書き」（承認なしで実行＝標準）の Run now が、scrcpy の仮想ディスプレイが消えてアクティビティが破棄された後に「draft action approval timed out」（5 分）で終わった。原因は、draft / notify を自動許可するドレインが RootLayout の useEffect（`app/_layout.tsx` `drainAgentActionApprovalRequests`）の中にあり、`ReactHost.onHostDestroy` で root がアンマウントされると cleanup がインターバルとキープアライブ tick の購読を外すこと（JS ランタイム・実行の出所レジストリ・ネイティブの tick は生きている。logcat で `ReactHost{0}.onHostDestroy(activity)` → 再表示時に `RootLayout ⚡ mounted` を確認）。
 **修正（ブランチ `fix/rwa-draft-auto-accept-background`、実機未検証）**: `lib/agent-action-approval-headless.ts` をモジュールスコープで登録し、RootLayout がマウントされていない間だけ、同じキープアライブ tick で draft / notify の要求を `decideActionAutoApproval`（Keystore の設定＋定義ハッシュ、出所は drained / minted の両方、POLICY-001 の deny / draft_only / ask で停止）で判定して署名付き accept を返す。許可しないものには何もしない（decline も通知も出さない。再マウント後に従来のドレインが扱う）。2 つのドレインは共有ロックで同時に動かない。**実機で確認すること**: Run now の直後にアプリのタスクを消す（またはアクティビティを破棄する）→ 下書きが保存され、logcat に `headless run-without-approval auto-accepted` が出る。tick がアクティビティ破棄後も JS に届くこと。
 **未対応**: CLI ワーカーのゲートのエスカレーション（`drainAgentEscalationRequests`、同じ effect 内）も同じ理由で画面の破棄後は自動許可されず、ドライバーのターンのタイムアウトまで待つ。同じ形（モジュールスコープ＋共有ロック）で直す。
+
+### ClosePaw を Shelly の承認なしで実行 — 実装済み、実機未検証（2026-11-16、P1）
+
+オーナー決定（2026-11-16）: Muse をインターフェースに Shelly を動かし、Shelly から ClosePaw に画面操作を渡すため、Shelly 側の ClosePaw 承認を ON/OFF できる 1 つのスイッチで外す。ON の間は (1) `shelly closepaw "<goal>"` が通知なしで即起動（`ClosePawShellApprovals.runPreapproved` → タップと同じ `resolve` 経路）、(2) エージェントの ClosePaw ステップは毎回の Review なし（実行の出どころ確認と 1 実行 1 回の claim は残す）、(3) 下書きは宛先ごとの設定と 1 日の上限なしでタップなし。ON はチャットで打った固定の文（「ClosePawは承認なしで」/ "run ClosePaw without approval"、ClosePaw の語が必須）だけ、OFF はチャットか設定。操作できるアプリの限定はしない（オーナー判断: どのアプリでも）。**受け入れた残余リスク**: ON の間は `shelly closepaw` に届く依頼（Codex、エージェント、Web 由来の文を含む）が確認なしに ClosePaw でどのアプリも本人として操作できる。止まるのは STOP-ALL、信頼済み variant の確認、ClosePaw 自身のポリシー、Shelly 内のゲートだけ。
+
+**残る確認**: 実機で ON/OFF（チャット・設定）、ON で `shelly closepaw` が通知なしに背面実行・`shelly closepaw wait` の状態が running→結果になること、エージェントの ClosePaw ステップが Review なしで 1 回だけ動くこと、STOP-ALL で拒否されること、下書きがタップなしで出ること。
 
 ### MCP アクション事前許可 — 実装済み、APK・実機未検証（2026-11-16、P1）
 

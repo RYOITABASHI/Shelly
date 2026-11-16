@@ -479,6 +479,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   disableDraftPreapproval?(destinations: string[]): Promise<string>;
   /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
   getDraftPreapproval?(): Promise<string>;
+  /** "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt).
+   *  Call with true ONLY for words the owner typed in the AI pane composer
+   *  (lib/closepaw-shell-preapproval.ts); false is safe from anywhere.
+   *  Returns JSON {ok, code, on, enabledAt?}. */
+  setClosePawShellPreapproval?(on: boolean): Promise<string>;
+  /** Status JSON {on, enabledAt?}. */
+  getClosePawShellPreapproval?(): Promise<string>;
   /** MCP always-allow rules for typed ops (McpAlwaysAllowStore.kt). Use lib/mcp-always-allow.ts.
    *  Status JSON {version, status: 'empty'|'ok'|'unreadable', rules: [{id, principal, op, target, bind?, label, createdAt}]}. */
   mcpAlwaysAllowList?(): Promise<string>;

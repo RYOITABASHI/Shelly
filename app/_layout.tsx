@@ -97,6 +97,7 @@ import {
 } from '@/lib/agent-add-queue';
 import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
 import { closePawRunProvenanceOk, isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
+import { isClosePawShellPreapprovalOn } from '@/lib/closepaw-shell-preapproval';
 import { closePawOutcomeKey, closePawRefusalFromError, closePawRefusalKey, postClosePawChatLine } from '@/lib/closepaw-background';
 import { handleClosePawDecisionDeepLink, syncClosePawShellApprovalsToChat } from '@/lib/closepaw-shell-approval';
 import {
@@ -2646,6 +2647,10 @@ export default function RootLayout() {
       if (!closePawRunProvenanceOk({ activeRunStartedAt, handoffAvailable: handoffAvailable === true })) {
         return false;
       }
+      // "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt,
+      // owner decision 2026-11-16): no per-run Review for any agent while it
+      // is on. The provenance check above and the once-per-run claim still apply.
+      if (await isClosePawShellPreapprovalOn()) return true;
       const agent = useAgentStore.getState().agents.find((a) => a.id === request.agentId);
       return isClosePawPreapproved(request, agent ?? null).catch(() => false);
     };

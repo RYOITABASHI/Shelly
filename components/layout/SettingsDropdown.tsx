@@ -54,6 +54,7 @@ import {
   getDraftPreapprovalEntries,
   type DraftPreapprovalEntry,
 } from '@/lib/closepaw-draft-preapproval';
+import { disableClosePawShellPreapproval, getClosePawShellPreapproval } from '@/lib/closepaw-shell-preapproval';
 import {
   clientIdLabel,
   listMcpAlwaysAllowRules,
@@ -204,6 +205,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <VoiceInputSection />
             <FrontAgentSection />
             <AgentsSection visible={visible} />
+            <ClosePawPreapprovalSection visible={visible} />
             <DraftPreapprovalSection visible={visible} />
             <McpAlwaysAllowSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
@@ -2490,6 +2492,76 @@ const SocialConnectorsSection = React.memo(function SocialConnectorsSection() {
 // pane opens via the shelly://browser deep link, and ~/.codex/auth.json
 // (mode 0600) is written on success. Verification is delegated to
 // shelly-doctor (which already reports `codex auth: <exists|missing>`).
+
+// "Run ClosePaw without Shelly's approval" (lib/closepaw-shell-preapproval.ts).
+// The native state (ClosePawShellPreapproval.kt) is the truth and is re-read
+// every time Settings opens. This toggle only turns it OFF: ON is set by
+// typing in the chat, never here.
+const ClosePawPreapprovalSection = React.memo(function ClosePawPreapprovalSection({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  const [on, setOn] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    getClosePawShellPreapproval()
+      .then((st) => { if (!cancelled) setOn(st.on); })
+      .catch((e) => logError('SettingsDropdown', 'Failed to load ClosePaw pre-approval', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  const toggle = React.useCallback(async () => {
+    if (!on) {
+      Alert.alert(t('closepaw_preapproval.settings_toggle'), t('closepaw_preapproval.settings_hint_off'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const st = await disableClosePawShellPreapproval();
+      setOn(st.on);
+      ToastAndroid.show(t('closepaw_preapproval.off'), ToastAndroid.SHORT);
+    } catch (e: any) {
+      Alert.alert(t('closepaw_preapproval.settings_toggle'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to turn off ClosePaw pre-approval', e);
+    } finally {
+      setBusy(false);
+    }
+  }, [on, t]);
+
+  return (
+    <Section title={t('closepaw_preapproval.settings_title')}>
+      <Row label={t('closepaw_preapproval.settings_toggle')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: on ? withAlpha(C.accent, 0.36) : C.border },
+            busy && styles.integrationRowDisabled,
+          ]}
+          onPress={() => void toggle()}
+          disabled={busy}
+          hitSlop={4}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: on, disabled: busy }}
+          accessibilityLabel={t('closepaw_preapproval.settings_toggle')}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: on ? C.accent : C.text2 },
+              on && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: on ? C.text1 : C.text2 }]}>
+        {t(on ? 'closepaw_preapproval.settings_hint_on' : 'closepaw_preapproval.settings_hint_off')}
+      </Text>
+    </Section>
+  );
+});
 
 // "Save drafts without approval" (lib/closepaw-draft-preapproval.ts). The
 // native state (ClosePawDraftPreapproval.kt) is the truth and is re-read every
