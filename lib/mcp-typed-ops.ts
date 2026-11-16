@@ -31,6 +31,10 @@ export const TYPED_OP_ERROR_CODES = [
   'tainted',
   'policy_denied',
   'not_attended',
+  // Native only (McpTypedOpConsumer): RN was live but the move of the request
+  // into requests/ failed. RN never writes it; listed so the vocabulary stays
+  // the one set the Kotlin refusals are checked against (mcp-typed-op-native-parity).
+  'handoff_failed',
   'denied_by_user',
   'approval_timeout',
   'revoked',

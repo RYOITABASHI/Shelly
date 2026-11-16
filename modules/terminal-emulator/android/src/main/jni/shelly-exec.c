@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -571,3 +572,49 @@ Java_expo_modules_terminalemulator_ShellyJNI_readDir(
     return result;
 }
 
+
+/*
+ * renameNoReplace — rename(2) that never replaces an existing destination:
+ * renameat2(AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE). Atomic; fails
+ * with EEXIST when dst is taken. Used by the MCP typed-op handoff
+ * (McpTypedOpConsumer / McpHandoffMove) instead of link(2) + unlink(2):
+ * SELinux denies untrusted_app the `link` permission on app_data_file, but
+ * `rename` is allowed.
+ *
+ * Called directly as a syscall (bionic's renameat2() wrapper only exists from
+ * API 30). The Kotlin caller only calls this on API 30+, where the app seccomp
+ * filter allows renameat2 (bionic exposes it); below that it never reaches here.
+ *
+ * Returns 0 on success, otherwise the errno (positive). Never throws.
+ */
+#ifndef RENAME_NOREPLACE
+#define RENAME_NOREPLACE (1 << 0)
+#endif
+
+JNIEXPORT jint JNICALL
+Java_expo_modules_terminalemulator_ShellyJNI_renameNoReplace(
+        JNIEnv *env,
+        jclass  clazz __attribute__((unused)),
+        jstring srcJ,
+        jstring dstJ)
+{
+#ifndef __NR_renameat2
+    (void)env; (void)srcJ; (void)dstJ;
+    return ENOSYS;
+#else
+    if (!srcJ || !dstJ) return EINVAL;
+    const char *src = (*env)->GetStringUTFChars(env, srcJ, NULL);
+    if (!src) return ENOMEM;
+    const char *dst = (*env)->GetStringUTFChars(env, dstJ, NULL);
+    if (!dst) {
+        (*env)->ReleaseStringUTFChars(env, srcJ, src);
+        return ENOMEM;
+    }
+    long rc = syscall(__NR_renameat2, AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE);
+    int err = rc == 0 ? 0 : errno;
+    (*env)->ReleaseStringUTFChars(env, dstJ, dst);
+    (*env)->ReleaseStringUTFChars(env, srcJ, src);
+    if (rc != 0 && err == 0) err = EIO;
+    return err;
+#endif
+}

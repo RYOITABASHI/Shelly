@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { actionTypeCapabilities, hasSideEffect, type PolicyCapability } from '@/lib/agent-action-policy';
 import { canonicalJson, mcpHandoffToken, mcpRequestMac, verifyMcpHandoffToken } from '@/lib/mcp-request-auth';
-import { AGENT_BIND_FIELDS, agentBindingHash, agentBindingProjection, classifyRunAgentDeny } from '@/lib/mcp-typed-ops';
+import { AGENT_BIND_FIELDS, agentBindingHash, agentBindingProjection, classifyRunAgentDeny, TYPED_OP_ERROR_CODES } from '@/lib/mcp-typed-ops';
 import { nodeSha256 } from './helpers/mcp-signed-request';
 
 function fixture<T>(name: string): T {
@@ -111,6 +111,7 @@ describe('headless consumer wiring (structural)', () => {
   const kt = (name: string) =>
     fs.readFileSync(path.join(__dirname, '..', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator', name), 'utf8');
   const consumer = kt('McpTypedOpConsumer.kt');
+  const move = kt('McpHandoffMove.kt');
   const launcher = kt('McpRunLauncher.kt');
   const supervisor = kt('McpServerSupervisor.kt');
   const bridge = fs.readFileSync(path.join(__dirname, '..', 'lib/mcp-server-bridge.ts'), 'utf8');
@@ -128,16 +129,55 @@ describe('headless consumer wiring (structural)', () => {
   it('the consumer touches requests/ only through the one no-overwrite handoff move, after the token', () => {
     expect(consumer.match(/requestsDir/g)).toHaveLength(2); // declaration + handOff
     const handOff = consumer.slice(consumer.indexOf('private fun handOff'), consumer.indexOf('// ── Facts'));
-    expect(handOff).toMatch(/audit\("mcp_typed_op_handed_off"[\s\S]*writeHandoffToken\(token, request\.callId\) && publishNoOverwrite\(claimed, dest\)/);
+    expect(handOff).toMatch(/audit\("mcp_typed_op_handed_off"[\s\S]*if \(writeHandoffToken\(token, request\.callId\)\) McpHandoffMove\.move\(claimed\.path, dest\.path, handoffFs\) else null/);
     // After a successful move nothing is written.
-    expect(handOff).toMatch(/if \(moved\) \{[\s\S]*?return\s*\}/);
+    expect(handOff).toMatch(/if \(result is McpHandoffMove\.Result\.Moved\) \{[\s\S]*?return\s*\}/);
     // Results are published create-if-absent too.
     const write = consumer.slice(consumer.indexOf('private fun writeResult'), consumer.indexOf('private fun writeHandoffToken'));
     expect(write).toMatch(/Os\.open\(\s*final\.path,\s*OsConstants\.O_WRONLY or OsConstants\.O_CREAT or OsConstants\.O_EXCL/);
     expect(write).not.toMatch(/Os\.rename/);
-    // No rename fallback anywhere in the no-overwrite move.
-    const pub = consumer.slice(consumer.indexOf('internal fun publishNoOverwrite'), consumer.indexOf('private val app'));
-    expect(pub).not.toMatch(/Os\.rename/);
+    // No hard links anywhere in the consumer (SELinux denies apps `link` on app_data_file: build 2964).
+    expect(consumer).not.toMatch(/Os\.link\(/);
+  });
+
+  // Build 2964: the hard-link handoff failed on device and was reported as not_attended.
+  it('a failed handoff move is refused handoff_failed with its errno audited, never not_attended', () => {
+    const handOff = consumer.slice(consumer.indexOf('private fun handOff'), consumer.indexOf('// ── Facts'));
+    expect(handOff).not.toMatch(/NOT_ATTENDED/);
+    expect(handOff).toMatch(/audit\("mcp_typed_op_handoff_failed", agentId, request\.principal, why\)/);
+    expect(handOff).toMatch(/McpHandoffMove\.refusalAfterFailure\(lexists\(claimed\), lexists\(dest\)\)[\s\S]*Os\.remove\(token\.path\)[\s\S]*refuse\(request, claimed, refusal/);
+    expect(move).toMatch(/if \(claimedStillThere && !destExists\) McpTypedOpDecision\.HANDOFF_FAILED else null/);
+    expect(kt('IngressAuditWriter.kt')).toMatch(/NATIVE_MCP_KINDS: Set<String> = setOf\([^)]*"mcp_typed_op_handoff_failed"/);
+  });
+
+  it('the handoff move is renameat2(RENAME_NOREPLACE); the checked rename only when that is unavailable', () => {
+    const body = move.slice(move.indexOf('fun move('), move.indexOf('fun refusalAfterFailure'));
+    // EEXIST = taken; only UNAVAILABLE / ENOSYS / EINVAL reach the fallback; any other errno fails.
+    expect(body).toMatch(/0 -> return Result\.Moved\(ROUTE_NOREPLACE\)\s*EEXIST -> return Result\.Taken\s*UNAVAILABLE, ENOSYS, EINVAL -> Unit[^\n]*\s*else -> return Result\.Failed\(r, ROUTE_NOREPLACE\)/);
+    // The fallback checks the destination before renaming.
+    expect(body.indexOf('fs.exists(dst)')).toBeGreaterThan(-1);
+    expect(body.indexOf('fs.exists(dst)')).toBeLessThan(body.indexOf('fs.rename(src, dst)'));
+    expect(consumer).toMatch(/Build\.VERSION\.SDK_INT < 30\) return McpHandoffMove\.UNAVAILABLE/);
+    const jni = fs.readFileSync(path.join(__dirname, '..', 'modules/terminal-emulator/android/src/main/jni/shelly-exec.c'), 'utf8');
+    expect(jni).toMatch(/Java_expo_modules_terminalemulator_ShellyJNI_renameNoReplace[\s\S]*syscall\(__NR_renameat2, AT_FDCWD, src, AT_FDCWD, dst, RENAME_NOREPLACE\)/);
+    expect(kt('ShellyJNI.kt')).toMatch(/external fun renameNoReplace\(src: String, dst: String\): Int/);
+  });
+
+  // Every code a native refusal can carry is in the TS vocabulary and is shown
+  // by both copies of the MCP script as `Error: [<code>] …`.
+  it('every Kotlin typed-op refusal code is a TYPED_OP_ERROR_CODES entry the script renders', () => {
+    const decision = kt('McpTypedOpDecision.kt');
+    const codes = [...decision.matchAll(/Refusal\("([a-z_]+)"/g)].map((m) => m[1]);
+    expect(codes).toEqual(expect.arrayContaining(['not_attended', 'handoff_failed']));
+    for (const code of codes) expect(TYPED_OP_ERROR_CODES).toContain(code);
+    const scripts = ['scripts/shelly-mcp-server.js', 'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js'].map((p) =>
+      fs.readFileSync(path.join(__dirname, '..', p), 'utf8'),
+    );
+    expect(scripts[0]).toBe(scripts[1]);
+    const re = /const RESULT_CODE_RE = \/(.+)\/;/.exec(scripts[0]);
+    expect(re).not.toBeNull();
+    const resultCodeRe = new RegExp(re![1]);
+    for (const code of TYPED_OP_ERROR_CODES) expect({ code, ok: resultCodeRe.test(code) }).toEqual({ code, ok: true });
   });
 
   it('stop() waits on the commit lock the launch runs under', () => {

@@ -93,9 +93,10 @@ object IngressAuditWriter {
      * Kinds only the native consumer writes (RN's appendMcpLine cannot): a rule
      * matched and the run is about to start (written BEFORE the launch; a failed
      * write stops the launch), the request was handed to RN, or a request file
-     * was dropped without an answer (bad MAC, stale, replay, orphan sweep).
+     * was dropped without an answer (bad MAC, stale, replay, orphan sweep), or
+     * the handoff move to RN failed (code = the errno name, McpHandoffMove.failureCode).
      */
-    val NATIVE_MCP_KINDS: Set<String> = setOf("mcp_typed_op_executing", "mcp_typed_op_handed_off", "mcp_typed_op_dropped")
+    val NATIVE_MCP_KINDS: Set<String> = setOf("mcp_typed_op_executing", "mcp_typed_op_handed_off", "mcp_typed_op_handoff_failed", "mcp_typed_op_dropped")
     private val RULE_ID_RE = Regex("^r_[0-9a-f]{16}$")
     private val TARGET_RE = Regex("^agent:[A-Za-z0-9_-]{1,128}$")
 

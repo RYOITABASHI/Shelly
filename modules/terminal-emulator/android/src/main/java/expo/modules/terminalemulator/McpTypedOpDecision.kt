@@ -183,6 +183,14 @@ object McpTypedOpDecision {
     val TAINTED = Refusal("tainted", "this agent was created or changed over MCP (or the ingress-mark store is unreadable); it is not started over MCP")
     val POLICY_DENIED = Refusal("policy_denied", "refused by your agent safety rules (deny) for this agent's actions")
     val NOT_ATTENDED = Refusal("not_attended", "Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now")
+    /**
+     * RN was live and the request was to be handed to it, but the move into
+     * requests/ failed (McpHandoffMove.Result.Failed; the errno is in logcat
+     * and the audit line). Never reported as [NOT_ATTENDED]: that one means
+     * nobody was there to approve, this one means Shelly could not pass the
+     * request on.
+     */
+    val HANDOFF_FAILED = Refusal("handoff_failed", "Shelly could not pass the request to the app for approval (internal file move failed); nothing was started")
     val TARGET_CHANGED = Refusal("target_changed", "the agent was edited before the run could start; call run_agent again")
     val BUSY = Refusal("busy", "this client already has ${McpRunTickets.MAX_LIVE_RUNS_PER_PRINCIPAL} runs queued or running; poll get_run_result and retry later")
     val LAUNCH_FAILED = Refusal("launch_failed", "the run could not be started")
