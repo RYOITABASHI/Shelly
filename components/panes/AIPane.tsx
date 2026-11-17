@@ -1088,6 +1088,7 @@ export default function AIPane() {
         <FlatList
           ref={listRef}
           data={messages}
+          initialNumToRender={messages.length}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
           inverted={false}
