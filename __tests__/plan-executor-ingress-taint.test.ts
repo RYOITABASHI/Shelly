@@ -290,7 +290,7 @@ describe('native + .sh wiring (source pins)', () => {
     expect(kt).not.toContain('callerTainted || ');
     expect(kt.match(/append\(ingressTaintExports\(ingressReason\)\)/g)).toHaveLength(2);
     expect(kt).toContain('" && readonly SHELLY_INGRESS_TAINTED SHELLY_INGRESS_TAINTED_REASON"');
-    expect(kt).toContain('runOrigin, ingressReason, mcpActionsPreapproved)');
+    expect(kt).toContain('runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart)');
   });
 
   it('runTaintReason fails closed, never throws, and reads the native mcp-ever marker seal() writes', () => {

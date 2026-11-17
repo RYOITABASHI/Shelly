@@ -31,7 +31,9 @@ import { ensureAgentKeepAlive, keepAliveDelay } from './agent-keepalive';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { isIngressTaintedForApproval } from './agent-run-without-approval';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
-import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
+import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS, lastTriggerMs, cronToIntervalMs } from './agent-scheduler';
+import { CHAIN_LOCK_STALE_MS, decideReconcile, isChainLockLive, parseChainLockAcquiredAt } from './agent-schedule-reconcile';
+import { CHAIN_LOCK_SHELL } from './agent-chain-lock-protocol';
 import { migrateSeededSampleAgents } from './agent-seeded-sample-migration';
 import { CONTINUOUS_CHECKPOINT_FILE, CONTINUOUS_STOP_MARKER_FILE, isContinuousAgent, normalizeContinuousConfig } from './agent-continuous';
 import { t } from '@/lib/i18n';
@@ -1955,7 +1957,7 @@ async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): 
  * release/disarm time (so a chain that outlives its own staleness window can
  * never tear down or mutate a DIFFERENT, later chain's lock).
  */
-const CHAIN_LOCK_STALE_MS = 2 * 60 * 60_000; // 2h — comfortably above agent-orchestration.ts's HARD_TOTAL_TIMEOUT_MS (1h ceiling), so a live chain's own long tail is never mistaken for an orphan, but a chain whose process was killed before its `finally` ran (app killed mid-run) self-heals instead of permanently blocking that agent's future scheduled fires.
+// CHAIN_LOCK_STALE_MS (lib/agent-schedule-reconcile.ts, 2 h) is the ONE stale-lock policy: acquireChainLock steals at that age, and the run-liveness readers (isAgentRunLockLive below, native AgentAlarmScheduler.isAgentRunLive) ignore a lock that old. 2h — comfortably above agent-orchestration.ts's HARD_TOTAL_TIMEOUT_MS (1h ceiling), so a live chain's own long tail is never mistaken for an orphan, but a chain whose process was killed before its `finally` ran (app killed mid-run) self-heals instead of permanently blocking that agent's future scheduled fires.
 
 function chainLockToken(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
@@ -1983,31 +1985,14 @@ export async function acquireChainLock(
   const seed = chainLockToken();
   const nowSec = Math.floor(Date.now() / 1000);
   const staleSec = Math.floor(CHAIN_LOCK_STALE_MS / 1000);
+  // Shared protocol (lib/agent-chain-lock-protocol.ts): create with its
+  // metadata, else reap the instance at the path only if IT is stale (bound
+  // to that instance, removal under its marker), then create once more.
   const out = await runCommand(
     `# CHAIN_LOCK_ACQUIRE\n` +
+      `${CHAIN_LOCK_SHELL}\n` +
       `mkdir -p ${shellQuote(`${agentsDir()}/locks`)}\n` +
-      `LOCK_DIR=${shellQuote(dir)}\n` +
-      `shelly_try_acquire_chain_lock() {\n` +
-      `  if mkdir "$LOCK_DIR" 2>/dev/null; then\n` +
-      `    printf '%s' ${shellQuote(seed)} > "$LOCK_DIR/seed"\n` +
-      `    printf '' > "$LOCK_DIR/token"\n` +
-      `    printf '%s' "$1" > "$LOCK_DIR/acquired-at"\n` +
-      `    echo CHAIN_LOCK_OK\n` +
-      `    return 0\n` +
-      `  fi\n` +
-      `  return 1\n` +
-      `}\n` +
-      `if ! shelly_try_acquire_chain_lock ${nowSec}; then\n` +
-      `  ACQUIRED_AT=$(cat "$LOCK_DIR/acquired-at" 2>/dev/null || echo 0)\n` +
-      `  case "$ACQUIRED_AT" in ''|*[!0-9]*) ACQUIRED_AT=0 ;; esac\n` +
-      `  AGE=$(( ${nowSec} - ACQUIRED_AT ))\n` +
-      `  if [ "$AGE" -ge ${staleSec} ]; then\n` +
-      `    rm -rf "$LOCK_DIR"\n` +
-      `    shelly_try_acquire_chain_lock ${nowSec} || echo CHAIN_LOCK_BUSY\n` +
-      `  else\n` +
-      `    echo CHAIN_LOCK_BUSY\n` +
-      `  fi\n` +
-      `fi`
+      `shelly_chain_lock_acquire ${shellQuote(dir)} ${shellQuote(seed)} ${nowSec} ${staleSec}`
   );
   if (out.includes('CHAIN_LOCK_BUSY')) {
     throw new Error(`agent ${agentId}: another run of this agent is already holding the chain lock`);
@@ -2026,11 +2011,15 @@ export async function releaseChainLock(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
   const dir = getChainLockDir(agentId);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const staleSec = Math.floor(CHAIN_LOCK_STALE_MS / 1000);
   try {
+    // Shared protocol: removes only the instance holding this seed, under
+    // its marker (never a lock that replaced ours).
     await runCommand(
       `# CHAIN_LOCK_RELEASE\n` +
-        `HELD=$(cat ${shellQuote(`${dir}/seed`)} 2>/dev/null || true); ` +
-        `if [ "$HELD" = ${shellQuote(seed)} ]; then rm -rf ${shellQuote(dir)}; fi`
+        `${CHAIN_LOCK_SHELL}\n` +
+        `shelly_chain_lock_release ${shellQuote(dir)} ${shellQuote(seed)} ${nowSec} ${staleSec}`
     );
   } catch (error) {
     logWarn('AgentChainLock', `failed to release chain lock for ${agentId}`, error);
@@ -2052,10 +2041,11 @@ async function disarmChainLockToken(
 ): Promise<void> {
   const dir = getChainLockDir(agentId);
   try {
+    // Shared protocol: clears the token only in the instance holding this seed.
     await runCommand(
       `# CHAIN_LOCK_DISARM\n` +
-        `HELD=$(cat ${shellQuote(`${dir}/seed`)} 2>/dev/null || true); ` +
-        `if [ "$HELD" = ${shellQuote(seed)} ]; then printf '' > ${shellQuote(`${dir}/token`)}; fi`
+        `${CHAIN_LOCK_SHELL}\n` +
+        `shelly_chain_lock_disarm ${shellQuote(dir)} ${shellQuote(seed)}`
     );
   } catch (error) {
     logWarn('AgentChainLock', `failed to disarm chain lock token for ${agentId}`, error);
@@ -2594,7 +2584,8 @@ async function readProgressStreamText(
 
 /** Fails like the serial path's acquireChainLock when a live attended SERIAL
  *  chain holds `<id>.chain.lock` (native would skip our executor with a
- *  "previous run still active" log); a stale (>2h) lock is cleared. */
+ *  "previous run still active" log); a stale (>2h) lock is reaped through the
+ *  shared protocol (lib/agent-chain-lock-protocol.ts). */
 async function assertNoLiveChainLock(
   agentId: string,
   runCommand: (cmd: string) => Promise<string>,
@@ -2602,14 +2593,12 @@ async function assertNoLiveChainLock(
   const dir = getChainLockDir(agentId);
   const nowSec = Math.floor(Date.now() / 1000);
   const staleSec = Math.floor(CHAIN_LOCK_STALE_MS / 1000);
+  // Shared protocol: a stale instance is reaped (bound to it, under its
+  // marker); anything else at the path is busy.
   const out = await runCommand(
     `# CHAIN_LOCK_CHECK\n` +
-      `LOCK_DIR=${shellQuote(dir)}\n` +
-      `if [ -d "$LOCK_DIR" ]; then\n` +
-      `  ACQUIRED_AT=$(cat "$LOCK_DIR/acquired-at" 2>/dev/null || echo 0)\n` +
-      `  case "$ACQUIRED_AT" in ''|*[!0-9]*) ACQUIRED_AT=0 ;; esac\n` +
-      `  if [ $(( ${nowSec} - ACQUIRED_AT )) -ge ${staleSec} ]; then rm -rf "$LOCK_DIR"; else echo CHAIN_LOCK_BUSY; fi\n` +
-      `fi`,
+      `${CHAIN_LOCK_SHELL}\n` +
+      `shelly_chain_lock_check ${shellQuote(dir)} ${nowSec} ${staleSec}`,
   );
   if (String(out || '').includes('CHAIN_LOCK_BUSY')) {
     throw new Error(`agent ${agentId}: another run of this agent is already holding the chain lock`);
@@ -4002,7 +3991,12 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `  cp "$d/logs/${agentId}/agent-driver-audit.jsonl" "$d/audits/${agentId}-agent-driver-audit.jsonl"\n` +
     `fi\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/plans/plan-agent-${agentId}.json" "$d/locks/${agentId}.pid"\n` +
-    `rm -rf "$d/locks/${agentId}.pid.lockdir" "$d/locks/${agentId}.chain.lock"\n` +
+    `rm -rf "$d/locks/${agentId}.pid.lockdir"\n` +
+    // The chain lock goes through the shared protocol too (under its marker,
+    // lib/agent-chain-lock-protocol.ts), so no code removes a chain lock
+    // outside it; a live marker holder is already removing it.
+    `${CHAIN_LOCK_SHELL}\n` +
+    `shelly_chain_lock_discard "$d/locks/${agentId}.chain.lock" ${Math.floor(Date.now() / 1000)} ${Math.floor(CHAIN_LOCK_STALE_MS / 1000)} >/dev/null || true\n` +
     // PlanSpec executor v20: the 2nd-concurrent-CLI-branch lock (+ its starttime record).
     `rm -rf "$d/locks/${agentId}.fanout.pid" "$d/locks/${agentId}.fanout.pid.lockdir"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
@@ -4499,6 +4493,45 @@ export async function loadAgentsFromDisk(
   }
 }
 
+/**
+ * True while a run of this agent holds its lock: the executor / .sh
+ * single-flight lock (`locks/<id>.pid`, pid alive per `kill -0`) or an
+ * attended chain (`locks/<id>.chain.lock`) that is NOT stale under
+ * acquireChainLock's own policy (isChainLockLive on its `acquired-at`; a
+ * lock left behind by a killed run stops counting after CHAIN_LOCK_STALE_MS,
+ * exactly when the next acquire would steal it). The same files AgentRuntime's
+ * "previous run still active" gate and the Sidebar RUNNING list read
+ * (AgentAlarmScheduler.isAgentRunLive mirrors this natively). Run logs are
+ * written at run END, so without this a run still in progress looked
+ * "missed" to the startup repair (doze-scheduler-diagnosis §3.4). A failed
+ * check counts as not running (the previous behaviour).
+ */
+async function isAgentRunLockLive(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  const locks = `${agentsDir()}/locks`;
+  try {
+    const out = await runCommand(
+      `f=${shellQuote(`${locks}/${agentId}.pid`)}; c=${shellQuote(`${locks}/${agentId}.chain.lock`)}; ` +
+        `if [ -d "$c" ]; then printf 'CHAIN_AT=%s\\n' "$(cat "$c/acquired-at" 2>/dev/null | head -c 32 | tr -d '\\n')"; fi; ` +
+        `p="$(cat "$f" 2>/dev/null || true)"; ` +
+        `if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo LOCK_LIVE; else echo LOCK_IDLE; fi`
+    );
+    const lines = String(out || '').split('\n').map((l) => l.trim());
+    if (lines.includes('LOCK_LIVE')) return true;
+    const chain = lines.find((l) => l.startsWith('CHAIN_AT='));
+    if (chain == null) return false;
+    const acquiredAt = parseChainLockAcquiredAt(chain.slice('CHAIN_AT='.length));
+    if (isChainLockLive(acquiredAt, nowMs)) return true;
+    logWarn('AgentStartupRepair', `ignoring stale chain lock for ${agentId} (acquired-at=${acquiredAt})`);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function scheduleAgentStartupRepair(
   agents: Agent[],
   runCommand: (cmd: string) => Promise<string>,
@@ -4515,6 +4548,27 @@ function scheduleAgentStartupRepair(
     // Don't re-install schedules while the global kill-switch is on.
     if (useAgentStore.getState().halted) return;
     void (async () => {
+      // Agents whose latest occurrence is due-unrun inside its catch-up window
+      // (or still inside the grace) are handed to the native reconciler
+      // instead of being re-armed forward here — PER AGENT, at the moment the
+      // decision is made, so an early exit (shouldRun() false, STOP-ALL) can
+      // never strand an agent whose alarm install was skipped. The bridge is
+      // global: once it has accepted in this pass, that one reconcile pass
+      // covers every agent. A rejected / accepted=false request is retried
+      // for the next deferred agent, and the agent it failed for falls back
+      // to the previous behaviour (missed check + normal install).
+      let nativeReconcileAccepted = false;
+      const requestNativeReconcile = async (agentId: string): Promise<boolean> => {
+        if (nativeReconcileAccepted) return true;
+        try {
+          const accepted = (await TerminalEmulator.reconcileAgentSchedules?.()) === true;
+          logInfo('AgentStartupRepair', `native reconcile requested for ${agentId} (accepted=${accepted})`);
+          nativeReconcileAccepted = accepted;
+        } catch (error) {
+          logWarn('AgentStartupRepair', `native reconcile request failed for ${agentId}`, error);
+        }
+        return nativeReconcileAccepted;
+      };
       for (const agent of scheduledAgents) {
         if (shouldRun && !shouldRun()) return;
         if (useAgentStore.getState().halted) return;
@@ -4531,6 +4585,14 @@ function scheduleAgentStartupRepair(
           } catch (error) {
             console.warn('Failed to remove disabled agent schedule during startup repair', agent.id, error);
           }
+          continue;
+        }
+        // A run of this agent is in flight: its log is written only when it
+        // ends, so the missed check would be a false positive, and a
+        // materialize/re-arm would rewrite the plan and alarm under it. The
+        // run re-arms its own next occurrence (native arm-before-run).
+        if (await isAgentRunLockLive(agent.id, runCommand)) {
+          logInfo('AgentStartupRepair', `skipping ${agent.id}: a run holds its lock`);
           continue;
         }
         // Continuous mode: native disables a loop when it stops (Stop button,
@@ -4597,7 +4659,38 @@ function scheduleAgentStartupRepair(
           }
         }
         let pendingMissedNotify: number | null = null;
-        if (agent.schedule && oneShotAtMs(agent.schedule) === null) {
+        // Due-unrun inside the catch-up window (lib/agent-schedule-reconcile.ts),
+        // or still inside the grace: re-arming forward here would REPLACE a
+        // deferred alarm that is still pending (same request code) and turn a
+        // delay into a skip (doze-scheduler-diagnosis §3.3). Leave the alarm
+        // alone and let native reconcile run it late (same ACTION_RUN_AGENT
+        // gates), with no "missed" notification — it is not missed yet.
+        // Builds without the bridge keep the old behaviour.
+        let deferToNativeReconcile = false;
+        if (agent.schedule && oneShotAtMs(agent.schedule) === null && typeof TerminalEmulator.reconcileAgentSchedules === 'function') {
+          const nowMs = Date.now();
+          const occurrenceMs = lastTriggerMs(agent.schedule, nowMs);
+          const decision = decideReconcile({
+            nowMs,
+            halted: false,
+            enabled: 'enabled',
+            running: false,
+            occurrenceMs,
+            previousOccurrenceMs: occurrenceMs == null ? null : lastTriggerMs(agent.schedule, occurrenceMs - 1),
+            lastRunAt: storeAgent.lastRun ?? null,
+            createdAt: typeof agent.createdAt === 'number' ? agent.createdAt : null,
+            startNotBefore: agent.startNotBefore ?? null,
+            intervalMs: cronToIntervalMs(agent.schedule),
+            claimedForMs: null,
+            claimedAtMs: null,
+            startedForMs: null,
+            settledForMs: null,
+            deferredForMs: null,
+          });
+          deferToNativeReconcile = decision.action === 'late-run' || decision.action === 'wait-grace';
+        }
+        const checkMissed = () => {
+          if (!agent.schedule || oneShotAtMs(agent.schedule) !== null) return;
           const { missed, expectedAt } = isScheduleMissed(agent.schedule, storeAgent.lastRun, agent.createdAt, Date.now(), MISSED_RUN_GRACE_MS, agent.startNotBefore);
           if (missed && expectedAt != null && storeAgent.lastMissedNotifiedAt !== expectedAt) {
             useAgentStore.getState().updateAgent(agent.id, { lastMissedNotifiedAt: expectedAt });
@@ -4611,18 +4704,41 @@ function scheduleAgentStartupRepair(
             agent.lastMissedNotifiedAt = expectedAt;
             pendingMissedNotify = expectedAt;
           }
-        }
+        };
+        if (!deferToNativeReconcile) checkMissed();
         let repaired = false;
         try {
           // Re-arm regardless of whether a miss was just detected — this IS the
           // repair: every enabled scheduled agent gets a fresh native alarm for
           // its next legitimate occurrence on every app launch, independent of
           // whatever state AlarmManager silently ended up in.
-          await materializeAgent(storeAgent, runCommand, true, false);
+          // Deferred to native reconcile: refresh the artifacts, arm nothing.
+          await materializeAgent(storeAgent, runCommand, !deferToNativeReconcile, false);
           repaired = true;
           await new Promise((resolve) => setTimeout(resolve, 250));
         } catch (error) {
           console.warn('Failed to repair scheduled agent on startup', agent.id, error);
+        }
+        if (deferToNativeReconcile) {
+          // STOP-ALL raised meanwhile: arm nothing (it uninstalls everything).
+          if (useAgentStore.getState().halted) return;
+          // Hand-off for THIS agent, right after its artifacts are refreshed
+          // (so a late run executes the fresh plan).
+          if (!(await requestNativeReconcile(agent.id))) {
+            // Native did not take it: never leave this agent with no armed
+            // alarm and no recovery — previous behaviour (missed check +
+            // notify + install the next future occurrence).
+            logWarn('AgentStartupRepair', `native reconcile unavailable; re-arming ${agent.id} forward`);
+            checkMissed();
+            repaired = false;
+            try {
+              const current = useAgentStore.getState().agents.find((a) => a.id === agent.id) ?? storeAgent;
+              await materializeAgent({ ...current, lastMissedNotifiedAt: agent.lastMissedNotifiedAt }, runCommand, true, false);
+              repaired = true;
+            } catch (error) {
+              console.warn('Failed to re-arm scheduled agent after a refused native reconcile', agent.id, error);
+            }
+          }
         }
         // Notify AFTER the re-arm attempt has resolved, wording it according to
         // whether repair actually succeeded — never claim a re-arm that didn't

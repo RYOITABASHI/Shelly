@@ -58,6 +58,20 @@ class TerminalSessionService : Service() {
         // receiver, so the re-schedule loop lives here).
         const val EXTRA_INTERVAL_MS = "interval_ms"
         const val EXTRA_CRON = "cron"
+        // Catch-up reconcile (AgentAlarmScheduler.reconcile): boot, package
+        // replace, exact-alarm grant, the hourly watchdog and the JS startup
+        // repair all start the service with this action.
+        const val ACTION_SCHEDULE_RECONCILE = "expo.modules.terminalemulator.SCHEDULE_RECONCILE"
+        const val EXTRA_RECONCILE_REASON = "reconcile_reason"
+        // Set ONLY on a late run built by AgentAlarmScheduler.reconcile: the
+        // run still carries interval/cron, so it is an ordinary "schedule"
+        // origin run through every gate below; these only label it.
+        const val EXTRA_LATE = "late"
+        // On every alarm armed by AgentAlarmScheduler.schedule(): the trigger
+        // time it was armed for (= the cron occurrence), used as the fire's
+        // occurrence identity. Absent on alarms armed by an older build.
+        const val EXTRA_SCHEDULED_AT = "scheduled_at"
+        const val EXTRA_EXPECTED_AT = "expected_at"
         const val EXTRA_TAINTED = "tainted"
         const val EXTRA_MANUAL = "manual"
         // NOTIFY-001 Increment 3 (sender-gated notification text channel): the
@@ -225,6 +239,28 @@ class TerminalSessionService : Service() {
                 }.start()
                 return if (hasProtectedWork()) START_STICKY else START_NOT_STICKY
             }
+            ACTION_SCHEDULE_RECONCILE -> {
+                val reason = intent.getStringExtra(EXTRA_RECONCILE_REASON)?.take(40) ?: "unknown"
+                // Started via startForegroundService (receiver / watchdog alarm
+                // / bridge): enter the foreground before anything else.
+                startForegroundWithNotification(null)
+                val result = runCatching { AgentAlarmScheduler.reconcile(applicationContext, reason) }
+                    .onFailure { Log.e(TAG, "Schedule reconcile ($reason) failed", it) }
+                    .getOrNull()
+                // Late runs go through the SAME ACTION_RUN_AGENT handling as an
+                // alarm fire (STOP-ALL, enabled re-check, backoff, circuit
+                // breaker, origin "schedule", unattended).
+                result?.lateRuns?.forEach { late ->
+                    runCatching { onStartCommand(late, 0, startId) }
+                        .onFailure { Log.e(TAG, "Late run dispatch failed for ${late.getStringExtra(EXTRA_AGENT_ID)}", it) }
+                }
+                if (!hasProtectedWork()) {
+                    stopForegroundAndMark()
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
             ACTION_RUN_AGENT -> {
                 val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
                 if (agentId.isNullOrBlank()) {
@@ -340,6 +376,61 @@ class TerminalSessionService : Service() {
                         return START_STICKY
                     }
                 }
+                // Arm-before-run (doze-scheduler-diagnosis Option 1): a recurring
+                // cron fire arms its NEXT occurrence now, before the run, so a
+                // run killed mid-way (process death, update, OEM kill) no longer
+                // ends the chain. The post-run re-arm below stays as an
+                // idempotent safety net, and a circuit-breaker trip still
+                // cancels after it (cancel runs later, so it wins). Continuous
+                // loops (interval, no cron), one-shots and manual/widget runs
+                // are excluded and keep their own scheduling.
+                if (!manual && !cron.isNullOrBlank() && !AgentAlarmScheduler.isOneShotCron(cron) && continuousConfig == null) {
+                    try {
+                        AgentAlarmScheduler.scheduleNextIfAgentEnabled(applicationContext, agentId, intervalMs, cron)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Arm-before-run failed for $agentId (post-run re-arm will retry)", e)
+                    }
+                }
+                // The occurrence this run is for (late run or regular recurring
+                // fire); marked STARTED right before runAgentInBackground so it
+                // never runs again (claim lifecycle, AgentAlarmScheduler
+                // .claimOccurrence / markOccurrenceStarted).
+                var occurrenceToStart: Long? = null
+                if (intent.getBooleanExtra(EXTRA_LATE, false)) {
+                    // Reconcile already reserved this occurrence.
+                    val expectedAt = intent.getLongExtra(EXTRA_EXPECTED_AT, 0L)
+                    occurrenceToStart = expectedAt.takeIf { it > 0 }
+                    Log.w(TAG, "SCHEDULE_LATE_RUN starting agent=$agentId expectedAt=$expectedAt lateBy=${System.currentTimeMillis() - expectedAt}ms")
+                } else if (!manual && !cron.isNullOrBlank() && !AgentAlarmScheduler.isOneShotCron(cron) && continuousConfig == null) {
+                    // A regular recurring fire claims the occurrence it was
+                    // ARMED for (EXTRA_SCHEDULED_AT, not the delivery time), so
+                    // a late run reconcile already dispatched for it (or would
+                    // dispatch later) never runs it a second time. An alarm
+                    // armed by an older build carries no identity: it runs
+                    // unclaimed (the run locks and run logs still apply). A
+                    // NOT_DURABLE claim still runs (the fire is the schedule).
+                    val occurrence = intent.getLongExtra(EXTRA_SCHEDULED_AT, 0L).takeIf { it > 0 }
+                    occurrenceToStart = occurrence
+                    val claim = occurrence?.let { AgentAlarmScheduler.claimOccurrence(applicationContext, agentId, it) }
+                    if (claim == AgentAlarmScheduler.Claim.CLAIMED) {
+                        // Recovery tick in case this run never starts; relaxed
+                        // again when it does (markOccurrenceStarted).
+                        runCatching { AgentAlarmScheduler.armReservationRecovery(applicationContext, agentId) }
+                            .onFailure { Log.e(TAG, "Reservation recovery tick failed for $agentId", it) }
+                    }
+                    if (claim == AgentAlarmScheduler.Claim.ALREADY_CLAIMED) {
+                        Log.i(TAG, "SCHEDULE_DUPLICATE_SUPPRESSED agent=$agentId occurrence=$occurrence: already started, or reserved by a late-run dispatch")
+                        AgentAlarmScheduler.audit(applicationContext, agentId, "duplicate_suppressed", JSONObject().put("expectedAt", occurrence))
+                        if (!hasProtectedWork()) {
+                            startForegroundWithNotification(null)
+                            stopForegroundAndMark()
+                            stopSelf(startId)
+                            return START_NOT_STICKY
+                        }
+                        startForegroundWithNotification(null)
+                        return START_STICKY
+                    }
+                }
                 val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)
                 val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
                 if (manual && widgetAgent == null) {
@@ -397,7 +488,9 @@ class TerminalSessionService : Service() {
                     intent.getStringExtra(EXTRA_RUN_ORIGIN) == "user" -> "user"
                     else -> "event"
                 }
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal)
+                // Every service gate above has passed; the worker thread marks
+                // the occurrence STARTED immediately before AgentRuntime.runAgent.
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal, occurrenceToStart)
                 return START_STICKY
             }
         }
@@ -565,7 +658,10 @@ class TerminalSessionService : Service() {
         origin: String = "event",
         /** MCP run_agent (McpRunTickets.kt): the run ticket to report into. */
         mcpRunHandle: String? = null,
-        mcpPrincipal: String? = null
+        mcpPrincipal: String? = null,
+        /** The schedule occurrence this run is for (late run / regular
+         *  recurring fire), marked STARTED right before AgentRuntime.runAgent. */
+        scheduledOccurrence: Long? = null
     ) {
         activeAgentRuns.incrementAndGet()
         // Fable5 review (2026-08-29): recorded before the run starts so
@@ -612,7 +708,38 @@ class TerminalSessionService : Service() {
                         notificationText = notificationText,
                         notificationPackage = notificationPackage,
                         origin = origin,
-                        ingressRunReason = if (mcpRunHandle != null && !mcpActionsPreapproved) AgentIngressTaint.RUN_REASON_MCP else null
+                        ingressRunReason = if (mcpRunHandle != null && !mcpActionsPreapproved) AgentIngressTaint.RUN_REASON_MCP else null,
+                        // Claim lifecycle: AgentRuntime calls this after every
+                        // gate and preparation step (extraction, stale-lock
+                        // cleanup, local-LLM preflight), immediately before the
+                        // executor process launches — from then on the
+                        // occurrence never runs again. A death before it
+                        // leaves only a reservation, which is recoverable
+                        // (AgentAlarmScheduler.claimOccurrence); while this
+                        // process is inside AgentRuntime the run counts as live
+                        // (NativeAgentRunRegistry, isAgentRunLive).
+                        onExecutionStart = scheduledOccurrence?.let { occ ->
+                            val markStarted: () -> Unit = { AgentAlarmScheduler.markOccurrenceStarted(applicationContext, agentId, occ) }
+                            markStarted
+                        },
+                        // Refused inside AgentRuntime before any executor
+                        // launched: "previous run still active" DEFERS the
+                        // occurrence (recoverable once that run ends); every
+                        // other refusal SETTLES it (the failure / backoff /
+                        // circuit-breaker path owns it; never re-dispatched).
+                        // A dispatch with no runtime outcome at all (crash,
+                        // process death) leaves the reservation, which is
+                        // re-dispatched inside its window once abandoned.
+                        onRefusedBeforeLaunch = scheduledOccurrence?.let { occ ->
+                            val markRefused: (Boolean, String) -> Unit = { previousRunActive, reason ->
+                                if (previousRunActive) {
+                                    AgentAlarmScheduler.markOccurrenceDeferred(applicationContext, agentId, occ)
+                                } else {
+                                    AgentAlarmScheduler.markOccurrenceSettled(applicationContext, agentId, occ, reason)
+                                }
+                            }
+                            markRefused
+                        }
                     )
                     runEndMs = System.currentTimeMillis()
                 }
@@ -679,6 +806,9 @@ class TerminalSessionService : Service() {
                     runCatching { ContinuousLoop.cancelRunningNotification(applicationContext, agentId) }
                 }
             } else if (intervalMs > 0 || !cron.isNullOrBlank()) {
+                // The next occurrence was already armed when this fire arrived
+                // (arm-before-run above); re-arming the same time again here is
+                // an idempotent safety net. A circuit-breaker trip cancels it.
                 val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
                 if (shouldRearm) {
                     try {

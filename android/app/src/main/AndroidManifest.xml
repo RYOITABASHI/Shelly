@@ -83,11 +83,23 @@
          that alone is correct and sufficient. -->
     <receiver android:name="expo.modules.terminalemulator.BootCompletedReceiver" android:exported="true">
       <intent-filter>
-        <!-- BOOT_COMPLETED only: it is an AOSP protected broadcast (system-sender
-             only). QUICKBOOT_POWERON is NOT protected (a normal-permission holder
+        <!-- BOOT_COMPLETED and MY_PACKAGE_REPLACED only: AOSP protected
+             broadcasts (system-sender only). QUICKBOOT_POWERON is NOT protected (a normal-permission holder
              could spoof it), and LOCKED_BOOT_COMPLETED requires directBootAware
              (which would break MODE_PRIVATE prefs pre-unlock) — both omitted. -->
         <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        <!-- An in-app update kills a run in flight: reconcile schedules
+             (AgentAlarmScheduler.reconcile). Protected, system-sent. -->
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+      </intent-filter>
+    </receiver>
+    <!-- Exact-alarm access granted: re-arm every agent alarm as exact and
+         reconcile (ExactAlarmPermissionReceiver). System-sent; exported=false
+         like CodexRemoteAutostartReceiver. Also registered by
+         plugins/with-terminal-service.js (the copy that survives a prebuild). -->
+    <receiver android:name="expo.modules.terminalemulator.ExactAlarmPermissionReceiver" android:exported="false">
+      <intent-filter>
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/>
       </intent-filter>
     </receiver>
     <!-- NOTIFY-001 Increment 0 (dormant, plumbing-only — see

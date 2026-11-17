@@ -86,10 +86,20 @@ object AgentAlarmScheduler {
         var count = 0
         for ((agentId, raw) in prefs.all) {
             if (agentId.isNullOrBlank() || raw !is String) continue
-            if (!isPersistedAgentEnabled(context, agentId)) {
-                cancel(context, agentId)
-                Log.i(TAG, "Boot re-arm removed stale schedule for missing/disabled agent $agentId")
-                continue
+            when (persistedAgentEnabledState(context, agentId)) {
+                AgentScheduleReconcileCore.Enabled.DISABLED -> {
+                    cancel(context, agentId)
+                    Log.i(TAG, "Boot re-arm removed stale schedule for missing/disabled agent $agentId")
+                    continue
+                }
+                AgentScheduleReconcileCore.Enabled.UNKNOWN -> {
+                    // Transient read/parse failure: keep the boot entry so the
+                    // reconcile watchdog (armed below) re-arms it once the
+                    // file reads again. Never cancel on uncertainty.
+                    Log.w(TAG, "Boot re-arm deferred for $agentId: agent file unreadable; schedule kept")
+                    continue
+                }
+                AgentScheduleReconcileCore.Enabled.ENABLED -> Unit
             }
             val parts = raw.split(BOOT_FIELD_SEP)
             val intervalMs = parts.getOrNull(0)?.toLongOrNull() ?: 0L
@@ -137,6 +147,9 @@ object AgentAlarmScheduler {
             }
         }
         Log.i(TAG, "Boot re-armed $count scheduled agent(s)")
+        // Alarms (the watchdog included) are cleared by a reboot.
+        runCatching { ensureReconcileWatchdog(context, force = true) }
+            .onFailure { Log.e(TAG, "Boot: failed to arm the reconcile watchdog", it) }
         return count
     }
 
@@ -333,25 +346,58 @@ object AgentAlarmScheduler {
         intervalMs: Long,
         cron: String?
     ): Boolean {
-        if (!isPersistedAgentEnabled(context, agentId)) {
-            cancel(context, agentId)
-            Log.i(TAG, "Post-run re-arm removed stale schedule for missing/disabled agent $agentId")
-            return false
+        when (persistedAgentEnabledState(context, agentId)) {
+            AgentScheduleReconcileCore.Enabled.DISABLED -> {
+                cancel(context, agentId)
+                Log.i(TAG, "Re-arm removed stale schedule for missing/disabled agent $agentId")
+                return false
+            }
+            AgentScheduleReconcileCore.Enabled.UNKNOWN -> {
+                // A transient I/O / parse failure used to CANCEL the schedule
+                // and its boot entry here, ending the chain for good. Keep
+                // both; the reconcile watchdog re-arms once the file reads.
+                Log.w(TAG, "Re-arm deferred for $agentId: agent file unreadable; schedule and boot entry kept")
+                audit(context, agentId, "rearm_deferred_unreadable", null)
+                runCatching { ensureReconcileWatchdog(context) }
+                return false
+            }
+            AgentScheduleReconcileCore.Enabled.ENABLED -> Unit
         }
-        return scheduleNext(context, agentId, intervalMs, cron)
+        val notBefore = readAgentJsonQuiet(context, agentId)?.let { optLongOrNull(it, "startNotBefore") }
+        return scheduleNext(context, agentId, intervalMs, cron, notBefore)
     }
 
-    private fun isPersistedAgentEnabled(context: Context, agentId: String): Boolean {
-        val agentFile = File(HomeInitializer.getHomeDir(context), ".shelly/agents/$agentId.json")
+    /**
+     * ENABLED / DISABLED (file missing, id mismatch, enabled != true) /
+     * UNKNOWN (the file exists but could not be read or parsed — transient;
+     * callers keep whatever is armed instead of cancelling).
+     */
+    fun persistedAgentEnabledState(context: Context, agentId: String): AgentScheduleReconcileCore.Enabled {
+        val agentFile = agentJsonFile(context, agentId)
         return try {
-            if (!agentFile.isFile) return false
+            if (!agentFile.isFile) return AgentScheduleReconcileCore.Enabled.DISABLED
             val json = JSONObject(agentFile.readText())
-            json.optString("id") == agentId && json.optBoolean("enabled", false)
+            if (json.optString("id") == agentId && json.optBoolean("enabled", false)) {
+                AgentScheduleReconcileCore.Enabled.ENABLED
+            } else {
+                AgentScheduleReconcileCore.Enabled.DISABLED
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to verify scheduled agent $agentId; suppressing re-arm", e)
-            false
+            Log.w(TAG, "Failed to read scheduled agent $agentId; treating as unknown (schedule kept)", e)
+            AgentScheduleReconcileCore.Enabled.UNKNOWN
         }
     }
+
+    private fun readAgentJsonQuiet(context: Context, agentId: String): JSONObject? = try {
+        val file = agentJsonFile(context, agentId)
+        if (!file.isFile) null else JSONObject(file.readText()).takeIf { it.optString("id") == agentId }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun optLongOrNull(json: JSONObject, key: String): Long? =
+        if (!json.has(key) || json.isNull(key)) null
+        else (json.opt(key) as? Number)?.toLong()?.takeIf { it > 0 }
 
     /**
      * Mirrors lib/agent-manager.ts's halt sentinel and TerminalSessionService's
@@ -387,13 +433,20 @@ object AgentAlarmScheduler {
         context: Context,
         agentId: String,
         intervalMs: Long,
-        cron: String?
+        cron: String?,
+        scheduledAtMs: Long = 0L
     ): PendingIntent {
         val intent = Intent(context, TerminalSessionService::class.java).apply {
             action = TerminalSessionService.ACTION_RUN_AGENT
             putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
             putExtra(TerminalSessionService.EXTRA_INTERVAL_MS, intervalMs)
             if (!cron.isNullOrBlank()) putExtra(TerminalSessionService.EXTRA_CRON, cron)
+            // The occurrence this alarm is armed for: the fire's identity for
+            // claimOccurrence (delivery time is not — a deferred delivery can
+            // cross the next cron boundary). FLAG_UPDATE_CURRENT replaces it on
+            // every re-arm, and there is one pending alarm per PendingIntent,
+            // so the delivered value is always the armed time.
+            if (scheduledAtMs > 0) putExtra(TerminalSessionService.EXTRA_SCHEDULED_AT, scheduledAtMs)
         }
         val rc = getAgentRequestCode(context, agentId)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -439,17 +492,24 @@ object AgentAlarmScheduler {
         // Migration: drop any alarm previously armed via the broadcast trampoline so
         // the same request code isn't double-armed at both a receiver and the service.
         try { am.cancel(legacyBroadcastPendingIntent(context, agentId)) } catch (_: Exception) {}
-        val pi = runServicePendingIntent(context, agentId, intervalMs, cron)
-        setExactWhileIdle(am, triggerAtMs, pi)
-        Log.i(TAG, "Scheduled agent $agentId at $triggerAtMs (interval=${intervalMs}ms, cron=${cron ?: "-"})")
+        val pi = runServicePendingIntent(context, agentId, intervalMs, cron, triggerAtMs)
+        val exact = setExactWhileIdle(context, am, triggerAtMs, pi, agentId)
+        Log.i(TAG, "Scheduled agent $agentId at $triggerAtMs (interval=${intervalMs}ms, cron=${cron ?: "-"}, exact=$exact)")
         // Dormant boot-autostart: only persist when enabled, so the live path is
         // byte-preserved with the flag OFF.
         if (bootAutostartEnabled(context)) persistScheduleForBoot(context, agentId, intervalMs, cron)
+        // A recurring cron schedule exists: make sure the reconcile watchdog
+        // is armed (only moves it if none is armed; never pushes it later).
+        if (isReconcilableCron(cron)) {
+            runCatching { ensureReconcileWatchdog(context) }
+                .onFailure { Log.e(TAG, "Failed to arm the reconcile watchdog", it) }
+        }
     }
 
-    /** Re-arm the next fire (called by the service after a run, or the legacy receiver). */
-    fun scheduleNext(context: Context, agentId: String, intervalMs: Long, cron: String?): Boolean {
-        val triggerAt = nextTriggerAt(cron)
+    /** Re-arm the next fire (called by the service before/after a run, boot,
+     *  reconcile, or the legacy receiver). [notBeforeMs] = Agent.startNotBefore. */
+    fun scheduleNext(context: Context, agentId: String, intervalMs: Long, cron: String?, notBeforeMs: Long? = null): Boolean {
+        val triggerAt = nextTriggerAt(cron, notBeforeMs)
             ?: if (intervalMs > 0) System.currentTimeMillis() + intervalMs else return false
         schedule(context, agentId, intervalMs, triggerAt, cron)
         return true
@@ -469,27 +529,777 @@ object AgentAlarmScheduler {
         // STOP-ALL / circuit breaker all funnel through here).
         ContinuousLoop.cancelRunningNotification(context, agentId)
         Log.i(TAG, "Cancelled agent $agentId (service + legacy)")
+        // No recurring schedule left: the watchdog has nothing to watch.
+        runCatching { if (!hasReconcilableSchedules(context)) cancelReconcileWatchdog(context) }
     }
 
-    private fun setExactWhileIdle(am: AlarmManager, triggerAtMs: Long, pi: PendingIntent) {
+    /**
+     * Arms [pi] exact-while-idle when permitted. Returns false when it had to
+     * fall back to an inexact alarm. That fallback used to be silent; an
+     * inexact alarm gets no foreground-service-start exemption in Doze, so the
+     * run it carries may never start (doze-scheduler-diagnosis §3.1). Every
+     * fallback now writes a distinct, greppable line: logcat
+     * `EXACT_ALARM_FALLBACK agent=<id> reason=<no-access|security-exception>`
+     * and an `exact_alarm_fallback` row in logs/schedule-reconcile.jsonl.
+     * [agentId] is the agent id, or "reconcile-watchdog".
+     */
+    private fun setExactWhileIdle(context: Context, am: AlarmManager, triggerAtMs: Long, pi: PendingIntent, agentId: String): Boolean {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
                 (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms())
             ) {
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
+                return true
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
             } else {
                 am.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
             }
+            logExactFallback(context, agentId, "no-access", null)
         } catch (e: SecurityException) {
-            Log.w(TAG, "Exact alarm denied; falling back to inexact alarm", e)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
             } else {
                 am.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pi)
             }
+            logExactFallback(context, agentId, "security-exception", e)
         }
+        return false
+    }
+
+    private fun logExactFallback(context: Context, agentId: String, reason: String, e: Exception?) {
+        Log.w(TAG, "EXACT_ALARM_FALLBACK agent=$agentId reason=$reason: armed an INEXACT alarm; in Doze its service start may be refused", e)
+        audit(context, agentId, "exact_alarm_fallback", JSONObject().put("reason", reason))
+    }
+
+    // ── Reconcile (catch-up) ─────────────────────────────────────────────────
+    // doze-scheduler-diagnosis §6 Option 2. A recurring occurrence whose alarm
+    // was lost used to be dropped; reconcile() runs it late inside a bounded
+    // window (AgentScheduleReconcileCore) through the same ACTION_RUN_AGENT
+    // service path, or records it as missed and re-arms. Entry points all go
+    // through TerminalSessionService ACTION_SCHEDULE_RECONCILE: boot,
+    // MY_PACKAGE_REPLACED, exact-alarm access granted, the hourly watchdog
+    // below, and the JS startup repair (bridge reconcileAgentSchedules()).
+
+    const val RECONCILE_REASON_BOOT = "boot"
+    const val RECONCILE_REASON_PACKAGE_REPLACED = "package-replaced"
+    const val RECONCILE_REASON_EXACT_GRANTED = "exact-alarm-granted"
+    const val RECONCILE_REASON_WATCHDOG = "watchdog"
+    const val RECONCILE_REASON_APP = "app"
+
+    private const val RECONCILE_PREFS = "shelly_schedule_reconcile"
+    private const val WATCHDOG_AT_KEY = "_watchdog_at"
+    private const val CLAIMED_PREFIX = "claimed:"
+    /** Wall time the current claim was taken (claim lifecycle, see
+     *  AgentScheduleReconcileCore.occurrenceClaimState). */
+    private const val CLAIMED_AT_PREFIX = "claimedAt:"
+    /** The occurrence whose run actually started (markOccurrenceStarted). */
+    private const val STARTED_PREFIX = "started:"
+    /** The occurrence whose dispatch AgentRuntime refused before launch
+     *  (markOccurrenceSettled): never re-dispatched. */
+    private const val SETTLED_PREFIX = "settled:"
+    /** The occurrence whose dispatch was refused because a previous run was
+     *  still active (markOccurrenceDeferred): recoverable as soon as no run
+     *  is live. Cleared by the next reservation of it. */
+    private const val DEFERRED_PREFIX = "deferred:"
+    /** Pending recovery tick of a reservation that has not started yet
+     *  (armReservationRecovery); cleared when its run starts. */
+    private const val RECOVERY_PREFIX = "recoveryAt:"
+    /** The tick the last reconcile pass asked for (its WAIT_GRACE / WAIT_CLAIM
+     *  follow-ups or the hourly period), so relaxing a recovery tick never
+     *  pushes the watchdog past a pass's own follow-up. */
+    private const val RECONCILE_TICK_KEY = "_reconcile_tick_at"
+    /** Stable request code of the watchdog PendingIntent. Its Intent action
+     *  (ACTION_SCHEDULE_RECONCILE) already differs from every agent alarm's. */
+    private const val WATCHDOG_REQUEST_CODE = 7737
+    private const val AUDIT_FILE = ".shelly/agents/logs/schedule-reconcile.jsonl"
+    private const val AUDIT_MAX_BYTES = 128 * 1024L
+
+    /** A recurring cron that reconcile can reason about (not one-shot, not a
+     *  continuous loop's interval-only alarm, and a shape lastTriggerAt knows). */
+    fun isReconcilableCron(cron: String?): Boolean =
+        !cron.isNullOrBlank() && !isOneShotCron(cron) && lastTriggerAt(cron, System.currentTimeMillis()) != null
+
+    private fun persistedSchedules(context: Context): List<Triple<String, Long, String?>> =
+        context.getSharedPreferences(BOOT_SCHEDULES, Context.MODE_PRIVATE).all.mapNotNull { (agentId, raw) ->
+            if (agentId.isNullOrBlank() || raw !is String) return@mapNotNull null
+            val parts = raw.split(BOOT_FIELD_SEP)
+            Triple(agentId, parts.getOrNull(0)?.toLongOrNull() ?: 0L, parts.getOrNull(1)?.ifBlank { null })
+        }
+
+    fun hasReconcilableSchedules(context: Context): Boolean =
+        persistedSchedules(context).any { isReconcilableCron(it.third) }
+
+    /** Live run of this agent: the same per-agent locks the executor / .sh
+     *  (locks/<id>.pid, pid alive) and the attended chain (locks/<id>.chain.lock)
+     *  hold — AgentRuntime's "previous run still active" and the Sidebar's
+     *  RUNNING list read the same files. A chain lock counts only while it is
+     *  not stale under acquireChainLock's own policy
+     *  (AgentScheduleReconcileCore.isChainLockLive on its `acquired-at`; a
+     *  missing / garbage `acquired-at` is stale, as on the acquire side), so a
+     *  lock left by a killed run cannot suppress recovery forever. A run this
+     *  process is executing (NativeAgentRunRegistry, from the top of
+     *  AgentRuntime.runAgent — i.e. also while it is still extracting the
+     *  runtime, before any lock file exists) is live too. Errors count as
+     *  running (no late run). */
+    fun isAgentRunLive(context: Context, agentId: String): Boolean = try {
+        if (NativeAgentRunRegistry.activeRunStartedAt(agentId) != null) {
+            true
+        } else {
+            val locks = File(HomeInitializer.getHomeDir(context), ".shelly/agents/locks")
+            val chain = File(locks, "$agentId.chain.lock")
+            val chainLive = chain.isDirectory && run {
+                val acquiredAt = AgentScheduleReconcileCore.parseChainLockAcquiredAt(
+                    File(chain, "acquired-at").takeIf { it.isFile }?.readText()
+                )
+                AgentScheduleReconcileCore.isChainLockLive(acquiredAt, System.currentTimeMillis()).also { live ->
+                    if (!live) Log.w(TAG, "Stale chain lock for $agentId (acquired-at=$acquiredAt) ignored")
+                }
+            }
+            if (chainLive) {
+                true
+            } else {
+                val pidFile = File(locks, "$agentId.pid")
+                val pid = if (pidFile.isFile) pidFile.readText().trim().toIntOrNull() else null
+                pid != null && pid > 0 && File("/proc/$pid").exists()
+            }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Run-lock check failed for $agentId; treating as running", e)
+        true
+    }
+
+    /** Result of one reconcile pass: the late runs the service must dispatch
+     *  through its own ACTION_RUN_AGENT handler. */
+    data class ReconcileResult(val lateRuns: List<Intent>, val decisions: Map<String, String>)
+
+    /**
+     * One pass over every persisted schedule (shelly_boot_schedules).
+     * Never runs anything itself: late runs come back as ACTION_RUN_AGENT
+     * intents (origin "schedule", EXTRA_LATE, EXTRA_EXPECTED_AT) so every
+     * service gate still applies. An occurrence runs at most once: a late
+     * run RESERVES it (claimOccurrence) and the run marks it STARTED
+     * (markOccurrenceStarted); only a reservation that never started is
+     * re-dispatched, after CLAIM_ABANDON_MS and only inside its window.
+     */
+    fun reconcile(context: Context, reason: String): ReconcileResult {
+        val now = System.currentTimeMillis()
+        val decisions = LinkedHashMap<String, String>()
+        if (isGloballyHalted(context)) {
+            // STOP-ALL promises no armed agent alarm; the watchdog goes too
+            // (RESUME re-installs schedules, which re-arms it).
+            Log.i(TAG, "Reconcile ($reason) suppressed: globally halted (STOP-ALL)")
+            runCatching { cancelReconcileWatchdog(context) }
+            return ReconcileResult(emptyList(), decisions)
+        }
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        val lateRuns = ArrayList<Intent>()
+        var followUpAt: Long? = null
+        // Agents this pass actually decided (not SKIP_UNKNOWN, no exception):
+        // only their due recovery deadlines count as serviced.
+        val decided = HashSet<String>()
+        val scheduledIds = HashSet<String>()
+        for ((agentId, intervalMs, cron) in persistedSchedules(context)) {
+            scheduledIds += agentId
+            try {
+                val oneShotAt = oneShotAtMs(cron)
+                if (oneShotAt != null) {
+                    // One-shots keep their own grace/retire rules. Only an
+                    // access grant re-arms a future one (now exact).
+                    if (reason == RECONCILE_REASON_EXACT_GRANTED && oneShotAt > now &&
+                        persistedAgentEnabledState(context, agentId) == AgentScheduleReconcileCore.Enabled.ENABLED &&
+                        !oneShotAlreadyFired(context, agentId, oneShotAt)
+                    ) {
+                        schedule(context, agentId, 0L, oneShotAt, cron)
+                    }
+                    continue
+                }
+                // Continuous loops (interval, no cron) keep end-of-run + cooldown.
+                if (cron.isNullOrBlank()) continue
+                val enabled = persistedAgentEnabledState(context, agentId)
+                val json = if (enabled == AgentScheduleReconcileCore.Enabled.ENABLED) readAgentJsonQuiet(context, agentId) else null
+                val running = enabled == AgentScheduleReconcileCore.Enabled.ENABLED && isAgentRunLive(context, agentId)
+                val logAt = latestRunLogAt(context, agentId)
+                val jsonLastRun = json?.let { optLongOrNull(it, "lastRun") }
+                val lastRunAt = listOfNotNull(logAt, jsonLastRun).maxOrNull()
+                val notBefore = json?.let { optLongOrNull(it, "startNotBefore") }
+                val claimedFor = prefs.getLong(CLAIMED_PREFIX + agentId, -1L).takeIf { it > 0 }
+                val claimedAt = prefs.getLong(CLAIMED_AT_PREFIX + agentId, -1L).takeIf { it > 0 }
+                val startedFor = prefs.getLong(STARTED_PREFIX + agentId, -1L).takeIf { it > 0 }
+                val settledFor = prefs.getLong(SETTLED_PREFIX + agentId, -1L).takeIf { it > 0 }
+                val deferredFor = prefs.getLong(DEFERRED_PREFIX + agentId, -1L).takeIf { it > 0 }
+                val occurrence = lastTriggerAt(cron, now)
+                val decision = AgentScheduleReconcileCore.decide(
+                    AgentScheduleReconcileCore.Inputs(
+                        nowMs = now,
+                        halted = false,
+                        enabled = enabled,
+                        running = running,
+                        occurrenceMs = occurrence,
+                        previousOccurrenceMs = occurrence?.let { lastTriggerAt(cron, it - 1) },
+                        lastRunAt = lastRunAt,
+                        createdAt = json?.let { optLongOrNull(it, "createdAt") },
+                        startNotBefore = notBefore,
+                        intervalMs = intervalMs,
+                        claimedForMs = claimedFor,
+                        claimedAtMs = claimedAt,
+                        startedForMs = startedFor,
+                        settledForMs = settledFor,
+                        deferredForMs = deferredFor,
+                    )
+                )
+                decisions[agentId] = decision.action.code
+                when (decision.action) {
+                    AgentScheduleReconcileCore.Action.SKIP_HALTED -> Unit
+                    AgentScheduleReconcileCore.Action.SKIP_DISABLED -> {
+                        cancel(context, agentId)
+                        Log.i(TAG, "Reconcile ($reason) removed stale schedule for missing/disabled agent $agentId")
+                    }
+                    AgentScheduleReconcileCore.Action.SKIP_UNKNOWN ->
+                        Log.w(TAG, "Reconcile ($reason) skipped $agentId: agent file unreadable; schedule kept")
+                    AgentScheduleReconcileCore.Action.SKIP_RUNNING -> {
+                        Log.i(TAG, "Reconcile ($reason) skipped $agentId: a run is live")
+                        // A reservation whose run is still preparing (live in
+                        // this process, not yet STARTED), or an occurrence
+                        // DEFERRED behind this live run: keep a recovery tick
+                        // pending (the process may die before it starts; the
+                        // deferred one runs late once this run ends), only
+                        // while the occurrence is still inside its window.
+                        if (occurrence != null && claimedFor == occurrence && startedFor != occurrence && settledFor != occurrence && claimedAt != null &&
+                            now - occurrence <= decision.windowMs
+                        ) {
+                            val recoveryAt = armReservationRecovery(context, agentId, now)
+                            followUpAt = minOf(followUpAt ?: recoveryAt, recoveryAt)
+                        }
+                    }
+                    AgentScheduleReconcileCore.Action.WAIT_GRACE -> {
+                        // Leave a possibly deferred, still pending alarm alone;
+                        // look again right after the grace ends.
+                        val at = decision.expectedAt!! + AgentScheduleReconcileCore.RECONCILE_GRACE_MS +
+                            AgentScheduleReconcileCore.RECONCILE_GRACE_FOLLOW_UP_MS
+                        followUpAt = minOf(followUpAt ?: at, at)
+                        Log.i(TAG, "Reconcile ($reason) $agentId: occurrence ${decision.expectedAt} inside grace; follow-up at $at")
+                    }
+                    AgentScheduleReconcileCore.Action.WAIT_CLAIM -> {
+                        // A reservation for this occurrence is in flight (or
+                        // its dispatcher just died): keep the chain armed and
+                        // look again once it would count as abandoned.
+                        scheduleNext(context, agentId, intervalMs, cron, notBefore)
+                        val at = (claimedAt ?: now) + AgentScheduleReconcileCore.CLAIM_ABANDON_MS +
+                            AgentScheduleReconcileCore.RECONCILE_GRACE_FOLLOW_UP_MS
+                        followUpAt = minOf(followUpAt ?: at, at)
+                        Log.i(TAG, "Reconcile ($reason) $agentId: occurrence ${decision.expectedAt} reserved, not started; follow-up at $at")
+                    }
+                    AgentScheduleReconcileCore.Action.LATE_RUN -> {
+                        val expectedAt = decision.expectedAt!!
+                        val redispatch = AgentScheduleReconcileCore.occurrenceClaimState(expectedAt, claimedFor, claimedAt, startedFor, settledFor, deferredFor, now) in
+                            setOf(AgentScheduleReconcileCore.ClaimState.ABANDONED, AgentScheduleReconcileCore.ClaimState.DEFERRED)
+                        // RESERVE the occurrence first (atomic with the regular
+                        // fire path's claim), so neither a second pass nor an
+                        // already-queued regular alarm runs it while this
+                        // dispatch is in flight. The run itself marks it
+                        // STARTED (TerminalSessionService); a reservation that
+                        // never starts (crash, failed dispatch) is recoverable
+                        // after CLAIM_ABANDON_MS (WAIT_CLAIM / re-dispatch here).
+                        if (claimOccurrence(context, agentId, expectedAt) != Claim.CLAIMED) {
+                            decisions[agentId] = "claimed"
+                            scheduleNext(context, agentId, intervalMs, cron, notBefore)
+                            continue
+                        }
+                        // Recovery tick for this reservation, armed NOW (not
+                        // only at the end of the pass): if the process dies
+                        // before the run starts, a reconcile pass comes back
+                        // just after the reservation counts as abandoned and
+                        // re-dispatches it while it is still inside its window.
+                        val recoveryAt = armReservationRecovery(context, agentId, now)
+                        followUpAt = minOf(followUpAt ?: recoveryAt, recoveryAt)
+                        lateRuns += Intent(context, TerminalSessionService::class.java).apply {
+                            action = TerminalSessionService.ACTION_RUN_AGENT
+                            putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+                            putExtra(TerminalSessionService.EXTRA_INTERVAL_MS, intervalMs)
+                            putExtra(TerminalSessionService.EXTRA_CRON, cron)
+                            putExtra(TerminalSessionService.EXTRA_LATE, true)
+                            putExtra(TerminalSessionService.EXTRA_EXPECTED_AT, expectedAt)
+                        }
+                        Log.w(TAG, "SCHEDULE_LATE_RUN agent=$agentId expectedAt=$expectedAt lateBy=${now - expectedAt}ms reason=$reason redispatch=$redispatch")
+                        audit(context, agentId, "late_run", JSONObject()
+                            .put("expectedAt", expectedAt).put("lateByMs", now - expectedAt).put("trigger", reason)
+                            .put("redispatch", redispatch))
+                        // Re-arm AFTER the late run is queued: a failure here
+                        // must not strand the reservation without its dispatch
+                        // (the run's own arm-before-run re-arms again anyway).
+                        runCatching { scheduleNext(context, agentId, intervalMs, cron, notBefore) }
+                            .onFailure { Log.e(TAG, "Reconcile ($reason) re-arm after late run failed for $agentId", it) }
+                    }
+                    AgentScheduleReconcileCore.Action.MISSED -> {
+                        val expectedAt = decision.expectedAt!!
+                        Log.w(TAG, "SCHEDULE_MISSED agent=$agentId expectedAt=$expectedAt lateBy=${now - expectedAt}ms window=${decision.windowMs}ms reason=$reason; not run late, next occurrence re-armed")
+                        audit(context, agentId, "missed", JSONObject()
+                            .put("expectedAt", expectedAt).put("lateByMs", now - expectedAt)
+                            .put("windowMs", decision.windowMs).put("trigger", reason))
+                        scheduleNext(context, agentId, intervalMs, cron, notBefore)
+                    }
+                    AgentScheduleReconcileCore.Action.REARM ->
+                        scheduleNext(context, agentId, intervalMs, cron, notBefore)
+                }
+                // Reached only when the decision's action completed.
+                if (decision.action != AgentScheduleReconcileCore.Action.SKIP_UNKNOWN) decided += agentId
+            } catch (e: Exception) {
+                Log.e(TAG, "Reconcile ($reason) failed for $agentId", e)
+            }
+        }
+        if (hasReconcilableSchedules(context)) {
+            val next = now + AgentScheduleReconcileCore.RECONCILE_WATCHDOG_PERIOD_MS
+            val recoveryTick = runCatching { pendingRecoveryTick(context, now, decided, scheduledIds) }
+                .onFailure { Log.e(TAG, "Reconcile ($reason) could not read pending recovery ticks", it) }
+                .getOrNull()
+            val tick = listOfNotNull(next, followUpAt, recoveryTick).minOrNull() ?: next
+            prefs.edit().putLong(RECONCILE_TICK_KEY, tick).apply()
+            armReconcileWatchdog(context, tick)
+        } else {
+            cancelReconcileWatchdog(context)
+        }
+        Log.i(TAG, "Reconcile ($reason) done: ${decisions.entries.joinToString(",") { "${it.key}=${it.value}" }}")
+        return ReconcileResult(lateRuns, decisions)
+    }
+
+    /**
+     * One run per occurrence, shared by the regular alarm fire
+     * (TerminalSessionService ACTION_RUN_AGENT, identity = EXTRA_SCHEDULED_AT)
+     * and reconcile's late run (identity = the occurrence): an atomic
+     * check-and-RESERVE of this agent's occurrence. Lifecycle (TS
+     * occurrenceClaimState): reserved here → started by
+     * [markOccurrenceStarted] right before the run; a reservation that never
+     * starts is abandoned after CLAIM_ABANDON_MS and may be taken again.
+     *  - CLAIMED: newly reserved and committed to disk (survives process death);
+     *  - ALREADY_CLAIMED: this occurrence has started or settled, or another
+     *    path holds a fresh reservation for it;
+     *  - NOT_DURABLE: commit() failed. SharedPreferences updates its in-memory
+     *    map before persisting, so the previous values are restored: a failed
+     *    claim must not look ALREADY_CLAIMED to the other path. A regular fire
+     *    still runs; a late run is not sent.
+     */
+    enum class Claim { CLAIMED, ALREADY_CLAIMED, NOT_DURABLE }
+
+    @Synchronized
+    fun claimOccurrence(context: Context, agentId: String, occurrenceMs: Long, nowMs: Long = System.currentTimeMillis()): Claim {
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        val key = CLAIMED_PREFIX + agentId
+        val atKey = CLAIMED_AT_PREFIX + agentId
+        val previous = if (prefs.contains(key)) prefs.getLong(key, -1L) else null
+        val previousAt = if (prefs.contains(atKey)) prefs.getLong(atKey, -1L) else null
+        val startedFor = prefs.getLong(STARTED_PREFIX + agentId, -1L).takeIf { it > 0 }
+        val settledFor = prefs.getLong(SETTLED_PREFIX + agentId, -1L).takeIf { it > 0 }
+        val deferredKey = DEFERRED_PREFIX + agentId
+        val previousDeferred = if (prefs.contains(deferredKey)) prefs.getLong(deferredKey, -1L) else null
+        when (AgentScheduleReconcileCore.occurrenceClaimState(occurrenceMs, previous, previousAt?.takeIf { it > 0 }, startedFor, settledFor, previousDeferred?.takeIf { it > 0 }, nowMs)) {
+            AgentScheduleReconcileCore.ClaimState.STARTED,
+            AgentScheduleReconcileCore.ClaimState.SETTLED,
+            AgentScheduleReconcileCore.ClaimState.RESERVED -> return Claim.ALREADY_CLAIMED
+            // An old reservation (or a deferred occurrence) whose run is still
+            // preparing in THIS process (e.g. a long runtime extraction after
+            // an update) is not taken over.
+            AgentScheduleReconcileCore.ClaimState.ABANDONED,
+            AgentScheduleReconcileCore.ClaimState.DEFERRED ->
+                if (NativeAgentRunRegistry.activeRunStartedAt(agentId) != null) return Claim.ALREADY_CLAIMED
+            AgentScheduleReconcileCore.ClaimState.NONE -> Unit
+        }
+        // A deferred mark stays: if this re-dispatch dies without an outcome,
+        // the occurrence is deferred (recoverable) again once abandoned. It
+        // ends when the occurrence starts or settles.
+        if (prefs.edit().putLong(key, occurrenceMs).putLong(atKey, nowMs).commit()) return Claim.CLAIMED
+        // Roll the in-memory values back (their own persistence is best-effort).
+        runCatching {
+            val undo = prefs.edit()
+            if (previous == null) undo.remove(key) else undo.putLong(key, previous)
+            if (previousAt == null) undo.remove(atKey) else undo.putLong(atKey, previousAt)
+            undo.commit()
+        }
+        Log.e(TAG, "SCHEDULE_CLAIM_NOT_DURABLE agent=$agentId occurrence=$occurrenceMs: claim could not be persisted")
+        audit(context, agentId, "claim_not_durable", JSONObject().put("expectedAt", occurrenceMs))
+        return Claim.NOT_DURABLE
+    }
+
+    /**
+     * The run of [occurrenceMs] is starting (TerminalSessionService, right
+     * before runAgentInBackground): from now on it never runs again
+     * (occurrenceClaimState STARTED). Also (re)writes the claim, so the mark
+     * holds even when the fire ran unreserved after a NOT_DURABLE claim. A
+     * failed commit is logged and the run proceeds: while it runs its lock
+     * protects it, once finished its run log does.
+     */
+    @Synchronized
+    fun markOccurrenceStarted(context: Context, agentId: String, occurrenceMs: Long): Boolean {
+        val ok = runCatching {
+            context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(STARTED_PREFIX + agentId, occurrenceMs)
+                .putLong(CLAIMED_PREFIX + agentId, occurrenceMs)
+                .remove(DEFERRED_PREFIX + agentId)
+                .commit()
+        }.getOrDefault(false)
+        if (!ok) {
+            Log.e(TAG, "SCHEDULE_START_MARK_NOT_DURABLE agent=$agentId occurrence=$occurrenceMs")
+            audit(context, agentId, "start_mark_not_durable", JSONObject().put("expectedAt", occurrenceMs))
+        } else {
+            // Started: its recovery tick is no longer needed.
+            runCatching { relaxReservationRecovery(context, agentId) }
+                .onFailure { Log.w(TAG, "Could not relax the recovery tick for $agentId", it) }
+        }
+        return ok
+    }
+
+    /**
+     * The dispatch of [occurrenceMs] reached AgentRuntime and was refused
+     * there before the executor launched (disabled, failure backoff,
+     * extraction failure, missing / stale script or plan, …): SETTLED — it is
+     * never re-dispatched (those refusals are governed by the failure /
+     * backoff / circuit-breaker machinery; a re-dispatch would be refused
+     * again). Called only for a scheduled occurrence (TerminalSessionService);
+     * manual / widget / MCP runs never touch claims. A failed commit leaves
+     * the reservation, which turns abandoned and is re-dispatched inside its
+     * window (the refusal's own log usually settles it anyway).
+     */
+    @Synchronized
+    fun markOccurrenceSettled(context: Context, agentId: String, occurrenceMs: Long, reason: String): Boolean {
+        val ok = runCatching {
+            context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(SETTLED_PREFIX + agentId, occurrenceMs)
+                .putLong(CLAIMED_PREFIX + agentId, occurrenceMs)
+                .remove(DEFERRED_PREFIX + agentId)
+                .commit()
+        }.getOrDefault(false)
+        Log.i(TAG, "SCHEDULE_SETTLED agent=$agentId occurrence=$occurrenceMs durable=$ok: refused before launch")
+        audit(context, agentId, "settled", JSONObject().put("expectedAt", occurrenceMs).put("durable", ok).put("reason", reason.take(160)))
+        if (ok) {
+            runCatching { relaxReservationRecovery(context, agentId) }
+                .onFailure { Log.w(TAG, "Could not relax the recovery tick for $agentId", it) }
+        }
+        return ok
+    }
+
+    /**
+     * The dispatch of [occurrenceMs] was refused because a previous run of
+     * the agent was still active (AgentRuntime.PREVIOUS_RUN_ACTIVE_MESSAGE):
+     * DEFERRED — not settled. Reconcile may run it late, inside its window,
+     * once no run is live; a recovery tick is armed so a pass comes back (and
+     * keeps coming back while the run is live, see SKIP_RUNNING). The claim
+     * time is reset to now (so this recovery tick, not the original
+     * reservation, bounds it). A failed commit leaves the reservation
+     * (abandoned later; its refusal log then counts as evidence, so the
+     * occurrence is not retried).
+     */
+    @Synchronized
+    fun markOccurrenceDeferred(context: Context, agentId: String, occurrenceMs: Long): Boolean {
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val ok = runCatching {
+            val edit = prefs.edit()
+                .putLong(DEFERRED_PREFIX + agentId, occurrenceMs)
+                .putLong(CLAIMED_PREFIX + agentId, occurrenceMs)
+                // The claim's age bounds its recovery ticks (pendingRecoveryTick);
+                // a fire that ran unreserved (NOT_DURABLE) had none.
+                .putLong(CLAIMED_AT_PREFIX + agentId, now)
+            edit.commit()
+        }.getOrDefault(false)
+        Log.i(TAG, "SCHEDULE_DEFERRED agent=$agentId occurrence=$occurrenceMs durable=$ok: previous run still active")
+        audit(context, agentId, "deferred", JSONObject().put("expectedAt", occurrenceMs).put("durable", ok))
+        if (ok) {
+            runCatching { armReservationRecovery(context, agentId, now) }
+                .onFailure { Log.e(TAG, "Could not arm the deferred-occurrence recovery tick for $agentId", it) }
+        }
+        return ok
+    }
+
+    /**
+     * A reservation was just taken for [agentId] (reconcile late run or a
+     * regular fire): if its run never starts (process death, failed
+     * dispatch), a reconcile pass must come back right after the
+     * reservation counts as abandoned, while the occurrence is still inside
+     * its window. Records the deadline and pulls the watchdog in to it (never
+     * pushes an earlier tick later). Returns the deadline.
+     */
+    @Synchronized
+    fun armReservationRecovery(context: Context, agentId: String, nowMs: Long = System.currentTimeMillis()): Long {
+        val at = nowMs + AgentScheduleReconcileCore.CLAIM_ABANDON_MS + AgentScheduleReconcileCore.RECONCILE_GRACE_FOLLOW_UP_MS
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putLong(RECOVERY_PREFIX + agentId, at).apply()
+        try {
+            val armed = prefs.getLong(WATCHDOG_AT_KEY, 0L)
+            val piAlive = watchdogPendingIntent(context, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) != null
+            if (!(piAlive && armed > nowMs && armed <= at)) armReconcileWatchdog(context, at)
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not arm the reservation recovery tick for $agentId", e)
+        }
+        return at
+    }
+
+    /** Earliest persisted reservation recovery deadline (any agent), due or
+     *  not; null when none is pending. A value <= now means a recovery pass
+     *  is owed right away. */
+    private fun earliestRecoveryNeed(prefs: android.content.SharedPreferences): Long? =
+        prefs.all.mapNotNull { (k, v) -> if (k.startsWith(RECOVERY_PREFIX)) v as? Long else null }.minOrNull()
+
+    /**
+     * End of a reconcile pass: the earliest persisted reservation recovery
+     * deadline the watchdog must still honour, so a pass never replaces a
+     * pending recovery tick with its hourly one. A deadline that is due was
+     * serviced only if this pass actually decided that agent ([decided]);
+     * otherwise (agent file unreadable, per-agent failure) it is retried
+     * CLAIM_ABANDON_MS + 1 min later, for as long as its reservation is
+     * younger than the 2 h window cap. Deadlines of agents without a
+     * schedule, or past the cap, are dropped.
+     */
+    private fun pendingRecoveryTick(context: Context, now: Long, decided: Set<String>, scheduledIds: Set<String>): Long? {
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        val edit = prefs.edit()
+        var earliest: Long? = null
+        for ((key, value) in prefs.all) {
+            if (!key.startsWith(RECOVERY_PREFIX)) continue
+            val agentId = key.removePrefix(RECOVERY_PREFIX)
+            val at = value as? Long
+            val claimedAt = prefs.getLong(CLAIMED_AT_PREFIX + agentId, -1L)
+            val keep = when {
+                at == null || agentId !in scheduledIds -> null
+                at > now -> at
+                agentId in decided -> null
+                claimedAt > 0 && now - claimedAt <= AgentScheduleReconcileCore.CATCH_UP_WINDOW_CAP_MS ->
+                    now + AgentScheduleReconcileCore.CLAIM_ABANDON_MS + AgentScheduleReconcileCore.RECONCILE_GRACE_FOLLOW_UP_MS
+                else -> null
+            }
+            if (keep == null) edit.remove(key) else if (keep != at) edit.putLong(key, keep)
+            if (keep != null) earliest = minOf(earliest ?: keep, keep)
+        }
+        edit.apply()
+        return earliest
+    }
+
+    /**
+     * The reserved run of [agentId] started: drop its recovery deadline and,
+     * if the watchdog is armed EARLIER than anything still needs, push it
+     * back out to the earliest remaining need — another pending recovery, the
+     * last reconcile pass's own tick, or the hourly period — so a run that
+     * starts normally costs no extra reconcile pass.
+     */
+    private fun relaxReservationRecovery(context: Context, agentId: String) {
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        if (!prefs.contains(RECOVERY_PREFIX + agentId)) return
+        prefs.edit().remove(RECOVERY_PREFIX + agentId).apply()
+        if (isGloballyHalted(context) || !hasReconcilableSchedules(context)) return
+        val now = System.currentTimeMillis()
+        val armed = prefs.getLong(WATCHDOG_AT_KEY, 0L)
+        if (armed <= now) return
+        val pending = earliestRecoveryNeed(prefs)
+        // Another reservation's recovery is overdue (its pass has not run
+        // yet): whatever is armed may be that pass — leave it alone.
+        if (pending != null && pending <= now) return
+        val tick = prefs.getLong(RECONCILE_TICK_KEY, 0L).takeIf { it > now }
+        val target = listOfNotNull(pending, tick, now + AgentScheduleReconcileCore.RECONCILE_WATCHDOG_PERIOD_MS).minOrNull() ?: return
+        if (armed < target) armReconcileWatchdog(context, target)
+    }
+
+    /** The service intent every reconcile entry point sends. */
+    fun reconcileServiceIntent(context: Context, reason: String): Intent =
+        Intent(context, TerminalSessionService::class.java).apply {
+            action = TerminalSessionService.ACTION_SCHEDULE_RECONCILE
+            putExtra(TerminalSessionService.EXTRA_RECONCILE_REASON, reason)
+        }
+
+    /**
+     * Receivers / the bridge: hand a reconcile pass to TerminalSessionService
+     * (ACTION_SCHEDULE_RECONCILE). BOOT_COMPLETED, MY_PACKAGE_REPLACED and the
+     * exact-alarm grant broadcast all allow a foreground-service start. If
+     * the start is refused anyway, the watchdog is (re-)armed so a later tick
+     * reconciles. Returns whether the service start was accepted.
+     */
+    fun startReconcileService(context: Context, reason: String): Boolean {
+        val app = context.applicationContext
+        return try {
+            val intent = reconcileServiceIntent(app, reason)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) app.startForegroundService(intent) else app.startService(intent)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Reconcile service start refused ($reason); arming the watchdog instead", e)
+            audit(app, "-", "reconcile_start_refused", JSONObject().put("trigger", reason).put("error", e.javaClass.simpleName))
+            runCatching { ensureReconcileWatchdog(app, force = true) }
+            false
+        }
+    }
+
+    private fun watchdogPendingIntent(context: Context, flags: Int = piFlags()): PendingIntent? {
+        val intent = reconcileServiceIntent(context, RECONCILE_REASON_WATCHDOG)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(context, WATCHDOG_REQUEST_CODE, intent, flags)
+        } else {
+            PendingIntent.getService(context, WATCHDOG_REQUEST_CODE, intent, flags)
+        }
+    }
+
+    /** Arm the watchdog at [atMs] (exact while idle; inexact fallback is
+     *  logged — a late reconcile is still useful). */
+    fun armReconcileWatchdog(context: Context, atMs: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = watchdogPendingIntent(context) ?: return
+        setExactWhileIdle(context, am, atMs, pi, "reconcile-watchdog")
+        context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE).edit().putLong(WATCHDOG_AT_KEY, atMs).apply()
+        Log.i(TAG, "Reconcile watchdog armed at $atMs")
+    }
+
+    /**
+     * Arm the watchdog one period out unless one is already armed for an
+     * earlier future time (never pushes a pending tick later, so a grace
+     * follow-up survives later schedule() calls). [force] re-arms regardless
+     * (after a reboot every alarm is gone). The PendingIntent's existence is
+     * part of "already armed": a force-stop / reboot removes it.
+     */
+    fun ensureReconcileWatchdog(context: Context, force: Boolean = false) {
+        if (isGloballyHalted(context)) return
+        if (!hasReconcilableSchedules(context)) return
+        val now = System.currentTimeMillis()
+        val period = AgentScheduleReconcileCore.RECONCILE_WATCHDOG_PERIOD_MS
+        // Never later than a pending reservation recovery deadline (a due one
+        // gets a pass a minute from now): re-arming here — including the
+        // forced re-arm after a refused service start or a reboot — must not
+        // replace a recovery tick with the hourly one.
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        // Per deadline: an overdue one becomes "a minute from now", a future
+        // one stays as is; then the earliest.
+        val recovery = prefs.all.mapNotNull { (k, v) ->
+            if (k.startsWith(RECOVERY_PREFIX)) (v as? Long)?.let {
+                if (it <= now) now + AgentScheduleReconcileCore.RECONCILE_GRACE_FOLLOW_UP_MS else it
+            } else null
+        }.minOrNull()
+        val target = minOf(now + period, recovery ?: (now + period))
+        if (!force) {
+            val armedAt = prefs.getLong(WATCHDOG_AT_KEY, 0L)
+            val piAlive = watchdogPendingIntent(context, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) != null
+            if (piAlive && armedAt > now && armedAt <= target) return
+        }
+        armReconcileWatchdog(context, target)
+    }
+
+    fun cancelReconcileWatchdog(context: Context) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        watchdogPendingIntent(context, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)?.let {
+            runCatching { am.cancel(it) }
+            runCatching { it.cancel() }
+        }
+        context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE).edit().remove(WATCHDOG_AT_KEY).apply()
+    }
+
+    /**
+     * One JSON line per scheduling event in ~/.shelly/agents/logs/
+     * schedule-reconcile.jsonl (outside every logs/<id>/ dir, so it is never
+     * read as a run log). Bounded: past 128 KB the older half is dropped.
+     * Device evidence for doze-scheduler-diagnosis §7; best-effort.
+     */
+    @Synchronized
+    fun audit(context: Context, agentId: String, event: String, extra: JSONObject?) {
+        try {
+            val file = File(HomeInitializer.getHomeDir(context), AUDIT_FILE)
+            file.parentFile?.mkdirs()
+            if (file.isFile && file.length() > AUDIT_MAX_BYTES) {
+                val lines = file.readLines()
+                file.writeText(lines.drop(lines.size / 2).joinToString("\n", postfix = "\n"))
+            }
+            val row = (extra ?: JSONObject()).put("ts", System.currentTimeMillis()).put("agentId", agentId).put("event", event)
+            file.appendText(row.toString() + "\n")
+        } catch (e: Exception) {
+            Log.w(TAG, "Schedule audit write failed ($event, $agentId)", e)
+        }
+    }
+
+    /**
+     * Cron -> most recent fire epoch ms at or before [nowMs] (an occurrence
+     * exactly at nowMs counts). Mirrors lib/agent-scheduler.ts lastTriggerMs
+     * for the shapes nextTriggerAt below supports (every-N-min, every-N-hour,
+     * daily, daily-multi, weekly single/CSV DOW), with the same field guards as
+     * nextTriggerAt. One-shot sentinels and anything else → null. Used only by
+     * reconcile().
+     */
+    fun lastTriggerAt(cron: String?, nowMs: Long): Long? {
+        if (cron.isNullOrBlank()) return null
+        if (cron.trim().startsWith("@")) return null
+        val parts = cron.trim().split(Regex("\\s+"))
+        if (parts.size != 5) return null
+
+        val minute = parts[0]
+        val hour = parts[1]
+        val dayOfMonth = parts[2]
+        val month = parts[3]
+        val dayOfWeek = parts[4]
+        val now = Calendar.getInstance().apply { timeInMillis = nowMs }
+        val target = Calendar.getInstance().apply { timeInMillis = nowMs }
+
+        val everyMin = Regex("^\\*/(\\d+)$").matchEntire(minute)?.groupValues?.get(1)?.toIntOrNull()
+        if (everyMin != null && everyMin > 0 && hour == "*" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*") {
+            target.set(Calendar.SECOND, 0)
+            target.set(Calendar.MILLISECOND, 0)
+            target.set(Calendar.MINUTE, (now.get(Calendar.MINUTE) / everyMin) * everyMin)
+            return target.timeInMillis
+        }
+
+        val everyHour = Regex("^\\*/(\\d+)$").matchEntire(hour)?.groupValues?.get(1)?.toIntOrNull()
+        if (everyHour != null && everyHour > 0 && minute == "0" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*") {
+            target.set(Calendar.MINUTE, 0)
+            target.set(Calendar.SECOND, 0)
+            target.set(Calendar.MILLISECOND, 0)
+            // Valid hours are {0, N, 2N, ...} within the day: the latest one at
+            // or before the current hour (hour 0 always qualifies).
+            target.set(Calendar.HOUR_OF_DAY, (now.get(Calendar.HOUR_OF_DAY) / everyHour) * everyHour)
+            return target.timeInMillis
+        }
+
+        val parsedMinute = minute.toIntOrNull()
+
+        // Daily-multi ("m 8,21 * * *"): the latest listed hour at or before now,
+        // else yesterday's. Checked before the single-hour guard (as in nextTriggerAt).
+        if (parsedMinute != null && dayOfMonth == "*" && month == "*" && dayOfWeek == "*" &&
+            Regex("^\\d+(,\\d+)+$").matches(hour)
+        ) {
+            val parsedHours = hour.split(",").map { it.toIntOrNull() }
+            if (parsedHours.any { it == null || it !in 0..23 }) return null
+            var best: Long? = null
+            for (h in parsedHours.filterNotNull().distinct()) {
+                val candidate = now.clone() as Calendar
+                candidate.set(Calendar.HOUR_OF_DAY, h)
+                candidate.set(Calendar.MINUTE, parsedMinute)
+                candidate.set(Calendar.SECOND, 0)
+                candidate.set(Calendar.MILLISECOND, 0)
+                if (candidate.timeInMillis > now.timeInMillis) candidate.add(Calendar.DAY_OF_YEAR, -1)
+                if (best == null || candidate.timeInMillis > best!!) best = candidate.timeInMillis
+            }
+            return best
+        }
+
+        val parsedHour = hour.toIntOrNull()
+        if (parsedMinute == null || parsedHour == null || dayOfMonth != "*" || month != "*") return null
+
+        target.set(Calendar.HOUR_OF_DAY, parsedHour)
+        target.set(Calendar.MINUTE, parsedMinute)
+        target.set(Calendar.SECOND, 0)
+        target.set(Calendar.MILLISECOND, 0)
+
+        // Weekly single day or CSV ("1,5"): the most recent listed day. Like
+        // lib/agent-scheduler.ts parseDowList, any value > 7 rejects the field.
+        if (Regex("^\\d+(,\\d+)*$").matches(dayOfWeek)) {
+            val days = dayOfWeek.split(",").map { it.toIntOrNull() ?: return null }
+            if (days.any { it > 7 }) return null
+            val todayDow = target.get(Calendar.DAY_OF_WEEK) - 1 // 0 = Sunday, like JS getDay()
+            var best: Long? = null
+            for (day in days.map { it % 7 }.distinct()) {
+                val candidate = target.clone() as Calendar
+                var daysSince = (todayDow - day + 7) % 7
+                if (daysSince == 0 && candidate.timeInMillis > now.timeInMillis) daysSince = 7
+                candidate.add(Calendar.DAY_OF_YEAR, -daysSince)
+                if (best == null || candidate.timeInMillis > best!!) best = candidate.timeInMillis
+            }
+            return best
+        }
+
+        if (dayOfWeek != "*") return null
+        // Daily: today at h:m if already reached, else yesterday.
+        if (target.timeInMillis > now.timeInMillis) target.add(Calendar.DAY_OF_YEAR, -1)
+        return target.timeInMillis
     }
 
     /**

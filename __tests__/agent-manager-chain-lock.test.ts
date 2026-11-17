@@ -147,6 +147,9 @@ describe('acquireChainLock / releaseChainLock — mkdir-based atomic lock (real 
     // — i.e. the crash this staleness reclaim exists for.
     const ancientEpochSec = Math.floor(Date.now() / 1000) - 3 * 60 * 60;
     fs.writeFileSync(`${dir}/acquired-at`, String(ancientEpochSec));
+    // Gate fix round 2 (R2): the directory itself must be old too — a lock
+    // created a moment ago (fresh mtime) is never stale.
+    fs.utimesSync(dir, ancientEpochSec, ancientEpochSec);
 
     const secondSeed = await acquireChainLock('lock-agent-5', realRunCommand);
     expect(secondSeed).not.toBe(firstSeed);
