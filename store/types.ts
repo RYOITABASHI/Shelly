@@ -488,6 +488,16 @@ export type AppSettings = {
    * can turn it off, so the native value wins and Settings re-reads it.
    */
   codexRemoteAutostart?: boolean;
+  /**
+   * "Wi-Fi連動オートパイロット" (connectivity guardian, default false). On Wi-Fi
+   * connect / boot: wireless debugging ON -> wait for Shizuku's own
+   * auto-start -> Tailscale connected (via fixed ClosePaw goals, only while
+   * "Run ClosePaw without approval" is on; otherwise a notification). On
+   * Wi-Fi loss (45 s debounce): Tailscale off -> wireless debugging OFF.
+   * Native (ConnectivityGuardian.kt); this flag is mirrored to the Keystore
+   * store by lib/connectivity-guardian-mirror.ts.
+   */
+  connectivityGuardianEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

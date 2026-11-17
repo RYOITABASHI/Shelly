@@ -16,6 +16,9 @@
 
 ## History
 
+- 2026-11-17: CC（feat/guardian-tailscale-mobile）がオーナー決定（2026-11-17）でガーディアンの仕様を変更: Wi-Fi 切断時に Tailscale を切断しない（モバイルデータでも接続したまま、Wi-Fi 外から Shelly の MCP に届くように）。OFF シーケンスは `adb_wifi_enabled=0` だけになり、ClosePaw への依頼も承認なし設定の参照もしない。Tailscale の経路は接続専用（`GOAL_TAILSCALE_DISCONNECT`・`disconnect` アクションを削除、Kotlin・TS の両コア）。状態機械・常駐の条件は不変。Gradle・実機未検証（下記 P1）。
+- 2026-11-17: CC（feat/wifi-guardian、base `feat/closepaw-shell-preapproval`）が「Wi-Fi連動オートパイロット」（connectivity guardian、オーナー承認済み、経路 C1）を実装（`ConnectivityGuardian*.kt`・`WifiDebugControl.kt`・`ShizukuLiveness.kt`・`TailscaleControl.kt`・`lib/connectivity-guardian-*.ts`、設定の「Wi-Fi 連動オートパイロット」、既定 OFF）。Kotlin と Shizuku 依存はローカルでは未コンパイル（CI のビルドで確認）、実機未検証（下記 P1）。
+- 2026-11-16: CC（feat/closepaw-shell-preapproval）が「ClosePaw を Shelly の承認なしで実行」（オーナー決定。Muse → Shelly → `shelly closepaw` の経路で毎回の承認を不要にする）を実装（`ClosePawShellPreapproval.kt`、`lib/closepaw-shell-preapproval.ts`、設定の「ClosePaw」）。Kotlin はローカルでは未コンパイル（CI のビルドで確認）、実機未検証（下記 P1）。
 - 2026-11-16: Codex (`fix/mcp-agent-action-preapproval`) が MCP の「常に許可」を、旧ルールを拡張せずに定義と安全設定に束縛したアクション事前許可へ拡張。APK・Keystore・実機は未検証。下記「MCP アクション事前許可」参照。
 
 - 2026-11-15: CC（feat/mcp-typed-diagnostics、未push）が MCP の読み取り専用ツール `device_status` / `read_logs` / `get_settings` を追加。実機未検証、MCP 経由の設定の書き込みは範囲外として記録（下記 P2「MCP の診断ツール」）。
@@ -91,6 +94,25 @@
 2026-11-14 実機: 「開発記 記事下書き」（承認なしで実行＝標準）の Run now が、scrcpy の仮想ディスプレイが消えてアクティビティが破棄された後に「draft action approval timed out」（5 分）で終わった。原因は、draft / notify を自動許可するドレインが RootLayout の useEffect（`app/_layout.tsx` `drainAgentActionApprovalRequests`）の中にあり、`ReactHost.onHostDestroy` で root がアンマウントされると cleanup がインターバルとキープアライブ tick の購読を外すこと（JS ランタイム・実行の出所レジストリ・ネイティブの tick は生きている。logcat で `ReactHost{0}.onHostDestroy(activity)` → 再表示時に `RootLayout ⚡ mounted` を確認）。
 **修正（ブランチ `fix/rwa-draft-auto-accept-background`、実機未検証）**: `lib/agent-action-approval-headless.ts` をモジュールスコープで登録し、RootLayout がマウントされていない間だけ、同じキープアライブ tick で draft / notify の要求を `decideActionAutoApproval`（Keystore の設定＋定義ハッシュ、出所は drained / minted の両方、POLICY-001 の deny / draft_only / ask で停止）で判定して署名付き accept を返す。許可しないものには何もしない（decline も通知も出さない。再マウント後に従来のドレインが扱う）。2 つのドレインは共有ロックで同時に動かない。**実機で確認すること**: Run now の直後にアプリのタスクを消す（またはアクティビティを破棄する）→ 下書きが保存され、logcat に `headless run-without-approval auto-accepted` が出る。tick がアクティビティ破棄後も JS に届くこと。
 **未対応**: CLI ワーカーのゲートのエスカレーション（`drainAgentEscalationRequests`、同じ effect 内）も同じ理由で画面の破棄後は自動許可されず、ドライバーのターンのタイムアウトまで待つ。同じ形（モジュールスコープ＋共有ロック）で直す。
+
+### Wi-Fi連動オートパイロット（connectivity guardian）— 実装済み（ブランチ `feat/wifi-guardian`）、Gradle・実機未検証（2026-11-17、P1）
+
+設計は `wifi-guardian-design.md`（Phase 1）＋ Phase 2 補遺（オーナーが経路 C1 を選択）。Wi-Fi 接続・起動時: `adb_wifi_enabled=1`（`WRITE_SECURE_SETTINGS`）→ Shizuku 自身の自動起動を `Shizuku.pingBinder()` で最大 90 秒待つ（**ガーディアンは Shizuku を起動しない**、権限も要求しない）→ Tailscale が切れていれば接続（接続済みなら何もしない）。Wi-Fi 切断の 45 秒後（戻れば取り消し）: `adb_wifi_enabled=0` だけ。**Tailscale は切断しない**（オーナー決定 2026-11-17: モバイルデータでも接続したままにし、Wi-Fi 外から Shelly の MCP に届くようにする。OFF シーケンスは ClosePaw に依頼せず、承認なし設定にも依らない）。常時の監視はしないので、遷移の間にオーナーが手で切った Tailscale はそのまま（次の Wi-Fi 接続で接続し直す）。Tailscale の接続は固定の ClosePaw ゴールを `ClosePawHandoff.handleLine` に渡すだけで、「ClosePaw を承認なしで実行」が ON のときだけ（OFF は通知のみ）。接続の可否は Shelly 自身の `TRANSPORT_VPN` プローブだけで判定。書き込みが効かない（「このネットワークでワイヤレスデバッグを許可しますか？」が出ている等）・Shizuku が 90 秒で来ない・Tailscale を確認できないときは通知して終了（ダイアログには一切応答しない、自動の再試行なし。次の Wi-Fi 接続・起動で再試行）。
+
+**初回のセットアップ（端末側、コードでは行わない）**: (i) `pm grant dev.shelly.terminal android.permission.WRITE_SECURE_SETTINGS`（shell uid から、オーナーの承認つき）。無ければ通知で知らせて何も書かない。(ii) Shizuku アプリ側の自動起動の設定（Shizuku 自身の `WRITE_SECURE_SETTINGS` と「起動時に開始」等）。
+
+**実機で確認する**: (1) One UI で `adb_wifi_enabled` の書き込みと読み戻し、未信頼ネットワークでのダイアログの挙動（書き込みが 0 に戻るか・1 のままか）。(2) Shizuku の権限なしで `pingBinder()` が true になるか（バインダーが権限の無いアプリにも届くか）。届かなければ C1 の待ちは常にタイムアウトする。(3) Shizuku の自動起動が Wi-Fi 再接続でも発火するか（起動時だけか）。(4) ワイヤレスデバッグ OFF で Shizuku が本当に止まるか。(5) Tailscale の画面ラベルとゴールの通り方、`com.tailscale.ipn` の Tasker 風インテント（`CONNECT_VPN`）の有無（あれば `TailscaleControl.requestTailscale` の差し替え先、接続専用）、Shelly が VPN を除外されていても `TRANSPORT_VPN` が見えるか。(6) `registerNetworkCallback(…, PendingIntent)` がプロセス終了後・再起動後に届くか（AOSP は「available」のときだけ送るので、切断は常駐サービス内のプロセス内コールバックで拾い、15 分の見回りアラームは予備）。(7) アラームからの前景サービス起動（`SCHEDULE_EXACT_ALARM` が無いときは不正確なアラームになり、サービスなしで実行する）、常駐中の前景サービスが Wi-Fi 接続中ずっと残り、OFF 完了・トグル OFF で消えること、見回りからは正確なアラームの run hop 経由でだけ常駐を再開すること。(7b) ClosePaw の実行状態ファイル（`.shelly-closepaw-run-<reqId>.json`）が終端（completed 等）になるまでシーケンスが終わらないこと（最大 5 分、監査 `tailscale/wait/settled` か `settle_timeout`）。(8) アプリ更新後に `WRITE_SECURE_SETTINGS` の付与が残るか。(9) 監査 `~/.shelly/agents/audits/connectivity-guardian.jsonl` が固定キーだけで SSID を含まないこと。
+
+**切断の検知（コーディネーターのゲート 2026-11-17 で解決、仕様どおり）**: ガーディアンの前景サービス（specialUse、既存の低優先度通知）は、OFF の義務がありうる間（ON 完了後の Wi-Fi 接続中・45 秒の猶予中・シーケンス実行中、`ConnectivityGuardianCore.wantsResident`）常駐し、プロセス内の切断コールバックを生かすので、45 秒の猶予は実際の切断から数える。OFF 完了・トグル OFF・Wi-Fi が無いまま OFF が終わったら止まる。常駐の開始は前景サービス起動が許される文脈（起動完了・アプリ起動・正確なアラームの run hop・シーケンス後の既に前景のサービス）だけで、新しいバックグラウンド起動経路は足していない。15 分の見回りは、プロセスが殺された場合の予備。**トレードオフ（オーナーへの注記）**: トグル ON かつ Wi-Fi 接続中は、ガーディアンの通知が常時出る。
+**プロセス終了からの回復**: 実行中のシーケンスは `in_flight` として保存し、起動・アプリ起動・見回り・サービス起動のたびに Wi-Fi を確かめて、無ければ切断の猶予を張って OFF、あれば ON をやり直す。
+**ClosePaw の実行との順序**: Tailscale の依頼を出したシーケンス（ON のみ。2026-11-17 以降 OFF は依頼しない）は、どんな理由（Wi-Fi の復帰・トグル OFF・STOP-ALL・確認失敗）でも、その依頼の実行が終端になる（`ClosePawRunResults` の状態ファイル、成否には使わない）か 5 分経つまで終わらない。次のシーケンスは必ずプローブし直す。
+Why not now: この VM からは端末を操作できない。Kotlin・Shizuku 依存は CI が初回コンパイル。
+
+### ClosePaw を Shelly の承認なしで実行 — 実装済み、実機未検証（2026-11-16、P1）
+
+オーナー決定（2026-11-16）: Muse をインターフェースに Shelly を動かし、Shelly から ClosePaw に画面操作を渡すため、Shelly 側の ClosePaw 承認を ON/OFF できる 1 つのスイッチで外す。ON の間は (1) `shelly closepaw "<goal>"` が通知なしで即起動（`ClosePawShellApprovals.runPreapproved` → タップと同じ `resolve` 経路）、(2) エージェントの ClosePaw ステップは毎回の Review なし（実行の出どころ確認と 1 実行 1 回の claim は残す）、(3) 下書きは宛先ごとの設定と 1 日の上限なしでタップなし。ON はチャットで打った固定の文（「ClosePawは承認なしで」/ "run ClosePaw without approval"、ClosePaw の語が必須）だけ、OFF はチャットか設定。操作できるアプリの限定はしない（オーナー判断: どのアプリでも）。**受け入れた残余リスク**: ON の間は `shelly closepaw` に届く依頼（Codex、エージェント、Web 由来の文を含む）が確認なしに ClosePaw でどのアプリも本人として操作できる。止まるのは STOP-ALL、信頼済み variant の確認、ClosePaw 自身のポリシー、Shelly 内のゲートだけ。
+
+**残る確認**: 実機で ON/OFF（チャット・設定）、ON で `shelly closepaw` が通知なしに背面実行・`shelly closepaw wait` の状態が running→結果になること、エージェントの ClosePaw ステップが Review なしで 1 回だけ動くこと、STOP-ALL で拒否されること、下書きがタップなしで出ること。
 
 ### MCP アクション事前許可 — 実装済み、APK・実機未検証（2026-11-16、P1）
 

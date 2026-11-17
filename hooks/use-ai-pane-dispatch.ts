@@ -98,6 +98,7 @@ import {
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import { canSetDraftPreapprovalFrom, handleDraftPreapprovalChat } from '@/lib/closepaw-draft-preapproval';
+import { canSetClosePawShellPreapprovalFrom, handleClosePawShellPreapprovalChat } from '@/lib/closepaw-shell-preapproval';
 import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, parseActionApprovalChatReply, resolveActionApprovalFromChat, resolvePendingApprovalFromMonitor } from '@/lib/agent-action-chat-approval';
 import { getPendingApprovals, pickMonitorApprovalTarget } from '@/lib/agent-pending-approvals';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -2729,6 +2730,30 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // the composer reaches it (typedByUser, no source): voice, a terminal
       // request, a widget ASK or a MONITOR team falls through and routes as
       // usual. Decided here, before any model, so no LLM claims a setting.
+      // "Run ClosePaw without Shelly's approval" (owner decision 2026-11-16,
+      // lib/closepaw-shell-preapproval.ts): 「ClosePawは承認なしで」 /
+      // "run ClosePaw without approval", and the matching "stop" phrase. Same
+      // rule as the draft switch: the whole message is the fixed phrase and
+      // only the owner's typing in the composer turns it on.
+      if (canSetClosePawShellPreapprovalFrom({ typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source })) {
+        const closePawPreapprovalReply = await handleClosePawShellPreapprovalChat(
+          userText,
+          detectMessageLocale(userText),
+          { typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source },
+        );
+        if (closePawPreapprovalReply !== null) {
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: closePawPreapprovalReply,
+            timestamp: Date.now(),
+            agent: agent as ChatMessage['agent'],
+            flowTurn: true,
+          });
+          return;
+        }
+      }
+
       if (canSetDraftPreapprovalFrom({ typedByUser: dispatchOpts?.typedByUser === true, source: dispatchOpts?.source })) {
         const draftPreapprovalReply = await handleDraftPreapprovalChat(
           userText,

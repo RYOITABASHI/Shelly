@@ -101,6 +101,13 @@ const config: ExpoConfig & { android?: any } = {
       // and silently drops anything added directly — see this repo's own
       // "expo prebuild wipes manual manifest edits" lesson.
       "ACCESS_NETWORK_STATE",
+      // Wi-Fi connectivity guardian (WifiDebugControl.kt) writes
+      // Settings.Global adb_wifi_enabled. signature|privileged|development:
+      // declaring it grants nothing; it only works after a one-time
+      // `pm grant dev.shelly.terminal android.permission.WRITE_SECURE_SETTINGS`
+      // from the shell uid (device-phase setup, never done by the app).
+      // Without the grant the guardian falls back to an assist notification.
+      "WRITE_SECURE_SETTINGS",
     ],
     intentFilters: [
       {

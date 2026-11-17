@@ -194,7 +194,7 @@ describe('native half (source)', () => {
     expect(unlock).toContain('if (auto.isNotEmpty()) startAutoBatch(app, auto) else requestApproval(app, items)');
     expect(fn(drafts, 'private fun startAutoBatch(')).toContain('sendNext(app)');
     // Re-checked per draft: turned off mid-batch leaves the item queued.
-    expect(fn(drafts, 'private fun sendNext(')).toContain('open.auto && !ClosePawDraftPreapproval.isOn(app, destinationKey(draft))');
+    expect(fn(drafts, 'private fun sendNext(')).toContain('open.auto && !ClosePawShellPreapproval.isOn(app) && !ClosePawDraftPreapproval.isOn(app, destinationKey(draft))');
     // The key binds the destination the destinations file resolved.
     expect(pre).toContain('platform == "substack" && subdomain != null -> "substack:$subdomain"');
   });

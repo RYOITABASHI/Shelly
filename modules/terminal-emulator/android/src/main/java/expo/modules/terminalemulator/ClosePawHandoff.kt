@@ -762,6 +762,13 @@ object ClosePawHandoff {
         Outcome.MAIN_DISPLAY -> Result(true, "main-display", MSG_MAIN_DISPLAY)
     }
 
+    /** STOP-ALL (`.halted`). Unreadable counts as on. */
+    fun isStopAllOn(context: Context): Boolean = try {
+        File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted").exists()
+    } catch (e: Exception) {
+        true
+    }
+
     @Volatile private var lastFireAtMs = Long.MIN_VALUE / 2
     private val recentReqIds = LinkedHashSet<String>()
 
@@ -784,6 +791,8 @@ object ClosePawHandoff {
         // times out and reports that Shelly did not respond.
         if (!recentReqIds.add(reqId)) return null
         while (recentReqIds.size > 64) recentReqIds.remove(recentReqIds.first())
+        // Set when ClosePawShellApprovals.runPreapproved already wrote the lifecycle.
+        var lifecycleWritten = false
         val result = when (parsed) {
             is Parsed.Bad -> when (parsed.reason) {
                 "stale" -> Result(false, "stale", "ClosePaw hand-off request expired (older than 30s); nothing was sent")
@@ -792,6 +801,15 @@ object ClosePawHandoff {
             }
             is Parsed.Ok -> if (nowMs - lastFireAtMs < QUEUE_MIN_INTERVAL_MS) {
                 Result(false, "rate-limited", "shelly closepaw: rate-limited (at most one hand-off every 5 seconds); try again shortly")
+            } else if (isTrustedVariantInstalled(context.applicationContext) &&
+                ClosePawShellPreapproval.isOn(context.applicationContext)
+            ) {
+                // Owner decision 2026-11-16: no Shelly approval while this is on
+                // (ClosePawShellPreapproval). Same launch as an approved request.
+                lastFireAtMs = nowMs
+                lifecycleWritten = true
+                val o = ClosePawShellApprovals.runPreapproved(context.applicationContext, parsed.reqId, parsed.goal, nowMs)
+                Result(o.ok, o.code, o.message)
             } else if (isTrustedVariantInstalled(context.applicationContext)) {
                 // The Shelly-trusted variant skips ClosePaw's own dialog, so
                 // the shell command (typed by the user OR by Codex driven from
@@ -822,7 +840,7 @@ object ClosePawHandoff {
         // approval path wrote pending-approval in ClosePawShellApprovals.create;
         // every other answer is final here: a direct hand-off (official
         // ClosePaw / no variant) has no result callback.
-        if (result.code != "approval-required") {
+        if (result.code != "approval-required" && !lifecycleWritten) {
             ClosePawRunResults.writeState(
                 context,
                 reqId,

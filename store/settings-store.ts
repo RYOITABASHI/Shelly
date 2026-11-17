@@ -254,6 +254,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mcpDiagnosticsEnabled: false,
   mcpTypedOpsEnabled: false,
   codexRemoteAutostart: false,
+  connectivityGuardianEnabled: false,
   terminalWallpaperTransparency: true,
   // Front agent (窓口): default 'none' = current behaviour (plain bash in the
   // first tab). See lib/front-agent.ts.

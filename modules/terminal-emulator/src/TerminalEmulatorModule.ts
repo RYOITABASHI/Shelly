@@ -479,6 +479,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   disableDraftPreapproval?(destinations: string[]): Promise<string>;
   /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
   getDraftPreapproval?(): Promise<string>;
+  /** "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt).
+   *  Call with true ONLY for words the owner typed in the AI pane composer
+   *  (lib/closepaw-shell-preapproval.ts); false is safe from anywhere.
+   *  Returns JSON {ok, code, on, enabledAt?}. */
+  setClosePawShellPreapproval?(on: boolean): Promise<string>;
+  /** Status JSON {on, enabledAt?}. */
+  getClosePawShellPreapproval?(): Promise<string>;
   /** MCP always-allow rules for typed ops (McpAlwaysAllowStore.kt). Use lib/mcp-always-allow.ts.
    *  Status JSON {version, status: 'empty'|'ok'|'unreadable', rules: [{id, principal, op, target, bind?, label, createdAt}]}. */
   mcpAlwaysAllowList?(): Promise<string>;
@@ -628,6 +635,16 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * now matches the request (false = cleared, auto-start OFF).
    */
   setMCPAutostartMirror(enabled: boolean, exec: boolean, readTerminal: boolean, diagnostics: boolean, typedOps: boolean, token: string | null): Promise<boolean>;
+  /**
+   * "Wi-Fi連動オートパイロット" (connectivity guardian) toggle mirror
+   * (ConnectivityGuardianStore.kt: Keystore-encrypted, re-keyed on every
+   * write, unreadable = OFF). Write it at app start and with every change of
+   * settings.connectivityGuardianEnabled (use lib/connectivity-guardian-mirror.ts).
+   * `false` clears it and unregisters the guardian's Wi-Fi callbacks.
+   * Resolves whether the mirror now matches the request. Optional: older
+   * native builds do not have it.
+   */
+  setConnectivityGuardianMirror?(enabled: boolean): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

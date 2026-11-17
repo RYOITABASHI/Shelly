@@ -68,6 +68,8 @@ object ClosePawShellApprovals {
         val drafts: List<ClosePawDrafts.ApprovedDraft>? = null,
         /** One cleaned line per draft, for the notification. */
         val lines: List<String> = emptyList(),
+        /** ClosePawShellPreapproval: decided at once, never shown or listed. */
+        val preapproved: Boolean = false,
     ) {
         @Volatile var attempts = 0
         @Volatile var lastAttemptAt = Long.MIN_VALUE / 2
@@ -104,6 +106,7 @@ object ClosePawShellApprovals {
         now: Long = System.currentTimeMillis(),
         drafts: List<ClosePawDrafts.ApprovedDraft>? = null,
         lines: List<String> = emptyList(),
+        preapproved: Boolean = false,
     ): Pending {
         sweep(now)
         while (pending.size >= MAX_PENDING) {
@@ -115,8 +118,9 @@ object ClosePawShellApprovals {
             )
         }
         val clean = ClosePawHandoff.sanitizeGoal(goal)
-        val p = Pending(reqId, clean, hash8(clean), now, now + TTL_MS, randomHex(16), randomHex(16), drafts, lines)
+        val p = Pending(reqId, clean, hash8(clean), now, now + TTL_MS, randomHex(16), randomHex(16), drafts, lines, preapproved)
         pending[reqId] = p
+        if (preapproved) return p
         // Lifecycle for `shelly closepaw wait` (ClosePawRunResults).
         ClosePawRunResults.writeState(
             context, reqId, ClosePawRunResults.STATUS_PENDING_APPROVAL,
@@ -125,6 +129,23 @@ object ClosePawShellApprovals {
         postNotification(context, p)
         Log.i(TAG, "closepaw approval required: $reqId goalLen=${clean.length}")
         return p
+    }
+
+    /**
+     * `shelly closepaw` while ClosePawShellPreapproval is ON: no notification and
+     * no chat line; the request is approved here and launched at once, through
+     * the same [resolve] path a tap takes. STOP-ALL still refuses it.
+     */
+    @Synchronized
+    fun runPreapproved(context: Context, reqId: String, goal: String, now: Long = System.currentTimeMillis()): Outcome {
+        if (ClosePawHandoff.isStopAllOn(context)) {
+            val msg = "shelly closepaw: STOP-ALL is on; nothing was sent to ClosePaw"
+            ClosePawRunResults.writeState(context, reqId, ClosePawRunResults.STATUS_FAILED, msg)
+            return Outcome(false, "halted", msg)
+        }
+        val p = create(context, reqId, goal, now, preapproved = true)
+        Log.i(TAG, "closepaw request $reqId runs without approval (pre-approval on) goalLen=${p.goal.length}")
+        return resolve(context, reqId, "approve", "preapproved", p.approveNonce, now)
     }
 
     /** True while the owner has an open, unexpired draft approval. */
@@ -147,7 +168,7 @@ object ClosePawShellApprovals {
     fun listJson(now: Long = System.currentTimeMillis()): String {
         sweep(now)
         val arr = JSONArray()
-        for (p in pending.values.sortedBy { it.createdAt }) {
+        for (p in pending.values.filter { !it.preapproved }.sortedBy { it.createdAt }) {
             arr.put(JSONObject().put("reqId", p.reqId).put("goal", p.goal).put("hash8", p.hash8).put("expiresAt", p.expiresAt))
         }
         return arr.toString()
@@ -174,7 +195,10 @@ object ClosePawShellApprovals {
         }
         if (decision != "approve" && decision != "reject") return Outcome(false, "invalid", "shelly closepaw: invalid decision")
         val ok = when (via) {
-            "notification" -> NONCE_RE.matches(secret) &&
+            // Only runPreapproved knows the nonce; a tap can never take this branch.
+            "preapproved" -> p.preapproved && decision == "approve" && NONCE_RE.matches(secret) &&
+                constantTimeEquals(secret, p.approveNonce)
+            "notification" -> !p.preapproved && NONCE_RE.matches(secret) &&
                 constantTimeEquals(secret, if (decision == "approve") p.approveNonce else p.rejectNonce)
             "chatgpt" -> {
                 // User decision (2026-10-14, option 3): with the trusted

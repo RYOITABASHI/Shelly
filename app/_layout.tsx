@@ -9,6 +9,7 @@ import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { onAgentKeepAliveTick } from '@/lib/agent-keepalive';
 import { Stack, SplashScreen, type ErrorBoundaryProps } from "expo-router";
 import { applyThemeFromSettings, startBootThemeGate } from '@/lib/boot-theme-gate';
+import { startConnectivityGuardianMirror } from '@/lib/connectivity-guardian-mirror';
 import { StatusBar } from "expo-status-bar";
 import { Alert, AppState, View, Text, Pressable, ScrollView, StyleSheet, ToastAndroid } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -97,6 +98,7 @@ import {
 } from '@/lib/agent-add-queue';
 import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
 import { closePawRunProvenanceOk, isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
+import { isClosePawShellPreapprovalOn } from '@/lib/closepaw-shell-preapproval';
 import { closePawOutcomeKey, closePawRefusalFromError, closePawRefusalKey, postClosePawChatLine } from '@/lib/closepaw-background';
 import { handleClosePawDecisionDeepLink, syncClosePawShellApprovalsToChat } from '@/lib/closepaw-shell-approval';
 import {
@@ -656,6 +658,16 @@ export default function RootLayout() {
   // Boot theme gate: apply the persisted preset as soon as the non-secret
   // settings blob is hydrated (NOT waiting on fonts or SecureStore), then
   // allow the tree to mount and hide the splash. See lib/boot-theme-gate.ts.
+  // Wi-Fi連動オートパイロット: mirror settings.connectivityGuardianEnabled to
+  // the native guardian's Keystore store once hydrated and on every change.
+  useEffect(() => startConnectivityGuardianMirror(
+    TerminalEmulator,
+    {
+      getState: () => useSettingsStore.getState(),
+      subscribe: (listener) => useSettingsStore.subscribe(listener),
+    },
+    (e) => logError('ConnectivityGuardian', 'mirror write failed', e),
+  ), []);
   useEffect(() => {
     const dispose = startBootThemeGate({
       isBaseSettingsLoaded: () => useSettingsStore.getState().isBaseSettingsLoaded,
@@ -2646,6 +2658,10 @@ export default function RootLayout() {
       if (!closePawRunProvenanceOk({ activeRunStartedAt, handoffAvailable: handoffAvailable === true })) {
         return false;
       }
+      // "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt,
+      // owner decision 2026-11-16): no per-run Review for any agent while it
+      // is on. The provenance check above and the once-per-run claim still apply.
+      if (await isClosePawShellPreapprovalOn()) return true;
       const agent = useAgentStore.getState().agents.find((a) => a.id === request.agentId);
       return isClosePawPreapproved(request, agent ?? null).catch(() => false);
     };
