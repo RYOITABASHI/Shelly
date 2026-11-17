@@ -16,14 +16,16 @@ import org.json.JSONObject
  * TRANSPORT_VPN, the DeviceStatusBridge.writeNetworkSnapshot style), never
  * what ClosePaw reports.
  *
- * Acting goes through ONE seam, [requestTailscale]. Today it hands a fixed
- * goal (ConnectivityGuardianCore.GOAL_TAILSCALE_CONNECT / _DISCONNECT) to
+ * Acting goes through ONE seam, [requestTailscale], and it is connect-only:
+ * the guardian never disconnects Tailscale (owner decision 2026-11-17, it
+ * stays up on mobile data). Today it hands the fixed goal
+ * ConnectivityGuardianCore.GOAL_TAILSCALE_CONNECT to
  * ClosePaw through the unchanged `shelly closepaw` decision point
  * (ClosePawHandoff.handleLine, in-process, a well-formed `closepaw:` line).
  * The guardian calls it only after reading ClosePawShellPreapproval.isOn()
  * itself, and [dispatchViaClosePaw] re-checks it (and the trusted variant)
  * under the same monitors handleLine uses, so a switch turned OFF can never
- * be raced into a dispatch or an approval prompt. A Tasker-style CONNECT_VPN / DISCONNECT_VPN intent route can
+ * be raced into a dispatch or an approval prompt. A Tasker-style CONNECT_VPN intent route can
  * replace [dispatchViaClosePaw] here without touching the runner.
  *
  * [closePawRunSettled] reads ONLY the `status` of the hand-off's run-state
@@ -52,8 +54,8 @@ object TailscaleControl {
         null
     }
 
-    /** The seam. The request id when handed off, else null; that alone never passes a step. */
-    fun requestTailscale(context: Context, connect: Boolean): String? = dispatchViaClosePaw(context, connect)
+    /** The seam (connect-only). The request id when handed off, else null; that alone never passes a step. */
+    fun requestTailscale(context: Context): String? = dispatchViaClosePaw(context)
 
     /** The run for [reqId] reached a terminal state. Unreadable / missing /
      *  still running = false (the runner's settle wait is bounded). */
@@ -72,10 +74,10 @@ object TailscaleControl {
         false
     }
 
-    private fun dispatchViaClosePaw(context: Context, connect: Boolean): String? {
+    private fun dispatchViaClosePaw(context: Context): String? {
         val now = System.currentTimeMillis()
         val reqId = "$now-" + "%08x".format(random.nextInt())
-        val line = ConnectivityGuardianCore.closePawLine(reqId, now, ConnectivityGuardianCore.goalFor(connect))
+        val line = ConnectivityGuardianCore.closePawLine(reqId, now, ConnectivityGuardianCore.goalFor())
             ?: return null
         val app = context.applicationContext
         // Re-check and hand off atomically against the switch being turned
@@ -99,7 +101,7 @@ object TailscaleControl {
             }
         }
         val code = result?.code ?: "none"
-        Log.i(TAG, "tailscale ${if (connect) "connect" else "disconnect"} hand-off: $code (t=${SystemClock.elapsedRealtime()})")
+        Log.i(TAG, "tailscale connect hand-off: $code (t=${SystemClock.elapsedRealtime()})")
         return if (result != null && result.ok && code != "approval-required") reqId else null
     }
 }

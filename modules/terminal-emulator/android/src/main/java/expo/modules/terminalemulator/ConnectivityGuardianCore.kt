@@ -21,8 +21,9 @@ package expo.modules.terminalemulator
  *  - Tailscale only through fixed ClosePaw goals while the ClosePaw shell
  *    pre-approval is ON (OFF = notify only). Connected-or-not is decided ONLY
  *    by Shelly's own TRANSPORT_VPN probe, never by ClosePaw's report.
- *  - OFF order: Tailscale first (Shizuku / the VD still up), then
- *    adb_wifi_enabled=0.
+ *  - Tailscale is connect-only (owner decision 2026-11-17): it stays
+ *    connected after Wi-Fi is lost, mobile data included. OFF only writes
+ *    adb_wifi_enabled=0; it never touches Tailscale or dispatches ClosePaw.
  */
 object ConnectivityGuardianCore {
     // ── Constants (lockstep with lib/connectivity-guardian-core.ts) ──
@@ -48,10 +49,7 @@ object ConnectivityGuardianCore {
     const val TAILSCALE_PACKAGE = "com.tailscale.ipn"
     const val GOAL_TAILSCALE_CONNECT =
         "Shelly connectivity guardian, fixed task: connect Tailscale. Open the Tailscale app (package com.tailscale.ipn) with the open_app tool. If the screen already shows that Tailscale is connected, change nothing and stop. Otherwise tap the control that connects Tailscale (the main on/off switch or the Connect button) exactly once, then wait a few seconds. Never accept, allow or confirm any VPN-permission, connection-request, login, sign-in or account dialog: if one appears, stop at once and report it. Do not open any other app and do not change any other setting. Report the connection state shown before and after."
-    const val GOAL_TAILSCALE_DISCONNECT =
-        "Shelly connectivity guardian, fixed task: disconnect Tailscale. Open the Tailscale app (package com.tailscale.ipn) with the open_app tool. If the screen already shows that Tailscale is disconnected, change nothing and stop. Otherwise tap the control that disconnects Tailscale (the main on/off switch or the Disconnect button) exactly once, then wait a few seconds. Never accept, allow or confirm any VPN-permission, connection-request, login, sign-in or account dialog: if one appears, stop at once and report it. Do not open any other app and do not change any other setting. Report the connection state shown before and after."
-
-    fun goalFor(connect: Boolean): String = if (connect) GOAL_TAILSCALE_CONNECT else GOAL_TAILSCALE_DISCONNECT
+    fun goalFor(): String = GOAL_TAILSCALE_CONNECT
 
     // ── State machine ──
     enum class Mode { DISABLED, IDLE_OFFLINE, IDLE_ONLINE, ON_RUNNING, LOSS_PENDING, OFF_RUNNING }
@@ -362,7 +360,7 @@ object ConnectivityGuardianCore {
     // ── Step runner ──
     // Closed value sets (lockstep with the TS STEPS / ACTIONS / LEVELS / OUTCOMES / ASSIST_REASONS).
     val STEPS: List<String> = listOf("wifi_debug", "shizuku", "tailscale", "sequence")
-    val ACTIONS: List<String> = listOf("check", "enable", "disable", "wait", "connect", "disconnect", "end")
+    val ACTIONS: List<String> = listOf("check", "enable", "disable", "wait", "connect", "end")
     val LEVELS: List<String> = listOf("on", "off", "unknown", "none")
     val OUTCOMES: List<String> = listOf(
         "already", "ok", "unverified", "not_applied", "grant_missing", "write_failed", "timeout", "cooldown",
@@ -401,10 +399,10 @@ object ConnectivityGuardianCore {
         fun vpnUp(): Boolean?
         /** ClosePawShellPreapproval.isOn(). */
         fun closePawPreapproved(): Boolean
-        /** The single seam (TailscaleControl.requestTailscale). The request id
-         *  when handed off, else null. Its answer never passes a step: only
-         *  [vpnUp] does. */
-        fun requestTailscale(connect: Boolean): String?
+        /** The single seam (TailscaleControl.requestTailscale), connect-only.
+         *  The request id when handed off, else null. Its answer never passes
+         *  a step: only [vpnUp] does. */
+        fun requestTailscale(): String?
         /** The ClosePaw run for [reqId] reached a terminal state
          *  ([isClosePawSettled]); unreadable = false. Sequencing only. */
         fun closePawSettled(reqId: String): Boolean
@@ -544,15 +542,15 @@ object ConnectivityGuardianCore {
         }
 
         // 3. Tailscale.
-        val t = tailscaleStep(r, true)
+        val t = tailscaleStep(r)
         return r.end(t ?: "done")
     }
 
-    /** OFF: Tailscale disconnect first (VD still up), then wireless debugging. */
+    /** OFF: wireless debugging only. Tailscale is never touched here (it
+     *  stays connected on mobile data), so OFF never dispatches ClosePaw and
+     *  does not depend on the ClosePaw pre-approval. */
     fun runOffSequence(p: Ports, seq: String): String {
         val r = Run(p, seq)
-        tailscaleStep(r, false)?.let { return r.end(it) }
-
         r.gated("wifi_debug")?.let { return r.end(it) }
         val adbBefore = p.readAdbWifi()
         if (adbBefore == 0) {
@@ -593,13 +591,14 @@ object ConnectivityGuardianCore {
         return r.end("failed")
     }
 
-    /** Returns null when the step passed (or was already in place). */
-    private fun tailscaleStep(r: Run, connect: Boolean): String? {
+    /** Connect-only (ON). Returns null when the step passed (or Tailscale was
+     *  already connected). */
+    private fun tailscaleStep(r: Run): String? {
         val p = r.p
         r.gated("tailscale")?.let { return it }
-        val action = if (connect) "connect" else "disconnect"
+        val action = "connect"
         val before = p.vpnUp()
-        if (before == connect) {
+        if (before == true) {
             r.audit("tailscale", "check", vpnLevel(before), vpnLevel(before), "already")
             return null
         }
@@ -613,7 +612,7 @@ object ConnectivityGuardianCore {
             r.assist("tailscale_preapproval_off")
             return "assist"
         }
-        val reqId = p.requestTailscale(connect)
+        val reqId = p.requestTailscale()
         if (reqId == null) {
             r.audit("tailscale", action, vpnLevel(before), vpnLevel(p.vpnUp()), "dispatch_failed")
             r.assist("tailscale_failed")
@@ -624,25 +623,25 @@ object ConnectivityGuardianCore {
         // verify failure, even an exception), the hand-off must settle first:
         // the next sequence must never act against a ClosePaw run in flight.
         try {
-            return verifyTailscale(r, connect, action, before)
+            return verifyTailscale(r, action, before)
         } finally {
             awaitSettle(r, reqId, dispatchedAt)
         }
     }
 
-    private fun verifyTailscale(r: Run, connect: Boolean, action: String, before: Boolean?): String? {
+    private fun verifyTailscale(r: Run, action: String, before: Boolean?): String? {
         val p = r.p
         var last: Boolean? = before
         val verified = pollUntil(p, VPN_VERIFY_MS, VPN_POLL_MS) {
             last = p.vpnUp()
-            last == connect
+            last == true
         }
         if (isAbort(verified)) {
             r.audit("tailscale", action, vpnLevel(before), vpnLevel(last), verified)
             return verified
         }
         if (verified == "ok") {
-            r.audit("tailscale", action, vpnLevel(before), vpnLevel(connect), "ok")
+            r.audit("tailscale", action, vpnLevel(before), "on", "ok")
             return null
         }
         r.audit("tailscale", action, vpnLevel(before), vpnLevel(last), "verify_failed")

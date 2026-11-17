@@ -32,8 +32,8 @@ import expo.modules.terminalemulator.ConnectivityGuardianCore.State
  *
  * On Wi-Fi connect (and at boot): wireless debugging ON -> wait for Shizuku's
  * own auto-start -> Tailscale connected. On Wi-Fi loss, after a 45 s debounce
- * (cancelled if Wi-Fi comes back): Tailscale disconnected -> wireless
- * debugging OFF. Decisions are ConnectivityGuardianCore's (android-free,
+ * (cancelled if Wi-Fi comes back): wireless debugging OFF only; Tailscale is
+ * left connected (mobile data too, owner decision 2026-11-17). Decisions are ConnectivityGuardianCore's (android-free,
  * mirrored in lib/connectivity-guardian-core.ts); this object owns the
  * Android plumbing:
  *
@@ -538,8 +538,8 @@ object ConnectivityGuardian {
         "wifi_debug_off_failed" -> "Wireless debugging could not be turned off (or Shelly could not confirm it). Turn it off yourself in Developer options if you need it off."
         "wifi_debug_not_applied" -> "Wireless debugging did not turn on. If Android asks \"Allow wireless debugging on this network?\", decide it yourself in Settings; Shelly never answers it."
         "shizuku_timeout" -> "Shizuku did not start within 90 seconds after wireless debugging came on. Open Shizuku and start it if you need it."
-        "tailscale_preapproval_off" -> "Tailscale needs switching, but \"Run ClosePaw without approval\" is off, so Shelly did not do it. Switch Tailscale yourself if you need it."
-        "tailscale_failed" -> "Tailscale could not be switched (or Shelly could not confirm it). Check Tailscale yourself."
+        "tailscale_preapproval_off" -> "Tailscale is not connected, but \"Run ClosePaw without approval\" is off, so Shelly did not connect it. Connect Tailscale yourself if you need it."
+        "tailscale_failed" -> "Tailscale could not be connected (or Shelly could not confirm it). Check Tailscale yourself."
         else -> "Wi-Fi autopilot needs your attention."
     }
 
@@ -597,7 +597,7 @@ object ConnectivityGuardian {
         override fun shizukuAlive(): Boolean = ShizukuLiveness.isAlive()
         override fun vpnUp(): Boolean? = TailscaleControl.isVpnUp(app)
         override fun closePawPreapproved(): Boolean = ClosePawShellPreapproval.isOn(app)
-        override fun requestTailscale(connect: Boolean): String? = TailscaleControl.requestTailscale(app, connect)
+        override fun requestTailscale(): String? = TailscaleControl.requestTailscale(app)
         override fun closePawSettled(reqId: String): Boolean = TailscaleControl.closePawRunSettled(app, reqId)
         override fun audit(seq: String, step: String, action: String, before: String, after: String, outcome: String) {
             val line = ConnectivityGuardianCore.buildAuditLine(ConnectivityGuardian.isoUtc(System.currentTimeMillis()), seq, step, action, before, after, outcome)

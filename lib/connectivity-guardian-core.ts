@@ -26,8 +26,9 @@
  *  - Tailscale is driven only through fixed ClosePaw goals, only while the
  *    ClosePaw shell pre-approval switch is ON; OFF = notify only. Whether
  *    Tailscale is connected is decided ONLY by Shelly's own VPN probe.
- *  - OFF order: Tailscale disconnect first (Shizuku / the VD still up), then
- *    adb_wifi_enabled=0.
+ *  - Tailscale is connect-only (owner decision 2026-11-17): it stays
+ *    connected after Wi-Fi is lost, mobile data included. OFF only writes
+ *    adb_wifi_enabled=0; it never touches Tailscale or dispatches ClosePaw.
  */
 
 // ── Constants (lockstep with ConnectivityGuardianCore.kt) ─────────────────
@@ -55,8 +56,6 @@ export const GOAL_MAX_CODE_POINTS = 2000;
 export const TAILSCALE_PACKAGE = 'com.tailscale.ipn';
 export const GOAL_TAILSCALE_CONNECT =
   'Shelly connectivity guardian, fixed task: connect Tailscale. Open the Tailscale app (package com.tailscale.ipn) with the open_app tool. If the screen already shows that Tailscale is connected, change nothing and stop. Otherwise tap the control that connects Tailscale (the main on/off switch or the Connect button) exactly once, then wait a few seconds. Never accept, allow or confirm any VPN-permission, connection-request, login, sign-in or account dialog: if one appears, stop at once and report it. Do not open any other app and do not change any other setting. Report the connection state shown before and after.';
-export const GOAL_TAILSCALE_DISCONNECT =
-  'Shelly connectivity guardian, fixed task: disconnect Tailscale. Open the Tailscale app (package com.tailscale.ipn) with the open_app tool. If the screen already shows that Tailscale is disconnected, change nothing and stop. Otherwise tap the control that disconnects Tailscale (the main on/off switch or the Disconnect button) exactly once, then wait a few seconds. Never accept, allow or confirm any VPN-permission, connection-request, login, sign-in or account dialog: if one appears, stop at once and report it. Do not open any other app and do not change any other setting. Report the connection state shown before and after.';
 
 // ── State machine ──────────────────────────────────────────────────────────
 export type Mode = 'DISABLED' | 'IDLE_OFFLINE' | 'IDLE_ONLINE' | 'ON_RUNNING' | 'LOSS_PENDING' | 'OFF_RUNNING';
@@ -417,7 +416,7 @@ export function reduce(s: GuardianState, e: GuardianEvent): Transition {
 
 // ── Step runner ────────────────────────────────────────────────────────────
 export type Step = 'wifi_debug' | 'shizuku' | 'tailscale' | 'sequence';
-export type Action = 'check' | 'enable' | 'disable' | 'wait' | 'connect' | 'disconnect' | 'end';
+export type Action = 'check' | 'enable' | 'disable' | 'wait' | 'connect' | 'end';
 export type Level = 'on' | 'off' | 'unknown' | 'none';
 export type Outcome =
   | 'already'
@@ -442,7 +441,7 @@ export type Outcome =
   | 'settle_timeout';
 
 export const STEPS: readonly Step[] = ['wifi_debug', 'shizuku', 'tailscale', 'sequence'];
-export const ACTIONS: readonly Action[] = ['check', 'enable', 'disable', 'wait', 'connect', 'disconnect', 'end'];
+export const ACTIONS: readonly Action[] = ['check', 'enable', 'disable', 'wait', 'connect', 'end'];
 export const LEVELS: readonly Level[] = ['on', 'off', 'unknown', 'none'];
 export const OUTCOMES: readonly Outcome[] = [
   'already', 'ok', 'unverified', 'not_applied', 'grant_missing', 'write_failed', 'timeout', 'cooldown',
@@ -492,9 +491,10 @@ export interface Ports {
   vpnUp(): boolean | null;
   /** ClosePawShellPreapproval.isOn(). */
   closePawPreapproved(): boolean;
-  /** The single seam (TailscaleControl.requestTailscale). The request id when
-   *  handed off, else null. Its answer never passes a step: only [vpnUp] does. */
-  requestTailscale(connect: boolean): string | null;
+  /** The single seam (TailscaleControl.requestTailscale), connect-only. The
+   *  request id when handed off, else null. Its answer never passes a step:
+   *  only [vpnUp] does. */
+  requestTailscale(): string | null;
   /** The ClosePaw run for [reqId] reached a terminal state
    *  ([isClosePawSettled]); unreadable = false. Sequencing only. */
   closePawSettled(reqId: string): boolean;
@@ -644,16 +644,15 @@ export function runOnSequence(p: Ports, mem: RunnerMemory, seq: string): Sequenc
   }
 
   // 3. Tailscale.
-  const t = tailscaleStep(r, true);
+  const t = tailscaleStep(r);
   return r.end(t ?? 'done');
 }
 
-/** OFF: Tailscale disconnect first (VD still up), then wireless debugging. */
+/** OFF: wireless debugging only. Tailscale is never touched here (it stays
+ *  connected on mobile data), so OFF never dispatches ClosePaw and does not
+ *  depend on the ClosePaw pre-approval. */
 export function runOffSequence(p: Ports, seq: string): SequenceResult {
   const r = new Run(p, seq);
-  const t = tailscaleStep(r, false);
-  if (t) return r.end(t);
-
   const stop = r.gated('wifi_debug');
   if (stop) return r.end(stop);
   const adbBefore = p.readAdbWifi();
@@ -695,14 +694,15 @@ export function runOffSequence(p: Ports, seq: string): SequenceResult {
   return r.end('failed');
 }
 
-/** Returns null when the step passed (or was already in place). */
-function tailscaleStep(r: Run, connect: boolean): SequenceResult | null {
+/** Connect-only (ON). Returns null when the step passed (or Tailscale was
+ *  already connected). */
+function tailscaleStep(r: Run): SequenceResult | null {
   const p = r.p;
   const stop = r.gated('tailscale');
   if (stop) return stop;
-  const action: Action = connect ? 'connect' : 'disconnect';
+  const action: Action = 'connect';
   const before = p.vpnUp();
-  if (before === connect) {
+  if (before === true) {
     r.audit('tailscale', 'check', vpnLevel(before), vpnLevel(before), 'already');
     return null;
   }
@@ -716,7 +716,7 @@ function tailscaleStep(r: Run, connect: boolean): SequenceResult | null {
     r.assist('tailscale_preapproval_off');
     return 'assist';
   }
-  const reqId = p.requestTailscale(connect);
+  const reqId = p.requestTailscale();
   if (reqId === null) {
     r.audit('tailscale', action, vpnLevel(before), vpnLevel(p.vpnUp()), 'dispatch_failed');
     r.assist('tailscale_failed');
@@ -727,25 +727,25 @@ function tailscaleStep(r: Run, connect: boolean): SequenceResult | null {
   // failure, even an exception), the hand-off must settle first: the next
   // sequence must never act against a ClosePaw run still in flight.
   try {
-    return verifyTailscale(r, connect, action, before);
+    return verifyTailscale(r, action, before);
   } finally {
     awaitSettle(r, reqId, dispatchedAt);
   }
 }
 
-function verifyTailscale(r: Run, connect: boolean, action: Action, before: boolean | null): SequenceResult | null {
+function verifyTailscale(r: Run, action: Action, before: boolean | null): SequenceResult | null {
   const p = r.p;
   let last: boolean | null = before;
   const verified = pollUntil(p, VPN_VERIFY_MS, VPN_POLL_MS, () => {
     last = p.vpnUp();
-    return last === connect;
+    return last === true;
   });
   if (isAbort(verified)) {
     r.audit('tailscale', action, vpnLevel(before), vpnLevel(last), verified);
     return verified;
   }
   if (verified === 'ok') {
-    r.audit('tailscale', action, vpnLevel(before), vpnLevel(connect), 'ok');
+    r.audit('tailscale', action, vpnLevel(before), 'on', 'ok');
     return null;
   }
   r.audit('tailscale', action, vpnLevel(before), vpnLevel(last), 'verify_failed');
@@ -825,6 +825,6 @@ export function closePawLine(reqId: string, nowMs: number, goal: string): string
   return `closepaw:${reqId}:${nowMs}:${encodeUriComponent(goal)}`;
 }
 
-export function goalFor(connect: boolean): string {
-  return connect ? GOAL_TAILSCALE_CONNECT : GOAL_TAILSCALE_DISCONNECT;
+export function goalFor(): string {
+  return GOAL_TAILSCALE_CONNECT;
 }
