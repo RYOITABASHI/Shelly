@@ -295,8 +295,14 @@ describe('ClosePaw pre-approval seal', () => {
     const registryNative = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/NativeAgentRunRegistry.kt');
     expect(registryNative).toContain('closePawHandoffClaimed?.compareAndSet(false, true) == true');
     const runtime = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt');
-    expect(runtime).toMatch(/val runToken = NativeAgentRunRegistry\.begin\(agentId\)\s*try \{\s*return runAgentInner\(/);
-    expect(runtime).toContain('NativeAgentRunRegistry.end(agentId, runToken)');
+    // The run is registered before runAgentInner and ended in the same try's
+    // finally (the try also tracks the schedule claim's launch, re-gate R1).
+    const reg = runtime.slice(runtime.indexOf('val runToken = NativeAgentRunRegistry.begin(agentId)'));
+    const tryBody = reg.slice(0, reg.indexOf('} finally {'));
+    expect(tryBody).toMatch(/^val runToken = NativeAgentRunRegistry\.begin\(agentId\)\s*try \{/);
+    expect(tryBody).toContain('val result = runAgentInner(');
+    expect(tryBody).toContain('return result');
+    expect(reg.slice(reg.indexOf('} finally {'), reg.indexOf('} finally {') + 120)).toContain('NativeAgentRunRegistry.end(agentId, runToken)');
     const registry = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/NativeAgentRunRegistry.kt');
     expect(registry).toContain('ConcurrentHashMap');
     const registryCode = registry.split(/\r?\n/).filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');

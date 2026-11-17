@@ -118,6 +118,8 @@ describe('materializeAgent shared queue — cross-caller races (round 2)', () =>
       if (command.includes('SHELLY_AGENT_LOG') || command.startsWith('for d in')) return '';
       // Orphan-file sweep (cleanupOrphanAgentFiles).
       if (command.startsWith('cd ')) return '';
+      // Startup repair's run-lock probe (isAgentRunLockLive): no run in flight.
+      if (command.includes('then echo LOCK_LIVE; else echo LOCK_IDLE')) return 'LOCK_IDLE\n';
       // Consent / key preflight read (ladderEnvFromDisk).
       if (command.startsWith('for k in CEREBRAS_API_KEY')) {
         envReads += 1;

@@ -102,8 +102,17 @@ function withTerminalService(config) {
     // receivers using that mistaken pattern). The <uses-permission> declared
     // via app.config.ts's permissions list is what actually grants this app
     // the ability to receive the broadcast.
+    //
+    // MY_PACKAGE_REPLACED (doze-scheduler fix): an in-app update kills a run
+    // in flight, so the receiver also asks TerminalSessionService for a
+    // catch-up reconcile after an update. Both actions are protected
+    // (system-sender only) broadcasts.
     const bootReceiverName =
       "expo.modules.terminalemulator.BootCompletedReceiver";
+    const bootReceiverActions = [
+      "android.intent.action.BOOT_COMPLETED",
+      "android.intent.action.MY_PACKAGE_REPLACED",
+    ];
     const bootReceiverExists = application.receiver.find(
       (r) => r.$?.["android:name"] === bootReceiverName
     );
@@ -115,10 +124,44 @@ function withTerminalService(config) {
         },
         "intent-filter": [
           {
+            action: bootReceiverActions.map((name) => ({
+              $: { "android:name": name },
+            })),
+          },
+        ],
+      });
+    } else {
+      // An existing declaration (e.g. a manifest from before this change)
+      // still gets every action.
+      const filters = (bootReceiverExists["intent-filter"] ||= [{}]);
+      const actions = (filters[0].action ||= []);
+      for (const name of bootReceiverActions) {
+        if (!actions.some((a) => a.$?.["android:name"] === name)) {
+          actions.push({ $: { "android:name": name } });
+        }
+      }
+    }
+
+    // Register ExactAlarmPermissionReceiver (doze-scheduler fix): when the
+    // user grants "Alarms & reminders", every agent alarm armed while access
+    // was missing is still INEXACT; the receiver asks TerminalSessionService
+    // to reconcile (re-arm everything as exact). exported=false: the
+    // broadcast is system-sent (CodexRemoteAutostartReceiver pattern).
+    const exactAlarmReceiverName =
+      "expo.modules.terminalemulator.ExactAlarmPermissionReceiver";
+    if (!application.receiver.find((r) => r.$?.["android:name"] === exactAlarmReceiverName)) {
+      application.receiver.push({
+        $: {
+          "android:name": exactAlarmReceiverName,
+          "android:exported": "false",
+        },
+        "intent-filter": [
+          {
             action: [
               {
                 $: {
-                  "android:name": "android.intent.action.BOOT_COMPLETED",
+                  "android:name":
+                    "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED",
                 },
               },
             ],

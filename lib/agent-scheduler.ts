@@ -204,18 +204,20 @@ export function nextTriggerMs(cron: string, notBefore?: number | null): number {
 
 /** The most recent scheduled fire time at or before now, or null if not parseable.
  *  Mirrors nextTriggerMs but going BACKWARD — used to detect a missed run (a fire
- *  that was due but never produced a run log). Display/health only, not scheduling. */
-export function lastTriggerMs(cron: string): number | null {
+ *  that was due but never produced a run log) and by the catch-up decision
+ *  (lib/agent-schedule-reconcile.ts). Mirrored natively by
+ *  AgentAlarmScheduler.lastTriggerAt (__tests__/agent-schedule-reconcile.test.ts). */
+export function lastTriggerMs(cron: string, nowMs: number = Date.now()): number | null {
   // One-shot: its instant once that has passed, otherwise nothing was due yet.
   const oneShotAt = oneShotAtMs(cron);
-  if (oneShotAt !== null) return oneShotAt <= Date.now() ? oneShotAt : null;
+  if (oneShotAt !== null) return oneShotAt <= nowMs ? oneShotAt : null;
   if (cron.trim().startsWith('@')) return null;
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return null;
 
   const [min, hour, dom, mon, dow] = parts;
-  const now = new Date();
-  const target = new Date();
+  const now = new Date(nowMs);
+  const target = new Date(nowMs);
 
   const everyMinMatch = min.match(/^\*\/(\d+)$/);
   if (everyMinMatch && hour === '*') {
@@ -342,7 +344,7 @@ export function isScheduleMissed(
     const plan = planOneShotArm({ schedule, enabled: true, lastRun: lastRunAt }, now);
     return { missed: plan.action === 'missed' && now - oneShotAt > ONE_SHOT_GRACE_MS, expectedAt: oneShotAt };
   }
-  const expectedAt = lastTriggerMs(schedule);
+  const expectedAt = lastTriggerMs(schedule, now);
   const lastActual = lastRunAt ?? createdAt;
   const missed = expectedAt != null && expectedAt < now - graceMs && expectedAt > lastActual + graceMs;
   return { missed, expectedAt };

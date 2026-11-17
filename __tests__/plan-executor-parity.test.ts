@@ -133,7 +133,7 @@ describe('shelly-plan-executor.js parity', () => {
     // params (null for widget/alarm runs) — extended in lockstep. MCP typed
     // ops added the run ticket handle/principal (null unless runAgentForMcp).
     expect(terminalSessionService).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal, occurrenceToStart)',
     );
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
@@ -192,7 +192,7 @@ describe('shelly-plan-executor.js parity', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
     // NOTIFY-001 Increment 3 extended the call with notificationText/Package
     // (still tainted-first) — extended in lockstep.
-    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved)');
+    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart)');
     expect(agentRuntime).toMatch(/private fun runPlanAgent\(\s*context: Context,\s*homeDir: File,\s*libDir: File,\s*bashPath: String,\s*agentId: String,\s*tainted: Boolean,\s*unattended: Boolean/);
     // The env-var builder exports SHELLY_CAP_TAINTED=1 right after the other
     // CAP-001 flags (SHELLY_CAP_BROKER/FS/EXEC), guarded by the same `tainted`
