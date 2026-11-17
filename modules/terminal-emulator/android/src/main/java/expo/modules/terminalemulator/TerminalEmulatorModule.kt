@@ -2761,6 +2761,18 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // Catch-up reconcile (AgentAlarmScheduler.reconcile) on demand: the JS
+        // startup repair calls this instead of re-arming forward when an
+        // occurrence is due and unrun inside the catch-up window (re-arming
+        // would replace a deferred, still pending alarm). Runs in
+        // TerminalSessionService (ACTION_SCHEDULE_RECONCILE), so a late run
+        // goes through the same ACTION_RUN_AGENT gates as an alarm fire.
+        // Resolves true when the service start was accepted.
+        AsyncFunction("reconcileAgentSchedules") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            AgentAlarmScheduler.startReconcileService(context, AgentAlarmScheduler.RECONCILE_REASON_APP)
+        }
+
         AsyncFunction("cancelAgent") { agentId: String ->
             val context = appContext.reactContext ?: return@AsyncFunction null
             // Cancels BOTH the new service alarm and any legacy broadcast alarm.

@@ -11,7 +11,9 @@ import android.util.Log
  * AlarmManager alarms armed via setExactAndAllowWhileIdle are CLEARED by the OS on
  * reboot, so scheduled agents silently stop firing after a restart. This receiver
  * re-arms every persisted scheduled agent on BOOT_COMPLETED (via
- * AgentAlarmScheduler.rearmAllFromPersistedSchedules).
+ * AgentAlarmScheduler.rearmAllFromPersistedSchedules), then asks TerminalSessionService
+ * for a catch-up reconcile (AgentAlarmScheduler.reconcile). MY_PACKAGE_REPLACED
+ * (an in-app update kills a run in flight) only reconciles.
  *
  * AgentAlarmScheduler.bootAutostartEnabled() now defaults true, so
  * rearmAllFromPersistedSchedules actively re-arms on a normal install; the flag
@@ -28,20 +30,33 @@ class BootCompletedReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        // Only the AOSP protected BOOT_COMPLETED (system-sender only). No
-        // QUICKBOOT_POWERON (spoofable) / LOCKED_BOOT_COMPLETED (needs
-        // directBootAware, which breaks MODE_PRIVATE prefs pre-unlock).
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        // Only AOSP protected broadcasts (system-sender only): BOOT_COMPLETED
+        // and MY_PACKAGE_REPLACED. No QUICKBOOT_POWERON (spoofable) /
+        // LOCKED_BOOT_COMPLETED (needs directBootAware, which breaks
+        // MODE_PRIVATE prefs pre-unlock).
+        val action = intent.action
+        if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext
         if (!AgentAlarmScheduler.bootAutostartEnabled(app)) {
-            Log.i(TAG, "Boot received; autostart disabled via override flag, nothing to re-arm")
+            Log.i(TAG, "$action received; autostart disabled via override flag, nothing to re-arm")
             return
         }
-        try {
-            val count = AgentAlarmScheduler.rearmAllFromPersistedSchedules(app)
-            Log.i(TAG, "Boot autostart re-armed $count scheduled agent(s)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Boot autostart re-arm failed", e)
+        if (action == Intent.ACTION_BOOT_COMPLETED) {
+            // A reboot cleared every alarm: re-arm the next future occurrences
+            // here (cheap, no service needed), then reconcile in the service
+            // (a run that fell into the downtime may still run late).
+            try {
+                val count = AgentAlarmScheduler.rearmAllFromPersistedSchedules(app)
+                Log.i(TAG, "Boot autostart re-armed $count scheduled agent(s)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Boot autostart re-arm failed", e)
+            }
+            AgentAlarmScheduler.startReconcileService(app, AgentAlarmScheduler.RECONCILE_REASON_BOOT)
+        } else {
+            // An update keeps armed alarms but kills a run in flight. No
+            // blanket forward re-arm here (it would replace a deferred, still
+            // pending alarm); reconcile decides per schedule.
+            AgentAlarmScheduler.startReconcileService(app, AgentAlarmScheduler.RECONCILE_REASON_PACKAGE_REPLACED)
         }
     }
 }

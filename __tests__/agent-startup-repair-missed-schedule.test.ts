@@ -21,6 +21,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
     cancelAgent: jest.fn(async () => undefined),
     execCommand: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
     runAgent: jest.fn(async () => undefined),
+    reconcileAgentSchedules: jest.fn(async () => true),
   },
 }));
 
@@ -38,13 +39,17 @@ const scheduleNotificationAsync = Notifications.scheduleNotificationAsync as jes
 const terminalEmulator = jest.requireMock('@/modules/terminal-emulator/src/TerminalEmulatorModule').default as {
   scheduleAgent: jest.Mock;
   cancelAgent: jest.Mock;
+  reconcileAgentSchedules?: jest.Mock;
 };
 
 const AGENT_LIST_MARKER = '---SEPARATOR---';
 
-/** A daily 08:00 cron that (relative to a fixed "now" of 09:00) is guaranteed
- *  to have last fired at today 08:00 — well past the 5-minute missed-run grace. */
-const DAILY_0800 = '0 8 * * *';
+/** A daily 06:00 cron that (relative to a fixed "now" of 09:00) last fired at
+ *  today 06:00 — past the 5-minute missed-run grace AND past the 2-hour
+ *  catch-up window (lib/agent-schedule-reconcile.ts), so it is a real miss:
+ *  notify + re-arm forward. An occurrence still inside the window is handed
+ *  to native reconcile instead (see the catch-up describe below). */
+const DAILY_0600 = '0 6 * * *';
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -52,7 +57,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     name: 'Daily digest',
     description: '',
     prompt: 'summarize the day',
-    schedule: DAILY_0800,
+    schedule: DAILY_0600,
     tool: { type: 'local' },
     autonomous: false,
     outputPath: '~/out',
@@ -158,8 +163,8 @@ describe('scheduleAgentStartupRepair — missed-schedule detection (P0-1)', () =
   });
 
   it('does not notify when the agent already ran at/after the expected fire', async () => {
-    // lastRun at today 08:00 exactly satisfies the expected fire — not missed.
-    const lastRun = new Date(2026, 6, 15, 8, 0, 0, 0).getTime();
+    // lastRun at today 06:00 exactly satisfies the expected fire — not missed.
+    const lastRun = new Date(2026, 6, 15, 6, 0, 0, 0).getTime();
     const agent = makeAgent({ lastRun, createdAt: lastRun - 24 * 60 * 60 * 1000 });
     useAgentStore.getState().setAgents([agent]);
     const runCommand = buildRunCommand(agent);
@@ -325,5 +330,204 @@ describe('scheduleAgentStartupRepair — one-shot schedules (lib/agent-oneshot.t
     await repair(makeAgent({ schedule: `@once ${due}`, createdAt: due - 5 * 60_000 }));
     expect(terminalEmulator.scheduleAgent).toHaveBeenCalledWith('sched-agent', 0, NOW + 5000, `@once ${due}`);
     expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleAgentStartupRepair — live run lock and catch-up hand-off (doze-scheduler fix)', () => {
+  const NOW = new Date(2026, 6, 15, 9, 0, 0, 0).getTime(); // Wed 09:00
+  const DAY = 24 * 60 * 60 * 1000;
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+    jest.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    useAgentStore.getState().setAgents([]);
+    useAgentStore.getState().setRunHistory({});
+    jest.clearAllMocks();
+  });
+
+  async function repair(agent: Agent, opts: { lockLive?: boolean; chainAt?: string } = {}) {
+    useAgentStore.getState().setAgents([agent]);
+    const base = buildRunCommand(agent);
+    const runCommand = jest.fn(async (command: string): Promise<string> => {
+      if (command.includes('then echo LOCK_LIVE; else echo LOCK_IDLE')) {
+        const chain = opts.chainAt !== undefined ? `CHAIN_AT=${opts.chainAt}\n` : '';
+        return chain + (opts.lockLive ? 'LOCK_LIVE\n' : 'LOCK_IDLE\n');
+      }
+      return base(command);
+    });
+    await loadAgentsFromDisk(runCommand, { syncLogs: false, repairSchedules: true, repairDelayMs: 0, shouldRepair: () => true });
+    await jest.advanceTimersByTimeAsync(1000);
+    await settleMicrotasks();
+    return runCommand;
+  }
+
+  const metadataWrites = (runCommand: jest.Mock) =>
+    runCommand.mock.calls.map((c) => c[0] as string).filter((c) => extractAgentMetadataJson(c, 'sched-agent') != null);
+
+  it('a live run lock skips the missed check AND the re-arm (no false positive while the run is in flight)', async () => {
+    // 06:00 is past the window and has no run log yet — but the 06:00 run is
+    // still going (its log is written at the end).
+    const runCommand = await repair(makeAgent({ lastRun: null, createdAt: NOW - 3 * DAY }), { lockLive: true });
+    const lockCheck = runCommand.mock.calls.map((c) => c[0] as string).find((c) => c.includes('LOCK_LIVE'));
+    expect(lockCheck).toContain('/home/shelly-test/.shelly/agents/locks/sched-agent.pid');
+    expect(lockCheck).toContain('sched-agent.chain.lock');
+    expect(lockCheck).toContain('kill -0');
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(terminalEmulator.reconcileAgentSchedules).not.toHaveBeenCalled();
+    expect(metadataWrites(runCommand)).toHaveLength(0);
+  });
+
+  it('an idle lock keeps the existing past-window behaviour (notify + re-arm forward)', async () => {
+    await repair(makeAgent({ lastRun: null, createdAt: NOW - 3 * DAY }), { lockLive: false });
+    expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.reconcileAgentSchedules).not.toHaveBeenCalled();
+  });
+
+  it('due-unrun inside the catch-up window: native reconcile instead of a forward re-arm, no notification', async () => {
+    // 08:00 daily, now 09:00: 1 h late, window 2 h.
+    const runCommand = await repair(makeAgent({ schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+    // The artifacts are still refreshed (no alarm), and no dedup marker is set.
+    expect(metadataWrites(runCommand).length).toBeGreaterThan(0);
+    expect(useAgentStore.getState().agents.find((a) => a.id === 'sched-agent')?.lastMissedNotifiedAt).toBeUndefined();
+  });
+
+  it('an occurrence still inside the grace is not re-armed forward either (a deferred alarm may still be pending)', async () => {
+    // 08:57 daily, now 09:00: 3 min after the occurrence, inside the 5-min grace.
+    await repair(makeAgent({ schedule: '57 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('an occurrence that already ran is re-armed forward as before (no native hand-off)', async () => {
+    await repair(makeAgent({ schedule: '0 8 * * *', lastRun: NOW - 55 * 60_000, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.reconcileAgentSchedules).not.toHaveBeenCalled();
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('hourly cron with no run for 2 h: the latest occurrence is inside its 1 h window, so it is handed off (no forward re-arm, no notification)', async () => {
+    jest.setSystemTime(new Date(2026, 6, 15, 9, 30, 0, 0).getTime());
+    // Window = min(1 h interval, 2 h) = 1 h; the latest occurrence (09:00) is
+    // 30 min old. The 08:00 one is older but only the latest is ever owed.
+    await repair(makeAgent({ schedule: '0 */1 * * *', lastRun: NOW - 2 * 60 * 60_000, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('a build without the reconcile bridge keeps the old behaviour (notify + forward re-arm)', async () => {
+    const saved = terminalEmulator.reconcileAgentSchedules;
+    delete terminalEmulator.reconcileAgentSchedules;
+    try {
+      await repair(makeAgent({ schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY }));
+      expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+      expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    } finally {
+      terminalEmulator.reconcileAgentSchedules = saved;
+    }
+  });
+
+  it('several due agents still produce ONE native reconcile request', async () => {
+    const a = makeAgent({ id: 'a1', schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY });
+    const b = makeAgent({ id: 'b2', schedule: '30 7 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY });
+    useAgentStore.getState().setAgents([a, b]);
+    const runCommand = jest.fn(async (command: string): Promise<string> => {
+      if (command.includes('then echo LOCK_LIVE; else echo LOCK_IDLE')) return 'LOCK_IDLE\n';
+      if (command.startsWith('[ -f ')) return 'HALTED_NO';
+      if (command.startsWith('d=')) return `${JSON.stringify(a)}\n${AGENT_LIST_MARKER}\n${JSON.stringify(b)}\n${AGENT_LIST_MARKER}\n`;
+      return '';
+    });
+    await loadAgentsFromDisk(runCommand, { syncLogs: false, repairSchedules: true, repairDelayMs: 0, shouldRepair: () => true });
+    await jest.advanceTimersByTimeAsync(1000);
+    await settleMicrotasks(40);
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Codex gate F2: stale chain lock ──
+  const SEC = (ms: number) => String(Math.floor(ms / 1000));
+
+  it('a STALE chain lock (older than the acquire-side steal age) does not suppress the missed notification or the re-arm', async () => {
+    const runCommand = await repair(makeAgent({ lastRun: null, createdAt: NOW - 3 * DAY }), { chainAt: SEC(NOW - 3 * 60 * 60_000) });
+    const lockCheck = runCommand.mock.calls.map((c) => c[0] as string).find((c) => c.includes('LOCK_LIVE'));
+    expect(lockCheck).toContain('acquired-at');
+    expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a chain lock with a missing / garbage acquired-at is stale too (as acquireChainLock treats it)', async () => {
+    await repair(makeAgent({ lastRun: null, createdAt: NOW - 3 * DAY }), { chainAt: '' });
+    expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a FRESH chain lock still counts as a live run (skip)', async () => {
+    const runCommand = await repair(makeAgent({ lastRun: null, createdAt: NOW - 3 * DAY }), { chainAt: SEC(NOW - 10 * 60_000) });
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(metadataWrites(runCommand)).toHaveLength(0);
+  });
+
+  // ── Codex gate F4: per-agent hand-off with fallback ──
+  it('bridge rejection: the agent falls back to the previous behaviour (missed notify + forward re-arm)', async () => {
+    terminalEmulator.reconcileAgentSchedules!.mockRejectedValueOnce(new Error('service start refused'));
+    await repair(makeAgent({ schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+    expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('bridge accepted=false: the agent falls back too', async () => {
+    terminalEmulator.reconcileAgentSchedules!.mockResolvedValueOnce(false);
+    await repair(makeAgent({ schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY }));
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledTimes(1);
+  });
+
+  function twoDueAgents() {
+    const a = makeAgent({ id: 'a1', schedule: '0 8 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY });
+    const b = makeAgent({ id: 'b2', schedule: '30 7 * * *', lastRun: NOW - DAY, createdAt: NOW - 3 * DAY });
+    useAgentStore.getState().setAgents([a, b]);
+    const runCommand = jest.fn(async (command: string): Promise<string> => {
+      if (command.includes('then echo LOCK_LIVE; else echo LOCK_IDLE')) return 'LOCK_IDLE\n';
+      if (command.startsWith('[ -f ')) return 'HALTED_NO';
+      if (command.startsWith('d=')) return `${JSON.stringify(a)}\n${AGENT_LIST_MARKER}\n${JSON.stringify(b)}\n${AGENT_LIST_MARKER}\n`;
+      return '';
+    });
+    return runCommand;
+  }
+  const armedIds = () => terminalEmulator.scheduleAgent.mock.calls.map((c) => c[0]);
+
+  it('a failed hand-off is retried for the next deferred agent; only the agent it failed for is re-armed', async () => {
+    terminalEmulator.reconcileAgentSchedules!.mockResolvedValueOnce(false);
+    const runCommand = twoDueAgents();
+    await loadAgentsFromDisk(runCommand, { syncLogs: false, repairSchedules: true, repairDelayMs: 0, shouldRepair: () => true });
+    await jest.advanceTimersByTimeAsync(2000);
+    await settleMicrotasks(60);
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(2);
+    expect(armedIds()).toEqual(['a1']);
+  });
+
+  it('early exit after the first agent: that agent was already handed off (not stranded)', async () => {
+    const runCommand = twoDueAgents();
+    // true for the timer callback and the first iteration, false from the second.
+    let calls = 0;
+    await loadAgentsFromDisk(runCommand, { syncLogs: false, repairSchedules: true, repairDelayMs: 0, shouldRepair: () => ++calls <= 2 });
+    await jest.advanceTimersByTimeAsync(2000);
+    await settleMicrotasks(60);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(terminalEmulator.reconcileAgentSchedules).toHaveBeenCalledTimes(1);
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    // The second agent was never touched.
+    const b2Writes = runCommand.mock.calls.map((c) => c[0] as string).filter((c) => extractAgentMetadataJson(c, 'b2') != null);
+    expect(b2Writes).toHaveLength(0);
   });
 });

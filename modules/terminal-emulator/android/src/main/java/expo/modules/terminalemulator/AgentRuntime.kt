@@ -644,7 +644,20 @@ object AgentRuntime {
          *  AgentIngressTaint.RUN_REASON_MCP. Used when the agent itself is not
          *  marked; it can only add the taint, never clear it. */
         ingressRunReason: String? = null,
-        mcpActionsPreapproved: Boolean = false
+        mcpActionsPreapproved: Boolean = false,
+        /** Schedule claim lifecycle (AgentAlarmScheduler.markOccurrenceStarted):
+         *  called once, after every runtime gate, extraction and the stale
+         *  chain-lock cleanup, immediately before either executor launches. */
+        onExecutionStart: (() -> Unit)? = null,
+        /** Schedule claim lifecycle: called once when this call returns a
+         *  result WITHOUT having launched an executor — a refusal before
+         *  launch, with its message. `previousRunActive` is true only for the "previous run
+         *  still active" refusal (the occurrence stays recoverable,
+         *  AgentAlarmScheduler.markOccurrenceDeferred); every other refusal
+         *  settles it (markOccurrenceSettled). Not called when the call
+         *  throws. Only TerminalSessionService passes it, for a scheduled
+         *  occurrence; manual / widget / MCP runs never do. */
+        onRefusedBeforeLaunch: ((previousRunActive: Boolean, reason: String) -> Unit)? = null
     ): AgentRunResult {
         // MONITOR widget hook (push-only updates; never throws). Counted per
         // call, paired with runEnded in the finally below.
@@ -654,10 +667,82 @@ object AgentRuntime {
         // run's ClosePaw approval request from a forged request file.
         val runToken = NativeAgentRunRegistry.begin(agentId)
         try {
-            return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved)
+            // A scheduled occurrence (either hook given): note whether an
+            // executor actually launched, so a return without one is reported
+            // as a pre-launch refusal.
+            var launched = false
+            val startHook: (() -> Unit)? = if (onExecutionStart == null && onRefusedBeforeLaunch == null) null else {
+                {
+                    launched = true
+                    onExecutionStart?.invoke()
+                }
+            }
+            val result = runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved, startHook)
+            if (!launched && onRefusedBeforeLaunch != null) {
+                val previousRunActive = result.stderr == PREVIOUS_RUN_ACTIVE_MESSAGE
+                runCatching { onRefusedBeforeLaunch(previousRunActive, result.stderr) }
+                    .onFailure { Log.e(TAG, "Agent $agentId: refused-before-launch hook failed", it) }
+            }
+            return result
         } finally {
             NativeAgentRunRegistry.end(agentId, runToken)
             expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runEnded(context, agentId)
+        }
+    }
+
+    /** The refusal message of a run that could not start because another run
+     *  of the agent holds its chain lock or run lock. runAgent reports it to
+     *  the claim lifecycle as "deferred", not "settled". */
+    const val PREVIOUS_RUN_ACTIVE_MESSAGE = "previous run still active"
+
+    /** Schedule claim lifecycle hook (AgentAlarmScheduler.markOccurrenceStarted
+     *  via TerminalSessionService): called once per run, by whichever executor
+     *  path runs, immediately before its execSubprocess launch. */
+    private fun fireExecutionStart(agentId: String, onExecutionStart: (() -> Unit)?) {
+        onExecutionStart?.let { cb ->
+            runCatching { cb() }.onFailure { Log.e(TAG, "Agent $agentId: execution-start hook failed", it) }
+        }
+    }
+
+    /**
+     * Steal-side of the shared chain-lock staleness policy
+     * (lib/agent-schedule-reconcile.ts CHAIN_LOCK_STALE_MS / isChainLockLive,
+     * AgentScheduleReconcileCore): a chain lock left by a killed attended run
+     * would make both executors refuse this agent forever, so a stale one is
+     * removed here — through the ONE chain-lock protocol shared with the JS
+     * acquirer (ChainLockProtocol / shelly-chain-lock.sh): every check bound
+     * to the one instance at the path, removal only under that instance's
+     * marker with an inode-verified rename, and a just-created lock (fresh
+     * directory mtime, metadata maybe not written yet) is never stale. Only
+     * spawned when the lock directory exists. Any failure leaves the lock in
+     * place (the executors then refuse: fail-safe).
+     */
+    private fun clearStaleChainLock(context: Context, homeDir: File, agentId: String) {
+        val dir = File(homeDir, ".shelly/agents/locks/$agentId.chain.lock")
+        if (!dir.isDirectory) return
+        when (ChainLockProtocol.reap(context, dir)) {
+            ChainLockProtocol.ReapOutcome.REAPED -> Log.w(TAG, "Agent $agentId: removed stale chain lock")
+            ChainLockProtocol.ReapOutcome.ABSENT -> Unit
+            ChainLockProtocol.ReapOutcome.LOCKED -> Log.i(TAG, "Agent $agentId: chain lock held (not stale, or not removable now)")
+        }
+    }
+
+    /**
+     * Another run of [agentId] is live, by the same files the executors
+     * refuse on: the chain lock directory exists (runPlanAgent / the legacy
+     * .sh), or `locks/<id>.pid` names a live process (the PlanSpec executor's
+     * and the .sh's own acquireLock rule: pid > 0 and alive). Read errors
+     * count as not active (the executor still decides, as before).
+     */
+    private fun isAnotherRunActive(homeDir: File, agentId: String): Boolean {
+        val locks = File(homeDir, ".shelly/agents/locks")
+        if (File(locks, "$agentId.chain.lock").isDirectory) return true
+        return try {
+            val pidFile = File(locks, "$agentId.pid")
+            val pid = if (pidFile.isFile) pidFile.readText().trim().toIntOrNull() else null
+            pid != null && pid > 0 && File("/proc/$pid").exists()
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -670,7 +755,8 @@ object AgentRuntime {
         notificationPackage: String?,
         origin: String,
         ingressRunReason: String?,
-        mcpActionsPreapproved: Boolean
+        mcpActionsPreapproved: Boolean,
+        onExecutionStart: (() -> Unit)?
     ): AgentRunResult {
         val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
@@ -765,8 +851,29 @@ object AgentRuntime {
         }
         val bashPath = LibExtractor.getBashPath(appContext)
 
+        // A chain lock left behind by a killed attended run would make both
+        // executors below refuse this agent forever ("previous run still
+        // active"). Apply the ONE stale-lock policy here, before either path
+        // checks the lock (clearStaleChainLock).
+        clearStaleChainLock(appContext, homeDir, agentId)
+
+        // Scheduled occurrence only (the claim hook is present — only
+        // TerminalSessionService passes it): refuse BEFORE launch when another
+        // run of this agent is live — its chain lock exists (after the stale
+        // cleanup above; runPlanAgent and the legacy .sh refuse on it too) or
+        // its run lock holds a live pid (the executor's / .sh's own
+        // acquireLock rule). The executor would refuse after launch, and the
+        // occurrence would then count as STARTED; refused here it is DEFERRED
+        // and can run late once that run ends (claim lifecycle).
+        if (onExecutionStart != null && isAnotherRunActive(homeDir, agentId)) {
+            val message = PREVIOUS_RUN_ACTIVE_MESSAGE
+            Log.i(TAG, "Agent $agentId scheduled occurrence refused before launch: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 130, "", message)
+        }
+
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -880,6 +987,9 @@ object AgentRuntime {
             writeReceiverLog(homeDir, agentId, "skipped", message)
             return AgentRunResult(agentId, 129, "", message)
         }
+        // Every gate and preparation step (incl. the local-LLM preflight) is
+        // behind us: the scheduled occurrence counts as started from here on.
+        fireExecutionStart(agentId, onExecutionStart)
         val runStartedAtMs = System.currentTimeMillis()
         val result = try {
             ShellyJNI.execSubprocess(
@@ -960,7 +1070,8 @@ object AgentRuntime {
         notificationPackage: String? = null,
         runOrigin: String = "event",
         ingressReason: String? = null,
-        mcpActionsPreapproved: Boolean = false
+        mcpActionsPreapproved: Boolean = false,
+        onExecutionStart: (() -> Unit)? = null
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -1071,7 +1182,7 @@ object AgentRuntime {
         // that the lock system isn't currently protecting.
         val chainLockDir = File(homeDir, ".shelly/agents/locks/$agentId.chain.lock")
         if (chainLockDir.isDirectory) {
-            val message = "previous run still active"
+            val message = PREVIOUS_RUN_ACTIVE_MESSAGE
             Log.i(TAG, "Agent $agentId skipped via PlanSpec executor: $message (chain lock held by an attended run)")
             writeReceiverLog(homeDir, agentId, "skipped", message)
             return AgentRunResult(agentId, 130, "", message)
@@ -1202,6 +1313,9 @@ object AgentRuntime {
             writeReceiverLog(homeDir, agentId, "skipped", message)
             return AgentRunResult(agentId, 129, "", message)
         }
+        // Every gate and preparation step (incl. the local-LLM preflight) is
+        // behind us: the scheduled occurrence counts as started from here on.
+        fireExecutionStart(agentId, onExecutionStart)
         val runStartedAtMs = System.currentTimeMillis()
         val result = try {
             ShellyJNI.execSubprocess(

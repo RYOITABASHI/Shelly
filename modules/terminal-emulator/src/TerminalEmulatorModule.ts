@@ -119,6 +119,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   testExecve(): Promise<{ success: boolean; result?: string; error?: string }>;
   scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string | null): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
+  /** Ask TerminalSessionService for a catch-up reconcile of every recurring
+   *  schedule (AgentAlarmScheduler.reconcile): a due, unrun occurrence inside
+   *  its catch-up window runs late through the normal ACTION_RUN_AGENT gates;
+   *  older ones are recorded as missed and re-armed. Resolves true when the
+   *  service start was accepted. Optional: absent on builds without it. */
+  reconcileAgentSchedules?(): Promise<boolean>;
   /** `lane: 'long'` is for the CLI installer only; everything else runs one at a time. See ExecLanes. */
   execCommand(command: string, timeoutMs?: number, lane?: 'long'): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   readDir(path: string): Promise<string>;
