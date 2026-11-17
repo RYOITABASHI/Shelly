@@ -33,10 +33,11 @@ class ConnectivityGuardianCoreTest {
         val notes = mutableListOf<String>()
         val outcomes = mutableListOf<String>()
         var stop = false
-        private var inFlight: Pair<Long, Boolean>? = null
+        /** When the in-flight (connect-only) ClosePaw run acts. */
+        private var inFlight: Long? = null
         private fun land() {
             val f = inFlight ?: return
-            if (now >= f.first) { if (vpnFollows) vpn = f.second; inFlight = null }
+            if (now >= f) { if (vpnFollows) vpn = true; inFlight = null }
         }
         override fun nowMs() = now
         override fun sleep(ms: Long) { now += ms; land() }
@@ -49,11 +50,12 @@ class ConnectivityGuardianCoreTest {
             calls += "adb:$value"; adb = value; if (value == 1) shizuku = true; return true
         }
         override fun shizukuAlive() = shizuku
-        override fun vpnUp(): Boolean? { land(); return vpn }
+        var vpnProbes = 0
+        override fun vpnUp(): Boolean? { vpnProbes++; land(); return vpn }
         override fun closePawPreapproved() = preapproved
-        override fun requestTailscale(connect: Boolean): String? {
-            calls += "tailscale:$connect"
-            inFlight = Pair(now + closePawDelayMs, connect)
+        override fun requestTailscale(): String? {
+            calls += "tailscale:connect"
+            inFlight = now + closePawDelayMs
             land()
             if (stopAllAfterDispatch) stop = true
             return "1763000000000-0123abcd"
@@ -70,10 +72,30 @@ class ConnectivityGuardianCoreTest {
     fun onOrderAndOffOrder() {
         val p = FakePorts()
         assertEquals("done", ConnectivityGuardianCore.runOnSequence(p, ConnectivityGuardianCore.RunnerMemory(), "on-1"))
-        assertEquals(listOf("adb:1", "tailscale:true"), p.calls)
+        assertEquals(listOf("adb:1", "tailscale:connect"), p.calls)
         p.calls.clear()
+        // OFF (since 2026-11-17): wireless debugging only; Tailscale stays up.
         assertEquals("done", ConnectivityGuardianCore.runOffSequence(p, "off-1"))
-        assertEquals(listOf("tailscale:false", "adb:0"), p.calls)
+        assertEquals(listOf("adb:0"), p.calls)
+        assertEquals(true, p.vpn)
+    }
+
+    @Test
+    fun offIssuesNoTailscaleRequest() {
+        val p = FakePorts(adb = 1, shizuku = true, vpn = true, preapproved = true)
+        assertEquals("done", ConnectivityGuardianCore.runOffSequence(p, "off-1"))
+        assertEquals(listOf("adb:0"), p.calls)
+        assertEquals(0, p.vpnProbes)
+        assertTrue(p.outcomes.none { it.startsWith("tailscale:") })
+        assertEquals(listOf("wifi_debug:disable:ok", "sequence:end:done"), p.outcomes)
+    }
+
+    @Test
+    fun offDoesNotDependOnPreapproval() {
+        val p = FakePorts(adb = 1, shizuku = true, vpn = true, preapproved = false)
+        assertEquals("done", ConnectivityGuardianCore.runOffSequence(p, "off-1"))
+        assertEquals(listOf("adb:0"), p.calls)
+        assertEquals(emptyList<String>(), p.notes)
     }
 
     @Test
@@ -109,19 +131,22 @@ class ConnectivityGuardianCoreTest {
 
     @Test
     fun stopAllAfterDispatchStillWaitsForTheRunToSettle() {
-        val p = FakePorts(adb = 1, shizuku = true, vpn = true, closePawDelayMs = 60_000L, stopAllAfterDispatch = true)
+        val p = FakePorts(adb = 1, shizuku = true, vpn = false, closePawDelayMs = 60_000L, stopAllAfterDispatch = true)
         val start = p.now
-        assertEquals("stopped", ConnectivityGuardianCore.runOffSequence(p, "off-1"))
+        assertEquals("stopped", ConnectivityGuardianCore.runOnSequence(p, ConnectivityGuardianCore.RunnerMemory(), "on-1"))
         assertTrue(p.now - start >= 60_000L)
-        assertEquals(false, p.vpn)
-        assertEquals(listOf("tailscale:disconnect:stopped", "tailscale:wait:settled", "sequence:end:stopped"), p.outcomes)
+        assertEquals(true, p.vpn)
+        assertEquals(
+            listOf("wifi_debug:check:already", "shizuku:check:already", "tailscale:connect:stopped", "tailscale:wait:settled", "sequence:end:stopped"),
+            p.outcomes,
+        )
     }
 
     @Test
     fun aRunThatNeverSettlesIsBounded() {
-        val p = FakePorts(adb = 1, shizuku = true, vpn = true, closePawDelayMs = Long.MAX_VALUE / 2, stopAllAfterDispatch = true)
+        val p = FakePorts(adb = 1, shizuku = true, vpn = false, closePawDelayMs = Long.MAX_VALUE / 2, stopAllAfterDispatch = true)
         val start = p.now
-        assertEquals("stopped", ConnectivityGuardianCore.runOffSequence(p, "off-1"))
+        assertEquals("stopped", ConnectivityGuardianCore.runOnSequence(p, ConnectivityGuardianCore.RunnerMemory(), "on-1"))
         assertTrue(p.now - start >= ConnectivityGuardianCore.CLOSEPAW_SETTLE_MS)
         assertTrue(p.now - start < ConnectivityGuardianCore.CLOSEPAW_SETTLE_MS + 10_000L)
         assertEquals("tailscale:wait:settle_timeout", p.outcomes[p.outcomes.size - 2])

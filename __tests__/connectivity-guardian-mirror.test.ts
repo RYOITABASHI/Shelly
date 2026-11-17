@@ -168,4 +168,15 @@ describe('setting, Settings row, i18n', () => {
     }
     expect((ja as any)['connectivity_guardian.settings_toggle']).toBe('Wi-Fi連動オートパイロット');
   });
+
+  it('the hint states the 2026-11-17 spec: Tailscale stays up after Wi-Fi loss, only wireless debugging goes off', () => {
+    const enHint: string = (en as any)['connectivity_guardian.settings_hint_on'];
+    const jaHint: string = (ja as any)['connectivity_guardian.settings_hint_on'];
+    expect(enHint).toContain('mobile data');
+    expect(enHint).toContain('only wireless debugging off');
+    expect(enHint).not.toMatch(/disconnects Tailscale/);
+    expect(jaHint).toContain('モバイルデータ');
+    expect(jaHint).toContain('ワイヤレスデバッグだけをオフ');
+    expect(jaHint).not.toContain('Tailscale を切断');
+  });
 });

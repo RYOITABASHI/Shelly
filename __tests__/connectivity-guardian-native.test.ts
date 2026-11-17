@@ -114,9 +114,18 @@ describe('lockstep: ConnectivityGuardianCore.kt <-> lib/connectivity-guardian-co
     'GOAL_MAX_CODE_POINTS',
     'TAILSCALE_PACKAGE',
     'GOAL_TAILSCALE_CONNECT',
-    'GOAL_TAILSCALE_DISCONNECT',
   ])('%s is identical', (name) => {
     expect(ktConst(name)).toEqual((core as any)[name]);
+  });
+
+  it('Tailscale is connect-only in both cores (owner decision 2026-11-17)', () => {
+    expect((core as any).GOAL_TAILSCALE_DISCONNECT).toBeUndefined();
+    expect(coreKt).not.toContain('GOAL_TAILSCALE_DISCONNECT');
+    expect(core.ACTIONS).not.toContain('disconnect');
+    expect(ktList('ACTIONS')).not.toContain('disconnect');
+    expect(coreKt).toContain('fun goalFor(): String = GOAL_TAILSCALE_CONNECT');
+    expect(coreKt).toContain('fun requestTailscale(): String?');
+    expect(coreTs).toContain('requestTailscale(): string | null;');
   });
 
   it.each(['STEPS', 'ACTIONS', 'LEVELS', 'OUTCOMES', 'ASSIST_REASONS', 'AUDIT_KEYS', 'CLOSEPAW_SETTLED_STATUSES'])('%s is identical', (name) => {
@@ -193,8 +202,8 @@ describe('lockstep: ConnectivityGuardianCore.kt <-> lib/connectivity-guardian-co
         "return s.mode === 'IDLE_ONLINE' || s.mode === 'LOSS_PENDING' || s.mode === 'ON_RUNNING' || s.mode === 'OFF_RUNNING';",
       ],
       [
-        'try {\n            return verifyTailscale(r, connect, action, before)\n        } finally {\n            awaitSettle(r, reqId, dispatchedAt)\n        }',
-        'try {\n    return verifyTailscale(r, connect, action, before);\n  } finally {\n    awaitSettle(r, reqId, dispatchedAt);\n  }',
+        'try {\n            return verifyTailscale(r, action, before)\n        } finally {\n            awaitSettle(r, reqId, dispatchedAt)\n        }',
+        'try {\n    return verifyTailscale(r, action, before);\n  } finally {\n    awaitSettle(r, reqId, dispatchedAt);\n  }',
       ],
       [
         'Transition(cleared(t.state).copy(mode = Mode.IDLE_ONLINE, pending = Pending.ON), t.effects.filter { it !is Effect.RunOn })',
@@ -256,7 +265,7 @@ describe('1 / 2 (native). sequence order in the Kotlin runner', () => {
     const on = fn(coreKt, 'fun runOnSequence(');
     const a = on.indexOf('r.gated("wifi_debug")');
     const b = on.indexOf('r.gated("shizuku")');
-    const c = on.indexOf('tailscaleStep(r, true)');
+    const c = on.indexOf('tailscaleStep(r)');
     expect(a).toBeGreaterThan(-1);
     expect(b).toBeGreaterThan(a);
     expect(c).toBeGreaterThan(b);
@@ -264,12 +273,19 @@ describe('1 / 2 (native). sequence order in the Kotlin runner', () => {
     expect(on).toContain('pollUntil(p, SHIZUKU_WAIT_MS, SHIZUKU_POLL_MS) { p.shizukuAlive() }');
   });
 
-  it('OFF: tailscale(disconnect) -> adb_wifi_enabled=0', () => {
-    const off = fn(coreKt, 'fun runOffSequence(');
-    const a = off.indexOf('tailscaleStep(r, false)');
-    const b = off.indexOf('p.writeAdbWifi(0)');
-    expect(a).toBeGreaterThan(-1);
-    expect(b).toBeGreaterThan(a);
+  it('OFF: adb_wifi_enabled=0 only; no Tailscale step, no ClosePaw, no pre-approval read', () => {
+    for (const [off, q] of [
+      [fn(coreKt, 'fun runOffSequence('), '"'],
+      [fn(coreTs, 'export function runOffSequence('), "'"],
+    ] as const) {
+      expect(off.indexOf(`r.gated(${q}wifi_debug${q})`)).toBeGreaterThan(-1);
+      expect(off).toContain('p.writeAdbWifi(0)');
+      expect(off).not.toContain('tailscaleStep');
+      expect(off).not.toContain('requestTailscale');
+      expect(off).not.toContain('closePawPreapproved');
+      expect(off).not.toContain('vpnUp');
+      expect(off).not.toContain(`${q}tailscale${q}`);
+    }
   });
 });
 
@@ -313,9 +329,9 @@ describe('6 (native). Shizuku: ping only, never started, no permission', () => {
 
 describe('7 (native). ClosePaw dispatch: only the handleLine seam, only after reading the pre-approval', () => {
   it('TailscaleControl has one seam that builds the fixed line and calls handleLine', () => {
-    expect(fn(tailscale, 'fun requestTailscale(')).toContain('dispatchViaClosePaw(context, connect)');
+    expect(fn(tailscale, 'fun requestTailscale(')).toContain('dispatchViaClosePaw(context)');
     const d = fn(tailscale, 'private fun dispatchViaClosePaw(');
-    expect(d).toContain('ConnectivityGuardianCore.closePawLine(reqId, now, ConnectivityGuardianCore.goalFor(connect))');
+    expect(d).toContain('ConnectivityGuardianCore.closePawLine(reqId, now, ConnectivityGuardianCore.goalFor())');
         // Re-checked atomically against OFF (same lock order as handleLine), trusted variant only.
     const lock = d.indexOf('synchronized(ClosePawHandoff) {');
     const inner = d.indexOf('synchronized(ClosePawShellPreapproval) {');
@@ -545,7 +561,7 @@ describe('16 (native). coordinator gate round 1: settle, recovery reconcile, res
     expect(drain.indexOf('activeDrains.decrementAndGet()')).toBeLessThan(drain.indexOf('runCatching(onIdle)'));
     // The settle wait lives inside tailscaleStep, after every verify outcome, before return.
     const step = fn(coreKt, 'private fun tailscaleStep(');
-    expect(step).toMatch(/try \{\s*return verifyTailscale\(r, connect, action, before\)\s*\} finally \{\s*awaitSettle\(r, reqId, dispatchedAt\)\s*\}/);
+    expect(step).toMatch(/try \{\s*return verifyTailscale\(r, action, before\)\s*\} finally \{\s*awaitSettle\(r, reqId, dispatchedAt\)\s*\}/);
     // No gate inside the settle wait: toggle off / STOP-ALL / superseded cannot cut it short.
     const settle = fn(coreKt, 'private fun awaitSettle(');
     expect(settle).not.toMatch(/gate\(|gated\(|superseded|enabled\(|stopAll\(/);
