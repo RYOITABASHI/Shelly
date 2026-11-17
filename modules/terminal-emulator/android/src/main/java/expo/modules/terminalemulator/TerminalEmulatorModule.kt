@@ -654,6 +654,10 @@ class TerminalEmulatorModule : Module() {
                 // `shelly device <command>` (DeviceApi.kt).
                 runCatching { DeviceApi.ensureWatching(context) }
                     .onFailure { Log.w("TerminalEmulator", "device-api request watcher failed to start", it) }
+                // Wi-Fi connectivity guardian: re-register its Wi-Fi callbacks
+                // while the process lives (no-op while the toggle is OFF).
+                runCatching { ConnectivityGuardian.onAppStart(context) }
+                    .onFailure { Log.w("TerminalEmulator", "connectivity guardian re-register failed", it) }
                 // "Keep ChatGPT connected": app start brings the Codex
                 // remote-control host back (CodexRemoteHost.kt).
                 Thread {
@@ -853,6 +857,17 @@ class TerminalEmulatorModule : Module() {
             } else {
                 McpAutostartStore.writeOn(context, exec, readTerminal, diagnostics, typedOps, token)
             }
+        }
+
+        // "Wi-Fi連動オートパイロット" toggle mirror (ConnectivityGuardianStore.kt:
+        // Keystore AES-GCM, re-keyed per write, unreadable = OFF). RN writes
+        // it at app start and on every change (lib/connectivity-guardian-mirror.ts).
+        // false clears it, cancels the debounce and unregisters the Wi-Fi
+        // callbacks. Resolves whether the mirror now matches the request.
+        AsyncFunction("setConnectivityGuardianMirror") { enabled: Boolean ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            ConnectivityGuardian.setFromRn(context, enabled)
         }
 
         // Running, or wanted and about to be restarted by the native

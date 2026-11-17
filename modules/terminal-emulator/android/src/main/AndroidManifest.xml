@@ -105,6 +105,54 @@
       </intent-filter>
     </receiver>
 
+    <!-- Wi-Fi connectivity guardian ("Wi-Fi連動オートパイロット",
+         ConnectivityGuardian.kt). Short-lived specialUse foreground service
+         while an ON / OFF sequence runs; stopWithTask=false so a sequence
+         finishes when Shelly is swiped from recents. Module manifest so a
+         clean expo prebuild keeps all of these. -->
+    <service
+      android:name=".ConnectivityGuardianService"
+      android:exported="false"
+      android:stopWithTask="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="connectivity_guardian" />
+    </service>
+
+    <!-- Guardian re-arm after reboot / app update. exported=true like
+         McpServerAutostartReceiver: both actions are system-only protected
+         broadcasts and the receiver ignores anything else. Does nothing
+         while the toggle mirror (ConnectivityGuardianStore) is OFF. -->
+    <receiver
+      android:name=".ConnectivityGuardianReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+
+    <!-- Guardian internal events (Wi-Fi PendingIntent callback, debounce /
+         run / watchdog alarms). NOT exported, no intent-filter: only
+         Shelly's own explicit PendingIntents reach it. -->
+    <receiver
+      android:name=".ConnectivityGuardianEventReceiver"
+      android:exported="false" />
+
+    <!-- Shizuku client binder delivery (dev.rikka.shizuku:provider), used
+         ONLY for Shizuku.pingBinder() by ShizukuLiveness.kt (never a
+         permission request, never a bound service). Exactly the block from
+         Shizuku-API's README; INTERACT_ACROSS_USERS_FULL keeps normal apps
+         out (only the Shizuku server, running as shell/root, calls it). -->
+    <provider
+      android:name="rikka.shizuku.ShizukuProvider"
+      android:authorities="${applicationId}.shizuku"
+      android:multiprocess="false"
+      android:enabled="true"
+      android:exported="true"
+      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">

@@ -206,6 +206,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <FrontAgentSection />
             <AgentsSection visible={visible} />
             <ClosePawPreapprovalSection visible={visible} />
+            <ConnectivityGuardianSection />
             <DraftPreapprovalSection visible={visible} />
             <McpAlwaysAllowSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
@@ -2558,6 +2559,40 @@ const ClosePawPreapprovalSection = React.memo(function ClosePawPreapprovalSectio
       </Row>
       <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: on ? C.text1 : C.text2 }]}>
         {t(on ? 'closepaw_preapproval.settings_hint_on' : 'closepaw_preapproval.settings_hint_off')}
+      </Text>
+    </Section>
+  );
+});
+
+// "Wi-Fi連動オートパイロット" (settings.connectivityGuardianEnabled, default
+// OFF). The setting is the truth; lib/connectivity-guardian-mirror.ts copies
+// it to the native guardian (ConnectivityGuardian.kt).
+const ConnectivityGuardianSection = React.memo(function ConnectivityGuardianSection() {
+  const { t } = useTranslation();
+  const on = useSettingsStore((s) => s.settings.connectivityGuardianEnabled === true);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  return (
+    <Section title={t('connectivity_guardian.settings_title')}>
+      <Row label={t('connectivity_guardian.settings_toggle')}>
+        <Pressable
+          style={[styles.switchTrack, { backgroundColor: on ? withAlpha(C.accent, 0.36) : C.border }]}
+          onPress={() => updateSettings({ connectivityGuardianEnabled: !on })}
+          hitSlop={4}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: on }}
+          accessibilityLabel={t('connectivity_guardian.settings_toggle')}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: on ? C.accent : C.text2 },
+              on && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: on ? C.text1 : C.text2 }]}>
+        {t(on ? 'connectivity_guardian.settings_hint_on' : 'connectivity_guardian.settings_hint_off')}
       </Text>
     </Section>
   );
