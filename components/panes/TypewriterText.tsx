@@ -11,6 +11,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Text, type TextStyle, type StyleProp } from 'react-native';
+import { logAIPaneJitter } from '@/lib/ai-pane-scroll-follow';
 
 const CHARS_PER_TICK = 2;
 const TICK_MS = 16;
@@ -52,18 +53,31 @@ export function TypewriterText({ text, style, active, cursorColor }: Props) {
     return () => clearInterval(id);
   }, [active]);
 
+  // TEMPORARY (2026-11-17) jitter diagnosis: numbers only, at most once per
+  // second while active. Remove after the 60fps device gate.
+  const lastJitterLogRef = useRef(0);
+  useEffect(() => {
+    if (!active) return;
+    const now = Date.now();
+    if (now - lastJitterLogRef.current < 1000) return;
+    lastJitterLogRef.current = now;
+    logAIPaneJitter(`typewriter revealed=${revealed} len=${textRef.current.length}`);
+  }, [revealed, active]);
+
   const shown = active ? text.slice(0, revealed) : text;
   // While streaming the glyph is ALWAYS laid out so its footprint never
   // changes (it takes part in line breaking; toggling it made the last line
   // wrap/unwrap at the reveal's catch-up rate and the pane jitter). Once the
-  // reveal has caught up it is merely transparent.
+  // reveal has caught up it is drawn at near-zero alpha. Not 'transparent':
+  // that is colour value 0, which Android treats as the undefined-colour
+  // sentinel, so the cursor would inherit the text colour and render opaque.
   const showCursor = active;
   const caughtUp = revealed >= text.length;
 
   return (
     <Text style={style} selectable>
       {shown}
-      {showCursor ? <Text style={{ color: caughtUp ? 'transparent' : (cursorColor ?? undefined) }}>{'▋'}</Text> : null}
+      {showCursor ? <Text style={{ color: caughtUp ? 'rgba(0,0,0,0.01)' : (cursorColor ?? undefined) }}>{'▋'}</Text> : null}
     </Text>
   );
 }

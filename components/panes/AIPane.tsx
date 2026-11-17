@@ -16,6 +16,7 @@ import {
   Easing,
   TouchableOpacity,
   Alert,
+  type LayoutChangeEvent,
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -68,6 +69,7 @@ import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { logError } from '@/lib/debug-logger';
+import { createRafCoalescer, logAIPaneJitter } from '@/lib/ai-pane-scroll-follow';
 import {
   isAiPaneAgent,
   pickDefaultAiPaneAgent,
@@ -712,24 +714,44 @@ export default function AIPane() {
   }, [boundAgent]);
 
   // Keep the chat pinned to the latest message as content streams in, mirroring
-  // the terminal's auto-scroll. A single scrollToEnd is fragile with variable row
-  // heights + removeClippedSubviews (the content size is estimated, so one call
-  // lands short), so we fire it three times — immediately, next frame, and after a
-  // short settle — exactly like AgentChatPane which already tail-follows reliably.
+  // the terminal's auto-scroll. FlatList.scrollToEnd derives its target from
+  // cell metrics and omits the content container's bottom padding, which left
+  // two resting positions ~8dp apart (and the old triple fire flipped between
+  // them — the streaming shake). The native scroll view's scrollToEnd goes to
+  // the true end (padding included), so one rAF-coalesced call per frame is
+  // enough.
   const listRef = useRef<FlatList<ChatMessage>>(null);
-  const scrollToLatest = useCallback(() => {
-    listRef.current?.scrollToEnd({ animated: false });
-    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
-    setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 80);
+  const scrollCoalescerRef = useRef<ReturnType<typeof createRafCoalescer> | null>(null);
+  if (scrollCoalescerRef.current === null) {
+    scrollCoalescerRef.current = createRafCoalescer(() => {
+      // FlatList.d.ts types getScrollResponder() as a JSX element, but at
+      // runtime it returns the ScrollView instance (ScrollView.getScrollResponder).
+      const responder = listRef.current?.getScrollResponder() as
+        | { scrollToEnd?: (options?: { animated?: boolean }) => void }
+        | null
+        | undefined;
+      responder?.scrollToEnd?.({ animated: false });
+    });
+  }
+  useEffect(() => () => scrollCoalescerRef.current?.cancel(), []);
+  const scrollToLatest = useCallback((trigger: 'contentSize' | 'tailSignal') => {
+    logAIPaneJitter(`scrollToLatest trigger=${trigger} t=${Date.now()}`);
+    scrollCoalescerRef.current?.call();
   }, []);
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
     isNearBottomRef.current = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+    logAIPaneJitter(`scroll y=${contentOffset.y.toFixed(1)} contentH=${contentSize.height.toFixed(1)} layoutH=${layoutMeasurement.height.toFixed(1)} distBottom=${distanceFromBottom.toFixed(1)}`);
   }, []);
-  const handleContentSizeChange = useCallback(() => {
-    if (isNearBottomRef.current) scrollToLatest();
+  const handleContentSizeChange = useCallback((contentWidth: number, contentHeight: number) => {
+    logAIPaneJitter(`contentSizeChange h=${contentHeight.toFixed(1)}`);
+    if (isNearBottomRef.current) scrollToLatest('contentSize');
   }, [scrollToLatest]);
+  // TEMPORARY (2026-11-17) jitter diagnosis: list viewport height.
+  const handleListLayout = useCallback((event: LayoutChangeEvent) => {
+    logAIPaneJitter(`listLayout h=${event.nativeEvent.layout.height.toFixed(1)}`);
+  }, []);
 
   // 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3): this used to
   // be two separate effects — one posting a hardcoded, non-i18n'd
@@ -949,15 +971,13 @@ export default function AIPane() {
   const isStreaming = conversation?.isStreaming ?? false;
   const contextBadge = formatContextBadge(paneTerminalContext);
 
-  // Tail-follow signal: changes on every new message AND on each streamed token,
-  // since the store mutates the last message's streamingText in place (the array
-  // ref may not change, so onContentSizeChange alone can miss growth). Re-running
-  // scrollToLatest on this signal keeps the latest line pinned during streaming.
-  const last = messages[messages.length - 1];
-  const tailSignal = `${messages.length}:${(last?.streamingText ?? last?.content ?? '').length}:${isStreaming ? 1 : 0}`;
+  // Tail-follow on newly appended messages. Growth during streaming changes the
+  // content size, so onContentSizeChange follows it; this effect only covers
+  // message-count changes.
+  const messageCount = messages.length;
   useEffect(() => {
-    if (messages.length > 0 && isNearBottomRef.current) scrollToLatest();
-  }, [tailSignal, scrollToLatest]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (messageCount > 0 && isNearBottomRef.current) scrollToLatest('tailSignal');
+  }, [messageCount, scrollToLatest]);
 
   // P1 scheduling-reliability audit (2026-07-15): dismissing the checklist
   // just collapses this one message back to a short acknowledgement line —
@@ -1077,6 +1097,8 @@ export default function AIPane() {
           onScroll={handleScroll}
           scrollEventThrottle={16}
           onContentSizeChange={handleContentSizeChange}
+          onLayout={handleListLayout}
+          ListFooterComponent={<View style={paneStyles.listFooter} />}
         />
       )}
 
@@ -1183,8 +1205,13 @@ const paneStyles = createThemedStyles(() => ({
     lineHeight: 14,
     color: C.text2,
   },
+  // Bottom 8dp lives in the footer (listFooter), whose length VirtualizedList
+  // counts, so even a metrics-based scrollToEnd lands on the true end.
   listContent: {
-    paddingVertical: 8,
+    paddingTop: 8,
+  },
+  listFooter: {
+    height: 8,
   },
   voiceBar: {
     flexDirection: 'row',
