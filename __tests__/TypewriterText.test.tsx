@@ -1,7 +1,8 @@
 /**
  * TypewriterText cursor: while active the ▋ glyph is always rendered (so line
- * breaking never changes mid-stream); once the reveal catches up it is
- * transparent rather than removed. Inactive renders no cursor.
+ * breaking never changes mid-stream); once the reveal catches up it is drawn
+ * at near-zero alpha (not 'transparent', which Android renders opaque) rather
+ * than removed. Inactive renders no cursor.
  */
 import React from 'react';
 import { act, render } from '@testing-library/react-native';
@@ -30,7 +31,7 @@ describe('TypewriterText cursor', () => {
     });
     const caught = queryByText(CURSOR);
     expect(caught).not.toBeNull();
-    expect(flatten(caught!.props.style).color).toBe('transparent');
+    expect(flatten(caught!.props.style).color).toBe('rgba(0,0,0,0.01)');
   });
 
   it('keeps the cursor present when more text arrives after catching up', () => {
@@ -38,7 +39,7 @@ describe('TypewriterText cursor', () => {
     act(() => {
       jest.advanceTimersByTime(16 * 10);
     });
-    expect(flatten(queryByText(CURSOR)!.props.style).color).toBe('transparent');
+    expect(flatten(queryByText(CURSOR)!.props.style).color).toBe('rgba(0,0,0,0.01)');
     rerender(<TypewriterText text="abcdef" active cursorColor="#0f0" />);
     expect(queryByText(CURSOR)).not.toBeNull();
     expect(flatten(queryByText(CURSOR)!.props.style).color).toBe('#0f0');
