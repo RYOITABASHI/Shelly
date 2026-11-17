@@ -443,7 +443,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **音声入力** | コマンドや AI プロンプトを話しかけられます。Groq キーがあれば Groq Whisper が文字起こしを担当し、無ければ Android の端末内音声認識（キー不要、API 31 以上）にフォールバックします（Settings → Voice Input で端末内に固定すれば、音声はネットワークに出ません）。そのテキストを VoiceChain がキーボードと同じ入力ルーターに流します。 |
 | **リアルタイム音声（Gemini Live）** | オプトインの全二重音声モード。録音 → 文字起こし → 送信を繰り返すターン制ではなく、話しかけると音声で返答が返り、割り込みはサーバー側で処理されます。通常の音声入力とは別のトグルです（Settings → Realtime Voice、既定 OFF）。テキストと違い、Gemini Live API 経由の音声は無料枠のキーでもトークン課金される点に注意してください。 |
 | **A2A サーバー（Agent2Agent）** | オプトインのローカル HTTP サーバー（Settings → A2A Server、既定 OFF）。標準の [A2A プロトコル](https://a2a-protocol.org/) の Agent Card と `list_agents` スキルを公開し、同じネットワーク上の A2A 対応エージェント / ツールから Shelly に登録済みのものが見えるようにします。現時点では読み取り専用で、実行や書き込みのスキルは公開していません。 |
-| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。`read_terminal_output`・`git_status`・`list_agents`・`list_repos` の 4 つの読み取り専用ツールを公開し、Claude Code や Claude Desktop のようなデスクトップの MCP クライアントからスマホ上で動いているものを覗けるようにします。ほかに `run_command` と `write_file` の 2 つがありますが、Settings → Agents →「MCP: Allow exec/write」をオンにしない限り無効で、オンにしても呼び出しのたびにスマホでの承認タップが必要です。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。 |
+| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。読み取り専用ツール――`device_status`・`list_agents`・`list_repos`・`git_status`、さらにそれぞれ専用のスイッチの背後にある `read_terminal_output`・`read_logs`・`get_settings`――で、任意の MCP クライアントからスマホ上で動いているものを覗けます。型付き操作 `run_agent` / `get_run_result`（Settings → Agents →「MCP: Allow typed operations (run agents)」）は、Shelly の同意ルールの下で登録済みエージェントを起動します。`run_command` と `write_file` は「MCP: Allow exec/write」をオンにしない限り無効で、オンにしても呼び出しのたびにスマホでの承認タップが必要です。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。詳細: [外部エージェントと MCP](#外部エージェントと-mcp)。 |
 | **エージェントの安全ルール（ベータ、既定 OFF）** | POLICY-001: 普通の言葉でルールを伝えられます（「お金が絡む操作は必ず聞いて」「Xへの投稿は下書きまで」）。復唱されたうえで、あなたが確認したときだけ保存され、一覧表示や取り消しも同じく言葉で行えます。あなたが起動したのではない実行（スケジュール・ウィジェット・通知・起動時）は読み取り / 下書き / 通知に限定され、同じ種類のアクションを何度も問題なく承認すると、以後は聞かずに実行するかを提案することがあります（支払い・投稿・ネットワーク送信・高リスクのコマンドには決して提案しません）。既定 OFF（Settings → Agent Safety Rules (beta)）。 |
 | **実行中の常駐通知** | スケジュールまたは手動で起動したエージェントは、実行結果の通知だけでなく、実行中ずっと「▶ 実行中」の常駐通知を出します。実行中の状態が、終わってから初めて分かるのではなく通知シェードから見えます。 |
 
@@ -470,11 +470,50 @@ and write the primary-source links + a short summary to my Obsidian vault
 
 無人実行のうち、アクションがローカルの `draft` ファイル（スコープされた出力フォルダ内）か `notify` だけのものは、手動承認のタップを待たなくなりました――どちらも端末の外に出ないからです。それ以外のアクション（webhook、CLI、SNS 投稿など）は引き続き承認が必要で、安全ルールを有効にしている場合はそちらが優先されます。
 
-**ClosePaw への引き継ぎ（Experimental）。** エージェントから、オープンソース（Apache-2.0）の Android スマホ操作エージェント [ClosePaw](https://github.com/imoonkey/closepaw) にタスクを引き継げます。「ClosePawでChromeを開いて東京の天気を検索して」（"have ClosePaw open Chrome and search the weather in Tokyo"）のように言うだけです。実行のたびにまず Shelly の Review で「ClosePaw に引き継ぎ: <ゴール>」を確認し（自動承認はされません）、さらに ClosePaw 側でも「External Goal」の確認が出てから動きます。公式の ClosePaw は結果を返さないため、実行は結果つきの成功ではなく **「ClosePaw に引き継ぎ済み」** で終わります（Shelly 用ビルドのバックグラウンド実行では結果が返ります。後述）。ClosePaw は GitHub のリリースから各自でインストールし、API キー / OpenAI 互換エンドポイントで設定してください（Shelly の小型オンデバイスモデルでは ClosePaw を動かせません）。Shelly のターミナル（その中で動く Codex セッションを含む）からは `shelly closepaw "Chromeを開いて東京の天気を検索して"` で直接引き継げます（同意は ClosePaw 側の Run 確認。5 秒に 1 回まで、30 秒より古い要求は破棄）。Shelly がバックグラウンドのとき（ChatGPT アプリから Codex を操作している時など）も動きます。Android はバックグラウンドのアプリから別アプリを開かせないため、その場合は「ClosePaw に引き継ぎ」通知が出るので、タップして続行してください。**Shelly が信頼する ClosePaw ビルド（任意）:** [RYOITABASHI/closepaw](https://github.com/RYOITABASHI/closepaw) からビルドした ClosePaw の変種（`shelly-trusted-caller`、APK は https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-2 ）は、Shelly から起動されたときは ClosePaw 自身の確認を省きます。Shelly がすでにあなたに確認しているからです。インストールするには、先に公式の ClosePaw をアンインストールする必要があります（署名が異なるため）。Shelly はその署名証明書がピン留めしたものと一致するときだけ信頼済みとして扱い、公式の ClosePaw にはトークンを渡さないので、公式版では確認ダイアログが残ります。変種を入れると、`shelly closepaw "<ゴール>"` は直接は発火しなくなります。Shelly がまず、スマホの上でだけあなたに確認します ―― 通知の **Approve** をタップする（端末のロック解除が必要）か、Shelly のチャットで `approve <hash>` と返信してください（ただの「OK」は承認になりません）。ChatGPT やターミナルからは拒否（`shelly closepaw reject <requestId>`）はできても承認はできず、依頼ごとに承認が必要です。同じく、変種を入れている間は、ClosePaw のステップを含むエージェントを ChatGPT から承認することはできません。スマホで承認すると、そのエージェントが編集されるまで、以後の実行でもそのステップは承認済みになります。**バックグラウンド実行（Shelly 用 ClosePaw ビルド v0.1.0-4 以降）:** [shelly-v0.1.0-4](https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-4) 以降の Shelly 用ビルドでは、承認済みの引き継ぎで ClosePaw が前面に出なくなります。Shelly は ClosePaw のバックグラウンド入口に依頼を送り、ClosePaw は自分の仮想ディスプレイ上で作業します（Shizuku の起動が必要）。その間もスマホはそのまま使えます（ClosePaw が操作中のアプリだけは避けてください）。結果はターミナル・エージェント実行結果・チャットに「バックグラウンドで作業中」と表示され、失敗時は対処法（Shizuku を起動、ClosePaw のユーザー補助をオン、重ねて表示の許可、認証情報の追加、ClosePaw が実行中）を具体的に示します。Shelly が ClosePaw にメイン画面の操作を求めることはありません。古い ClosePaw ビルドでは従来どおりの起動になります。ClosePaw の結果が返るのはこのバックグラウンド実行のときだけです: `shelly closepaw --wait "<ゴール>"`（または `shelly closepaw wait <requestId>`）があなたの承認と ClosePaw の回答を待って表示します。それ以外では `--wait` は exit 3（引き継ぎのみ、結果なし）で終わります。*ChatGPT → `shelly closepaw --wait` → バックグラウンド実行 → 結果、の経路は実機検証済み（Galaxy Z Fold6、N=1、[ステータス](#ステータス)参照）。*
+**ClosePaw への引き継ぎ（Experimental）。** エージェントから、オープンソース（Apache-2.0）の Android スマホ操作エージェント [ClosePaw](https://github.com/imoonkey/closepaw) にタスクを引き継げます。「ClosePawでChromeを開いて東京の天気を検索して」（"have ClosePaw open Chrome and search the weather in Tokyo"）のように言うだけです。実行のたびにまず Shelly の Review で「ClosePaw に引き継ぎ: <ゴール>」を確認します（例外は、そのエージェントと一緒に事前承認されたステップと、「ClosePaw を承認なしで実行」スイッチが ON の場合だけです。[外部エージェントと MCP](#外部エージェントと-mcp) 参照）。さらに ClosePaw 側でも「External Goal」の確認が出てから動きます。公式の ClosePaw は結果を返さないため、実行は結果つきの成功ではなく **「ClosePaw に引き継ぎ済み」** で終わります（Shelly 用ビルドのバックグラウンド実行では結果が返ります。後述）。ClosePaw は GitHub のリリースから各自でインストールし、API キー / OpenAI 互換エンドポイントで設定してください（Shelly の小型オンデバイスモデルでは ClosePaw を動かせません）。Shelly のターミナル（その中で動く Codex セッションを含む）からは `shelly closepaw "Chromeを開いて東京の天気を検索して"` で直接引き継げます（同意は ClosePaw 側の Run 確認。5 秒に 1 回まで、30 秒より古い要求は破棄）。Shelly がバックグラウンドのとき（ChatGPT アプリから Codex を操作している時など）も動きます。Android はバックグラウンドのアプリから別アプリを開かせないため、その場合は「ClosePaw に引き継ぎ」通知が出るので、タップして続行してください。**Shelly が信頼する ClosePaw ビルド（任意）:** [RYOITABASHI/closepaw](https://github.com/RYOITABASHI/closepaw) からビルドした ClosePaw の変種（`shelly-trusted-caller`、APK は https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-2 ）は、Shelly から起動されたときは ClosePaw 自身の確認を省きます。Shelly がすでにあなたに確認しているからです。インストールするには、先に公式の ClosePaw をアンインストールする必要があります（署名が異なるため）。Shelly はその署名証明書がピン留めしたものと一致するときだけ信頼済みとして扱い、公式の ClosePaw にはトークンを渡さないので、公式版では確認ダイアログが残ります。変種を入れると、`shelly closepaw "<ゴール>"` は直接は発火しなくなります。Shelly がまず、スマホの上でだけあなたに確認します ―― 通知の **Approve** をタップする（端末のロック解除が必要）か、Shelly のチャットで `approve <hash>` と返信してください（ただの「OK」は承認になりません）。ChatGPT やターミナルからは拒否（`shelly closepaw reject <requestId>`）はできても承認はできず、依頼ごとに承認が必要です（「ClosePaw を承認なしで実行」スイッチが ON の間を除きます）。同じく、変種を入れている間は、ClosePaw のステップを含むエージェントを ChatGPT から承認することはできません。スマホで承認すると、そのエージェントが編集されるまで、以後の実行でもそのステップは承認済みになります。**バックグラウンド実行（Shelly 用 ClosePaw ビルド v0.1.0-4 以降）:** [shelly-v0.1.0-4](https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-4) 以降の Shelly 用ビルドでは、承認済みの引き継ぎで ClosePaw が前面に出なくなります。Shelly は ClosePaw のバックグラウンド入口に依頼を送り、ClosePaw は自分の仮想ディスプレイ上で作業します（Shizuku の起動が必要）。その間もスマホはそのまま使えます（ClosePaw が操作中のアプリだけは避けてください）。結果はターミナル・エージェント実行結果・チャットに「バックグラウンドで作業中」と表示され、失敗時は対処法（Shizuku を起動、ClosePaw のユーザー補助をオン、重ねて表示の許可、認証情報の追加、ClosePaw が実行中）を具体的に示します。Shelly が ClosePaw にメイン画面の操作を求めることはありません。古い ClosePaw ビルドでは従来どおりの起動になります。ClosePaw の結果が返るのはこのバックグラウンド実行のときだけです: `shelly closepaw --wait "<ゴール>"`（または `shelly closepaw wait <requestId>`）があなたの承認と ClosePaw の回答を待って表示します。それ以外では `--wait` は exit 3（引き継ぎのみ、結果なし）で終わります。*ChatGPT → `shelly closepaw --wait` → バックグラウンド実行 → 結果、の経路は実機検証済み（Galaxy Z Fold6、N=1、[ステータス](#ステータス)参照）。*
 
 そもそもリクエストが曖昧すぎて動きようがない場合――目的語もドメインもない「なんか手伝って」のような場合――Shelly は空のタスクでエージェントを登録したりせず、いつ動かすかを聞く*前に*、実際に何をしてほしいのかを尋ねます。
 
 **正直な注意点:** 無人での発火は Android のバックグラウンド制限に依存し、これはメーカーによって差があります（Samsung / Xiaomi / Oppo / OnePlus のバッテリー凍結機能）。Shelly は上に挙げた Android の最優先アラームパスを使い、実行漏れも表に出しますが、あらゆる端末での発火を*保証*することはできません。バッテリー最適化の除外を許可したうえで、エージェントの実行ビューを確認してください。
+
+### 外部エージェントと MCP
+
+Shelly は、スマホの上で動くローカルファーストの実行と同意のレイヤーです。任意の MCP クライアント――デスクトップのコーディングエージェント、個人の AI エージェント、その他のツール――が bearer トークンで Shelly の MCP サーバーに接続し、登録済みのエージェントの実行を Shelly に頼みます。同意の権限はクライアントではなく Shelly にあり、実行は端末上で行われます（各エージェントに設定されたモデルプロバイダを呼び出します）。
+
+**ツール。** サーバーは既定で OFF です（Settings → Agents → **MCP Server**）。
+
+| グループ | ツール | スイッチ |
+|---|---|---|
+| 読み取り専用 | `device_status`、`list_agents`、`list_repos`、`git_status` | サーバー自体のほかに無し |
+| 読み取り専用 | `read_terminal_output` | "MCP: Allow reading terminal output" |
+| 読み取り専用 | `read_logs`、`get_settings`（秘密情報は返しません） | "MCP: Allow diagnostics (logs, settings)" |
+| 型付き操作 | `run_agent`、`get_run_result` | "MCP: Allow typed operations (run agents)" |
+| 生 | `run_command`、`write_file` | "MCP: Allow exec/write (dangerous)" |
+
+`run_agent` は登録済みエージェントの実行を 1 回開始し、実行ハンドルを即座に返します。`get_run_result` はその状態と出力をポーリングします。生のツールは性質が違います: `run_command` / `write_file` の呼び出しは毎回スマホでの承認タップが必要で、事前承認は決してできません。
+
+**同意のはしご。** ルールに一致しない `run_agent` の呼び出しは、スマホの上で決まります: 前景では承認ダイアログが出て、Shelly が背面にある間に届いた呼び出しは代わりに拒否されます。ダイアログで **Always allow**（常に許可）を選ぶと、クライアント（トークン）× 操作 × 対象の単位の「常に許可」ルールができます（例: このトークンはこのエージェントを実行してよい）。
+
+- ルールは Settings → **MCP: always allowed** に一覧され、個別にも、全部まとめても取り消せます。設定からは追加できません。
+- MCP トークンを再生成すると、ルールはすべて消えます。
+- ルールはエージェント定義に束縛されます: プロンプト・ツール・アクション・実行設定を編集すると、ダイアログが戻ります。
+- **アクションの実行権限**を担うルールは、検証済みの安全設定の内容にも束縛されます。エージェント定義と安全設定のどちらかが変われば――緩める変更でも――ルールは一致しなくなり、実行は聞き直しに落ちます（fail-closed）。
+- ルールが一致すると、実行は宣言済みアクションを含めてバックグラウンドでヘッドレスに実行され、実行ごとのダイアログは出ません。アクションはそれぞれの実行時ゲート（安全設定の deny / draft-only / ask ルール、CRITICAL コマンド、出力先のルート）はそのまま通りますし、画面依存のアクションの制限も従来どおりです。*実機検証済み（Galaxy Z Fold6、N=1）。*
+
+契約と制限: [docs/mcp-agent-action-consent.md](docs/mcp-agent-action-consent.md)。各部分の止め方: [docs/revoke-access.ja.md](./docs/revoke-access.ja.md)。
+
+**入口の印（ingress taint）。** MCP 越しに届いた実行は、外部由来として印が付きます。印の付いた実行は制限されます: 書き込み・宣言済みアクション・外部送信は、一致するルールが実行権限を担っていない限り拒否され、印の付いた実行が無人の一括承認を受けることは決してありません。**STOP-ALL はすべての事前承認の仕組みに優先します**――ルール、下記の ClosePaw スイッチ、下書きの事前承認もです。
+
+**可用性。** MCP サーバーが ON のときは、再起動のあと自動で起動します。先にアプリを開く必要はありません。
+
+**ClosePaw という手。** [ClosePaw](https://github.com/imoonkey/closepaw) は、背面の仮想ディスプレイで他のアプリの画面を操作する別のアプリです（上の [ClosePaw への引き継ぎ](#自律エージェント) 参照）。接続の形は 2 つあります:
+
+- **Shelly が ClosePaw にゴールを引き継ぐ** ―― ターミナルからの `shelly closepaw "<ゴール>"`、またはエージェント内の ClosePaw ステップ。事前承認スイッチ **Run ClosePaw without approval**（ClosePaw を承認なしで実行）を ON にすると、これらの引き継ぎは実行ごとの承認なしで動きます。ON にできるのは持ち主だけで、Shelly 自身のチャットで武装フレーズ（"run ClosePaw without approval"）を打ったときだけです。設定からは OFF にすることしかできません。ON の間も STOP-ALL は引き続きブロックし、エージェント引き継ぎの出所確認は変わりません。
+- **MCP クライアントが ClosePaw に直接ゴールを送る** ―― ClosePaw は自身のトークンで守られた MCP エンドポイントも公開していて、結果は同じように呼び出し元へ返ります。
+
+**下書きの事前承認。** 下書きだけの宛先（note、Substack）については、持ち主が Shelly の AI ペインで指示を打つことで、宛先ごとに事前承認を ON にできます――例えば "save drafts to note and Substack without approval"。ON になった宛先のキュー済み下書きは、宛先ごとの確認と 1 日の上限（既定 5 件）のもとで、タップなしに保存されます。"stop saving drafts without approval" か設定のトグルで OFF になります。
+
+**接続性ガーディアン。** オプトインの設定自動化（**Wi-Fi-linked autopilot**、既定 OFF）が、この連携への到達可能性を保つのを助けます。Wi-Fi が接続するとワイヤレスデバッグを ON にして Shizuku が使えるようになるのを待ち、Wi-Fi が切れて約 45 秒たつと、Tailscale は接続したままワイヤレスデバッグを OFF にするので、MCP サーバーにはモバイルデータでも届き続けます。初回だけ `WRITE_SECURE_SETTINGS` の付与が必要です。
 
 ### エージェントのロール
 
@@ -557,7 +596,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 
 | 領域 | 状態 |
 |---|---|
-| MCP のアクション事前許可 | 実装済み、ホストテストのみ。APK・実機未検証。新しい同意は定義と検証済み安全設定に束縛し、旧ルールは起動確認の省略のみ。[仕様と制限](docs/mcp-agent-action-consent.md)。 |
+| MCP のアクション事前許可 | ✅ 一致した「常に許可」ルールがアクションの実行権限を担います: ルールに一致した実行は、宣言済みアクションを含め、バックグラウンドでヘッドレスに実行されます（各アクションは実行時ゲートの対象のまま）。新しい同意はエージェント定義と検証済み安全設定に束縛し、旧ルールはダイアログの省略のみ。実機検証済み（Galaxy Z Fold6、N=1）。[仕様と制限](docs/mcp-agent-action-consent.md)。 |
 | コアターミナル — ネイティブPTY、マルチペインレイアウト、AI Editのゴールデンパス、FileTree/git、コマンドパレット | ✅ 出荷済み、広く実機検証済み |
 | バックグラウンド/自律エージェント — `@agent`登録 → AlarmManagerによる無人発火 → 通知 | ✅ 結線済み。無人発火はZ Fold6(N=1)で端から端まで実機確認済み |
 | サブエージェントのファンアウト(`parallelGroup`) — 分離されたブランチコンテキスト、無人での並行ディスパッチ | ✅ 2026-08-17に実際の3ブランチ並行AlarmManager発火で実機検証済み |
