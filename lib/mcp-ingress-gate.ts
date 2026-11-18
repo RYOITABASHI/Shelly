@@ -60,6 +60,7 @@ export function mapHomeForGate(text: string, homeDir: string): string {
   return out;
 }
 
+/** KEEP IN SYNC: McpRawToolDecision.kt shellQuote (headless copy). */
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -142,6 +143,8 @@ function cleanRealPath(p: string | null): p is string {
 }
 
 /**
+ * KEEP IN SYNC: McpRawToolDecision.kt resolveWriteTarget (the headless copy,
+ * same rules and messages; McpRawToolDecisionTest + mcp-raw-tool-cases.json).
  * Resolve where a write_file call would really land. The leaf must not be a
  * symlink, must be a regular file with one hard link when it exists (a
  * hardlinked file is truncated in place, rewriting its other name); every

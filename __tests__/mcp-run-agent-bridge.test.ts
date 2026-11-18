@@ -225,6 +225,29 @@ describe('the dialog and the "always allow" tap', () => {
     expect(h.launches).toHaveLength(0);
   });
 
+  it('approveAllWithoutAsking answers once without a dialog (even in the background) and writes no rule', async () => {
+    addAgent('a1');
+    h.settings.approveAllWithoutAsking = true;
+    h.appState.currentState = 'background';
+    const r = await callTool('run_agent', { agentId: 'a1' });
+    expect(r).toMatchObject({ ok: true, data: { agentId: 'a1', state: 'accepted', untrusted: true } });
+    expect(useMcpApprovalStore.getState().current).toBeNull();
+    expect(h.addCalls).toBe(0);
+    expect(h.rules).toHaveLength(0);
+    expect(h.launches).toHaveLength(1);
+  });
+
+  it('approveAllWithoutAsking does not lift STOP-ALL or a taint mark', async () => {
+    addAgent('a1');
+    h.settings.approveAllWithoutAsking = true;
+    h.halted = true;
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: false, code: 'halted' });
+    h.halted = false;
+    h.taintStatus = JSON.stringify({ status: 'unreadable', overflow: false, entries: [] });
+    expect(await callTool('run_agent', { agentId: 'a1' })).toMatchObject({ ok: false, code: 'tainted' });
+    expect(h.launches).toHaveLength(0);
+  });
+
   it('STOP-ALL or a taint mark set while the dialog is open still refuses after the tap', async () => {
     addAgent('a1');
     let d = await startWithDialog({ agentId: 'a1' });

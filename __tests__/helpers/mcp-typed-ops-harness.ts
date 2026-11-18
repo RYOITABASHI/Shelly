@@ -112,6 +112,9 @@ function matchRule(principal: string, op: string, target: string, bind: string |
 export const nativeMock = {
   __esModule: true,
   default: {
+    // The native "Skip all approvals" switch (ApproveAllStore); tests drive it
+    // through h.settings.approveAllWithoutAsking.
+    getApproveAllWithoutAsking: async () => h.settings.approveAllWithoutAsking === true,
     mcpAlwaysAllowMatch: async (p: string, op: string, t: string, b: string | null) => {
       const hit = !!matchRule(p, op, t, b);
       h.onMatch?.();

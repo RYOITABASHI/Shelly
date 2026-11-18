@@ -10,6 +10,7 @@ import { useSettingsStore, DEFAULT_SETTINGS } from '@/store/settings-store';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
+import { UI_ONLY_ENABLE_SETTINGS } from '@/lib/ui-only-settings';
 import {
   SKILL_NAME_RE,
   importSkillToQuarantine,
@@ -540,6 +541,17 @@ export async function executeCommand(
           if (key in COSMETIC_KEYS) {
             COSMETIC_KEYS[key](rawVal);
             return { lines: out(`${key} = ${rawVal}`), newState: {} };
+          }
+
+          // Approval-skipping switches: only the Settings UI may turn them
+          // ON; from here they can only be turned off.
+          if (UI_ONLY_ENABLE_SETTINGS.has(key)) {
+            const boolVal = rawVal === 'true' || rawVal === '1' || rawVal === 'on';
+            if (boolVal) {
+              return { lines: err(`config: '${key}' can only be turned on in Settings (gear button → Agents)`), newState: {} };
+            }
+            useSettingsStore.getState().updateSettings({ [key]: false });
+            return { lines: out(`${key} = false`), newState: {} };
           }
 
           // Boolean settings

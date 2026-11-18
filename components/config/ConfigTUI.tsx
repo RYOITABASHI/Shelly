@@ -38,6 +38,8 @@ import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
+import { setMcpSkipApprovalFromToggle, syncMcpSkipApprovalFromNative } from '@/lib/mcp-skip-approval';
+import { setApproveAllFromToggle, syncApproveAllFromNative } from '@/lib/approve-all-without-asking';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
@@ -148,6 +150,9 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       // external-posting action types) are unchanged.
       { key: 'agentApproveFromChatGpt', label: 'Approve Agents from ChatGPT', labelKey: 'settings.approve_from_chatgpt_label', type: 'boolean', source: 'settings', description: 'Allow an agent requested with `shelly agent add` (e.g. from the ChatGPT app via Codex remote control) to be approved from that conversation with `shelly agent confirm <requestId> <hash>`. The AI on the other side could run that command itself, so every such approval posts a notification with a one-tap Disable and is recorded in the chat. Off = approve only in Shelly or from its notification. Default on.' },
       { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', labelKey: 'settings.widget_no_confirm_label', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
+      // Master switch "Skip all approvals" (lib/approve-all-without-asking.ts).
+      // The ONLY place it can be turned on (lib/ui-only-settings.ts).
+      { key: 'approveAllWithoutAsking', label: 'Skip all approvals (dangerous)', labelKey: 'settings.approve_all_without_asking_label', type: 'boolean', source: 'settings', description: 'Answers every agent and MCP approval prompt with Allow, without showing it: CLI-step asks on runs you start from the app, per-run actions (draft, notify, webhook, API call, social post, CLI command, app intent), @agent registration typed in the AI Pane or widget, and MCP run_command / write_file / run_agent. Each one leaves a log line and an "All approvals skipped" line in the agent\'s chat. Still blocked or still asked: anything the safety gate refuses (CRITICAL commands, agent definitions and the policy file, your own deny / draft-only / ask rules), commands that read secrets, are destructive or name Shelly\'s own settings and keys, agents created or changed over MCP, agents that read web pages, URLs, notifications, the screen or DMs (prompt injection), notification-triggered and scheduled runs, `shelly agent add` requests, ClosePaw / DM / browser actions, and stale requests. Any mistake or injected instruction in an agent you start runs without you seeing it first. Only Settings can turn this on. Default off.', descriptionKey: 'settings.approve_all_without_asking_desc' },
       // POLICY-001 strangler flag (lib/agent-action-policy.ts). Tighten-only.
       { key: 'agentPolicyEngine', label: 'Agent Safety Rules (beta)', labelKey: 'settings.agent_policy_label', type: 'boolean', source: 'settings', description: 'Automatic runs (schedule / notification / boot) may only read, summarize, draft and notify — anything else needs your approval or is refused. Lets you add your own rules in chat ("お金が絡む操作は必ず聞いて"), and offers in chat to stop asking for an action you have approved 3 times. Rules can only make agents MORE careful. Default off.', descriptionKey: 'settings.agent_policy_desc' },
       { key: 'a2aServerEnabled', label: 'A2A Server', labelKey: 'settings.a2a_server_label', type: 'boolean', source: 'settings', description: 'Exposes a read-only "list_agents" skill to A2A (Agent2Agent) protocol clients on the same network (Wi-Fi/VPN) — lets a PC-side agent ask what Shelly agents exist. Opens a real HTTP listener while the app is running. No run-triggering skill yet. Default off.', descriptionKey: 'settings.a2a_server_desc' },
@@ -158,6 +163,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'mcpDiagnosticsEnabled', label: 'MCP: Allow diagnostics (logs, settings)', labelKey: 'settings.mcp_diagnostics_label', type: 'boolean', source: 'settings', description: 'Adds two read-only MCP tools: read_logs, which returns Shelly\'s own recent log lines (secrets redacted), and get_settings, which returns these settings with every setting whose name mentions a token, key, secret, password or credential left out. Logs can still mention file paths, agent names or commands you ran, so this is off by default. Settings can never be changed over MCP. No effect unless MCP Server is also on. Turning it on or off restarts the MCP server.', descriptionKey: 'settings.mcp_diagnostics_desc' },
       { key: 'mcpTypedOpsEnabled', label: 'MCP: Allow typed operations (run agents)', labelKey: 'settings.mcp_typed_ops_label', type: 'boolean', source: 'settings', description: 'Adds two MCP tools: run_agent, which starts one run of an agent you registered, and get_run_result, which returns that run\'s state and output (secrets redacted). Every run_agent call needs an approval tap on the phone, unless you tapped "Always allow" for that agent and client; editing the agent, revoking the rule in Settings or regenerating the MCP token brings the tap back. A run started this way is treated as external input: it may read and call models, but its file writes, sends and actions are refused. Agents created or changed over MCP are never started, nor is anything while all agents are stopped. Separate from exec/write. No effect unless MCP Server is also on. Default off.', descriptionKey: 'settings.mcp_typed_ops_desc' },
       { key: 'mcpExecEnabled', label: 'MCP: Allow exec/write (dangerous)', labelKey: 'settings.mcp_exec_label', type: 'boolean', source: 'settings', description: 'Adds two more MCP tools — run_command and write_file — so an MCP client (Claude Code, Codex) can execute commands and write files on this device, not just read from it. Each call is first checked by the same safety gate as agent CLI steps: anything it refuses (CRITICAL risk, changes to agent definitions or the policy file, your own deny rules) is refused without asking, and everything else still blocks on an in-app approval popup on the phone. This is real remote-code-execution surface protected only by the bearer token above and your own approval taps. Only turn this on if you specifically want that. No effect unless MCP Server is also on. Default off.', descriptionKey: 'settings.mcp_exec_desc' },
+      { key: 'mcpSkipApproval', label: 'MCP: Run without approval', labelKey: 'settings.mcp_skip_approval_label', type: 'boolean', source: 'settings', description: 'MCP run_command and write_file run without the approval popup on the phone — also while Shelly is in the background or the screen is locked (Shelly runs them itself, without the app UI). The safety gate still refuses what it refuses (CRITICAL risk, agent definitions, the policy file, your own deny rules), and refuses everything while your safety rules cannot be verified. Anyone holding the MCP token can then run commands and write files on this device without you seeing it. Stop all agents or regenerating the MCP token turns this off. No effect unless MCP: Allow exec/write is also on. Default off.', descriptionKey: 'settings.mcp_skip_approval_desc' },
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
       // clarification dialogue in its own words instead of Shelly's fixed
@@ -667,6 +673,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         .catch((e: unknown) => {
           logError('ConfigTUI', 'Failed to load notification-trigger flag', e);
         });
+      // Native switches win (STOP-ALL / token regeneration may have turned them off).
+      syncMcpSkipApprovalFromNative().catch((e: unknown) => {
+        logError('ConfigTUI', 'Failed to read MCP run-without-approval', e);
+      });
+      syncApproveAllFromNative().catch((e: unknown) => {
+        logError('ConfigTUI', 'Failed to read Skip all approvals', e);
+      });
     }
   }, [visible]);
 
@@ -852,6 +865,23 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             }
             break;
         }
+        return;
+      }
+      if (def.source === 'settings' && def.key === 'mcpSkipApproval') {
+        // The native Keystore-HMAC'd switch is the truth; this toggle is the
+        // ONLY place that may turn it on (lib/mcp-skip-approval.ts).
+        await setMcpSkipApprovalFromToggle(rawValue === true);
+        return;
+      }
+      if (def.source === 'settings' && def.key === 'approveAllWithoutAsking') {
+        // The native Keystore-HMAC'd switch is the truth (lib/approve-all-without-asking.ts);
+        // this toggle is the ONLY place that may turn it on. "Skip all
+        // approvals" covers MCP run_command / write_file too, which are decided
+        // natively (headless): turn that native switch on from this same tap.
+        // Turning the master switch off leaves "MCP: Run without approval" as
+        // it is (it has its own row).
+        const on = await setApproveAllFromToggle(rawValue === true);
+        if (on) await setMcpSkipApprovalFromToggle(true);
         return;
       }
       if (def.source === 'settings') {

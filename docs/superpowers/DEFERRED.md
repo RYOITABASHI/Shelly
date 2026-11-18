@@ -127,6 +127,23 @@ Why not now: この VM からは端末を操作できない。Kotlin・Shizuku �
 **残る確認**: 実機で ON/OFF（チャット・設定）、ON で `shelly closepaw` が通知なしに背面実行・`shelly closepaw wait` の状態が running→結果になること、エージェントの ClosePaw ステップが Review なしで 1 回だけ動くこと、STOP-ALL で拒否されること、下書きがタップなしで出ること。
 **実機検証（2026-11-17、ブランチ `feat/closepaw-shell-preapproval` のビルド → 2980、Galaxy Z Fold6）**: チャットで打った固定の文で ON、同じくチャットの文で OFF（OFF のあとは従来の承認通知が戻り、通知から承認して実行できることを確認）。ON の間はターミナル起点の `shelly closepaw` が承認なしで背面実行され、結果がターミナルに返ること。STOP-ALL が ON の間はスイッチ ON でも即拒否されること（2980 でも再確認）。**残る確認**: 設定トグルでの OFF、エージェントの ClosePaw ステップが Review なしで 1 回だけ動くこと、下書きが宛先ごとの設定・上限なしでタップなしに出ること、は個別には未実施。
 
+### MCP「承認なしで実行」のヘッドレス run_command / write_file — 実装済み・実機 / Gradle 未検証（2026-11-19、ブランチ `feat/mcp-skip-approval`）(P1、セキュリティ)
+
+- 何をしたか: サーバーは run_command / write_file を常に `raw-requests/` に置き、ネイティブ `McpRawToolConsumer` が callId ごとに 1 回だけ経路を決める。Keystore HMAC のスイッチ（`McpSkipApprovalStore`、ON は Settings のトグルだけ、STOP-ALL・トークン再生成で OFF）と exec がオンで STOP-ALL でなければネイティブが RN なしで実行（ゲートは RN と同じ TS を APK 資産の `shelly-mcp-raw-gate.js` から `node -` で実行、POLICY-001 が検証できなければ拒否）。それ以外は handoff トークン付きで `requests/` に移し、RN が従来どおりタップで答える（RN は raw tool をトークンなしでは実行しない）。
+- 実機で確認すること: 画面ロック中・Shelly がバックグラウンドのときに PC から run_command / write_file が答えること、`node -` への資産パイプが linker64 経由で動くこと、`/proc/self/fd` の readlink が正規化パスと一致すること（不一致なら write_file は全部拒否される）、OFF のときに従来どおりタップが出ること、STOP-ALL でスイッチが落ちること。Gradle の JVM テスト（McpRawToolDecisionTest）も未実行。
+- 外部由来の印（taint）: ネイティブ実行の窓と、その間に現れた `shelly agent add` の依頼は、`noBackupFilesDir` の Keystore HMAC 付きジャーナル（`McpIngressJournal`、書き込みごとに鍵を作り直す）に、コマンド開始前に書く（書けなければ実行しない）。落ちて閉じなかった窓は次の読み取りで復元し、ジャーナルが無い・偽造ならディスク上の依頼をすべて MCP 由来として扱う。残る点: 件数の上限が無く 24 時間で消えるだけ（大量の依頼でファイルが育ちうる）、鍵の作り直しと rename の間で落ちると次回は端末で打った正当な依頼まで MCP 由来になる（安全側）。
+- write_file は確認済みの親ディレクトリに一時ファイルを書いて fsync し、`/proc/self/fd/<dirfd>/…` 経由の rename で置き換える（Android に renameat が無いため）。既存の対象が通常ファイル・リンク 1 本でなければ拒否。実機の SELinux でこの rename が通るかは未確認。
+- スイッチの切り替え・STOP-ALL・承認の送信は `ApprovalSwitchCore` の 1 つのロックと世代番号で直列化（下の「すべての承認を省略」と共通）。実行中のヘッドレスコマンドは STOP-ALL では止めない（自分のタイムアウト、最大 90 秒で終わる。RN 経路と同じ）。
+- 同期が必要な重複: `McpRawToolDecision.kt` の各関数に「KEEP IN SYNC」（`__tests__/fixtures/mcp-raw-tool-cases.json` と `__tests__/mcp-raw-tool-native.test.ts` が検査）。ゲート判定そのものは TS 1 か所（`lib/mcp-raw-gate.ts`、資産は `pnpm build:mcp-raw-gate` で再生成）。
+
+### 「すべての承認を省略」マスタースイッチ — 実装済み・実機 / Gradle 未検証（2026-11-19、ブランチ `feat/mcp-skip-approval`）(P1、セキュリティ)
+
+- 何をしたか: オーナー要望で、設定 → Agents の「すべての承認を省略（危険）」（`settings.approveAllWithoutAsking` は表示用の写し、正本は native の Keystore HMAC スイッチ `ApproveAllStore`）。ON の間、有人実行の CLI ステップのエスカレーション・実行ごとのアクション（draft / notify / webhook / api-call / social-post / cli / intent）・AI ペインとウィジェットの登録確認・MCP の run_command / write_file / run_agent を、表示せずに許可で答える。オーナーの決定で、自分の POLICY-001「ask」ルールとホーム内の destructive（`rm -rf ~/x` 等）も答える。ON にすると「MCP: 承認なしで実行」も ON になる。
+- 止まるもの: ゲートの deny（CRITICAL、deny / draft_only ルール、policy-write）、secret-read、indirect-exec と opaque-script-exec（`python ~/x.py` 等。スクリプトの中身を見ないため）、Shelly 自身の設定・鍵・認証ファイルを指すコマンド、MCP 由来や外部入力を読むエージェント、通知起点・無人の実行、`shelly agent add` と MONITOR チーム登録、ClosePaw / DM / ブラウザ操作、古い依頼。
+- 仕組み: ON にできるのは設定画面のトグルだけ（`shelly config set` は OFF のみ、`lib/ui-only-settings.ts`）。STOP-ALL は `.halted` を書く前と後に両スイッチを無条件で OFF、起動時も `.halted` があれば OFF。判定の開始時に世代トークンを取り、native の専用入口（`resolveApproveAllEscalation` / `resolveApproveAllAction` / `checkApproveAllToken`）がロックの中でスイッチ ON・halted なし・トークン一致を確認してから署名付きの返信を書く。RN の JS は信頼側として扱う（署名 API を持つため）ので、ON にするときの native 確認ダイアログは置かない。
+- 残る点: intent は最後のトークン確認から実際に発火するまでの数ミリ秒の間に OFF / STOP-ALL が来ると発火済みになる（承認は拒否され、実行は decline）。無人実行、ClosePaw のシェル承認と下書き、capability broker の新ホスト承認は対象外（driver / native の変更が要る）。
+- 実機で確認すること: トグルの ON / OFF と再起動後の保持、STOP-ALL で OFF になること、有人実行のエスカレーションとアクションが表示なしで通りチャットに「すべての承認を省略: 自動許可 …」が残ること、止まるもの（`python ~/x.py`、`rm -rf /`、外部入力のエージェント）が従来どおり聞かれること。Gradle の JVM テスト（`ApprovalSwitchCoreTest`、`McpIngressJournalCoreTest`、`McpRawToolDecisionTest`）も未実行。
+
 ### MCP アクション事前許可 — ✅ 実装済み・実機 VERIFIED（build 2968 / 2980、2026-11-16〜17）（P1、残りの確認あり）
 
 新しい「常に許可」はクライアント × 定義ハッシュ × 検証済み安全設定のハッシュへの明示同意。最初の実行から適用し、背面では従来の保守的 step 7 より前にこの証明を確認する。旧ルールは起動ダイアログ省略のまま。新しい権限にするには設定で旧ルールを取り消し、前景で再承認する。今回だけ許可・raw 操作・定義 taint・STOP-ALL・CRITICAL の制限は維持。アクション実行時の deny/draft_only/ask も維持し、音声・記事入力を一括で信頼しない。詳細・制限・検証手順は `docs/mcp-agent-action-consent.md`。

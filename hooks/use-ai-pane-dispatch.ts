@@ -77,6 +77,7 @@ import { parseAgentNL, detectFreeTextAgentDeleteIntent, isContinuousDraft, isMan
 import { formatContinuousSummary, mergeContinuousOnEdit } from '@/lib/agent-continuous';
 import { resolveAgentOutputBase } from '@/lib/agent-executor';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import { isApproveAllWithoutAskingOn } from '@/lib/approve-all-without-asking';
 import {
   resolveRegistrationConfirmRequirement,
   notifyWidgetAgentRegistered,
@@ -856,8 +857,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               : dispatchOpts?.source === 'widget-ask'
                 ? 'widget-ask'
                 : 'ai-pane';
+        // The master switch is native (Keystore-HMAC'd); the setting is only a mirror.
         const requireRegistrationConfirm = resolveRegistrationConfirmRequirement(
-          useSettingsStore.getState().settings,
+          { ...useSettingsStore.getState().settings, approveAllWithoutAsking: await isApproveAllWithoutAskingOn() },
           registrationSource,
         );
         // See isAutoRegisterEligibleOnChatConfirm's doc comment (lib/agent-

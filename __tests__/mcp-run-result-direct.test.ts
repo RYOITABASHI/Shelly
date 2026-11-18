@@ -85,13 +85,37 @@ describe('typed-requests routing', () => {
 
   it('every other queued tool still goes to requests/', async () => {
     const callTool = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
-    const pending = callTool('run_command', { command: 'ls' }, ingress);
+    const pending = callTool('read_logs', {}, ingress);
     const reqs = fs.readdirSync(path.join(dir, 'requests')).filter((n: string) => n.endsWith('.json'));
     expect(reqs).toHaveLength(1);
     expect(fs.readdirSync(path.join(dir, 'typed-requests'))).toEqual([]);
+    expect(fs.readdirSync(path.join(dir, 'raw-requests'))).toEqual([]);
     const callId = reqs[0].replace(/\.json$/, '');
     fs.writeFileSync(path.join(dir, 'results', `${callId}.json`), JSON.stringify({ ok: true, data: null }));
     await expect(pending).resolves.toEqual({ ok: true, data: null });
+  });
+
+  it.each(['run_command', 'write_file'])('%s lands in raw-requests/ only (the native raw consumer decides once per callId)', async (tool) => {
+    const callTool = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
+    const pending = callTool(tool, tool === 'run_command' ? { command: 'ls' } : { path: '/x', content: 'y' }, ingress);
+    const raw = fs.readdirSync(path.join(dir, 'raw-requests')).filter((n: string) => n.endsWith('.json'));
+    expect(raw).toHaveLength(1);
+    expect(fs.readdirSync(path.join(dir, 'requests'))).toEqual([]);
+    expect(fs.readdirSync(path.join(dir, 'typed-requests'))).toEqual([]);
+    const body = JSON.parse(fs.readFileSync(path.join(dir, 'raw-requests', raw[0]), 'utf8'));
+    __resetMcpSeenCallIdsForTests();
+    expect((await verifyMcpRequest(body, TEST_BRIDGE_KEY, nodeSha256, { fileName: raw[0] })).ok).toBe(true);
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(dir, 'raw-requests')).mode & 0o777).toBe(0o700);
+    fs.writeFileSync(path.join(dir, 'results', `${body.callId}.json`), JSON.stringify({ ok: true, data: { stdout: '', stderr: '', exitCode: 0 } }));
+    await expect(pending).resolves.toEqual({ ok: true, data: { stdout: '', stderr: '', exitCode: 0 } });
+  });
+
+  it('requestDirName routes each tool to exactly one directory', () => {
+    expect(server.requestDirName('run_agent')).toBe('typed-requests');
+    expect(server.requestDirName('run_command')).toBe('raw-requests');
+    expect(server.requestDirName('write_file')).toBe('raw-requests');
+    expect(server.requestDirName('read_terminal_output')).toBe('requests');
+    expect([...server.RAW_REQUEST_TOOLS].sort()).toEqual(['run_command', 'write_file']);
   });
 
   it('get_run_result never touches the queue; other tools fall through', async () => {

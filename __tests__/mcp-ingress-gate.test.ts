@@ -64,7 +64,7 @@ jest.mock('@/hooks/use-native-exec', () => ({ execCommand: (...a: unknown[]) => 
 jest.mock('@/lib/debug-logger', () => ({ logInfo: () => {}, logError: () => {}, logWarn: () => {} }));
 
 import { __setMCPRequestSha256ForTests, setMCPBridgeKey, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
-import { TEST_BRIDGE_KEY, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+import { TEST_BRIDGE_KEY, nodeSha256, handoffTokenForTest, signedRequest } from './helpers/mcp-signed-request';
 import { MCP_SHELLY_LAZY_FN } from '@/lib/mcp-ingress-origin';
 
 beforeAll(() => {
@@ -99,6 +99,7 @@ let seq = 0;
 async function call(tool: string, args: Record<string, unknown>, opts: { approve?: boolean } = {}) {
   const callId = `c${++seq}`;
   mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, tool, args));
+  mockFiles.set(`${QUEUE}/handoffs/${callId}`, await handoffTokenForTest(callId));
   startMCPPoller();
   const resultUri = `${RESULTS}/${callId}.json`;
   let shown: string | null = null;
@@ -209,6 +210,7 @@ describe('run_command through the RN bridge', () => {
     const answer = async (tool: string, args: Record<string, unknown>) => {
       const callId = `c${++seq}`;
       mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, tool, args));
+      mockFiles.set(`${QUEUE}/handoffs/${callId}`, await handoffTokenForTest(callId));
       startMCPPoller();
       await waitFor(() => {
         const cur = useMcpApprovalStore.getState().current;
@@ -232,6 +234,7 @@ describe('run_command through the RN bridge', () => {
   it('re-checks the exec setting after the tap', async () => {
     const callId = `c${++seq}`;
     mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, 'run_command', { command: 'whoami' }));
+    mockFiles.set(`${QUEUE}/handoffs/${callId}`, await handoffTokenForTest(callId));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     mockSettings.mcpExecEnabled = false;

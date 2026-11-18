@@ -102,6 +102,33 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   >;
   /** Re-run the Codex remote-control supervisor now (STOP-ALL / resume). */
   wakeCodexRemoteHost(): Promise<void>;
+  /**
+   * "MCP: Run without approval" (McpSkipApprovalStore.kt): the Keystore-HMAC'd
+   * native switch behind settings.mcpSkipApproval. Optional so an older native
+   * build reads as off.
+   */
+  getMcpSkipApproval?(): Promise<boolean>;
+  /**
+   * ON only from the Settings toggle (lib/mcp-skip-approval.ts); OFF from
+   * anywhere, with a short reason for logcat. Resolves the verified state.
+   */
+  setMcpSkipApproval?(enabled: boolean, reason?: string | null): Promise<boolean>;
+  /** JSON of the headless MCP run_command windows and agent requests (McpNativeIngress.kt). */
+  getMcpNativeIngress?(): Promise<string>;
+  /** "Skip all approvals" (ApproveAllStore.kt, Keystore-HMAC'd); the setting only mirrors it. */
+  getApproveAllWithoutAsking?(): Promise<boolean>;
+  /** ON only from the Settings toggle (lib/approve-all-without-asking.ts); refused while STOP-ALL. Resolves the verified state. */
+  setApproveAllWithoutAsking?(enabled: boolean, reason?: string | null): Promise<boolean>;
+  /** The master switch's decision token (ApprovalSwitchCore generation), or null when off / STOP-ALL. */
+  getApproveAllToken?(): Promise<string | null>;
+  /** Master-switch accept of an escalation; native re-checks switch, `.halted` and token under its lock. False = not written. */
+  resolveApproveAllEscalation?(runId: string, reqId: string, requestSha256: string, actionNonce: string, token: string): Promise<boolean>;
+  /** Master-switch accept of a per-run action (same re-check). False = not written. */
+  resolveApproveAllAction?(runId: string, requestSha256: string, actionNonce: string, token: string): Promise<boolean>;
+  /** Is the master-switch token still current (before RN fires an intent)? */
+  checkApproveAllToken?(token: string): Promise<boolean>;
+  /** STOP-ALL: both approval switches OFF natively. Resolves true when verifiably off. */
+  turnOffApprovalSwitchesForStopAll?(): Promise<boolean>;
   setNotificationReplyEnabled(enabled: boolean): Promise<void>;
   sendNotificationReply(packageName: string, replyText: string): Promise<boolean>;
   findDmPairingCandidates(code: string): Promise<Array<{

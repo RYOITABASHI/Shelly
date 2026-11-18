@@ -32,10 +32,12 @@ export type McpRequestOrigin = {
   via: 'marker' | 'window';
 };
 
-/** principal / callId in env, marker and the shim: no `.`, `:`, quotes or spaces. */
+/** principal / callId in env, marker and the shim: no `.`, `:`, quotes or spaces.
+ *  KEEP IN SYNC with McpRawToolDecision.kt (headless copy of this file's prefix / lazy fn). */
 export const INGRESS_VALUE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MARKER_RE = /^ingress=mcp\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9_-]{1,64})$/;
 /** How long after an MCP command ends its window still claims new requests. */
+/** KEEP IN SYNC: McpIngressJournalCore.GRACE_MS (McpNativeIngress.kt). */
 export const MCP_WINDOW_GRACE_MS = 60_000;
 const MAX_WINDOWS = 64;
 const MAX_ORIGINS = 1000;
@@ -73,6 +75,23 @@ type ExecWindow = { callId: string; principal: string; start: number; end: numbe
 
 const windows: ExecWindow[] = [];
 const originsByRequest = new Map<string, McpRequestOrigin>();
+/**
+ * Windows of MCP commands that native ran headless (McpRawToolConsumer, "MCP:
+ * Run without approval"), copied from native memory by lib/mcp-native-ingress.ts.
+ * Replaced as a whole on each copy (native owns their retention), never pruned
+ * by RN's clock: RN may drain a request long after the command ended.
+ */
+let nativeWindows: ExecWindow[] = [];
+/**
+ * The native ingress journal could not be read or verified (lib/mcp-native-ingress.ts):
+ * until a later read succeeds, every agent request classified is MCP-originated
+ * (fail closed: a headless MCP command may have written it).
+ */
+let nativeTaintAll = false;
+
+export function setNativeMcpTaintAll(on: boolean): void {
+  nativeTaintAll = on;
+}
 
 function prune(now: number): void {
   for (let i = windows.length - 1; i >= 0; i--) {
@@ -102,11 +121,25 @@ export function endMcpExecWindow(callId: string, now: number = Date.now()): void
 
 /** The window covering time `t` (open, or ended at most the grace before), newest first. */
 export function mcpWindowAt(t: number): { callId: string; principal: string } | null {
-  for (let i = windows.length - 1; i >= 0; i--) {
-    const w = windows[i];
-    if (t >= w.start && (w.end === null || t <= w.end + MCP_WINDOW_GRACE_MS)) return { callId: w.callId, principal: w.principal };
+  for (const list of [windows, nativeWindows]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const w = list[i];
+      if (t >= w.start && (w.end === null || t <= w.end + MCP_WINDOW_GRACE_MS)) return { callId: w.callId, principal: w.principal };
+    }
   }
   return null;
+}
+
+/** Replaces the native (headless) windows; values are sanitized, at most MAX_WINDOWS kept. */
+export function setNativeMcpExecWindows(list: ReadonlyArray<{ callId: unknown; principal: unknown; start: unknown; end: unknown }>): void {
+  const out: ExecWindow[] = [];
+  for (const w of list) {
+    if (typeof w.start !== 'number' || !Number.isFinite(w.start)) continue;
+    const end = w.end === null ? null : typeof w.end === 'number' && Number.isFinite(w.end) ? w.end : undefined;
+    if (end === undefined) continue;
+    out.push({ callId: safeIngressValue(w.callId), principal: safeIngressValue(w.principal), start: w.start, end });
+  }
+  nativeWindows = out.slice(-MAX_WINDOWS);
 }
 
 function remember(reqId: string, origin: McpRequestOrigin): McpRequestOrigin {
@@ -133,6 +166,7 @@ export function classifyTerminalRequest(
   const known = originsByRequest.get(reqId);
   if (known) return known;
   if (marker) return remember(reqId, { principal: marker.principal, callId: marker.callId, via: 'marker' });
+  if (nativeTaintAll) return remember(reqId, { principal: 'unknown', callId: 'unknown', via: 'window' });
   for (const t of times) {
     const w = Number.isFinite(t) ? mcpWindowAt(t) : null;
     if (w) return remember(reqId, { principal: w.principal, callId: w.callId, via: 'window' });
@@ -152,5 +186,7 @@ export function mcpOriginForRequest(reqId: string | null | undefined): McpReques
 /** Test hook. */
 export function __resetMcpIngressOriginForTests(): void {
   windows.length = 0;
+  nativeWindows = [];
+  nativeTaintAll = false;
   originsByRequest.clear();
 }

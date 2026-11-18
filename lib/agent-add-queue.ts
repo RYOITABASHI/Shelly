@@ -77,6 +77,7 @@ export const TERMINAL_AGENT_REQUEST_CONFIRM_WINDOW_MS = 30 * 60 * 1000;
 
 export const AGENT_ADD_REQUEST_FILE_PREFIX = '.shelly-agent-req-';
 export const AGENT_ADD_PENDING_FILE_PREFIX = '.shelly-agent-pending-';
+// KEEP IN SYNC: McpRawToolDecision.kt agentRequestIds (req / pending / ctl / claim file names, id shape).
 export const AGENT_ADD_CLAIM_FILE_PREFIX = '.shelly-agent-claim-';
 
 export const AGENT_ADD_MSG_SENT = "Sent to Shelly — confirm the new agent in Shelly's chat";
@@ -343,6 +344,8 @@ export type AgentAddDrainDeps = {
   writeCtlResult: (ctlId: string, result: AgentAddResult) => Promise<void>;
   now: () => number;
   log?: (message: string) => void;
+  /** Copies native (headless MCP command) origin facts before classifying (lib/mcp-native-ingress.ts). */
+  syncNativeMcpIngress?: () => Promise<void>;
 };
 
 export type AgentAddDrainState = { lastHandOffAt: number };
@@ -366,6 +369,7 @@ export async function drainAgentAddRequests(
   state: AgentAddDrainState,
 ): Promise<number> {
   if (!deps.isActive()) return 0;
+  if (deps.syncNativeMcpIngress) await deps.syncNativeMcpIngress().catch(() => {});
   const names = await deps.listHome();
   const now = deps.now();
 

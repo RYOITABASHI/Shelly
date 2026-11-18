@@ -100,7 +100,7 @@ import {
 } from '@/lib/agent-add-queue';
 import { markMcpAgentBeforePersist, mcpOriginForDraft, newAgentIdFor } from '@/lib/mcp-agent-ingress';
 import { handleAgentCtl } from '@/lib/agent-add-flow';
-import { TEST_BRIDGE_KEY, TEST_PRINCIPAL, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+import { TEST_BRIDGE_KEY, TEST_PRINCIPAL, nodeSha256, handoffTokenForTest, signedRequest } from './helpers/mcp-signed-request';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const server = require('../scripts/shelly-mcp-server.js');
@@ -241,8 +241,8 @@ describe('queue request authentication', () => {
     try {
       const callTool = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
       void callTool('run_command', { command: 'echo hi', nested: { b: 1, a: [1, 'x'] } }, { principal: TEST_PRINCIPAL, clientNameSelfReported: 'demo\u202Eclient' });
-      const name = fs.readdirSync(path.join(dir, 'requests')).find((n) => n.endsWith('.json'))!;
-      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'requests', name), 'utf8'));
+      const name = fs.readdirSync(path.join(dir, 'raw-requests')).find((n) => n.endsWith('.json'))!;
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'raw-requests', name), 'utf8'));
       // Answer so the pending poll inside callTool ends.
       fs.writeFileSync(path.join(dir, 'results', `${parsed.callId}.json`), JSON.stringify({ ok: true, data: null }));
       const res = await verifyMcpRequest(parsed, TEST_BRIDGE_KEY, nodeSha256);
@@ -292,6 +292,7 @@ describe('queue request authentication', () => {
 describe('run_command ingress labelling', () => {
   it('shows External (MCP) with the principal and the self-reported name, and runs with the env prefix', async () => {
     mockFiles.set(`${REQUESTS}/r1.json`, await signedRequest('r1', 'run_command', { command: 'ls -la' }, { clientName: 'Example Client' }));
+    mockFiles.set(`${QUEUE}/handoffs/r1`, await handoffTokenForTest('r1'));
     startMCPPoller();
     await waitFor(() => useMcpApprovalStore.getState().current !== null);
     const cur = useMcpApprovalStore.getState().current!;
@@ -303,6 +304,71 @@ describe('run_command ingress labelling', () => {
     expect(ran).toBe(`export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=${TEST_PRINCIPAL} SHELLY_INGRESS_CALL=r1; ${MCP_SHELLY_LAZY_FN}ls -la`);
     // the `shelly` stub only loads ~/.bashrc and re-dispatches; it never runs the command itself
     expect(MCP_SHELLY_LAZY_FN).toBe('shelly() { unset -f shelly; . "$HOME/.bashrc" >/dev/null 2>&1; shelly "$@"; }; ');
+  });
+
+  it('a handed-off run_command always asks, even with the mcpSkipApproval mirror on (native runs the no-tap case itself)', async () => {
+    mockSettings.mcpSkipApproval = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s1.json`, await signedRequest('s1', 'run_command', { command: 'ls -la' }));
+      mockFiles.set(`${QUEUE}/handoffs/s1`, await handoffTokenForTest('s1'));
+      startMCPPoller();
+      await waitFor(() => useMcpApprovalStore.getState().current !== null);
+      expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('ls -la'))).toBe(false);
+      useMcpApprovalStore.getState().current!.resolve('deny');
+      useMcpApprovalStore.setState({ current: null, queue: [] });
+      await waitFor(() => mockFiles.has(`${RESULTS}/s1.json`));
+      expect(JSON.parse(mockFiles.get(`${RESULTS}/s1.json`)!).ok).toBe(false);
+    } finally {
+      delete mockSettings.mcpSkipApproval;
+    }
+  });
+
+  it('a raw request in requests/ without the native handoff token is never run nor answered', async () => {
+    mockFiles.set(`${REQUESTS}/s2.json`, await signedRequest('s2', 'run_command', { command: 'id -u' }));
+    mockFiles.set(`${REQUESTS}/s3.json`, await signedRequest('s3', 'write_file', { path: '/x', content: 'y' }));
+    mockFiles.set(`${QUEUE}/handoffs/s3`, 'f'.repeat(64)); // wrong token
+    startMCPPoller();
+    await waitFor(() => !mockFiles.has(`${REQUESTS}/s2.json`) && !mockFiles.has(`${REQUESTS}/s3.json`));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(useMcpApprovalStore.getState().current).toBeNull();
+    expect(mockFiles.has(`${RESULTS}/s2.json`)).toBe(false);
+    expect(mockFiles.has(`${RESULTS}/s3.json`)).toBe(false);
+    expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('id -u'))).toBe(false);
+  });
+
+  it('approveAllWithoutAsking (a settings mirror) never lets RN run a raw tool without the native handoff, nor skip the tap', async () => {
+    mockSettings.approveAllWithoutAsking = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s3.json`, await signedRequest('s3', 'run_command', { command: 'ls -la' }));
+      startMCPPoller();
+      await waitFor(() => !mockFiles.has(`${REQUESTS}/s3.json`));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mockFiles.has(`${RESULTS}/s3.json`)).toBe(false);
+      expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('ls -la'))).toBe(false);
+      mockFiles.set(`${REQUESTS}/s5.json`, await signedRequest('s5', 'run_command', { command: 'ls -la' }));
+      mockFiles.set(`${QUEUE}/handoffs/s5`, await handoffTokenForTest('s5'));
+      await waitFor(() => useMcpApprovalStore.getState().current !== null);
+      useMcpApprovalStore.getState().current!.resolve('deny');
+      useMcpApprovalStore.setState({ current: null, queue: [] });
+      await waitFor(() => mockFiles.has(`${RESULTS}/s5.json`));
+    } finally {
+      delete mockSettings.approveAllWithoutAsking;
+    }
+  });
+
+  it('approveAllWithoutAsking does not bypass a gate refusal', async () => {
+    mockSettings.approveAllWithoutAsking = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s4.json`, await signedRequest('s4', 'run_command', { command: 'rm -rf /' }));
+      mockFiles.set(`${QUEUE}/handoffs/s4`, await handoffTokenForTest('s4'));
+      startMCPPoller();
+      await waitFor(() => mockFiles.has(`${RESULTS}/s4.json`));
+      const res = JSON.parse(mockFiles.get(`${RESULTS}/s4.json`)!);
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/refused by Shelly's agent gate/);
+    } finally {
+      delete mockSettings.approveAllWithoutAsking;
+    }
   });
 
   it('the modal component renders the origin lines', () => {

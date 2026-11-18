@@ -96,7 +96,17 @@ object IngressAuditWriter {
      * was dropped without an answer (bad MAC, stale, replay, orphan sweep), or
      * the handoff move to RN failed (code = the errno name, McpHandoffMove.failureCode).
      */
-    val NATIVE_MCP_KINDS: Set<String> = setOf("mcp_typed_op_executing", "mcp_typed_op_handed_off", "mcp_typed_op_handoff_failed", "mcp_typed_op_dropped")
+    val NATIVE_MCP_KINDS: Set<String> = setOf(
+        "mcp_typed_op_executing", "mcp_typed_op_handed_off", "mcp_typed_op_handoff_failed", "mcp_typed_op_dropped",
+        // Headless raw tools (McpRawToolConsumer, "MCP: Run without approval"):
+        // about to run (written BEFORE the command / write; a failed write
+        // stops it), finished (code ok / failed), refused (code), handed to RN
+        // for the approval tap, or dropped unanswered (bad MAC, stale, replay, orphan).
+        "mcp_raw_tool_executing", "mcp_raw_tool_done", "mcp_raw_tool_refused",
+        "mcp_raw_tool_handed_off", "mcp_raw_tool_handoff_failed", "mcp_raw_tool_dropped",
+    )
+    /** Events only native lines carry: [MCP_EVENTS] plus the raw tools. No command, path or content is ever written. */
+    val NATIVE_MCP_EVENTS: Set<String> = MCP_EVENTS + setOf("mcp_run_command", "mcp_write_file")
     private val RULE_ID_RE = Regex("^r_[0-9a-f]{16}$")
     private val TARGET_RE = Regex("^agent:[A-Za-z0-9_-]{1,128}$")
 
@@ -117,7 +127,7 @@ object IngressAuditWriter {
         target: String? = null,
     ): String? {
         if (kind !in MCP_KINDS && kind !in NATIVE_MCP_KINDS) return null
-        if (event !in MCP_EVENTS) return null
+        if (event !in NATIVE_MCP_EVENTS) return null
         if (agentId != null && !AGENT_ID_RE.matches(agentId)) return null
         if (principal != null && !PRINCIPAL_RE.matches(principal)) return null
         if (code != null && !CODE_RE.matches(code)) return null
@@ -145,8 +155,9 @@ object IngressAuditWriter {
         code: String?,
         ruleId: String? = null,
         target: String? = null,
+        event: String = "mcp_run_agent",
     ): Boolean {
-        val line = buildNativeMcpLine(System.currentTimeMillis(), kind, "mcp_run_agent", agentId, principal, code, ruleId, target)
+        val line = buildNativeMcpLine(System.currentTimeMillis(), kind, event, agentId, principal, code, ruleId, target)
             ?: return false
         return append(context, agentId, MCP_AGENTLESS_FILE, line)
     }

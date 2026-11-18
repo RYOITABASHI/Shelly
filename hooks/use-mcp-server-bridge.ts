@@ -63,6 +63,8 @@ import {
   stopMCPSnapshotPublisher,
 } from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
+import { syncMcpSkipApprovalFromNative } from '@/lib/mcp-skip-approval';
+import { syncApproveAllFromNative } from '@/lib/approve-all-without-asking';
 import {
   effectiveMirrorSettings,
   mcpCleanupAction,
@@ -231,6 +233,16 @@ export function useMCPServerBridge(): void {
   // default (false); acting on it would clear the native mirror and stop a
   // server the native side auto-started.
   const settingsLoaded = useSettingsStore((s) => s.isBaseSettingsLoaded);
+
+  // "MCP: Run without approval": once the persisted settings are in, the
+  // native Keystore switch overrides whatever was loaded (a load never turns
+  // it on; lib/mcp-skip-approval.ts).
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    syncMcpSkipApprovalFromNative().catch((e) => logError('MCPBridge', 'could not read MCP run-without-approval', e));
+    // Same for "Skip all approvals": a loaded ON never survives a native OFF.
+    syncApproveAllFromNative().catch((e) => logError('MCPBridge', 'could not read Skip all approvals', e));
+  }, [settingsLoaded]);
 
   useEffect(() => {
     if (!settingsLoaded) return;

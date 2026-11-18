@@ -48,8 +48,10 @@
  * New rules bind both the definition and RN-evaluated sealed policy snapshot;
  * native verifies them again at acceptance and start. Legacy rules remain
  * dialog-only. See docs/mcp-agent-action-consent.md.
- * This is the foreground path: it still needs RN to drain the queue (the
- * headless bypass is a later PR).
+ * This is the foreground path: it still needs RN to drain the queue.
+ * run_command / write_file arrive here only by the native McpRawToolConsumer's
+ * handoff (with a single-use token) while "MCP: Run without approval" is off;
+ * with it on, native runs them headless after the same gate (lib/mcp-raw-gate.ts).
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
@@ -97,6 +99,8 @@ import {
 } from '@/lib/mcp-typed-ops';
 import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
+import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
+import { isApproveAllWithoutAskingOn, turnOffApproveAll } from '@/lib/approve-all-without-asking';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -130,6 +134,21 @@ const EXEC_DISABLED_ERROR = 'exec/write tools are disabled (Settings → Agents 
 
 function execEnabled(): boolean {
   return useSettingsStore.getState().settings.mcpExecEnabled === true;
+}
+
+/**
+ * run_command / write_file reach RN only by the native McpRawToolConsumer's
+ * handoff, which it makes only while the native "MCP: Run without approval"
+ * switch is OFF (with it ON, native runs the call itself, headless, after the
+ * same gate). So here the tap is always asked: the mcpSkipApproval setting is
+ * only a mirror of that native switch (lib/mcp-skip-approval.ts) and is not
+ * read here.
+ */
+async function approveRawTool(
+  request: Omit<ApprovalRequestInput, 'alwaysAllowable'>,
+  _callId: string,
+): Promise<McpApprovalDecision> {
+  return requestApproval(request);
 }
 
 const DIAGNOSTICS_DISABLED_ERROR = 'is disabled (Settings → Agents → MCP: Allow diagnostics)';
@@ -650,6 +669,11 @@ export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } 
   await FileSystem.deleteAsync(HANDOFFS_DIR, { idempotent: true });
   logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
   if (opts.tokenRevoked) {
+    // A new token turns "MCP: Run without approval" off (the owner turns it
+    // on again in Settings). Not confirmed off = the regeneration fails and
+    // the server stays off.
+    await turnOffMcpSkipApproval('token regenerated');
+    await turnOffApproveAll('token regenerated');
     // run_agent tickets of the old token: live ones become `cancelled`
     // (an accepted one then never starts). Best effort — tickets are
     // principal-scoped, so the new token can't read them anyway.
@@ -803,13 +827,13 @@ async function callTool(
         logInfo('MCPBridge', `run_command refused by the gate (${gate.summary})`);
         return { ok: false, error: `refused by Shelly's agent gate — ${gate.summary}` };
       }
-      const decision = await requestApproval({
+      const decision = await approveRawTool({
         kind: 'run_command',
         summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
         detail: `${command}\n\nGate: ${gate.summary}`,
         riskLevel: gate.outcome?.verdict.dangerLevel,
         origin: ingress,
-      });
+      }, callId);
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       // Raw tools never offer "always allow" (no alwaysAllowable); a stray
       // 'always' is treated as 'once'. Rule writing is not done here.
@@ -857,12 +881,12 @@ async function callTool(
       }
       const preview = content.length > 400 ? `${content.slice(0, 400)}\n… (${content.length} bytes total)` : content;
       const shownPath = realPath === targetPath ? realPath : `${targetPath}\n→ ${realPath}`;
-      const decision = await requestApproval({
+      const decision = await approveRawTool({
         kind: 'write_file',
         summary: `Write ${content.length} bytes to a file via MCP?`,
         detail: `${shownPath}\n\nGate: ${gates[0].summary}\n\n${preview}`,
         origin: ingress,
-      });
+      }, callId);
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       // Raw tools never offer "always allow" (no alwaysAllowable); a stray
       // 'always' is treated as 'once'. Rule writing is not done here.
@@ -1293,6 +1317,15 @@ async function runAgentTool(
     }
     logError('MCPBridge', `always-allow rule matched run_agent ${agentId} but could not be listed; asking instead`);
   }
+  // 8b. The master switch "Skip all approvals" (Settings only): answered as
+  // a one-time 'once' — no always-allow rule is written, and the launch
+  // re-runs every deny class (STOP-ALL, taint, policy / CRITICAL) and the
+  // binding check. The run stays marked as external input (writes, sends
+  // and actions refused), exactly as after a tap.
+  if (await isApproveAllWithoutAskingOn()) {
+    logInfo('MCPBridge', `run_agent ${agentId} auto-approved once (approveAllWithoutAsking, principal=${ingress.principal.slice(0, 8)})`);
+    return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'dialog' });
+  }
   // 9. nobody to ask: refuse at once, never queue a dialog in the background.
   if (!appIsForeground()) {
     await appendTypedOpAudit(agentId, { kind: 'mcp_typed_op_refused', event: 'mcp_run_agent', agentId, principal: ingress.principal, code: 'not_attended' });
@@ -1410,6 +1443,8 @@ const inFlightRequestFiles = new Set<string>();
 
 /** Typed ops arrive in requests/ only through the native consumer's handoff. */
 const TYPED_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_agent']);
+/** So do raw tools (McpRawToolConsumer, scripts/shelly-mcp-server.js RAW_REQUEST_TOOLS). */
+const RAW_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_command', 'write_file']);
 export const HANDOFFS_DIR = `${QUEUE_DIR}/handoffs`;
 
 /**
@@ -1459,7 +1494,17 @@ async function processRequestFile(name: string): Promise<void> {
     }
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
-    if (TYPED_REQUEST_TOOLS.has(request.tool)) {
+    if (RAW_REQUEST_TOOLS.has(request.tool)) {
+      // A raw tool reaches requests/ only by the native raw consumer's handoff
+      // (it routes ONCE per callId: run natively, or hand here). Its token is
+      // consumed first, so a copied signed request (native owns or ran the
+      // original) is never run here too. No deadline: as before, the call
+      // waits for the tap.
+      if (!(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
+        logError('MCPBridge', `rejected raw request file ${name} (no valid handoff token)`);
+        return;
+      }
+    } else if (TYPED_REQUEST_TOOLS.has(request.tool)) {
       // A typed op reaches requests/ only by the native consumer's handoff
       // (PR 6). Its single-use token is consumed first, so a copied signed
       // request (native owns or ran the original) is never run here.

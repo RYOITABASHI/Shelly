@@ -70,7 +70,7 @@ import {
   startMCPPoller,
   stopMCPPoller,
 } from '@/lib/mcp-server-bridge';
-import { TEST_BRIDGE_KEY, nodeSha256, signedRequest } from './helpers/mcp-signed-request';
+import { TEST_BRIDGE_KEY, nodeSha256, handoffTokenForTest, signedRequest } from './helpers/mcp-signed-request';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mcp = require('../scripts/shelly-mcp-server.js');
@@ -117,6 +117,7 @@ let seq = 0;
 async function call(tool: string, args: Record<string, unknown> = {}) {
   const callId = `aud${++seq}`;
   mockFiles.set(`${REQUESTS}/${callId}.json`, await signedRequest(callId, tool, args));
+  mockFiles.set(`${QUEUE}/handoffs/${callId}`, await handoffTokenForTest(callId));
   startMCPPoller();
   const resultUri = `${RESULTS}/${callId}.json`;
   await waitFor(() => mockFiles.has(resultUri));

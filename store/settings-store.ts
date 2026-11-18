@@ -250,6 +250,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   a2aServerEnabled: false,
   mcpServerEnabled: false,
   mcpExecEnabled: false,
+  mcpSkipApproval: false,
+  approveAllWithoutAsking: false,
   mcpReadTerminalEnabled: false,
   mcpDiagnosticsEnabled: false,
   mcpTypedOpsEnabled: false,

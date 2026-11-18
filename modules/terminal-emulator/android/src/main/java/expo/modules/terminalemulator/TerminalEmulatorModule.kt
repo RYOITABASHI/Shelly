@@ -623,6 +623,8 @@ class TerminalEmulatorModule : Module() {
             // right below — an RN reload creates a new Module instance and the
             // old one's sendEvent no longer reaches JS.
             activeInstanceRef = WeakReference(this@TerminalEmulatorModule)
+            // STOP-ALL that survived a restart keeps both approval switches off.
+            appContext.reactContext?.let { runCatching { StopAllSwitches.enforceAtStart(it, "app start") } }
             for (session in sessions.values) {
                 session.emitEvent = ::emitEvent
             }
@@ -1456,6 +1458,37 @@ class TerminalEmulatorModule : Module() {
             status
         }
 
+        // "MCP: Run without approval" (McpSkipApprovalStore.kt, Keystore-HMAC'd).
+        // settings.mcpSkipApproval only mirrors it (lib/mcp-skip-approval.ts).
+        AsyncFunction("getMcpSkipApproval") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            McpSkipApprovalStore.isOn(context)
+        }
+
+        // ON only from the Settings toggle (lib/mcp-skip-approval.ts
+        // setMcpSkipApprovalFromToggle); OFF from anywhere. Returns the
+        // verified state afterwards. Exported to any RN JS on purpose: RN JS is
+        // the trusted base (it holds the signing APIs that answer approvals),
+        // so a native confirmation would add a prompt without adding a
+        // boundary (owner rule: no extra approval prompts; see KeystoreSwitch).
+        // What it stops is a same-uid file / prefs edit.
+        AsyncFunction("setMcpSkipApproval") { enabled: Boolean, reason: String? ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            // Through ApprovalSwitchCore's lock: never ON while STOP-ALL is
+            // active (re-checked inside the lock), every write bumps the generation.
+            if (enabled) {
+                ApprovalSwitches.enableMcpSkip(context)
+            } else {
+                ApprovalSwitches.disableMcpSkip(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
+            }
+        }
+
+        // Headless MCP run_command windows / agent requests (McpNativeIngress.kt).
+        AsyncFunction("getMcpNativeIngress") {
+            val context = appContext.reactContext ?: return@AsyncFunction "{\"ok\":false}"
+            McpNativeIngress.snapshotJson(context)
+        }
+
         // Settings "Sign out of Codex": OFF + stop the tracked host + sweep
         // every same-uid `remote-control` process (the notification
         // Disconnect path), returning status + remainingRemoteControlProcesses.
@@ -1471,6 +1504,94 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("wakeCodexRemoteHost") {
             CodexRemoteHost.wake()
             null
+        }
+
+        // STOP-ALL (lib/agent-manager.ts haltAllAgents, before AND after the
+        // `.halted` write): "MCP: Run without approval" and "Skip all
+        // approvals" go OFF here unconditionally, under ApprovalSwitchCore's
+        // lock, whether or not the MCP server is running. Returns true when
+        // both are verifiably off.
+        AsyncFunction("turnOffApprovalSwitchesForStopAll") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            StopAllSwitches.turnOff(context, "STOP-ALL")
+        }
+
+        // "Skip all approvals" master switch (ApproveAllStore, Keystore-HMAC'd).
+        // settings.approveAllWithoutAsking only mirrors it; every decision reads
+        // this (lib/approve-all-without-asking.ts isApproveAllWithoutAskingOn).
+        AsyncFunction("getApproveAllWithoutAsking") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            ApproveAllStore.isOn(context)
+        }
+
+        // ON only from the Settings toggle (lib/approve-all-without-asking.ts
+        // setApproveAllFromToggle); OFF from anywhere. Exported to any RN JS on
+        // purpose (RN JS is the trusted base; see KeystoreSwitch). Refused
+        // (stays OFF) while STOP-ALL is active.
+        AsyncFunction("setApproveAllWithoutAsking") { enabled: Boolean, reason: String? ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            // Through ApprovalSwitchCore's lock (see setMcpSkipApproval).
+            if (enabled) {
+                ApprovalSwitches.enableApproveAll(context)
+            } else {
+                ApprovalSwitches.disableApproveAll(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
+            }
+        }
+
+        // The master switch's decision token: a string (the generation), or
+        // null when the switch is off or STOP-ALL is active. RN takes it when
+        // it starts deciding and passes it to the two resolve entries below.
+        AsyncFunction("getApproveAllToken") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            ApprovalSwitches.approveAllToken(context)?.toString()
+        }
+
+        // The ONLY way the master switch answers a CLI-step escalation: under
+        // ApprovalSwitchCore's lock it re-checks the switch, `.halted` and the
+        // token (no switch write since the decision began), then writes the
+        // signed accept exactly as resolveAgentEscalationAutoApproval does.
+        // False when refused (nothing written; the request stays for a human).
+        AsyncFunction("resolveApproveAllEscalation") { runId: String, reqId: String, expectedRequestSha256: String, actionNonce: String, token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            val done = ApprovalSwitches.withApproveAllToken(context, gen) {
+                AgentEscalationBridge.writeHumanReply(
+                    context, runId, reqId, "accept", actionNonce, expectedRequestSha256,
+                    mintPreapprovalGrant = false
+                )
+                AgentEscalationBridge.clearRequest(context, runId, reqId)
+                true
+            } ?: false
+            if (done) {
+                context.getSystemService(NotificationManager::class.java)?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
+            }
+            done
+        }
+
+        // The ONLY way the master switch accepts a per-run action (foreground
+        // and headless): the same re-check under the lock, then the signed
+        // accept exactly as resolveAgentActionApproval writes it. Accept only.
+        AsyncFunction("resolveApproveAllAction") { runId: String, expectedRequestSha256: String, actionNonce: String, token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            val done = ApprovalSwitches.withApproveAllToken(context, gen) {
+                AgentActionApprovalBridge.writeHumanReply(context, runId, "accept", expectedRequestSha256, actionNonce)
+                AgentActionApprovalBridge.clearRequest(context, runId)
+                true
+            } ?: false
+            if (done) {
+                context.getSystemService(NotificationManager::class.java)?.cancel(AgentActionApprovalBridge.notificationId(runId))
+            }
+            done
+        }
+
+        // Before a master-switch intent fires (RN fires it): true only while the
+        // token is still current. The accept itself still goes through
+        // resolveApproveAllAction.
+        AsyncFunction("checkApproveAllToken") { token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            ApprovalSwitches.withApproveAllToken(context, gen) { true } ?: false
         }
 
         AsyncFunction("getNotificationReplyEnabled") {
@@ -2826,38 +2947,11 @@ class TerminalEmulatorModule : Module() {
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
             val homePath = homeDir.absolutePath
-            val sslDir = "$homePath/.shelly-ssl"
-            val caBundle = "$sslDir/ca-certificates.crt"
-            val opensslConf = "$sslDir/openssl.cnf"
-            try {
-                val sslDirFile = java.io.File(sslDir)
-                sslDirFile.mkdirs()
-                val caBundleFile = java.io.File(caBundle)
-                if (!caBundleFile.exists() || caBundleFile.length() == 0L) {
-                    context.assets.open("ca-certificates.crt").use { input ->
-                        caBundleFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                }
-                val opensslConfFile = java.io.File(opensslConf)
-                if (!opensslConfFile.exists()) opensslConfFile.writeText("")
-            } catch (e: Exception) {
-                Log.w("TerminalEmulator", "execCommand TLS env seed failed: ${e.message}")
-            }
-
             // Non-interactive Settings commands do not source ~/.bashrc, so mirror
-            // the TLS environment that HomeInitializer writes for bundled tools.
-            val wrappedCommand =
-                "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && " +
-                "export LD_LIBRARY_PATH='$libPath' && " +
-                "export HOME='$homePath' && " +
-                "export SSL_CERT_FILE='$caBundle' && " +
-                "export SSL_CERT_DIR='$sslDir' && " +
-                "export CURL_CA_BUNDLE='$caBundle' && " +
-                "export NODE_EXTRA_CA_CERTS='$caBundle' && " +
-                "export GIT_SSL_CAINFO='$caBundle' && " +
-                "export REQUESTS_CA_BUNDLE='$caBundle' && " +
-                "export OPENSSL_CONF='$opensslConf' && " +
-                "$command"
+            // the TLS environment that HomeInitializer writes for bundled tools
+            // (shared with the headless MCP run_command, NativeExecEnvironment).
+            NativeExecEnvironment.seedTls(context, homePath)
+            val wrappedCommand = NativeExecEnvironment.wrap(libPath, homePath, command)
 
             // Only log when something noteworthy happened; this path is polled.
             val bashExists = java.io.File(bashPath).exists()

@@ -4245,6 +4245,26 @@ export async function haltAllAgents(
   // Flip the in-memory flag FIRST so an attended chain in flight stops at its
   // next step / poll check while the alarms below are still being torn down.
   store.setHalted(true);
+  // "MCP: Run without approval" and "Skip all approvals" go OFF natively now,
+  // whether or not MCP is running (native also forces both OFF at start while
+  // `.halted` exists, and the MCP raw consumer on every rescan).
+  try {
+    const off = await TerminalEmulator.turnOffApprovalSwitchesForStopAll?.();
+    if (off === false) failures.push('approval switches could not be confirmed off');
+  } catch (error) {
+    failures.push(`approval switches: ${String(error)}`);
+  }
+  try {
+    // Mirror only (native is the truth). Dynamic import: see runAgent's
+    // savepoint note (a static settings-store import breaks pure jest suites).
+    const { useSettingsStore } = await import('@/store/settings-store');
+    const s = useSettingsStore.getState();
+    if (s.settings.mcpSkipApproval === true || s.settings.approveAllWithoutAsking === true) {
+      s.updateSettings({ mcpSkipApproval: false, approveAllWithoutAsking: false });
+    }
+  } catch {
+    // The Settings rows re-read native when opened.
+  }
   for (const a of store.agents) {
     if (a.schedule || isContinuousAgent(a)) {
       try {
@@ -4260,6 +4280,16 @@ export async function haltAllAgents(
     await runCommand(`set -e\n${writeFileCommand(haltSentinelPath(), 'halted\n')}`);
   } catch (error) {
     failures.push(`halt sentinel write failed: ${String(error)}`);
+  }
+  // Again AFTER the sentinel: native serializes enable / disable / STOP-ALL
+  // under one lock and an enable re-checks `.halted` inside it, so a Settings
+  // enable that slipped in before the sentinel existed is turned off here,
+  // and none can follow (ApprovalSwitchCore.kt).
+  try {
+    const off = await TerminalEmulator.turnOffApprovalSwitchesForStopAll?.();
+    if (off === false) failures.push('approval switches could not be confirmed off after the sentinel');
+  } catch (error) {
+    failures.push(`approval switches (after the sentinel): ${String(error)}`);
   }
   // After the sentinel: a run killed here cannot be relaunched (native and the
   // executor both refuse on `.halted`), and an executor that survives the
