@@ -305,6 +305,36 @@ describe('run_command ingress labelling', () => {
     expect(MCP_SHELLY_LAZY_FN).toBe('shelly() { unset -f shelly; . "$HOME/.bashrc" >/dev/null 2>&1; shelly "$@"; }; ');
   });
 
+  it('mcpSkipApproval runs run_command without the modal, still with the env prefix', async () => {
+    mockSettings.mcpSkipApproval = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s1.json`, await signedRequest('s1', 'run_command', { command: 'ls -la' }));
+      startMCPPoller();
+      await waitFor(() => mockFiles.has(`${RESULTS}/s1.json`));
+      expect(useMcpApprovalStore.getState().current).toBeNull();
+      expect(JSON.parse(mockFiles.get(`${RESULTS}/s1.json`)!).ok).toBe(true);
+      const ran = mockExecCommand.mock.calls.map((c) => String(c[0])).find((c) => c.includes('ls -la'))!;
+      expect(ran.startsWith(`export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=${TEST_PRINCIPAL} SHELLY_INGRESS_CALL=s1; `)).toBe(true);
+    } finally {
+      delete mockSettings.mcpSkipApproval;
+    }
+  });
+
+  it('mcpSkipApproval does not bypass a gate refusal', async () => {
+    mockSettings.mcpSkipApproval = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s2.json`, await signedRequest('s2', 'run_command', { command: 'rm -rf /' }));
+      startMCPPoller();
+      await waitFor(() => mockFiles.has(`${RESULTS}/s2.json`));
+      const res = JSON.parse(mockFiles.get(`${RESULTS}/s2.json`)!);
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/refused by Shelly's agent gate/);
+      expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('rm -rf /'))).toBe(false);
+    } finally {
+      delete mockSettings.mcpSkipApproval;
+    }
+  });
+
   it('the modal component renders the origin lines', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'components/McpApprovalModal.tsx'), 'utf8');
     expect(src).toContain("t('mcp.approval_origin')");

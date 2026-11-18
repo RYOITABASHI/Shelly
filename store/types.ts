@@ -480,6 +480,11 @@ export type AppSettings = {
    *  you specifically want a PC-side MCP client (Claude Code, Codex) to
    *  be able to run commands / write files on this device. */
   mcpExecEnabled?: boolean;
+  /** MCP run_command / write_file run without the on-device approval tap
+   *  (default false). Gate refusals still refuse. Only meaningful with
+   *  mcpExecEnabled on. Anyone holding the MCP token can then run commands
+   *  on the device unattended. */
+  mcpSkipApproval?: boolean;
   /**
    * "Keep ChatGPT connected" (default false): mirror of the native,
    * Keystore-HMAC'd opt-in (CodexRemoteAutostart.kt) that CodexRemoteHost.kt

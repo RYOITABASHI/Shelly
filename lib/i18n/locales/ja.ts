@@ -177,6 +177,8 @@ const ja: Record<string, string> = {
   'settings.mcp_token_copy_desc': 'MCPクライアントの認証に使うトークンをコピーします。初回は自動生成されます。',
   'settings.mcp_exec_label': 'MCP: 実行/書き込みを許可（危険）',
   'settings.mcp_exec_desc': 'MCPツールをさらに2つ追加します — run_command と write_file。MCPクライアント（Claude Code、Codex）がこの端末上でコマンド実行やファイル書き込みまでできるようになります（読み取りだけではなくなります）。各呼び出しはまずエージェントの CLI ステップと同じ安全ゲートで判定され、ゲートが拒否するもの（CRITICALレベル、エージェント定義やポリシーファイルの変更、自分で決めた拒否ルール）は確認なしで拒否されます。それ以外はすべて端末上の承認ポップアップで止まります。これは上記のベアラートークンと自分の承認タップだけで守られた、実質的なリモートコード実行の経路です。本当に必要な場合だけオンにしてください。MCP Serverがオフだと効果はありません。既定はオフ。',
+  'settings.mcp_skip_approval_label': 'MCP: 承認なしで実行',
+  'settings.mcp_skip_approval_desc': 'MCP の run_command と write_file を、端末の承認ポップアップなしで実行します。安全ゲートが拒否するもの（CRITICAL レベル、エージェント定義やポリシーファイルの変更、自分で決めた拒否ルール）は今までどおり拒否されます。オンの間は、MCP トークンを持つ人があなたの確認なしにこの端末でコマンド実行やファイル書き込みをできます。「MCP: 実行/書き込みを許可」もオンでないと効果はありません。既定はオフ。',
   'settings.mcp_read_terminal_label': 'MCP: ターミナル出力の読み取りを許可',
   'settings.mcp_read_terminal_desc': 'MCPツール read_terminal_output を追加します。ターミナルのタブの最近の表示内容を返します。画面にはトークン、見える形で打ったパスワード、貼り付けた秘密が映りうるため、既定はオフで、他の読み取りツールとは別のスイッチです。MCPサーバーがオフだと効果はありません。オン・オフを切り替えるとMCPサーバーが再起動します。',
   'settings.mcp_diagnostics_label': 'MCP: 診断情報（ログ・設定）の読み取りを許可',

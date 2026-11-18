@@ -132,6 +132,25 @@ function execEnabled(): boolean {
   return useSettingsStore.getState().settings.mcpExecEnabled === true;
 }
 
+/**
+ * settings.mcpSkipApproval: the owner chose to let MCP run_command /
+ * write_file run without the on-device tap (the tap needs Shelly in the
+ * foreground, so PC-side calls time out while another app is shown). Read
+ * at the moment of the decision. Gate refusals (CRITICAL, policy-write,
+ * POLICY-001 deny) still refuse; only the tap is skipped, and the answer is
+ * 'once' (never an always-allow rule).
+ */
+async function approveRawTool(
+  request: Omit<ApprovalRequestInput, 'alwaysAllowable'>,
+  callId: string,
+): Promise<McpApprovalDecision> {
+  if (useSettingsStore.getState().settings.mcpSkipApproval === true) {
+    logInfo('MCPBridge', `${request.kind} ${callId} auto-approved (mcpSkipApproval)`);
+    return 'once';
+  }
+  return requestApproval(request);
+}
+
 const DIAGNOSTICS_DISABLED_ERROR = 'is disabled (Settings → Agents → MCP: Allow diagnostics)';
 
 function diagnosticsEnabled(): boolean {
@@ -803,13 +822,13 @@ async function callTool(
         logInfo('MCPBridge', `run_command refused by the gate (${gate.summary})`);
         return { ok: false, error: `refused by Shelly's agent gate — ${gate.summary}` };
       }
-      const decision = await requestApproval({
+      const decision = await approveRawTool({
         kind: 'run_command',
         summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
         detail: `${command}\n\nGate: ${gate.summary}`,
         riskLevel: gate.outcome?.verdict.dangerLevel,
         origin: ingress,
-      });
+      }, callId);
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       // Raw tools never offer "always allow" (no alwaysAllowable); a stray
       // 'always' is treated as 'once'. Rule writing is not done here.
@@ -857,12 +876,12 @@ async function callTool(
       }
       const preview = content.length > 400 ? `${content.slice(0, 400)}\n… (${content.length} bytes total)` : content;
       const shownPath = realPath === targetPath ? realPath : `${targetPath}\n→ ${realPath}`;
-      const decision = await requestApproval({
+      const decision = await approveRawTool({
         kind: 'write_file',
         summary: `Write ${content.length} bytes to a file via MCP?`,
         detail: `${shownPath}\n\nGate: ${gates[0].summary}\n\n${preview}`,
         origin: ingress,
-      });
+      }, callId);
       if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       // Raw tools never offer "always allow" (no alwaysAllowable); a stray
       // 'always' is treated as 'once'. Rule writing is not done here.
