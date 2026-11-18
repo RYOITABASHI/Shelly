@@ -146,6 +146,7 @@ import {
   approveAllActionVerdict,
   approveAllEscalationVerdict,
   approveAllMintedRefusal,
+  approveAllPolicyBlocks,
   decideApproveAllActionApproval,
   isApproveAllWithoutAskingOn,
   type ApproveAllActionOpts,
@@ -242,6 +243,11 @@ installHeadlessRunWithoutApprovalDrain(onAgentKeepAliveTick, {
     await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
     if (!getTrustAllowSeal()) await loadTrustAllowSeal();
     return evaluateApprovalRequestPolicy(req, getTrustAllowSeal()).decision;
+  },
+  policyBlocksApproveAll: async (req) => {
+    await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
+    if (!getTrustAllowSeal()) await loadTrustAllowSeal();
+    return approveAllPolicyBlocks(evaluateApprovalRequestPolicy(req, getTrustAllowSeal()));
   },
   audit: (agentId, setting, what) => {
     postRunWithoutApprovalAuditLine(agentId, translateStatic(runWithoutApprovalAuditKey(setting), { command: what }));
@@ -2531,7 +2537,7 @@ export default function RootLayout() {
             { runId: minted.runId, agentId: minted.agentId, actionType: 'cli', command: minted.command },
             getTrustAllowSeal(),
           );
-          if (policy.decision === 'deny' || policy.decision === 'draft_only' || policy.decision === 'ask') policyBlocksAutoAccept = true;
+          policyBlocksAutoAccept = approveAllPolicyBlocks(policy);
         }
         const verdict = approveAllEscalationVerdict(minted, {
           on: isApproveAllWithoutAskingOn(),
@@ -3039,10 +3045,13 @@ export default function RootLayout() {
           // POLICY-001 (lib/agent-policy-approval.ts): fine-grained user
           // rules + proactive floor + trust-ramp allows, flag-gated OFF.
           let policyBlocksAutoAccept = false;
+          // The master switch skips the owner's own "ask" rules too.
+          let approveAllPolicyBlocked = false;
           if (useSettingsStore.getState().settings.agentPolicyEngine === true) {
             await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
             if (!getTrustAllowSeal()) await loadTrustAllowSeal();
             const verdict = evaluateApprovalRequestPolicy(parsed, getTrustAllowSeal());
+            approveAllPolicyBlocked = approveAllPolicyBlocks(verdict);
             if (verdict.decision === 'deny' || verdict.decision === 'draft_only') {
               logInfo('Policy', `auto-declined run=${parsed.runId} action=${parsed.actionType} layer=${verdict.layer}`);
               // Review M2: a deny / draft_only blocks every auto-accept below
@@ -3075,7 +3084,7 @@ export default function RootLayout() {
             rememberActionApproval(key, parsed);
             continue;
           }
-          if (await autoApproveActionForApproveAll(parsed, policyBlocksAutoAccept || proactiveRun)) {
+          if (await autoApproveActionForApproveAll(parsed, approveAllPolicyBlocked || proactiveRun)) {
             rememberActionApproval(key, parsed);
             continue;
           }

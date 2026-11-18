@@ -176,6 +176,10 @@ export interface HeadlessActionDrainDeps {
   /** POLICY-001 engine on? When on, evaluatePolicy decides blocking. */
   policyEngineEnabled: () => boolean;
   evaluatePolicy: (req: HeadlessActionRequest) => Promise<HeadlessPolicyDecision>;
+  /** Master switch only: approveAllPolicyBlocks on the full verdict (the
+   *  owner's own "ask" rules do not block). Absent: deny / draft_only / ask
+   *  from evaluatePolicy all block, as before. */
+  policyBlocksApproveAll?: (req: HeadlessActionRequest) => Promise<boolean>;
   audit: (agentId: string, setting: RunWithoutApprovalSetting, what: string) => void;
   log: (line: string) => void;
   now?: () => number;
@@ -225,9 +229,13 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
       attempted.add(key);
       try {
         let policyBlocks = false;
+        let approveAllPolicyBlocked = false;
         if (deps.policyEngineEnabled()) {
           const decision = await deps.evaluatePolicy(parsed);
           if (decision === 'deny' || decision === 'draft_only' || decision === 'ask') policyBlocks = true;
+          approveAllPolicyBlocked = deps.policyBlocksApproveAll
+            ? await deps.policyBlocksApproveAll(parsed).catch(() => true)
+            : policyBlocks;
         }
         const agent = deps.agentFor(parsed.agentId);
         const setting = await deps.getSetting(agent);
@@ -251,7 +259,7 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
               on: true,
               isOn: () => deps.approveAllOn?.() === true,
               ingressTainted,
-              policyBlocksAutoAccept: policyBlocks || proactive,
+              policyBlocksAutoAccept: approveAllPolicyBlocked || proactive,
               originOf: deps.originOf,
               agentFor: (id) => deps.agentFor(id) as UntrustedInputAgentLike | null,
               readMinted: async () => parseHeadlessActionRequest(await deps.readMinted(parsed.runId), { approveAll: true }),

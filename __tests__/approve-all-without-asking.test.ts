@@ -12,6 +12,7 @@ import {
   approveAllCommandRefusal,
   approveAllEscalationVerdict,
   approveAllMintedRefusal,
+  approveAllPolicyBlocks,
   decideApproveAllActionApproval,
   type ApproveAllActionOpts,
 } from '@/lib/approve-all-without-asking';
@@ -64,9 +65,29 @@ describe('escalation verdict', () => {
   });
 
   it.each([
-    ['secret-read'], ['destructive'], ['policy-write'], ['indirect-exec'], ['something-new'],
+    ['secret-read'], ['policy-write'], ['indirect-exec'], ['something-new'],
   ])('keeps the %s signal asking', (signal) => {
     expect(approveAllEscalationVerdict(esc({ signals: ['write-or-exec', signal] }), escOpts())).toEqual({ ok: false, reason: `signal:${signal}` });
+  });
+
+  it('answers destructive commands inside the home folder (owner decision), but not CRITICAL ones', () => {
+    expect(approveAllEscalationVerdict(esc({ command: 'rm -rf ~/demo/build', signals: ['destructive'], reason: 'boundary: destructive' }), escOpts())).toEqual({ ok: true, kind: 'all' });
+    expect(approveAllEscalationVerdict(esc({ command: 'rm -rf /', signals: ['destructive'], reason: 'boundary: destructive' }), escOpts())).toEqual({ ok: false, reason: 'safety:CRITICAL' });
+  });
+
+  it("answers the owner's own POLICY-001 ask rule, even with no boundary signal", () => {
+    expect(approveAllEscalationVerdict(esc({ command: 'git push', signals: [], reason: 'user rule: ask before git push · allowed' }), escOpts())).toEqual({ ok: true, kind: 'all' });
+    expect(approveAllEscalationVerdict(esc({ command: 'cat ~/.ssh/id_rsa', signals: [], reason: 'user rule: r1 · allowed' }), escOpts())).toEqual({ ok: false, reason: 'secret-file' });
+  });
+
+  it('approveAllPolicyBlocks: deny / draft_only / proactive / unreadable block; an owner ask rule does not', () => {
+    expect(approveAllPolicyBlocks({ decision: 'deny', layer: 'deny-rule', ruleId: 'r' })).toBe(true);
+    expect(approveAllPolicyBlocks({ decision: 'draft_only', layer: 'draft-rule', ruleId: 'r' })).toBe(true);
+    expect(approveAllPolicyBlocks({ decision: 'ask', layer: 'proactive' })).toBe(true);
+    expect(approveAllPolicyBlocks({ decision: 'ask', layer: 'ask-rule' })).toBe(true);
+    expect(approveAllPolicyBlocks({ decision: 'ask', layer: 'ask-rule', ruleId: 'r1' })).toBe(false);
+    expect(approveAllPolicyBlocks({ decision: 'allow', layer: 'trust' })).toBe(false);
+    expect(approveAllPolicyBlocks(null)).toBe(false);
   });
 
   it('keeps CRITICAL, trust-state and credential paths asking (raw and dequoted)', () => {
@@ -229,6 +250,8 @@ describe('headless drain with the master switch', () => {
       [{ agentFor: () => webAgent }, {}],
       [{ originOf: () => 'event' }, {}],
       [{ policyEngineEnabled: () => true, evaluatePolicy: async () => 'ask' }, {}],
+      [{ policyEngineEnabled: () => true, evaluatePolicy: async () => 'ask', policyBlocksApproveAll: async () => true }, {}],
+      [{ policyEngineEnabled: () => true, evaluatePolicy: async () => 'deny', policyBlocksApproveAll: async () => true }, {}],
       [{}, { actionType: 'cli', command: 'rm -rf /' }],
       [{}, { expiresAt: NOW - 1 }],
     ];
@@ -273,7 +296,8 @@ describe('wiring', () => {
     const master = src.indexOf('if (await autoApproveEscalationForApproveAll(parsed))');
     expect(perAgent).toBeGreaterThan(0);
     expect(master).toBeGreaterThan(perAgent);
-    expect(src).toContain('autoApproveActionForApproveAll(parsed, policyBlocksAutoAccept || proactiveRun)');
+    expect(src).toContain('autoApproveActionForApproveAll(parsed, approveAllPolicyBlocked || proactiveRun)');
+    expect(src).toContain('policyBlocksApproveAll: async (req) =>');
     expect(src).toContain('approveAllOn: isApproveAllWithoutAskingOn');
     // The ingress-taint decline runs before every auto-accept path.
     expect(src.indexOf('if (await isIngressTaintedForApproval(parsed.agentId)) {')).toBeLessThan(

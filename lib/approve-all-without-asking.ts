@@ -13,9 +13,11 @@
  *   - gate denies (CRITICAL, POLICY-001 deny / draft_only, policy-write,
  *     MCP gate refusals, classifyWorkspaceExec CRITICAL) — the driver /
  *     executor / MCP gate refuse those before any prompt exists;
- *   - escalations carrying an UNGRANTABLE boundary signal (secret-read,
- *     destructive, policy-write), indirect-exec (the executed command is not
- *     the text checked here) or a signal this module does not know;
+ *   - escalations carrying a secret-read or policy-write signal,
+ *     indirect-exec (the executed command is not the text checked here) or a
+ *     signal this module does not know. destructive (e.g. `rm -rf` inside the
+ *     home folder) IS answered (owner decision 2026-11-19); CRITICAL ones
+ *     (`rm -rf /` …) are refused by approveAllCommandRefusal;
  *   - commands that are CRITICAL (raw or dequoted) or name Shelly's own
  *     trust state (.shelly*, shared_prefs, no_backup, approval files, the
  *     app's databases) or a credential file;
@@ -24,8 +26,10 @@
  *     DM steps, notification triggers — runWithoutApprovalAllAllowedFor),
  *     and runs not started by the user from the app (proactive /
  *     notification-triggered) keep today's behaviour;
- *   - POLICY-001 user rules (deny / draft_only / ask) and requests that are
- *     stale, expired, queued or whose minted copy does not match;
+ *   - POLICY-001 deny / draft_only rules, the proactive floor, a policy file
+ *     that cannot be read, and requests that are stale, expired, queued or
+ *     whose minted copy does not match. The owner's own "ask" rules ARE
+ *     answered (owner decision 2026-11-19; approveAllPolicyBlocks);
  *   - unattended runs (the driver / executor decline before RN sees them).
  *
  * The switch is read at the moment of each decision (never cached), so
@@ -63,7 +67,24 @@ export const APPROVE_ALL_ESCALATION_SIGNALS: ReadonlySet<string> = new Set([
   'write-or-exec',
   'network-send',
   'opaque-script-exec',
+  'destructive',
 ]);
+
+/** A POLICY-001 verdict as evaluateActionPolicy returns it. */
+export type ApproveAllPolicyVerdictLike = { decision: string; layer?: string | null; ruleId?: string | null } | null | undefined;
+
+/**
+ * Does this POLICY-001 verdict keep the master switch from answering?
+ * deny / draft_only: yes. An "ask" from one of the owner's own rules
+ * (layer ask-rule with a ruleId): no — the owner chose to skip those too.
+ * Any other ask (the proactive floor, an unreadable policy file): yes.
+ */
+export function approveAllPolicyBlocks(verdict: ApproveAllPolicyVerdictLike): boolean {
+  if (!verdict) return false;
+  if (verdict.decision === 'deny' || verdict.decision === 'draft_only') return true;
+  if (verdict.decision === 'ask') return !(verdict.layer === 'ask-rule' && typeof verdict.ruleId === 'string' && verdict.ruleId !== '');
+  return false;
+}
 
 /** Action types answered with a plain signed accept (the executor performs
  *  the side effect after reading it). */
@@ -105,7 +126,7 @@ export type ApproveAllEscalationOpts = {
   ingressTainted: boolean;
   /** The CURRENT agent definition (agent store), or null. */
   agent: UntrustedInputAgentLike | null | undefined;
-  /** POLICY-001 deny / draft_only / ask, or a proactive origin. */
+  /** approveAllPolicyBlocks(verdict): deny / draft_only / a non-owner ask. */
   policyBlocksAutoAccept?: boolean;
 };
 
@@ -122,13 +143,17 @@ export function approveAllEscalationVerdict(request: EscalationRequestLike, opts
   if (!runWithoutApprovalAllAllowedFor(opts.agent)) return { ok: false, reason: 'untrusted-input' };
   // A queued request belongs to a run that already declined and moved on.
   if (request.state) return { ok: false, reason: 'not-live' };
-  // Only the boundary classifier's own gray; a POLICY-001 ask rule or the
-  // proactive read-only floor carry their own reason and keep asking.
-  if (!/^boundary: /.test(String(request.reason ?? ''))) return { ok: false, reason: 'not-boundary-gray' };
+  // The boundary classifier's own gray, or one of the owner's own POLICY-001
+  // "ask" rules on an otherwise allowed command (the gate's reason starts
+  // "user rule: "). The proactive read-only floor and an unreadable policy
+  // file carry other reasons and keep asking.
+  const reasonText = String(request.reason ?? '');
+  const userAskRule = /^user rule: /.test(reasonText);
+  if (!userAskRule && !/^boundary: /.test(reasonText)) return { ok: false, reason: 'not-boundary-gray' };
   const command = String(request.command ?? '').trim();
   if (!command) return { ok: false, reason: 'no-command' };
   const signals = Array.isArray(request.signals) ? request.signals.map((s) => String(s).trim()).filter(Boolean) : [];
-  if (signals.length === 0) return { ok: false, reason: 'no-signals' };
+  if (signals.length === 0 && !userAskRule) return { ok: false, reason: 'no-signals' };
   const foreign = signals.find((s) => !APPROVE_ALL_ESCALATION_SIGNALS.has(s));
   if (foreign) return { ok: false, reason: `signal:${foreign}` };
   const hard = approveAllCommandRefusal(command, [request.cwd]);
@@ -152,7 +177,7 @@ export type ApproveAllActionRequestLike = {
 export type ApproveAllActionOpts = {
   on: boolean;
   ingressTainted: boolean;
-  /** POLICY-001 deny / draft_only / ask, or a proactive origin. */
+  /** approveAllPolicyBlocks(verdict), or a proactive origin. */
   policyBlocksAutoAccept: boolean;
   /** lib/agent-policy-approval.ts trustedRequestOrigin. */
   originOf: (req: { agentId?: string | null; origin?: string | null }) => 'user' | 'event';
