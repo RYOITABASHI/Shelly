@@ -150,6 +150,10 @@ import {
   approveAllPolicyBlocks,
   decideApproveAllActionApproval,
   isApproveAllWithoutAskingOn,
+  approveAllToken,
+  checkApproveAllToken,
+  resolveApproveAllAction,
+  resolveApproveAllEscalation,
   type ApproveAllActionOpts,
 } from '@/lib/approve-all-without-asking';
 import {
@@ -254,6 +258,8 @@ installHeadlessRunWithoutApprovalDrain(onAgentKeepAliveTick, {
     postRunWithoutApprovalAuditLine(agentId, translateStatic(runWithoutApprovalAuditKey(setting), { command: what }));
   },
   approveAllOn: isApproveAllWithoutAskingOn,
+  approveAllToken,
+  resolveApproveAll: resolveApproveAllAction,
   auditApproveAll: (agentId, what) => {
     postRunWithoutApprovalAuditLine(agentId, translateStatic(APPROVE_ALL_AUDIT_KEY, { command: what }));
   },
@@ -2508,8 +2514,11 @@ export default function RootLayout() {
     // input, POLICY-001, proactive origin). Judged on the drained AND the
     // minted copy; the switch is re-read right before answering.
     const autoApproveEscalationForApproveAll = async (parsed: AgentEscalationRequest): Promise<boolean> => {
-      if (!(await isApproveAllWithoutAskingOn())) return false;
-      if (!TerminalEmulator.readAgentEscalationRequest || !TerminalEmulator.resolveAgentEscalationAutoApproval) return false;
+      // The decision token (null = off / STOP-ALL); the answer goes only
+      // through resolveApproveAllEscalation, which re-checks it natively.
+      const token = await approveAllToken();
+      if (token === null) return false;
+      if (!TerminalEmulator.readAgentEscalationRequest) return false;
       try {
         const agentFor = (agentId: string) => useAgentStore.getState().agents.find((a) => a.id === agentId) ?? null;
         const attended = registeredRunOrigin(parsed.agentId) === 'user';
@@ -2552,7 +2561,10 @@ export default function RootLayout() {
           logInfo('AgentEscalation', `approve-all not applied run=${minted.runId} req=${minted.reqId} reason=${verdict.reason}`);
           return false;
         }
-        await TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId, minted.reqId, requestSha256, actionNonce);
+        if (!(await resolveApproveAllEscalation(minted.runId, minted.reqId, requestSha256, actionNonce, token))) {
+          logInfo('AgentEscalation', `approve-all not applied run=${minted.runId} req=${minted.reqId} reason=token-stale`);
+          return false;
+        }
         postRunWithoutApprovalAuditLine(minted.agentId, t(APPROVE_ALL_AUDIT_KEY, { command: auditCommandText(minted.command) }));
         logInfo('AgentEscalation', `approve-all auto-approved run=${minted.runId} req=${minted.reqId} signals=${(minted.signals ?? []).join(',')}`);
         return true;
@@ -2763,6 +2775,9 @@ export default function RootLayout() {
         verifyMinted?: (minted: AgentActionApprovalRequest) => boolean | Promise<boolean>;
         /** Called once, right after the signed accept was written. */
         onAccepted?: (minted: AgentActionApprovalRequest) => void;
+        /** Master switch: its decision token. The side effect fires only while
+         *  it is current, and the accept goes ONLY through resolveApproveAllAction. */
+        approveAllToken?: string;
       },
     ): Promise<boolean> => {
       if (parsed.actionType !== 'intent' && parsed.actionType !== 'dm-reply') return false;
@@ -2778,6 +2793,10 @@ export default function RootLayout() {
         if (!minted || !requestSha256 || !actionNonce) return false;
         if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
         if (opts?.verifyMinted && !(await opts.verifyMinted(minted))) return false;
+        if (opts?.approveAllToken !== undefined && !(await checkApproveAllToken(opts.approveAllToken))) {
+          logInfo('AgentActionApproval', `approve-all not applied run=${minted.runId} reason=token-stale`);
+          return false;
+        }
         if (minted.actionType === 'intent') {
           if (!TerminalEmulator.fireAgentIntent) return false;
           if (intentRequiresHumanReview(minted)) {
@@ -2814,7 +2833,17 @@ export default function RootLayout() {
             return true;
           }
         }
-        await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', requestSha256, actionNonce);
+        if (opts?.approveAllToken !== undefined) {
+          if (!(await resolveApproveAllAction(minted.runId, requestSha256, actionNonce, opts.approveAllToken))) {
+            // Switched off / STOP-ALL in the moment after the side effect: the
+            // run is declined rather than accepted on a stale decision.
+            logInfo('AgentActionApproval', `approve-all accept refused after the side effect run=${minted.runId}; declining`);
+            await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
+            return true;
+          }
+        } else {
+          await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', requestSha256, actionNonce);
+        }
         logInfo('AgentActionApproval', `auto-accepted run=${minted.runId} action=${minted.actionType}`);
         opts?.onAccepted?.(minted);
         return true;
@@ -2901,7 +2930,10 @@ export default function RootLayout() {
       parsed: AgentActionApprovalRequest,
       policyBlocksAutoAccept: boolean,
     ): Promise<boolean> => {
-      if (!(await isApproveAllWithoutAskingOn())) return false;
+      // The decision token (null = off / STOP-ALL); the accept goes only
+      // through resolveApproveAllAction, which re-checks it natively.
+      const token = await approveAllToken();
+      if (token === null) return false;
       if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
       try {
         const ingressTainted = await isIngressTaintedForApproval(parsed.agentId);
@@ -2930,6 +2962,7 @@ export default function RootLayout() {
               return refusal === null;
             },
             onAccepted: auditAccepted,
+            approveAllToken: token,
           });
         }
         const decision = await decideApproveAllActionApproval(parsed, {
@@ -2943,7 +2976,10 @@ export default function RootLayout() {
         }
         const minted = decision.minted;
         if (!minted.requestSha256 || !minted.actionNonce) return false;
-        await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', minted.requestSha256, minted.actionNonce);
+        if (!(await resolveApproveAllAction(minted.runId, minted.requestSha256, minted.actionNonce, token))) {
+          logInfo('AgentActionApproval', `approve-all not applied run=${minted.runId} action=${minted.actionType} reason=token-stale`);
+          return false;
+        }
         auditAccepted(minted);
         return true;
       } catch (e) {

@@ -4281,6 +4281,16 @@ export async function haltAllAgents(
   } catch (error) {
     failures.push(`halt sentinel write failed: ${String(error)}`);
   }
+  // Again AFTER the sentinel: native serializes enable / disable / STOP-ALL
+  // under one lock and an enable re-checks `.halted` inside it, so a Settings
+  // enable that slipped in before the sentinel existed is turned off here,
+  // and none can follow (ApprovalSwitchCore.kt).
+  try {
+    const off = await TerminalEmulator.turnOffApprovalSwitchesForStopAll?.();
+    if (off === false) failures.push('approval switches could not be confirmed off after the sentinel');
+  } catch (error) {
+    failures.push(`approval switches (after the sentinel): ${String(error)}`);
+  }
   // After the sentinel: a run killed here cannot be relaunched (native and the
   // executor both refuse on `.halted`), and an executor that survives the
   // signal sees the sentinel at its next step/group check.

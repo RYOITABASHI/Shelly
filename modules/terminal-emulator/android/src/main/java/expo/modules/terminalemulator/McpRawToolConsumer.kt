@@ -443,9 +443,11 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
         // the command starts, with the agent requests that already exist: a
         // request the command writes stays MCP-originated even if this process
         // dies before RN drains it (McpNativeIngress). No journal, no run.
+        // The switch and `.halted` are re-checked under ApprovalSwitchCore's
+        // lock (the one enable / disable / STOP-ALL take) right before the run.
         val refusal = synchronized(commitLock) {
             val r = recheckLocked(request)
-                ?: run {
+                ?: ApprovalSwitches.whileMcpSkipOn(app) { Gate(run {
                     val before = McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull())
                     if (before == null || !McpNativeIngress.openWindow(app, request.callId, request.principal, before)) {
                         "journal_failed" to "not run: the MCP ingress journal could not be written"
@@ -455,7 +457,7 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
                     } else {
                         null
                     }
-                }
+                }) }.let { it?.refusal ?: if (it == null) "skip_off" to McpRawToolDecision.SKIP_TURNED_OFF_ERROR else null }
             r
         }
         if (refusal != null) return finish(request, claimed, event, "mcp_raw_tool_refused", refusal.first, McpRawToolDecision.errorResult(refusal.second))
@@ -497,7 +499,9 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
         var error: String? = null
         var code = "ok"
         val refusal = synchronized(commitLock) {
-            val r = recheckLocked(request) ?: run {
+            // The write itself runs under ApprovalSwitchCore's lock, only while
+            // the switch is on and STOP-ALL is not active.
+            val r = recheckLocked(request) ?: ApprovalSwitches.whileMcpSkipOn(app) { Gate(run {
                 // Resolve again right before the write: a symlink swapped in
                 // since the check must not redirect it.
                 val again = McpRawToolDecision.resolveWriteTarget(args.path, roots, deviceFs)
@@ -513,7 +517,7 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
                     if (error != null) code = "failed"
                     null
                 }
-            }
+            }) }.let { it?.refusal ?: if (it == null) "skip_off" to McpRawToolDecision.SKIP_TURNED_OFF_ERROR else null }
             r
         }
         if (refusal != null) return finish(request, claimed, event, "mcp_raw_tool_refused", refusal.first, McpRawToolDecision.errorResult(refusal.second))
@@ -591,6 +595,9 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
             runCatching { Os.close(dirFd) }
         }
     }
+
+    /** What ran under the switch lock: null [refusal] = go on. (A null Gate = the switch was off.) */
+    private class Gate(val refusal: Pair<String, String>?)
 
     // ── Facts (each fails closed) ─────────────────────────────────────────
 

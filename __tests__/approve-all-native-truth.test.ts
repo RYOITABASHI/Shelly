@@ -34,7 +34,7 @@ import { applyNativeMcpIngress, syncNativeMcpIngress } from '@/lib/mcp-native-in
 import { __resetMcpIngressOriginForTests, classifyTerminalRequest, mcpOriginForRequest } from '@/lib/mcp-ingress-origin';
 
 const ROOT = path.join(__dirname, '..');
-const read = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+const read = (p: string) => fs.readFileSync(path.join(ROOT, p), 'utf8').split('\r\n').join('\n');
 const trustedAgent = { prompt: 'Summarize my notes folder into a weekly digest', tool: { type: 'gemini-api' } };
 const baseOpts = {
   on: true,
@@ -118,11 +118,54 @@ describe('the master switch is native', () => {
   it('STOP-ALL turns both switches off natively, first', () => {
     const src = read('lib/agent-manager.ts');
     const halt = src.slice(src.indexOf('export async function haltAllAgents'));
+    const sentinel = halt.indexOf('writeFileCommand(haltSentinelPath()');
     expect(halt.indexOf('turnOffApprovalSwitchesForStopAll')).toBeGreaterThan(0);
-    expect(halt.indexOf('turnOffApprovalSwitchesForStopAll')).toBeLessThan(halt.indexOf('writeFileCommand(haltSentinelPath()'));
+    expect(halt.indexOf('turnOffApprovalSwitchesForStopAll')).toBeLessThan(sentinel);
+    // ...and again after the sentinel, so an enable that raced it is turned off.
+    expect(halt.indexOf('turnOffApprovalSwitchesForStopAll', sentinel)).toBeGreaterThan(sentinel);
     const kt = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt');
     expect(kt).toContain('StopAllSwitches.turnOff(context, "STOP-ALL")');
     expect(kt).toContain('StopAllSwitches.enforceAtStart(it, "app start")');
+    // STOP-ALL is unconditional (no isOn() first) and goes through the core lock.
+    const store = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpSkipApprovalStore.kt');
+    const turnOff = store.slice(store.indexOf('fun turnOff('), store.indexOf('fun halted('));
+    expect(turnOff).toContain('ApprovalSwitchCore.stopAll(');
+    expect(turnOff).not.toMatch(/if \(\w+\.isOn/);
+    // Enable / disable never touch the stores directly from the module.
+    expect(kt).not.toMatch(/McpSkipApprovalStore\.setOn|ApproveAllStore\.setOn/);
+    expect(kt).toContain('ApprovalSwitches.enableApproveAll(context)');
+    expect(kt).toContain('ApprovalSwitches.enableMcpSkip(context)');
+  });
+
+  it('the master-switch paths answer only through the token-checked native entries', () => {
+    const layout = read('app/_layout.tsx');
+    const esc = layout.slice(layout.indexOf('const autoApproveEscalationForApproveAll'), layout.indexOf('const autoApproveEscalationForApproveAll') + 4000);
+    const escBody = esc.slice(0, esc.indexOf('\n    };\n'));
+    expect(escBody).toContain('await approveAllToken()');
+    expect(escBody).toContain('resolveApproveAllEscalation(');
+    expect(escBody).not.toContain('resolveAgentEscalationAutoApproval(');
+    const act = layout.slice(layout.indexOf('const autoApproveActionForApproveAll'));
+    const actBody = act.slice(0, act.indexOf('\n    };\n'));
+    expect(actBody).toContain('await approveAllToken()');
+    expect(actBody).toContain('resolveApproveAllAction(');
+    expect(actBody).toContain('approveAllToken: token');
+    expect(actBody).not.toMatch(/resolveAgentActionApproval\([^)]*'accept'/);
+    // The shared intent helper: with a token, the accept goes only through the gated entry.
+    expect(layout).toMatch(/if \(opts\?\.approveAllToken !== undefined\) \{\n\s+if \(!\(await resolveApproveAllAction\(/);
+    expect(layout).toContain('checkApproveAllToken(opts.approveAllToken)');
+    // Headless: wired with the token and the gated entry.
+    expect(layout).toContain('resolveApproveAll: resolveApproveAllAction');
+    const headless = read('lib/agent-action-approval-headless.ts');
+    const all = headless.slice(headless.indexOf('const allToken'));
+    expect(all.slice(0, all.indexOf('continue;\n        }'))).not.toContain("deps.resolve(m.runId, 'accept'");
+    // Native: both entries re-check under the core lock.
+    const kt = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalEmulatorModule.kt');
+    for (const fn of ['resolveApproveAllEscalation', 'resolveApproveAllAction', 'checkApproveAllToken']) {
+      const body = kt.slice(kt.indexOf(`AsyncFunction("${fn}")`), kt.indexOf(`AsyncFunction("${fn}")`) + 1200);
+      expect(body).toContain('ApprovalSwitches.withApproveAllToken(context, gen)');
+    }
+    const consumer = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpRawToolConsumer.kt');
+    expect(consumer.match(/ApprovalSwitches\.whileMcpSkipOn\(app\)/g)?.length).toBe(2);
   });
 });
 

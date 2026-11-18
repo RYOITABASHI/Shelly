@@ -188,6 +188,10 @@ export interface HeadlessActionDrainDeps {
   /** The native "Skip all approvals" switch (isApproveAllWithoutAskingOn),
    *  asked at each decision. Absent / rejecting ⇒ off. */
   approveAllOn?: () => boolean | Promise<boolean>;
+  /** The master switch's decision token (null = off / STOP-ALL). Absent: the master switch never answers here. */
+  approveAllToken?: () => Promise<string | null>;
+  /** The ONLY accept the master switch uses (native re-checks the token under its lock). False: not written. */
+  resolveApproveAll?: (runId: string, requestSha256: string, actionNonce: string, token: string) => Promise<boolean>;
   /** Chat audit line of a master-switch auto-accept. */
   auditApproveAll?: (agentId: string, what: string) => void;
 }
@@ -263,7 +267,8 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
         });
         if (decision.ok === false) {
           deps.log(`headless run-without-approval not applied run=${parsed.runId} action=${parsed.actionType} reason=${decision.reason}`);
-          if (approveAll && (await approveAllNow(deps))) {
+          const allToken = approveAll && deps.approveAllToken && deps.resolveApproveAll ? await deps.approveAllToken().catch(() => null) : null;
+          if (allToken !== null) {
             const proactive = deps.originOf(parsed) !== 'user';
             const all = await decideApproveAllActionApproval(parsed, {
               on: true,
@@ -281,7 +286,10 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
             }
             const m = all.minted;
             if (!m.requestSha256 || !m.actionNonce) continue;
-            await deps.resolve(m.runId, 'accept', m.requestSha256, m.actionNonce);
+            if (!(await deps.resolveApproveAll!(m.runId, m.requestSha256, m.actionNonce, allToken).catch(() => false))) {
+              deps.log(`headless approve-all not applied run=${m.runId} action=${m.actionType} reason=token-stale`);
+              continue;
+            }
             const whatAll = m.preview ? `${m.actionType}: ${auditCommandText(m.preview, 120)}` : m.actionType;
             deps.auditApproveAll?.(m.agentId, whatAll);
             deps.log(`headless approve-all auto-accepted run=${m.runId} action=${m.actionType}`);

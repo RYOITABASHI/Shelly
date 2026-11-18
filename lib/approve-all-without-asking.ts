@@ -63,6 +63,10 @@ export { UI_ONLY_ENABLE_SETTINGS } from '@/lib/ui-only-settings';
 type ApproveAllNative = {
   getApproveAllWithoutAsking?: () => Promise<boolean>;
   setApproveAllWithoutAsking?: (enabled: boolean, reason?: string | null) => Promise<boolean>;
+  getApproveAllToken?: () => Promise<string | null>;
+  resolveApproveAllEscalation?: (runId: string, reqId: string, requestSha256: string, actionNonce: string, token: string) => Promise<boolean>;
+  resolveApproveAllAction?: (runId: string, requestSha256: string, actionNonce: string, token: string) => Promise<boolean>;
+  checkApproveAllToken?: (token: string) => Promise<boolean>;
 };
 
 function nativeModule(): ApproveAllNative | null {
@@ -91,6 +95,48 @@ function mirrorSetting(value: boolean): void {
 export async function isApproveAllWithoutAskingOn(): Promise<boolean> {
   try {
     return (await nativeModule()?.getApproveAllWithoutAsking?.()) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Answering through the master switch is atomic with the switch itself
+ * (ApprovalSwitchCore.kt): a decision takes a token when it starts
+ * ([approveAllToken]: null = off or STOP-ALL) and is answered ONLY through
+ * [resolveApproveAllEscalation] / [resolveApproveAllAction], which re-check —
+ * under the native lock that enable / disable / STOP-ALL also take — that the
+ * switch is still on, `.halted` is absent and nothing was written since. A
+ * decision made before an OFF can therefore never be answered after it. The
+ * master-switch paths never call the generic resolve APIs.
+ */
+export async function approveAllToken(): Promise<string | null> {
+  try {
+    const t = await nativeModule()?.getApproveAllToken?.();
+    return typeof t === 'string' && /^[0-9]{1,19}$/.test(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Signed accept of a CLI-step escalation, only while [token] is current. False ⇒ nothing was written. */
+export async function resolveApproveAllEscalation(runId: string, reqId: string, requestSha256: string, actionNonce: string, token: string): Promise<boolean> {
+  const fn = nativeModule()?.resolveApproveAllEscalation;
+  if (typeof fn !== 'function') return false;
+  return (await fn(runId, reqId, requestSha256, actionNonce, token)) === true;
+}
+
+/** Signed accept of a per-run action, only while [token] is current. False ⇒ nothing was written. */
+export async function resolveApproveAllAction(runId: string, requestSha256: string, actionNonce: string, token: string): Promise<boolean> {
+  const fn = nativeModule()?.resolveApproveAllAction;
+  if (typeof fn !== 'function') return false;
+  return (await fn(runId, requestSha256, actionNonce, token)) === true;
+}
+
+/** Before RN performs a side effect itself (an intent): is [token] still current? */
+export async function checkApproveAllToken(token: string): Promise<boolean> {
+  try {
+    return (await nativeModule()?.checkApproveAllToken?.(token)) === true;
   } catch {
     return false;
   }

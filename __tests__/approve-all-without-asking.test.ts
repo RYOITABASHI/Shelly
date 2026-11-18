@@ -220,6 +220,11 @@ function makeDeps(over: Partial<HeadlessActionDrainDeps> = {}, files: unknown[] 
     now: () => NOW,
     isIngressTainted: async () => false,
     approveAllOn: () => true,
+    approveAllToken: async () => '7',
+    resolveApproveAll: async (runId, _sha, _nonce, token) => {
+      resolved.push(`${runId}|accept-all@${token}`);
+      return true;
+    },
     auditApproveAll: (agentId, what) => audits.push(`${agentId}|${what}`),
     ...over,
   };
@@ -229,11 +234,27 @@ function makeDeps(over: Partial<HeadlessActionDrainDeps> = {}, files: unknown[] 
 describe('headless drain with the master switch', () => {
   beforeEach(() => __resetHeadlessActionDrainForTests());
 
-  it('accepts a webhook of an attended trusted agent and writes the audit line', async () => {
+  it('accepts a webhook of an attended trusted agent through the token-checked entry, and writes the audit line', async () => {
     const h = makeDeps();
     await drainHeadlessRunWithoutApproval(h.deps);
-    expect(h.resolved).toEqual(['run-1|accept']);
+    expect(h.resolved).toEqual(['run-1|accept-all@7']);
     expect(h.audits).toEqual(['agent-a|webhook: POST https://hooks.example.com']);
+  });
+
+  it('a stale token (switched off / STOP-ALL after the decision) answers nothing and writes no audit line', async () => {
+    const h = makeDeps({ resolveApproveAll: async () => false });
+    await drainHeadlessRunWithoutApproval(h.deps);
+    expect(h.resolved).toEqual([]);
+    expect(h.audits).toEqual([]);
+  });
+
+  it('no token (off / STOP-ALL) or no token-checked entry: the master switch never answers, and never via the generic resolve', async () => {
+    for (const over of [{ approveAllToken: async () => null }, { resolveApproveAll: undefined }, { approveAllToken: undefined }] as Partial<HeadlessActionDrainDeps>[]) {
+      __resetHeadlessActionDrainForTests();
+      const h = makeDeps(over);
+      await drainHeadlessRunWithoutApproval(h.deps);
+      expect(h.resolved).toEqual([]);
+    }
   });
 
   it('off: unchanged (webhook is not even parsed)', async () => {

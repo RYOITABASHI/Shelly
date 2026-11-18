@@ -1474,13 +1474,12 @@ class TerminalEmulatorModule : Module() {
         // What it stops is a same-uid file / prefs edit.
         AsyncFunction("setMcpSkipApproval") { enabled: Boolean, reason: String? ->
             val context = appContext.reactContext ?: return@AsyncFunction false
+            // Through ApprovalSwitchCore's lock: never ON while STOP-ALL is
+            // active (re-checked inside the lock), every write bumps the generation.
             if (enabled) {
-                // Never ON while STOP-ALL is active.
-                if (StopAllSwitches.halted(context)) return@AsyncFunction false
-                McpSkipApprovalStore.setOn(context)
+                ApprovalSwitches.enableMcpSkip(context)
             } else {
-                McpSkipApprovalStore.setOff(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
-                McpSkipApprovalStore.isOn(context)
+                ApprovalSwitches.disableMcpSkip(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
             }
         }
 
@@ -1507,14 +1506,14 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
-        // STOP-ALL (lib/agent-manager.ts haltAllAgents, before anything else):
-        // "MCP: Run without approval" and "Skip all approvals" go OFF here,
-        // whether or not the MCP server is running. Returns true when both
-        // are verifiably off.
+        // STOP-ALL (lib/agent-manager.ts haltAllAgents, before AND after the
+        // `.halted` write): "MCP: Run without approval" and "Skip all
+        // approvals" go OFF here unconditionally, under ApprovalSwitchCore's
+        // lock, whether or not the MCP server is running. Returns true when
+        // both are verifiably off.
         AsyncFunction("turnOffApprovalSwitchesForStopAll") {
             val context = appContext.reactContext ?: return@AsyncFunction false
             StopAllSwitches.turnOff(context, "STOP-ALL")
-            !McpSkipApprovalStore.isOn(context) && !ApproveAllStore.isOn(context)
         }
 
         // "Skip all approvals" master switch (ApproveAllStore, Keystore-HMAC'd).
@@ -1531,14 +1530,68 @@ class TerminalEmulatorModule : Module() {
         // (stays OFF) while STOP-ALL is active.
         AsyncFunction("setApproveAllWithoutAsking") { enabled: Boolean, reason: String? ->
             val context = appContext.reactContext ?: return@AsyncFunction false
+            // Through ApprovalSwitchCore's lock (see setMcpSkipApproval).
             if (enabled) {
-                // Never ON while STOP-ALL is active.
-                if (StopAllSwitches.halted(context)) return@AsyncFunction false
-                ApproveAllStore.setOn(context)
+                ApprovalSwitches.enableApproveAll(context)
             } else {
-                ApproveAllStore.setOff(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
-                ApproveAllStore.isOn(context)
+                ApprovalSwitches.disableApproveAll(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
             }
+        }
+
+        // The master switch's decision token: a string (the generation), or
+        // null when the switch is off or STOP-ALL is active. RN takes it when
+        // it starts deciding and passes it to the two resolve entries below.
+        AsyncFunction("getApproveAllToken") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            ApprovalSwitches.approveAllToken(context)?.toString()
+        }
+
+        // The ONLY way the master switch answers a CLI-step escalation: under
+        // ApprovalSwitchCore's lock it re-checks the switch, `.halted` and the
+        // token (no switch write since the decision began), then writes the
+        // signed accept exactly as resolveAgentEscalationAutoApproval does.
+        // False when refused (nothing written; the request stays for a human).
+        AsyncFunction("resolveApproveAllEscalation") { runId: String, reqId: String, expectedRequestSha256: String, actionNonce: String, token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            val done = ApprovalSwitches.withApproveAllToken(context, gen) {
+                AgentEscalationBridge.writeHumanReply(
+                    context, runId, reqId, "accept", actionNonce, expectedRequestSha256,
+                    mintPreapprovalGrant = false
+                )
+                AgentEscalationBridge.clearRequest(context, runId, reqId)
+                true
+            } ?: false
+            if (done) {
+                context.getSystemService(NotificationManager::class.java)?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
+            }
+            done
+        }
+
+        // The ONLY way the master switch accepts a per-run action (foreground
+        // and headless): the same re-check under the lock, then the signed
+        // accept exactly as resolveAgentActionApproval writes it. Accept only.
+        AsyncFunction("resolveApproveAllAction") { runId: String, expectedRequestSha256: String, actionNonce: String, token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            val done = ApprovalSwitches.withApproveAllToken(context, gen) {
+                AgentActionApprovalBridge.writeHumanReply(context, runId, "accept", expectedRequestSha256, actionNonce)
+                AgentActionApprovalBridge.clearRequest(context, runId)
+                true
+            } ?: false
+            if (done) {
+                context.getSystemService(NotificationManager::class.java)?.cancel(AgentActionApprovalBridge.notificationId(runId))
+            }
+            done
+        }
+
+        // Before a master-switch intent fires (RN fires it): true only while the
+        // token is still current. The accept itself still goes through
+        // resolveApproveAllAction.
+        AsyncFunction("checkApproveAllToken") { token: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            val gen = token.toLongOrNull() ?: return@AsyncFunction false
+            ApprovalSwitches.withApproveAllToken(context, gen) { true } ?: false
         }
 
         AsyncFunction("getNotificationReplyEnabled") {

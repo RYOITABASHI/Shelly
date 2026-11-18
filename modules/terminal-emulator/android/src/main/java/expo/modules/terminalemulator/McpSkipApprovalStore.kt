@@ -155,11 +155,15 @@ object ApproveAllStore {
 object StopAllSwitches {
     fun haltedSentinel(context: Context): File = File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted")
 
-    /** Turns both off now. */
-    fun turnOff(context: Context, reason: String) {
-        runCatching { if (McpSkipApprovalStore.isOn(context)) McpSkipApprovalStore.setOff(context, reason) }
-        runCatching { if (ApproveAllStore.isOn(context)) ApproveAllStore.setOff(context, reason) }
-    }
+    /**
+     * Both OFF now, unconditionally, under ApprovalSwitchCore's lock (bumps the
+     * generation, so no master-switch decision started before this can be
+     * answered after it). Returns whether both read OFF afterwards.
+     */
+    fun turnOff(context: Context, reason: String): Boolean = ApprovalSwitchCore.stopAll(
+        listOf({ McpSkipApprovalStore.setOff(context, reason) }, { ApproveAllStore.setOff(context, reason) }),
+        listOf({ McpSkipApprovalStore.isOn(context) }, { ApproveAllStore.isOn(context) }),
+    )
 
     /** STOP-ALL is active: `.halted` present, or it cannot be checked. */
     fun halted(context: Context): Boolean = try {
@@ -175,4 +179,37 @@ object StopAllSwitches {
     fun enforceAtStart(context: Context, reason: String) {
         if (halted(context)) turnOff(context, "STOP-ALL at $reason")
     }
+}
+
+/**
+ * Every enable / disable of the two switches goes through here (and so through
+ * ApprovalSwitchCore's lock), never straight to the stores.
+ */
+object ApprovalSwitches {
+    fun enableMcpSkip(context: Context): Boolean = ApprovalSwitchCore.enable(
+        { StopAllSwitches.halted(context) }, { McpSkipApprovalStore.setOn(context) }, { McpSkipApprovalStore.setOff(context, "STOP-ALL active") },
+    )
+
+    /** Returns whether it still reads ON. */
+    fun disableMcpSkip(context: Context, reason: String): Boolean =
+        ApprovalSwitchCore.disable({ McpSkipApprovalStore.setOff(context, reason) }, { McpSkipApprovalStore.isOn(context) })
+
+    fun enableApproveAll(context: Context): Boolean = ApprovalSwitchCore.enable(
+        { StopAllSwitches.halted(context) }, { ApproveAllStore.setOn(context) }, { ApproveAllStore.setOff(context, "STOP-ALL active") },
+    )
+
+    /** Returns whether it still reads ON. */
+    fun disableApproveAll(context: Context, reason: String): Boolean =
+        ApprovalSwitchCore.disable({ ApproveAllStore.setOff(context, reason) }, { ApproveAllStore.isOn(context) })
+
+    /** The master-switch decision token (see ApprovalSwitchCore), or null when it may not answer. */
+    fun approveAllToken(context: Context): Long? =
+        ApprovalSwitchCore.token({ ApproveAllStore.isOn(context) }, { StopAllSwitches.halted(context) })
+
+    fun <T> withApproveAllToken(context: Context, token: Long, block: () -> T): T? =
+        ApprovalSwitchCore.withToken(token, { ApproveAllStore.isOn(context) }, { StopAllSwitches.halted(context) }, block)
+
+    /** A headless MCP action, only while "MCP: Run without approval" is on and STOP-ALL is not active. */
+    fun <T> whileMcpSkipOn(context: Context, block: () -> T): T? =
+        ApprovalSwitchCore.whileOn({ McpSkipApprovalStore.isOn(context) }, { StopAllSwitches.halted(context) }, block)
 }
