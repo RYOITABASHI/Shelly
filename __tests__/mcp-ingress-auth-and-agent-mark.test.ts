@@ -335,6 +335,33 @@ describe('run_command ingress labelling', () => {
     }
   });
 
+  it('approveAllWithoutAsking implies mcpSkipApproval for run_command', async () => {
+    mockSettings.approveAllWithoutAsking = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s3.json`, await signedRequest('s3', 'run_command', { command: 'ls -la' }));
+      startMCPPoller();
+      await waitFor(() => mockFiles.has(`${RESULTS}/s3.json`));
+      expect(useMcpApprovalStore.getState().current).toBeNull();
+      expect(JSON.parse(mockFiles.get(`${RESULTS}/s3.json`)!).ok).toBe(true);
+    } finally {
+      delete mockSettings.approveAllWithoutAsking;
+    }
+  });
+
+  it('approveAllWithoutAsking does not bypass a gate refusal', async () => {
+    mockSettings.approveAllWithoutAsking = true;
+    try {
+      mockFiles.set(`${REQUESTS}/s4.json`, await signedRequest('s4', 'run_command', { command: 'rm -rf /' }));
+      startMCPPoller();
+      await waitFor(() => mockFiles.has(`${RESULTS}/s4.json`));
+      const res = JSON.parse(mockFiles.get(`${RESULTS}/s4.json`)!);
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/refused by Shelly's agent gate/);
+    } finally {
+      delete mockSettings.approveAllWithoutAsking;
+    }
+  });
+
   it('the modal component renders the origin lines', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'components/McpApprovalModal.tsx'), 'utf8');
     expect(src).toContain("t('mcp.approval_origin')");

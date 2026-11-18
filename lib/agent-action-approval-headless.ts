@@ -24,6 +24,12 @@
  * notification, no new prompt — the foreground drain handles it as before
  * once RootLayout is mounted again.
  *
+ * Master switch "Skip all approvals" (settings.approveAllWithoutAsking,
+ * lib/approve-all-without-asking.ts): when the per-agent option does not
+ * apply, the accept-only types it answers (draft, notify, webhook, api-call,
+ * social-post, cli — never a type RN must fire itself) are accepted here by
+ * the same signed accept, with the same hard checks as the foreground drain.
+ *
  * The two drains never run at the same time (shared lock below) and the
  * headless one never runs while the foreground drain is mounted, so a
  * request is never minted by both (each native read mints a fresh nonce).
@@ -34,7 +40,12 @@ import {
   decideActionAutoApproval,
   isIngressTaintedForApproval,
   type RunWithoutApprovalSetting,
+  type UntrustedInputAgentLike,
 } from './agent-run-without-approval';
+import {
+  APPROVE_ALL_ACCEPT_ONLY_ACTION_TYPES,
+  decideApproveAllActionApproval,
+} from './approve-all-without-asking';
 
 // ── Shared drain coordination ────────────────────────────────────────────
 
@@ -105,9 +116,16 @@ export type HeadlessActionRequest = {
   dmReplyText?: string | null;
 };
 
+/** Types this path may answer while the master switch is on: draft /
+ *  notify (per-agent option) plus the master switch's accept-only types. */
+const APPROVE_ALL_HEADLESS_TYPES: readonly string[] = Array.from(
+  new Set<string>([...AUTO_APPROVABLE_ACTION_TYPES, ...APPROVE_ALL_ACCEPT_ONLY_ACTION_TYPES]),
+);
+
 /** Minimal parser. Returns null for anything that is not a well-formed
- *  draft / notify request — the only types this path may answer. */
-export function parseHeadlessActionRequest(raw: unknown): HeadlessActionRequest | null {
+ *  draft / notify request — the only types this path may answer — or, with
+ *  `approveAll`, one of the master switch's accept-only types. */
+export function parseHeadlessActionRequest(raw: unknown, opts?: { approveAll?: boolean }): HeadlessActionRequest | null {
   const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
   if (!value) return null;
   const str = (field: string) => (typeof value[field] === 'string' ? (value[field] as string).trim() : '');
@@ -115,7 +133,8 @@ export function parseHeadlessActionRequest(raw: unknown): HeadlessActionRequest 
   const agentId = str('agentId');
   const actionType = str('actionType');
   if (!runId || !agentId) return null;
-  if (!(AUTO_APPROVABLE_ACTION_TYPES as readonly string[]).includes(actionType)) return null;
+  const allowed: readonly string[] = opts?.approveAll === true ? APPROVE_ALL_HEADLESS_TYPES : AUTO_APPROVABLE_ACTION_TYPES;
+  if (!allowed.includes(actionType)) return null;
   const expiresAt = typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) ? value.expiresAt : null;
   return {
     runId,
@@ -162,6 +181,10 @@ export interface HeadlessActionDrainDeps {
   now?: () => number;
   /** MCP ingress taint (Inc 5); defaults to isIngressTaintedForApproval (fails closed). */
   isIngressTainted?: (agentId: string) => Promise<boolean>;
+  /** settings.approveAllWithoutAsking, read at each decision. Absent ⇒ off. */
+  approveAllOn?: () => boolean;
+  /** Chat audit line of a master-switch auto-accept. */
+  auditApproveAll?: (agentId: string, what: string) => void;
 }
 
 /** Keys already handled by this drain (accepted or refused), so a request is
@@ -192,7 +215,8 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
       if (isForegroundActionDrainMounted()) break;
       // Lease taken over (this pass outlived DRAIN_LEASE_MS): stop.
       if (!holdsActionApprovalDrain(token)) break;
-      const parsed = parseHeadlessActionRequest(raw);
+      const approveAll = deps.approveAllOn?.() === true;
+      const parsed = parseHeadlessActionRequest(raw, { approveAll });
       if (!parsed) continue;
       const key = requestKey(parsed);
       present.add(key);
@@ -221,6 +245,29 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
         });
         if (decision.ok === false) {
           deps.log(`headless run-without-approval not applied run=${parsed.runId} action=${parsed.actionType} reason=${decision.reason}`);
+          if (approveAll && deps.approveAllOn?.() === true) {
+            const proactive = deps.originOf(parsed) !== 'user';
+            const all = await decideApproveAllActionApproval(parsed, {
+              on: true,
+              isOn: () => deps.approveAllOn?.() === true,
+              ingressTainted,
+              policyBlocksAutoAccept: policyBlocks || proactive,
+              originOf: deps.originOf,
+              agentFor: (id) => deps.agentFor(id) as UntrustedInputAgentLike | null,
+              readMinted: async () => parseHeadlessActionRequest(await deps.readMinted(parsed.runId), { approveAll: true }),
+              now: now(),
+            });
+            if (all.ok === false) {
+              deps.log(`headless approve-all not applied run=${parsed.runId} action=${parsed.actionType} reason=${all.reason}`);
+              continue;
+            }
+            const m = all.minted;
+            if (!m.requestSha256 || !m.actionNonce) continue;
+            await deps.resolve(m.runId, 'accept', m.requestSha256, m.actionNonce);
+            const whatAll = m.preview ? `${m.actionType}: ${auditCommandText(m.preview, 120)}` : m.actionType;
+            deps.auditApproveAll?.(m.agentId, whatAll);
+            deps.log(`headless approve-all auto-accepted run=${m.runId} action=${m.actionType}`);
+          }
           continue;
         }
         const minted = decision.minted;

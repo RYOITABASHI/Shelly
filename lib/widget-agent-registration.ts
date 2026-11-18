@@ -62,7 +62,7 @@ export type AgentRegistrationSource = 'ai-pane' | 'widget-ask' | 'terminal-reque
  *     changes nothing.
  */
 export function resolveRegistrationConfirmRequirement(
-  settings: Pick<AppSettings, 'agentRegistrationRequireConfirm' | 'widgetAgentRegistrationNoConfirm'>,
+  settings: Pick<AppSettings, 'agentRegistrationRequireConfirm' | 'widgetAgentRegistrationNoConfirm' | 'approveAllWithoutAsking'>,
   source: AgentRegistrationSource,
 ): boolean {
   // `shelly agent add` (lib/agent-add-queue.ts): the request text came from
@@ -73,6 +73,13 @@ export function resolveRegistrationConfirmRequirement(
   // MONITOR MAP "Register this team": registration always needs the
   // user's plain-chat OK on the summary (standing product rule).
   if (source === 'monitor-team') return true;
+  // Master switch "Skip all approvals" (Settings only, read per decision):
+  // the user's own `@agent` (AI Pane / widget ASK) registers without the
+  // confirm step. The auto-register fast path's content gates (fireable
+  // schedule, no assumed values, risk tier) still apply. Terminal-originated
+  // and MONITOR-team requests above are unchanged: their text is not the
+  // user's own words (prompt-injection defense).
+  if (settings.approveAllWithoutAsking === true) return false;
   if (source === 'widget-ask' && settings.widgetAgentRegistrationNoConfirm === true) {
     return false;
   }

@@ -144,8 +144,14 @@ async function approveRawTool(
   request: Omit<ApprovalRequestInput, 'alwaysAllowable'>,
   callId: string,
 ): Promise<McpApprovalDecision> {
-  if (useSettingsStore.getState().settings.mcpSkipApproval === true) {
+  const settings = useSettingsStore.getState().settings;
+  if (settings.mcpSkipApproval === true) {
     logInfo('MCPBridge', `${request.kind} ${callId} auto-approved (mcpSkipApproval)`);
+    return 'once';
+  }
+  // The master switch "Skip all approvals" implies mcpSkipApproval.
+  if (settings.approveAllWithoutAsking === true) {
+    logInfo('MCPBridge', `${request.kind} ${callId} auto-approved (approveAllWithoutAsking)`);
     return 'once';
   }
   return requestApproval(request);
@@ -1311,6 +1317,15 @@ async function runAgentTool(
       return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'rule', ruleId: rule.id, target, actionPolicyPin: rule.actionPolicyPin });
     }
     logError('MCPBridge', `always-allow rule matched run_agent ${agentId} but could not be listed; asking instead`);
+  }
+  // 8b. The master switch "Skip all approvals" (Settings only): answered as
+  // a one-time 'once' — no always-allow rule is written, and the launch
+  // re-runs every deny class (STOP-ALL, taint, policy / CRITICAL) and the
+  // binding check. The run stays marked as external input (writes, sends
+  // and actions refused), exactly as after a tap.
+  if (useSettingsStore.getState().settings.approveAllWithoutAsking === true) {
+    logInfo('MCPBridge', `run_agent ${agentId} auto-approved once (approveAllWithoutAsking, principal=${ingress.principal.slice(0, 8)})`);
+    return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'dialog' });
   }
   // 9. nobody to ask: refuse at once, never queue a dialog in the background.
   if (!appIsForeground()) {

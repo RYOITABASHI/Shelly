@@ -485,6 +485,13 @@ export type AppSettings = {
    *  mcpExecEnabled on. Anyone holding the MCP token can then run commands
    *  on the device unattended. */
   mcpSkipApproval?: boolean;
+  /** Master switch "Skip all approvals" (default false, Settings only —
+   *  `shelly config set` and every other programmatic path may only turn it
+   *  off). When on, every approval prompt RN can answer is answered allow
+   *  (lib/approve-all-without-asking.ts); gate denies, untrusted-input /
+   *  MCP-tainted agents, proactive runs and unattended runs are unchanged.
+   *  Implies mcpSkipApproval. */
+  approveAllWithoutAsking?: boolean;
   /**
    * "Keep ChatGPT connected" (default false): mirror of the native,
    * Keystore-HMAC'd opt-in (CodexRemoteAutostart.kt) that CodexRemoteHost.kt
