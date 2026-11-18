@@ -5132,6 +5132,139 @@ function readPinnedVoiceOptional(home, stream, fsImpl) {
 }
 
 /**
+ * Pipeline observability A1: the folder-name mismatches between the owner's
+ * article pipelines and the digest's streams, as short strings ([] when none,
+ * when there is no digest, or when the file is missing or unreadable). The
+ * digest finds drafts only by `streams[].folder` (scanDraftFolders), so a
+ * pipeline folder in no stream, or a stream with no pipeline, is reported
+ * "missing" every day without any error. Port of
+ * articleDigestStreamsMismatchError (lib/agent-pipeline-presets.ts), which
+ * refuses such a file when an agent is created; here it also compares this
+ * plan's own snapshot against the file, which can change after creation.
+ * Folder basenames only, never full paths. Throws nothing.
+ */
+function articleDigestStreamsMismatch(home, plan, fsImpl) {
+  // Audit only: nothing in here may stop a run, whatever the file holds.
+  try {
+    return articleDigestStreamsMismatchUnsafe(home, plan, fsImpl || fs);
+  } catch (_) {
+    return [];
+  }
+}
+
+function readArticlePipelineFileForAudit(home, f) {
+  try {
+    const file = path.join(home, ...VOICE_PIPELINE_FILE.split('/'));
+    // No follow, no blocking (a FIFO swapped in cannot stall the run), and the
+    // type and size checks on the descriptor actually read.
+    const fd = f.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    try {
+      const st = f.fstatSync(fd);
+      if (!st.isFile() || st.nlink !== 1 || st.size > VOICE_PIPELINE_FILE_MAX_BYTES) return null;
+      // O_NOFOLLOW covers only the last name: the descriptor must be the file
+      // at the real home's fixed path (no linked .shelly or agents folder).
+      // No /proc to tell: nothing is read, nothing is reported.
+      const want = path.join(f.realpathSync(home), ...VOICE_PIPELINE_FILE.split('/'));
+      if (f.readlinkSync(`/proc/self/fd/${fd}`) !== want) return null;
+      const buf = Buffer.alloc(st.size);
+      let got = 0;
+      while (got < st.size) {
+        const n = f.readSync(fd, buf, got, st.size - got, got);
+        if (n <= 0) break;
+        got += n;
+      }
+      return JSON.parse(buf.subarray(0, got).toString('utf8'));
+    } finally {
+      f.closeSync(fd);
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+function articleDigestStreamsMismatchUnsafe(home, plan, f) {
+  const str = (v) => (typeof v === 'string' ? v : '');
+  // Resolved like the scan resolves it (path.resolve: `.`, `..`, doubled and
+  // trailing slashes), with the same storage under its other names folded
+  // (canonicalFolder in lib/agent-pipeline-presets.ts). '' for no usable path.
+  const norm = (folder) => {
+    const raw = str(folder);
+    if (!raw.startsWith('/')) return '';
+    return path.posix.resolve(raw).replace(/^\/storage\/(?:emulated\/0|self\/primary)(?=\/|$)/, '/sdcard');
+  };
+  const basename = (folder) => {
+    const n = norm(folder);
+    return n && n !== '/' ? path.posix.basename(n) : '';
+  };
+  const parent = (folder) => {
+    const n = norm(folder);
+    return n && n !== '/' ? path.posix.dirname(n) : '';
+  };
+  // A name for the audit line: printable, short.
+  const shown = (name) => str(name).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029"]/g, '?').slice(0, 64);
+  const longform = !!(plan && plan.steps && plan.steps.longform === true && Array.isArray(plan.steps.list));
+  const digestPlan = longform && isDigestPlan(plan);
+  const planOutputDir = plan && plan.output ? plan.output.outputDir : '';
+  let planStreams = [];
+  if (digestPlan) {
+    const listStep = plan.steps.list.find((s) => !!s && !!s.local && s.local.kind === 'list-drafts');
+    planStreams = listStep && Array.isArray(listStep.local.streams) ? listStep.local.streams.filter((s) => s && typeof s.folder === 'string') : [];
+  }
+  const planFolders = new Set(planStreams.map((s) => s.folder));
+
+  // 1. What the saved plan alone says, file or no file. First, so the cap
+  //    below never drops it: the scan skips the folder this digest saves into.
+  const problems = [];
+  const planOwn = digestPlan ? basename(planOutputDir) : '';
+  if (planOwn && planFolders.has(planOwn)) problems.push(`this digest's stream folder "${shown(planOwn)}" is the digest's own folder, which the digest skips`);
+
+  // 2. The owner's file against itself and against this plan.
+  const parsed = readArticlePipelineFileForAudit(home, f);
+  const digest = parsed && typeof parsed === 'object' ? parsed.digest : null;
+  if (!digest || typeof digest !== 'object' || !Array.isArray(digest.streams)) return problems;
+  const streams = digest.streams.filter((s) => s && typeof s === 'object' && typeof s.folder === 'string');
+  const streamFolders = new Set(streams.map((s) => s.folder));
+  const pipelines = Array.isArray(parsed.pipelines) ? parsed.pipelines.filter((p) => p && typeof p === 'object') : [];
+  const pipelineFolders = new Set(pipelines.map((p) => basename(p.outputFolder)).filter(Boolean));
+  // The digest scans the folders next to its own (scanDraftFolders: draftsDir is
+  // the parent of the digest's outputFolder), so a pipeline elsewhere is unseen
+  // even when its folder name matches; and it skips its own folder.
+  const digestParent = parent(digest.outputFolder);
+  const digestOwn = basename(digest.outputFolder);
+  if (longform) {
+    if (digestPlan) {
+      // The plan's own folder decides where the scan looks; the file can move.
+      if (digestParent && parent(planOutputDir) && parent(planOutputDir) !== digestParent) {
+        problems.push("this digest's folder is not next to the file's digest folder (re-create the digest)");
+      }
+      for (const s of planStreams) {
+        if (!pipelineFolders.has(s.folder)) problems.push(`this digest's stream folder "${shown(s.folder)}" has no pipeline in the file`);
+      }
+      for (const folder of streamFolders) {
+        if (!planFolders.has(folder)) problems.push(`the file's stream folder "${shown(folder)}" is not in this digest (re-create the digest to list it)`);
+      }
+    } else {
+      const base = basename(planOutputDir);
+      if (base && !streamFolders.has(base)) problems.push(`this agent's folder "${shown(base)}" is not in the file's digest.streams`);
+      else if (base && digestParent && parent(planOutputDir) !== digestParent) problems.push(`this agent's folder "${shown(base)}" is not next to the digest's folder`);
+    }
+  }
+  pipelines.forEach((p, i) => {
+    const base = basename(p.outputFolder);
+    if (!base) problems.push(`pipelines[${i}] has no usable outputFolder`);
+    else if (!streamFolders.has(base)) problems.push(`pipelines[${i}] folder "${shown(base)}" is not in digest.streams`);
+    else if (digestParent && parent(p.outputFolder) !== digestParent) problems.push(`pipelines[${i}] folder "${shown(base)}" is not next to the digest's folder`);
+  });
+  streams.forEach((s, j) => {
+    if (digestOwn && s.folder === digestOwn) problems.push(`digest.streams[${j}] folder "${shown(s.folder)}" is the digest's own folder, which the digest skips`);
+    else if (!pipelineFolders.has(s.folder)) problems.push(`digest.streams[${j}] folder "${shown(s.folder)}" has no pipeline`);
+  });
+  // Plan-specific lines come first, so the cap drops only file-wide repeats.
+  return Array.from(new Set(problems)).slice(0, ARTICLE_MISMATCH_MAX_PROBLEMS);
+}
+const ARTICLE_MISMATCH_MAX_PROBLEMS = 20;
+
+/**
  * The materials root the owner pinned for this stream in
  * ~/.shelly/agents/article-pipelines.json, read again at run time like the
  * voice pin. '' when there is none. Throws nothing.
@@ -8906,8 +9039,22 @@ async function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
   // In bestEffort mode the whole sequence is swallowed on the FIRST failure, matching
   // the .sh `save_draft_result ... || true` under `set -e` (a failed primary write
   // aborts before the mirror). The terminal draft path lets the failure propagate.
+  let current = 'primary';
+  let snapshot = null;
+  const verified = [];
   try {
-    for (const target of targets) await brokerFsWrite(paths, opts, roots, target, paths.resultFile);
+    // A3: the draft is read once, through one descriptor, into a fresh private
+    // copy. The broker writes from that copy and the check below compares each
+    // saved file with the same bytes, so a result file replaced mid-save cannot
+    // make the saved draft and what was checked (or registered) differ.
+    snapshot = snapshotDraftSource(paths);
+    for (let k = 0; k < targets.length; k += 1) {
+      current = k === 0 ? 'primary' : 'mirror';
+      await brokerFsWrite(paths, opts, roots, targets[k], snapshot.file);
+      // A3: the broker answering 0 is not proof. Check the file is there, as a
+      // plain file of the bytes we handed over, before calling it saved.
+      verified.push(verifyDraftWritten(targets[k], snapshot, roots));
+    }
     // Record where the draft landed so writeRunLog can carry it into the run
     // log as savedPath/savedPathMirror — parity with the .sh's
     // SAVED_PATH_FIELDS. Without it the Sidebar agent detail's "Open" button
@@ -8921,10 +9068,224 @@ async function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
     // save_draft_result appends source URLs to the shared dedup registry AFTER the
     // write, inside set -e — a failed write aborts before it. Keep it inside the try
     // so a swallowed bestEffort write failure also skips the registry (parity).
-    registerSourceUrls(paths, config, plan);
+    registerSourceUrls(paths, config, plan, snapshot.text);
   } catch (e) {
+    // A3: never silent. One audit line names the failure, swallowed or not;
+    // the fatal path still throws so the run ends in error.
+    auditDraftWriteFailed(paths, plan, current, bestEffort, e);
     if (!bestEffort) throw e;
+    return false;
+  } finally {
+    if (snapshot) {
+      try { fs.unlinkSync(snapshot.file); } catch (_) {}
+    }
   }
+  auditDraftSaved(paths, plan, dest, verified.every((v) => v === 'bytes') ? 'bytes' : 'size');
+  return true;
+}
+
+// Pipeline observability A3 (2026-11-18): a draft that is not on disk after a
+// write the broker reported as done. Thrown into writeDraftOutputs' catch, so
+// it is audited and, on the fatal path, ends the run in error. stat, not
+// lstat: the broker writes through a leaf link whose target is inside a
+// root, and that is a saved draft too.
+function draftWriteFailure(code, message) {
+  const e = new PlanFailure(`draft not found after write: ${message}`, { exitCode: EXIT.OK, handled: true });
+  e.draftCode = code;
+  return e;
+}
+
+// One descriptor for every check, opened without blocking (a FIFO swapped in
+// cannot stall the run) and read only up to the size it reports. With
+// /proc/self/fd the opened file must also sit inside a declared root, as the
+// broker required for the write; only a hash leaves this function.
+// The draft source (the run's own result file), read through one descriptor
+// (no follow, no blocking, a regular file) and copied to a new private file
+// created exclusively in the run's tmp dir. { file, size, sha256, text }.
+function snapshotDraftSource(paths) {
+  let fd;
+  let buf;
+  try {
+    fd = fs.openSync(paths.resultFile, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  } catch (_) {
+    throw draftWriteFailure('other', 'the draft source could not be read');
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw draftWriteFailure('other', 'the draft source is not a plain file');
+    buf = readFdExactly(fd, st.size);
+    if (!buf) throw draftWriteFailure('other', 'the draft source changed while read');
+  } catch (e) {
+    if (e && typeof e.draftCode === 'string') throw e;
+    throw draftWriteFailure('other', 'the draft source could not be read');
+  } finally {
+    try { fs.closeSync(fd); } catch (_) {}
+  }
+  const file = path.join(paths.tmpDir, `plan-draft-${process.pid}-${crypto.randomBytes(8).toString('hex')}.md`);
+  try {
+    fs.writeFileSync(file, buf, { flag: 'wx', mode: 0o600 });
+  } catch (_) {
+    try { fs.unlinkSync(file); } catch (__) {}
+    throw draftWriteFailure('other', 'the draft copy could not be made');
+  }
+  return { file, size: buf.length, sha256: sha256Hex(buf), text: buf.toString('utf8') };
+}
+
+// Exactly `size` bytes from position 0, or null when the file is shorter.
+function readFdExactly(fd, size) {
+  const buf = Buffer.alloc(size);
+  let got = 0;
+  while (got < size) {
+    const n = fs.readSync(fd, buf, got, size - got, got);
+    if (n <= 0) break;
+    got += n;
+  }
+  return got === size ? buf : null;
+}
+
+// One descriptor for every check, opened without blocking (a FIFO swapped in
+// cannot stall the run) and read only up to the size it reports. With
+// /proc/self/fd the opened file must also sit inside a declared root, as the
+// broker required for the write; only a hash leaves this function.
+function verifyDraftWritten(target, written, roots) {
+  let fd;
+  try {
+    fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+  } catch (e) {
+    // A destination the broker may write but nobody may read (mode 0200, say)
+    // was a working save before this check existed: confirm what can be
+    // confirmed without reading (a plain file of the right size, inside a
+    // root) and say so in draft_saved.
+    if (e && (e.code === 'EACCES' || e.code === 'EPERM')) return verifyUnreadableDraft(target, written, roots);
+    throw draftWriteFailure('missing-after-write', e && e.code === 'ENOENT' ? 'ENOENT' : 'unreadable');
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw draftWriteFailure('not-a-file', 'not a plain file');
+    // Unlinked after the open: the bytes are readable, the draft is gone.
+    if (st.nlink === 0) throw draftWriteFailure('missing-after-write', 'removed');
+    if (st.size !== written.size) throw draftWriteFailure('size-mismatch', `${st.size} bytes on disk, ${written.size} written`);
+    if (!draftFdInsideRoots(fd, roots, target)) throw draftWriteFailure('outside-roots', 'the saved file is outside the output roots');
+    // Same size is not the same draft: an older one of equal length may still
+    // be there. Compare the bytes.
+    const buf = readFdExactly(fd, written.size);
+    if (!buf || sha256Hex(buf) !== written.sha256) throw draftWriteFailure('content-mismatch', 'the file on disk is not the draft written');
+    return 'bytes';
+  } catch (e) {
+    if (e && typeof e.draftCode === 'string') throw e;
+    throw draftWriteFailure('missing-after-write', 'unreadable');
+  } finally {
+    try { fs.closeSync(fd); } catch (_) {}
+  }
+}
+
+function verifyUnreadableDraft(target, written, roots) {
+  let real;
+  let st;
+  try {
+    real = fs.realpathSync(target);
+    st = fs.statSync(real);
+  } catch (_) {
+    throw draftWriteFailure('missing-after-write', 'unreadable');
+  }
+  if (!st.isFile()) throw draftWriteFailure('not-a-file', 'not a plain file');
+  if (st.size !== written.size) throw draftWriteFailure('size-mismatch', `${st.size} bytes on disk, ${written.size} written`);
+  if (!pathInsideRoots(real, roots)) throw draftWriteFailure('outside-roots', 'the saved file is outside the output roots');
+  return 'size';
+}
+
+function pathInsideRoots(real, roots) {
+  return (Array.isArray(roots) ? roots : []).some((root) => {
+    let r;
+    try {
+      r = fs.realpathSync(root);
+    } catch (_) {
+      return false;
+    }
+    return real === r || real.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+  });
+}
+
+function draftFdInsideRoots(fd, roots, target) {
+  let real;
+  try {
+    if (fs.existsSync('/proc/self/fd')) {
+      real = fs.readlinkSync(`/proc/self/fd/${fd}`);
+    } else {
+      // No /proc: the target's real path, accepted only when it is the very
+      // file the descriptor holds (same device and inode).
+      real = fs.realpathSync(target);
+      const a = fs.statSync(real);
+      const b = fs.fstatSync(fd);
+      if (a.dev !== b.dev || a.ino !== b.ino) return false;
+    }
+  } catch (_) {
+    return false;
+  }
+  if (/ \(deleted\)$/.test(real)) return false;
+  return (Array.isArray(roots) ? roots : []).some((root) => {
+    let r;
+    try {
+      r = fs.realpathSync(root);
+    } catch (_) {
+      return false;
+    }
+    return real === r || real.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+  });
+}
+
+function draftFilePresent(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+// The folder and file name only (what the digest scan matches), never the
+// full path. Throws nothing: an audit hiccup must not fail a saved draft.
+// verified: 'bytes' (every saved file hashed equal) or 'size' (one could not
+// be read back, see verifyUnreadableDraft).
+function auditDraftSaved(paths, plan, dest, verified) {
+  try {
+    let bytes = 0;
+    try { bytes = fs.statSync(dest).size; } catch (_) {}
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'draft_saved',
+      agentId: plan.agent.id,
+      folder: path.basename(path.dirname(dest)),
+      file: path.basename(dest),
+      bytes,
+      verified: verified || 'bytes',
+    });
+  } catch (_) {}
+}
+
+function draftWriteFailureCode(error) {
+  if (error && typeof error.draftCode === 'string') return error.draftCode;
+  if (error instanceof PlanFailure && /^scoped filesystem write denied/.test(String(error.message))) return 'broker-refused';
+  return 'other';
+}
+
+function auditDraftWriteFailed(paths, plan, target, bestEffort, error) {
+  try {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'draft_write_failed',
+      agentId: plan.agent.id,
+      actionType: String((plan.action && plan.action.type) || ''),
+      target,
+      // true: the caller goes on (an intermediate save, or a policy
+      // draft_only); false: the run ends in error.
+      swallowed: !!bestEffort,
+      // A code, never the error text: the broker's message can carry a path,
+      // and this log is readable over MCP (read_agent_audit).
+      code: draftWriteFailureCode(error),
+    });
+  } catch (_) {}
 }
 
 // Mirror of the .sh register_source_urls: append https URLs found in the draft to a
@@ -8932,16 +9293,19 @@ async function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
 // the url column, under a mkdir mutex. Fixed path (no model-controlled path), best
 // effort — a registry hiccup must never fail the run. No-op when the sources/ dir is
 // absent (parity with the .sh, whose `>>` silently fails without it).
-function registerSourceUrls(paths, config, plan) {
+function registerSourceUrls(paths, config, plan, draftText) {
   try {
     const contentProject = config.SHELLY_CONTENT_PROJECT || path.join(paths.home, 'projects/shelly-content-studio');
     const registryFile = config.SOURCE_REGISTRY_FILE || path.join(contentProject, 'sources', 'source-registry.tsv');
 
-    let text = '';
-    try {
-      text = fs.readFileSync(paths.resultFile, 'utf8');
-    } catch (_) {
-      return;
+    // A3: the bytes that were saved (writeDraftOutputs' snapshot), not the path again.
+    let text = typeof draftText === 'string' ? draftText : '';
+    if (typeof draftText !== 'string') {
+      try {
+        text = fs.readFileSync(paths.resultFile, 'utf8');
+      } catch (_) {
+        return;
+      }
     }
     const seen = new Set();
     // The .sh uses line-oriented `grep -Eo`, so a match never spans a newline; exclude
@@ -9572,7 +9936,9 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     throw new ActionSkipped(policy.reason);
   }
   if (policy.effect === 'draft_only') {
-    await writeDraftOutputs(paths, opts, plan, config, roots, true);
+    const saved = await writeDraftOutputs(paths, opts, plan, config, roots, true);
+    // A3: do not claim a draft that this (best-effort) write did not leave.
+    if (!saved) throw new ActionSkipped(`${policy.reason}: not dispatched, and the draft could not be saved`);
     throw new ActionSkipped(`${policy.reason}: kept as a draft, not dispatched`);
   }
   if (policy.effect === 'ask') {
@@ -10079,15 +10445,15 @@ function killAfterDraftHook() {
   return true;
 }
 
-function auditAfterDraftHook(paths, plan, status) {
+function auditAfterDraftHook(paths, plan, status, extra) {
   try {
-    appendJsonl(paths.planAuditFile, {
+    appendJsonl(paths.planAuditFile, Object.assign({
       ts: new Date().toISOString(),
       kind: 'plan.executor',
       event: 'after_draft_hook',
       agentId: plan.agent.id,
       status,
-    });
+    }, extra || {}));
   } catch (_) {}
 }
 
@@ -10163,7 +10529,10 @@ async function runAfterDraftHook(paths, opts, plan, savedPath, startedAt) {
       auditAfterDraftHook(paths, plan, 'too-late');
       return;
     }
-    auditAfterDraftHook(paths, plan, await spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs));
+    const hookStatus = await spawnAfterDraftHook(paths, opts, hook, savedPath, timeoutMs);
+    // A3: the hook is the owner's code and may move the draft. Say whether the
+    // saved file is still where the run put it (a digest scan looks only there).
+    auditAfterDraftHook(paths, plan, hookStatus, { draftPresent: draftFilePresent(savedPath) });
   } catch (_) {
     auditAfterDraftHook(paths, plan, 'error');
   }
@@ -13136,6 +13505,25 @@ async function run(args) {
   // forward) takes the untouched single-shot branch below — byte-identical
   // to this executor's behavior before this increment.
   const hasChain = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.length > 0);
+  // A1: an article or digest run names any folder mismatch between the
+  // owner's pipelines and the digest's streams. A line only: the draft is
+  // still worth saving, and the digest still lists what it can see. After
+  // STOP-ALL and the lock (a refused run reads nothing), and never for a
+  // tainted run: the owner's folder names go to an MCP-readable log.
+  if (plan.steps && plan.steps.longform === true && !opts.tainted && !ingressTainted()) {
+    const mismatch = articleDigestStreamsMismatch(home, plan);
+    if (mismatch.length) {
+      try {
+        appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event: 'article_config_mismatch',
+          agentId: plan.agent.id,
+          problems: mismatch,
+        });
+      } catch (_) {}
+    }
+  }
   // Live progress (v12): opened only once this run holds the agent lock, so a
   // concurrent "previous run still active" refusal never rotates the stream.
   // Guarded so a progress bug can never leave the agent lock held (the
@@ -14009,6 +14397,8 @@ module.exports = {
   voiceOmittedFooter,
   withoutAuthorViewSection,
   readPinnedVoiceOptional,
+  articleDigestStreamsMismatch,
+  writeDraftOutputs,
   buildVoiceWritePrompt,
   buildVoiceReviewPrompt,
   VoiceFailure,
