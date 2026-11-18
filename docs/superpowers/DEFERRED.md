@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-19: CC（feat/draft-direct-read、バッチC）が MCP の読み取り専用ツール `list_drafts` / `read_draft` を追加（サーバー自身が答えるので Shelly が背面でも下書きを読める）。`read_logs` の常時応答化は評価のみ。DEFERRED に 3 項目（下書き直読みの実機確認・read_logs の評価・共通マスク処理の規則順）。
 - 2026-11-17: ハヤト（ドキュメント同期、PR #171）: MCP アクション事前許可・ClosePaw 承認なしスイッチ・Wi-Fi ガーディアン・MCP 診断ツール・MCP 自動起動の各項目に実機検証の記録を追記（build 2968・2973・2980、Galaxy Z Fold6、N=1）。MCP ingress の印（Inc 1〜5）が main に着地済みであることも同項目に明記。README（英・日）の Status・ハイライト・ClosePaw 段落も同期。
 - 2026-11-17: CC（feat/guardian-tailscale-mobile）がオーナー決定（2026-11-17）でガーディアンの仕様を変更: Wi-Fi 切断時に Tailscale を切断しない（モバイルデータでも接続したまま、Wi-Fi 外から Shelly の MCP に届くように）。OFF シーケンスは `adb_wifi_enabled=0` だけになり、ClosePaw への依頼も承認なし設定の参照もしない。Tailscale の経路は接続専用（`GOAL_TAILSCALE_DISCONNECT`・`disconnect` アクションを削除、Kotlin・TS の両コア）。状態機械・常駐の条件は不変。Gradle・実機未検証（下記 P1）。
 - 2026-11-17: CC（feat/wifi-guardian、base `feat/closepaw-shell-preapproval`）が「Wi-Fi連動オートパイロット」（connectivity guardian、オーナー承認済み、経路 C1）を実装（`ConnectivityGuardian*.kt`・`WifiDebugControl.kt`・`ShizukuLiveness.kt`・`TailscaleControl.kt`・`lib/connectivity-guardian-*.ts`、設定の「Wi-Fi 連動オートパイロット」、既定 OFF）。Kotlin と Shizuku 依存はローカルでは未コンパイル（CI のビルドで確認）、実機未検証（下記 P1）。
@@ -165,6 +166,22 @@ Why not now: 外部エージェント側の準備（接続・トークン受け�
 **実機検証（2026-11-16〜17、build 2964〜2980、Galaxy Z Fold6）**: 診断トグルを ON にし、3 ツールとも MCP 越しに呼び出し済み。`device_status` は Shelly が背面の間も返り、`stale` と `ageMs` が増えること（2026-11-17 に約 48 分前のスナップショットが `stale: true` で返るのを確認）、サーマル状態が取れることを確認。**残る確認**: (3) `read_logs source=logcat` がアプリの uid から読めるかは切り分け未了。(4) `get_settings` に API キー類が出ないことの正式な確認も未実施（返答自体は検証作業の中で繰り返し読んでいる）。
 **設定の書き込みは範囲外（意図的）**: MCP から設定を変える経路は作らない。作るとしても、(a) MCP サーバーの ON/OFF・exec/write・ターミナル読み取り・診断・トークン・承認系・taint 系などセキュリティに関わる設定は永久に対象外（固定の許可リスト方式で、テーマやフォント等の見た目の設定だけを列挙する。拒否リスト方式は使わない）、(b) 1 件ずつ端末での承認タップ（`run_command` と同じ McpApprovalModal、ゲートを通らない分ここが唯一の制御）、(c) MCP 由来の変更として監査行を残す、(d) taint の付いた呼び出しからの変更は既存の ingress 規則に従う、が前提。
 Why not now: 読み取りの実機確認が先。書き込みは需要が具体化してから設計する。
+
+### MCP の下書き直読み（`list_drafts` / `read_draft`）— 実装済み・実機未検証（2026-11-19、P1）
+
+ブランチ `feat/draft-direct-read`。MCP サーバー（node、アプリと同じ uid）が `~/.shelly/agents/article-pipelines.json` の各 pipeline の `outputFolder` を直接読む。RN もスナップショットも使わないので、Shelly が背面でも答える。読むのは executor の frontmatter（title・date・saved_at・review）で始まる `*.md` だけで、ほかのノートは一覧にも本文取得にも出ない。保存先は共有ストレージ（`/sdcard` 等の別名を含む）か home の下に限る。vault / custom のルート設定は RN 側にあり RN なしでは読めないため、ここでは確かめない（設定ファイル自体はゲートの policy-write で保護）。本文は行ごとにマスクし、4 KiB を超える行は表示しない。
+**実機で確認すること**: (1) Shelly を背面にした状態（RN 休止）で `list_drafts` が設定した全系列について下書きを返すこと（既定は全系列合わせて新しい順に 100 本まで。MCP サーバーのプロセスが MANAGE_EXTERNAL_STORAGE のもとで `/storage/emulated/0/...` を読めること）。(2) `/proc/self/fd` のリンク先が `/storage/emulated/0/...` の形で返ること。FUSE の都合で別の形（`/mnt/user/0/...` 等）になると、そのフォルダの系列が「cannot confirm the folder is where it is configured」で拒否される（共有ストレージ上の全系列が該当しうる）。(3) `read_draft` が実際の下書きをマスク済みで返すこと（既定 32 KiB まで。秘密らしい行や閉じない引用があればそこで早めに終わる）。
+Why not now: 端末操作は VM から行えない（ハヤト経由）。
+
+### `read_logs` を Shelly が背面でも答えられるようにする — 評価のみ、未実装（2026-11-19、P2）
+
+`source=logcat` は、MCP サーバーのプロセス（アプリと同じ uid）が `logcat -d -s <Shelly のタグ>` を直接実行すれば RN なしで答えられる（RN 側と同じく、ReactNativeJS は `[Shelly][` の行だけに絞る絞り込み・マスク・タイムアウト・出力上限をそのまま移す。タグの絞り込みだけでは Shelly のロガー以外の ReactNativeJS 行が入る）。ネイティブのタグ（AgentRuntime・MCPBridge 等）は RN 休止中も書かれるので、スナップショットへのミラーより新しい。`source=app`（JS のリングバッファ、最大 1000 行）は RN 休止中は JS が止まって増えないため、背面に回る時点の内容を別の署名付きファイル（`snapshot.json` の 256 KiB 上限には入らない）へ間引いて書けば十分。どちらも `mcpDiagnosticsEnabled` の判定はサーバー側の環境変数で既に可能。
+Why not now: バッチC の範囲は評価のみ。logcat の直接実行は、子プロセスから `logcat` を実行できるかの実機確認（上の「MCP の診断ツール」(3) と同じ確認）が先。
+
+### MCP の共通マスク処理（`redactForMcp`）の規則順 — 未対応（2026-11-19、P2）
+
+`scripts/shelly-mcp-server.js` の `redactForMcp` は API キー等のトークン規則を先に、URL の userinfo（`scheme://user:pass@`）を後に処理する。userinfo の中でトークン規則が当たると URL 規則が当たらなくなり、ユーザー名などが残る（例 `https://me:sk-proj-…@host` → `https://me:<redacted:…>`）。`read_draft` / `list_drafts` の title は URL を先に処理して回避済み。`read_logs` など他のツールは従来の順のまま。また `read_logs` は 1 行ずつマスクするので、行をまたぐ値（折り返した `Bearer` など）は捕まらない（共通の規則自体は 2 行をまとめて渡せば一部を捕まえる）。
+Why not now: 他ツールの出力が変わるため、バッチC（下書きの直読み）の範囲外とした。直すなら URL 規則を先頭に移し、各ツールのテストを見直す。
 
 ### MCP サーバーが再起動・アップデート後に Shelly を開くまで止まったまま — ✅ 実装済み・実機 VERIFIED（再起動の脚、2026-11-17） (P1)
 
