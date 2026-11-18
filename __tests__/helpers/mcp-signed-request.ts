@@ -4,7 +4,7 @@
  * SHA-256. No realistic data: the principal is a fixed dummy hash.
  */
 import * as nodeCrypto from 'crypto';
-import { signMcpRequest, type Sha256 } from '@/lib/mcp-request-auth';
+import { mcpHandoffToken, signMcpRequest, type Sha256 } from '@/lib/mcp-request-auth';
 
 export const TEST_BRIDGE_KEY = 'a1'.repeat(32);
 export const TEST_PRINCIPAL = '0123456789abcdef0123456789abcdef';
@@ -29,4 +29,11 @@ export async function signedRequest(
     receivedAt: opts.receivedAt ?? new Date().toISOString(),
   };
   return JSON.stringify(await signMcpRequest(opts.key ?? TEST_BRIDGE_KEY, unsigned, nodeSha256));
+}
+
+/** The single-use handoff token the native raw / typed consumer writes to
+ *  handoffs/<callId> before it moves a request into requests/ (RN runs a
+ *  run_command / write_file / run_agent from requests/ only with it). */
+export function handoffTokenForTest(callId: string, key: string = TEST_BRIDGE_KEY): Promise<string> {
+  return mcpHandoffToken(key, callId, nodeSha256);
 }

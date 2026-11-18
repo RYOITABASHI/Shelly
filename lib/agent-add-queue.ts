@@ -343,6 +343,8 @@ export type AgentAddDrainDeps = {
   writeCtlResult: (ctlId: string, result: AgentAddResult) => Promise<void>;
   now: () => number;
   log?: (message: string) => void;
+  /** Copies native (headless MCP command) origin facts before classifying (lib/mcp-native-ingress.ts). */
+  syncNativeMcpIngress?: () => Promise<void>;
 };
 
 export type AgentAddDrainState = { lastHandOffAt: number };
@@ -366,6 +368,7 @@ export async function drainAgentAddRequests(
   state: AgentAddDrainState,
 ): Promise<number> {
   if (!deps.isActive()) return 0;
+  if (deps.syncNativeMcpIngress) await deps.syncNativeMcpIngress().catch(() => {});
   const names = await deps.listHome();
   const now = deps.now();
 

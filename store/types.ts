@@ -480,10 +480,12 @@ export type AppSettings = {
    *  you specifically want a PC-side MCP client (Claude Code, Codex) to
    *  be able to run commands / write files on this device. */
   mcpExecEnabled?: boolean;
-  /** MCP run_command / write_file run without the on-device approval tap
-   *  (default false). Gate refusals still refuse. Only meaningful with
-   *  mcpExecEnabled on. Anyone holding the MCP token can then run commands
-   *  on the device unattended. */
+  /** Mirror of the native, Keystore-HMAC'd "MCP: Run without approval"
+   *  switch (McpSkipApprovalStore.kt; native wins, lib/mcp-skip-approval.ts).
+   *  While native is on, McpRawToolConsumer runs MCP run_command / write_file
+   *  headless after the same gate, without the tap. Turned on only by the
+   *  Settings toggle; a load/sync only copies native; STOP-ALL and token
+   *  regeneration turn it off. Only meaningful with mcpExecEnabled on. */
   mcpSkipApproval?: boolean;
   /** Master switch "Skip all approvals" (default false, Settings only —
    *  `shelly config set` and every other programmatic path may only turn it

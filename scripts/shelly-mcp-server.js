@@ -19,7 +19,10 @@
  * (lib/agent-boundary-policy.ts, strict policy paths + POLICY-001) refuses
  * a deny outright (policy-write, CRITICAL, user deny rules) without asking,
  * and everything else blocks on an in-app approval tap
- * (components/McpApprovalModal.tsx, fail-closed on timeout). The pre-existing capability broker
+ * (components/McpApprovalModal.tsx, fail-closed on timeout) — unless the
+ * owner turned on "MCP: Run without approval", in which case the native
+ * McpRawToolConsumer runs the call after the same gate, without the tap and
+ * without RN (see RAW_REQUEST_TOOLS). The pre-existing capability broker
  * (lib/capability-envelope.ts / scripts/shelly-capability-broker.js) still
  * only gates OUTGOING agent requests — unrelated to this ingress path.
  *
@@ -422,6 +425,23 @@ function cleanClientName(raw) {
 // The choice is made once per callId from the tool name; nothing here ever
 // writes the same callId to both directories or re-enqueues on a timeout.
 const TYPED_REQUEST_TOOLS = new Set(['run_agent']);
+// Raw tools (run_command / write_file) likewise go to their own directory,
+// drained ONLY by the native McpRawToolConsumer. It is the one place that
+// decides, per callId, how the call is answered: with the owner's native
+// "MCP: Run without approval" switch on (Keystore-HMAC'd, turned on only by
+// the Settings toggle) it runs the call itself through the same gate RN
+// uses, without RN (Shelly in the background, screen locked); otherwise it
+// moves the original file into requests/ together with a single-use handoff
+// token, and RN answers it with the approval tap exactly as before. RN never
+// reads raw-requests/. Same once-per-callId rule as typed requests.
+const RAW_REQUEST_TOOLS = new Set(['run_command', 'write_file']);
+
+/** The queue subdirectory a tool's request file goes to (decided once per call). */
+function requestDirName(toolName) {
+  if (TYPED_REQUEST_TOOLS.has(toolName)) return 'typed-requests';
+  if (RAW_REQUEST_TOOLS.has(toolName)) return 'raw-requests';
+  return 'requests';
+}
 
 // Same request/result file-queue round trip as shelly-a2a-server.js — see
 // that script's waitForResult for the full rationale.
@@ -431,9 +451,11 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
   }
   const requestsDir = path.join(queueDir, 'requests');
   const typedRequestsDir = path.join(queueDir, 'typed-requests');
+  const rawRequestsDir = path.join(queueDir, 'raw-requests');
   const resultsDir = path.join(queueDir, 'results');
   fs.mkdirSync(requestsDir, { recursive: true });
   fs.mkdirSync(typedRequestsDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(rawRequestsDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(resultsDir, { recursive: true });
 
   function waitForResult(callId) {
@@ -487,7 +509,7 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
       },
       receivedAt: new Date().toISOString(),
     };
-    const file = path.join(TYPED_REQUEST_TOOLS.has(toolName) ? typedRequestsDir : requestsDir, `${callId}.json`);
+    const file = path.join(queueDir, requestDirName(toolName), `${callId}.json`);
     // tmp + rename: no consumer ever reads a half-written request (both
     // consumers only take names ending in `.json`).
     fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...unsigned, mac: requestMac(bridgeKey, unsigned) }), { mode: 0o600 });
@@ -565,6 +587,7 @@ function deviceStatusFromSnapshot(device, nowMs) {
   return { ok: true, data: { ...out, ageMs, stale: ageMs > DEVICE_STALE_AFTER_MS } };
 }
 
+// KEEP IN SYNC: McpRawToolDecision.kt snapshotMac / repoPathsFromSnapshot.
 function snapshotMac(token, body) {
   const key = crypto.createHash('sha256').update(`shelly-mcp-snapshot:${token}`).digest();
   return crypto.createHmac('sha256', key).update(body).digest('hex');
@@ -2511,7 +2534,8 @@ async function main() {
     token,
     // get_run_result reads runs/ directly; list_agents / list_repos /
     // git_status / device_status read the snapshot; the rest go through the
-    // file queue (run_agent → typed-requests/, everything else → requests/).
+    // file queue (run_agent → typed-requests/, run_command / write_file →
+    // raw-requests/, everything else → requests/).
     callTool: createRunResultCallTool({
       queueDir,
       fallback: createDirectReadCallTool({ queueDir, token, fallback: createFileQueueCallTool(queueDir, bridgeKey), log }),
@@ -2569,6 +2593,8 @@ if (require.main === module) {
     getRunResultDirect,
     redactForMcp,
     TYPED_REQUEST_TOOLS,
+    RAW_REQUEST_TOOLS,
+    requestDirName,
     RUN_RESULT_POLL_MS,
     requestMac,
     canonicalJson,

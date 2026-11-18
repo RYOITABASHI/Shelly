@@ -48,8 +48,10 @@
  * New rules bind both the definition and RN-evaluated sealed policy snapshot;
  * native verifies them again at acceptance and start. Legacy rules remain
  * dialog-only. See docs/mcp-agent-action-consent.md.
- * This is the foreground path: it still needs RN to drain the queue (the
- * headless bypass is a later PR).
+ * This is the foreground path: it still needs RN to drain the queue.
+ * run_command / write_file arrive here only by the native McpRawToolConsumer's
+ * handoff (with a single-use token) while "MCP: Run without approval" is off;
+ * with it on, native runs them headless after the same gate (lib/mcp-raw-gate.ts).
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
@@ -97,6 +99,7 @@ import {
 } from '@/lib/mcp-typed-ops';
 import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
+import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -133,27 +136,17 @@ function execEnabled(): boolean {
 }
 
 /**
- * settings.mcpSkipApproval: the owner chose to let MCP run_command /
- * write_file run without the on-device tap (the tap needs Shelly in the
- * foreground, so PC-side calls time out while another app is shown). Read
- * at the moment of the decision. Gate refusals (CRITICAL, policy-write,
- * POLICY-001 deny) still refuse; only the tap is skipped, and the answer is
- * 'once' (never an always-allow rule).
+ * run_command / write_file reach RN only by the native McpRawToolConsumer's
+ * handoff, which it makes only while the native "MCP: Run without approval"
+ * switch is OFF (with it ON, native runs the call itself, headless, after the
+ * same gate). So here the tap is always asked: the mcpSkipApproval setting is
+ * only a mirror of that native switch (lib/mcp-skip-approval.ts) and is not
+ * read here.
  */
 async function approveRawTool(
   request: Omit<ApprovalRequestInput, 'alwaysAllowable'>,
-  callId: string,
+  _callId: string,
 ): Promise<McpApprovalDecision> {
-  const settings = useSettingsStore.getState().settings;
-  if (settings.mcpSkipApproval === true) {
-    logInfo('MCPBridge', `${request.kind} ${callId} auto-approved (mcpSkipApproval)`);
-    return 'once';
-  }
-  // The master switch "Skip all approvals" implies mcpSkipApproval.
-  if (settings.approveAllWithoutAsking === true) {
-    logInfo('MCPBridge', `${request.kind} ${callId} auto-approved (approveAllWithoutAsking)`);
-    return 'once';
-  }
   return requestApproval(request);
 }
 
@@ -675,6 +668,10 @@ export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } 
   await FileSystem.deleteAsync(HANDOFFS_DIR, { idempotent: true });
   logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
   if (opts.tokenRevoked) {
+    // A new token turns "MCP: Run without approval" off (the owner turns it
+    // on again in Settings). Not confirmed off = the regeneration fails and
+    // the server stays off.
+    await turnOffMcpSkipApproval('token regenerated');
     // run_agent tickets of the old token: live ones become `cancelled`
     // (an accepted one then never starts). Best effort — tickets are
     // principal-scoped, so the new token can't read them anyway.
@@ -1444,6 +1441,8 @@ const inFlightRequestFiles = new Set<string>();
 
 /** Typed ops arrive in requests/ only through the native consumer's handoff. */
 const TYPED_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_agent']);
+/** So do raw tools (McpRawToolConsumer, scripts/shelly-mcp-server.js RAW_REQUEST_TOOLS). */
+const RAW_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_command', 'write_file']);
 export const HANDOFFS_DIR = `${QUEUE_DIR}/handoffs`;
 
 /**
@@ -1493,7 +1492,17 @@ async function processRequestFile(name: string): Promise<void> {
     }
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
-    if (TYPED_REQUEST_TOOLS.has(request.tool)) {
+    if (RAW_REQUEST_TOOLS.has(request.tool)) {
+      // A raw tool reaches requests/ only by the native raw consumer's handoff
+      // (it routes ONCE per callId: run natively, or hand here). Its token is
+      // consumed first, so a copied signed request (native owns or ran the
+      // original) is never run here too. No deadline: as before, the call
+      // waits for the tap.
+      if (!(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
+        logError('MCPBridge', `rejected raw request file ${name} (no valid handoff token)`);
+        return;
+      }
+    } else if (TYPED_REQUEST_TOOLS.has(request.tool)) {
       // A typed op reaches requests/ only by the native consumer's handoff
       // (PR 6). Its single-use token is consumed first, so a copied signed
       // request (native owns or ran the original) is never run here.

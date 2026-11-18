@@ -1456,6 +1456,31 @@ class TerminalEmulatorModule : Module() {
             status
         }
 
+        // "MCP: Run without approval" (McpSkipApprovalStore.kt, Keystore-HMAC'd).
+        // settings.mcpSkipApproval only mirrors it (lib/mcp-skip-approval.ts).
+        AsyncFunction("getMcpSkipApproval") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            McpSkipApprovalStore.isOn(context)
+        }
+
+        // ON only from the Settings toggle (lib/mcp-skip-approval.ts
+        // setMcpSkipApprovalFromToggle); OFF from anywhere. Returns the
+        // verified state afterwards.
+        AsyncFunction("setMcpSkipApproval") { enabled: Boolean, reason: String? ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            if (enabled) {
+                McpSkipApprovalStore.setOn(context)
+            } else {
+                McpSkipApprovalStore.setOff(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
+                McpSkipApprovalStore.isOn(context)
+            }
+        }
+
+        // Headless MCP run_command windows / agent requests (McpNativeIngress.kt).
+        AsyncFunction("getMcpNativeIngress") {
+            McpNativeIngress.snapshotJson()
+        }
+
         // Settings "Sign out of Codex": OFF + stop the tracked host + sweep
         // every same-uid `remote-control` process (the notification
         // Disconnect path), returning status + remainingRemoteControlProcesses.
@@ -2826,38 +2851,11 @@ class TerminalEmulatorModule : Module() {
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
             val homePath = homeDir.absolutePath
-            val sslDir = "$homePath/.shelly-ssl"
-            val caBundle = "$sslDir/ca-certificates.crt"
-            val opensslConf = "$sslDir/openssl.cnf"
-            try {
-                val sslDirFile = java.io.File(sslDir)
-                sslDirFile.mkdirs()
-                val caBundleFile = java.io.File(caBundle)
-                if (!caBundleFile.exists() || caBundleFile.length() == 0L) {
-                    context.assets.open("ca-certificates.crt").use { input ->
-                        caBundleFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                }
-                val opensslConfFile = java.io.File(opensslConf)
-                if (!opensslConfFile.exists()) opensslConfFile.writeText("")
-            } catch (e: Exception) {
-                Log.w("TerminalEmulator", "execCommand TLS env seed failed: ${e.message}")
-            }
-
             // Non-interactive Settings commands do not source ~/.bashrc, so mirror
-            // the TLS environment that HomeInitializer writes for bundled tools.
-            val wrappedCommand =
-                "export PATH='$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin' && " +
-                "export LD_LIBRARY_PATH='$libPath' && " +
-                "export HOME='$homePath' && " +
-                "export SSL_CERT_FILE='$caBundle' && " +
-                "export SSL_CERT_DIR='$sslDir' && " +
-                "export CURL_CA_BUNDLE='$caBundle' && " +
-                "export NODE_EXTRA_CA_CERTS='$caBundle' && " +
-                "export GIT_SSL_CAINFO='$caBundle' && " +
-                "export REQUESTS_CA_BUNDLE='$caBundle' && " +
-                "export OPENSSL_CONF='$opensslConf' && " +
-                "$command"
+            // the TLS environment that HomeInitializer writes for bundled tools
+            // (shared with the headless MCP run_command, NativeExecEnvironment).
+            NativeExecEnvironment.seedTls(context, homePath)
+            val wrappedCommand = NativeExecEnvironment.wrap(libPath, homePath, command)
 
             // Only log when something noteworthy happened; this path is polled.
             val bashExists = java.io.File(bashPath).exists()

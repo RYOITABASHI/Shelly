@@ -102,6 +102,19 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   >;
   /** Re-run the Codex remote-control supervisor now (STOP-ALL / resume). */
   wakeCodexRemoteHost(): Promise<void>;
+  /**
+   * "MCP: Run without approval" (McpSkipApprovalStore.kt): the Keystore-HMAC'd
+   * native switch behind settings.mcpSkipApproval. Optional so an older native
+   * build reads as off.
+   */
+  getMcpSkipApproval?(): Promise<boolean>;
+  /**
+   * ON only from the Settings toggle (lib/mcp-skip-approval.ts); OFF from
+   * anywhere, with a short reason for logcat. Resolves the verified state.
+   */
+  setMcpSkipApproval?(enabled: boolean, reason?: string | null): Promise<boolean>;
+  /** JSON of the headless MCP run_command windows and agent requests (McpNativeIngress.kt). */
+  getMcpNativeIngress?(): Promise<string>;
   setNotificationReplyEnabled(enabled: boolean): Promise<void>;
   sendNotificationReply(packageName: string, replyText: string): Promise<boolean>;
   findDmPairingCandidates(code: string): Promise<Array<{

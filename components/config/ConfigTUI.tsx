@@ -38,6 +38,7 @@ import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt
 import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
+import { setMcpSkipApprovalFromToggle, syncMcpSkipApprovalFromNative } from '@/lib/mcp-skip-approval';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
@@ -161,7 +162,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'mcpDiagnosticsEnabled', label: 'MCP: Allow diagnostics (logs, settings)', labelKey: 'settings.mcp_diagnostics_label', type: 'boolean', source: 'settings', description: 'Adds two read-only MCP tools: read_logs, which returns Shelly\'s own recent log lines (secrets redacted), and get_settings, which returns these settings with every setting whose name mentions a token, key, secret, password or credential left out. Logs can still mention file paths, agent names or commands you ran, so this is off by default. Settings can never be changed over MCP. No effect unless MCP Server is also on. Turning it on or off restarts the MCP server.', descriptionKey: 'settings.mcp_diagnostics_desc' },
       { key: 'mcpTypedOpsEnabled', label: 'MCP: Allow typed operations (run agents)', labelKey: 'settings.mcp_typed_ops_label', type: 'boolean', source: 'settings', description: 'Adds two MCP tools: run_agent, which starts one run of an agent you registered, and get_run_result, which returns that run\'s state and output (secrets redacted). Every run_agent call needs an approval tap on the phone, unless you tapped "Always allow" for that agent and client; editing the agent, revoking the rule in Settings or regenerating the MCP token brings the tap back. A run started this way is treated as external input: it may read and call models, but its file writes, sends and actions are refused. Agents created or changed over MCP are never started, nor is anything while all agents are stopped. Separate from exec/write. No effect unless MCP Server is also on. Default off.', descriptionKey: 'settings.mcp_typed_ops_desc' },
       { key: 'mcpExecEnabled', label: 'MCP: Allow exec/write (dangerous)', labelKey: 'settings.mcp_exec_label', type: 'boolean', source: 'settings', description: 'Adds two more MCP tools — run_command and write_file — so an MCP client (Claude Code, Codex) can execute commands and write files on this device, not just read from it. Each call is first checked by the same safety gate as agent CLI steps: anything it refuses (CRITICAL risk, changes to agent definitions or the policy file, your own deny rules) is refused without asking, and everything else still blocks on an in-app approval popup on the phone. This is real remote-code-execution surface protected only by the bearer token above and your own approval taps. Only turn this on if you specifically want that. No effect unless MCP Server is also on. Default off.', descriptionKey: 'settings.mcp_exec_desc' },
-      { key: 'mcpSkipApproval', label: 'MCP: Run without approval', labelKey: 'settings.mcp_skip_approval_label', type: 'boolean', source: 'settings', description: 'MCP run_command and write_file run without the approval popup on the phone. The safety gate still refuses what it refuses (CRITICAL risk, agent definitions, the policy file, your own deny rules). Anyone holding the MCP token can then run commands and write files on this device without you seeing it. No effect unless MCP: Allow exec/write is also on. Default off.', descriptionKey: 'settings.mcp_skip_approval_desc' },
+      { key: 'mcpSkipApproval', label: 'MCP: Run without approval', labelKey: 'settings.mcp_skip_approval_label', type: 'boolean', source: 'settings', description: 'MCP run_command and write_file run without the approval popup on the phone — also while Shelly is in the background or the screen is locked (Shelly runs them itself, without the app UI). The safety gate still refuses what it refuses (CRITICAL risk, agent definitions, the policy file, your own deny rules), and refuses everything while your safety rules cannot be verified. Anyone holding the MCP token can then run commands and write files on this device without you seeing it. Stop all agents or regenerating the MCP token turns this off. No effect unless MCP: Allow exec/write is also on. Default off.', descriptionKey: 'settings.mcp_skip_approval_desc' },
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
       // clarification dialogue in its own words instead of Shelly's fixed
@@ -671,6 +672,10 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         .catch((e: unknown) => {
           logError('ConfigTUI', 'Failed to load notification-trigger flag', e);
         });
+      // Native switch wins (STOP-ALL / token regeneration may have turned it off).
+      syncMcpSkipApprovalFromNative().catch((e: unknown) => {
+        logError('ConfigTUI', 'Failed to read MCP run-without-approval', e);
+      });
     }
   }, [visible]);
 
@@ -857,6 +862,19 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             break;
         }
         return;
+      }
+      if (def.source === 'settings' && def.key === 'mcpSkipApproval') {
+        // The native Keystore-HMAC'd switch is the truth; this toggle is the
+        // ONLY place that may turn it on (lib/mcp-skip-approval.ts).
+        await setMcpSkipApprovalFromToggle(rawValue === true);
+        return;
+      }
+      if (def.source === 'settings' && def.key === 'approveAllWithoutAsking' && rawValue === true) {
+        // "Skip all approvals" covers MCP run_command / write_file too, and
+        // those are decided natively (headless): turn the native switch on
+        // from this same Settings tap. Turning the master switch off leaves
+        // "MCP: Run without approval" as it is (it has its own row).
+        await setMcpSkipApprovalFromToggle(true);
       }
       if (def.source === 'settings') {
         // Handle nested keys

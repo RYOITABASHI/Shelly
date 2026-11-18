@@ -1,0 +1,69 @@
+{
+  "lazyFn": "shelly() { unset -f shelly; . \"$HOME/.bashrc\" >/dev/null 2>&1; shelly \"$@\"; }; ",
+  "execScript": [
+    {
+      "command": "ls -la",
+      "cwd": null,
+      "principal": "0123456789abcdef0123456789abcdef",
+      "callId": "abc-123",
+      "expected": "export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=0123456789abcdef0123456789abcdef SHELLY_INGRESS_CALL=abc-123; shelly() { unset -f shelly; . \"$HOME/.bashrc\" >/dev/null 2>&1; shelly \"$@\"; }; ls -la"
+    },
+    {
+      "command": "echo hi",
+      "cwd": "/data/it's dir",
+      "principal": "0123456789abcdef0123456789abcdef",
+      "callId": "c1",
+      "expected": "export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=0123456789abcdef0123456789abcdef SHELLY_INGRESS_CALL=c1; shelly() { unset -f shelly; . \"$HOME/.bashrc\" >/dev/null 2>&1; shelly \"$@\"; }; cd '/data/it'\\''s dir' && echo hi"
+    },
+    {
+      "command": "id",
+      "cwd": "/x",
+      "principal": "x; rm -rf ~",
+      "callId": "$(id)`",
+      "expected": "export SHELLY_INGRESS=mcp SHELLY_INGRESS_CLIENT=unknown SHELLY_INGRESS_CALL=unknown; shelly() { unset -f shelly; . \"$HOME/.bashrc\" >/dev/null 2>&1; shelly \"$@\"; }; cd '/x' && id"
+    }
+  ],
+  "shellQuote": [
+    [
+      "a b",
+      "'a b'"
+    ],
+    [
+      "it's",
+      "'it'\\''s'"
+    ]
+  ],
+  "normalizePath": [
+    [
+      "/a//b/./c/",
+      "/a/b/c"
+    ],
+    [
+      "/a/b/../c",
+      "/a/c"
+    ],
+    [
+      "/",
+      "/"
+    ]
+  ],
+  "snapshot": {
+    "token": "dummy-token-for-tests-0000000000",
+    "body": "{\"v\":1,\"agents\":[],\"repoPaths\":[\"/sdcard/repo\"]}",
+    "mac": "bd382a780066aa5e1548fbff804937ca233c76d9777c00f1d0cf8b56ce0dbd81",
+    "repoPaths": [
+      "/sdcard/repo"
+    ]
+  },
+  "writeTargetErrors": [
+    "path must be an absolute path without control characters",
+    "path must not contain \"..\"",
+    "path must name a file",
+    "path must be under the home dir or a Shelly-configured repo (see list_repos)",
+    "refused: the target file is a symlink",
+    "refused: the target exists and is not a regular file",
+    "refused: the target file has more than one hard link",
+    "refused: a parent of the target is not a directory (or is a dangling symlink)",
+    "refused: the real path (after following symlinks) is outside the home dir and the configured repos"
+  ]
+}

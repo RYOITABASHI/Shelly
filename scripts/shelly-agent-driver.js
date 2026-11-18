@@ -302,6 +302,7 @@ function readJsonArg(args) {
 // treats the run as proactive.
 // Mirror of lib/agent-user-policy-store.ts isSealedPolicyState. `bytes` null
 // ⇒ the file does not exist. An empty seal accepts only a missing/empty file.
+// KEEP IN SYNC: McpRawToolDecision.kt policySealAccepts (headless MCP gate).
 function policySealAccepts(sealRaw, bytes, everSealed) {
   const raw = String(sealRaw || '').trim();
   const seal = raw ? raw.split(',') : [];

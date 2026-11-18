@@ -96,6 +96,7 @@ import {
   agentAddResultFileName,
   agentCtlResultFileName,
 } from '@/lib/agent-add-queue';
+import { syncNativeMcpIngress } from '@/lib/mcp-native-ingress';
 import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
 import { closePawRunProvenanceOk, isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
 import { isClosePawShellPreapprovalOn } from '@/lib/closepaw-shell-preapproval';
@@ -2189,6 +2190,7 @@ export default function RootLayout() {
         }
         await drainAgentAddRequests(
           {
+            syncNativeMcpIngress,
             isActive: () => AppState.currentState === 'active' && useMultiPaneStore.getState()._hasHydrated === true,
             canAcceptPrompt: () => useAIPaneStore.getState().pendingExternalPrompt == null,
             listHome: () => FileSystem.readDirectoryAsync(homeDir),

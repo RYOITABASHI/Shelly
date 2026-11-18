@@ -23,7 +23,11 @@ import java.security.SecureRandom
  *    not exposed to JS, passed to node on stdin by MCPBridge). Requests the
  *    headless server queues can therefore not be verified by anyone until RN
  *    starts; that is intended: exec / write need RN's approval UI and simply
- *    wait (and time out) while Shelly is not open. Snapshot reads
+ *    wait (and time out) while Shelly is not open — unless the owner turned
+ *    on "MCP: Run without approval" (McpSkipApprovalStore): with exec on, a
+ *    McpRawToolConsumer (one per wanted server, bound to its bridge key and
+ *    token, in both modes) drains `raw-requests/`, runs the call itself when
+ *    that switch is on, and otherwise hands it to RN's requests/. Snapshot reads
  *    (list_agents / list_repos) and git_status are answered by the script
  *    itself and work headless. Typed ops (PR 6) do not wait for RN: with
  *    typed ops on, a McpTypedOpConsumer (one per wanted server, bound to its
@@ -123,6 +127,13 @@ object McpServerSupervisor {
      * takes [lock] and stopping it under [lock] cannot deadlock.
      */
     @Volatile private var typedOpConsumer: McpTypedOpConsumer? = null
+    /**
+     * The one McpRawToolConsumer: exists exactly while a server with exec on is
+     * wanted, bound to that server's bridge key and token (the script routes
+     * run_command / write_file to raw-requests/ in both modes and RN never
+     * reads it). Same locking rules as [typedOpConsumer].
+     */
+    @Volatile private var rawToolConsumer: McpRawToolConsumer? = null
 
     /** For the notification text: (exec, readTerminal, diagnostics) of the wanted server, or null. */
     fun wantedSwitches(): Triple<Boolean, Boolean, Boolean>? =
@@ -135,6 +146,9 @@ object McpServerSupervisor {
 
     /** McpTypedOpConsumer's native epoch: [c] is still the live consumer. */
     fun isCurrentTypedOpConsumer(c: McpTypedOpConsumer): Boolean = typedOpConsumer === c
+
+    /** McpRawToolConsumer's native epoch: [c] is still the live consumer. */
+    fun isCurrentRawToolConsumer(c: McpRawToolConsumer): Boolean = rawToolConsumer === c
 
     /**
      * Running, or wanted and waiting for the watchdog to restart it. Token
@@ -155,6 +169,7 @@ object McpServerSupervisor {
             // (waiting for its request in progress) and its pending typed
             // requests are cleared before the new server can write any.
             retireStaleTypedOpConsumerLocked(bridgeKey, typedOps)
+            retireStaleRawToolConsumerLocked(bridgeKey, token, exec)
             val started = MCPBridge.start(app, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)
             // Nothing wanted => nothing running: MCPBridge.start can refuse
             // (bad key / blank token) before touching an older process.
@@ -168,6 +183,7 @@ object McpServerSupervisor {
                 stopServiceLocked(app)
             }
             syncTypedOpConsumerLocked(app)
+            syncRawToolConsumerLocked(app)
             lock.notifyAll()
             started
         }
@@ -185,6 +201,7 @@ object McpServerSupervisor {
             MCPBridge.stop()
             // Server stop / token revoke: consumer stopped, pending typed requests cleared.
             syncTypedOpConsumerLocked(app)
+            syncRawToolConsumerLocked(app)
             stopServiceLocked(app)
             lock.notifyAll()
         }
@@ -265,10 +282,12 @@ object McpServerSupervisor {
             }
             val key = newBridgeKey()
             retireStaleTypedOpConsumerLocked(key, cfg.typedOps)
+            retireStaleRawToolConsumerLocked(key, cfg.token, cfg.exec)
             val ok = MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key)
             // Wanted even if this attempt failed: the watchdog retries with backoff.
             desired = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
             syncTypedOpConsumerLocked(app)
+            syncRawToolConsumerLocked(app)
             resetBackoff()
             if (ok) {
                 startedAt = System.currentTimeMillis()
@@ -329,6 +348,7 @@ object McpServerSupervisor {
                     resetBackoff()
                     stopServiceLocked(app)
                     syncTypedOpConsumerLocked(app)
+                    syncRawToolConsumerLocked(app)
                     Log.i(TAG, "MCP server died and the mirror is OFF/unreadable; not restarting")
                     return POLL_MS
                 }
@@ -336,6 +356,7 @@ object McpServerSupervisor {
                 desired = use
                 // The mirror's typed-ops switch may have changed (same key).
                 syncTypedOpConsumerLocked(app)
+                syncRawToolConsumerLocked(app)
             }
             runCatching { ensureRuntime(app) }
                 .onFailure { Log.w(TAG, "runtime extraction before restart failed (${it.javaClass.simpleName})") }
@@ -399,6 +420,32 @@ object McpServerSupervisor {
         if (d != null && d.typedOps) {
             val c = McpTypedOpConsumer(app, d.bridgeKey)
             typedOpConsumer = c
+            c.start()
+        }
+    }
+
+    // ── Raw-tool consumer ("MCP: Run without approval") ─────────────────
+
+    /** Under [lock]: before a server with [newKey] / [token] starts, stop a consumer bound to another. */
+    private fun retireStaleRawToolConsumerLocked(newKey: String, token: String, exec: Boolean) {
+        val c = rawToolConsumer ?: return
+        if (exec && c.hasKey(newKey, token)) return
+        rawToolConsumer = null
+        c.stop(clearPending = true)
+    }
+
+    /** Under [lock]: exactly one raw consumer while a server with exec is wanted, none otherwise. */
+    private fun syncRawToolConsumerLocked(app: Context) {
+        val d = desired
+        val current = rawToolConsumer
+        if (d != null && d.exec && current != null && current.hasKey(d.bridgeKey, d.token)) return
+        if (current != null) {
+            rawToolConsumer = null
+            current.stop(clearPending = true)
+        }
+        if (d != null && d.exec) {
+            val c = McpRawToolConsumer(app, d.bridgeKey, d.token)
+            rawToolConsumer = c
             c.start()
         }
     }
