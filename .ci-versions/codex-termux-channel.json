@@ -1,9 +1,9 @@
 {
   "package": "codex",
-  "version": "0.169.1",
-  "upstreamVersion": "0.169.1",
-  "filename": "pool/main/c/codex/codex_0.169.1_aarch64.deb",
-  "size": 87075200,
-  "sha256": "90564d84ddaa89287dce0e1991f70487617c80749c2f38cddc80dbc788e68e18",
-  "verifiedAt": "2026-11-18T07:51:42.617Z"
+  "version": "0.170.0",
+  "upstreamVersion": "0.170.0",
+  "filename": "pool/main/c/codex/codex_0.170.0_aarch64.deb",
+  "size": 87514036,
+  "sha256": "853d4dd6bba2dd6e51e4e9f6083935eb7f3da56b7aa1a0dbbc21882b4902591d",
+  "verifiedAt": "2026-11-18T20:50:34.330Z"
 }
