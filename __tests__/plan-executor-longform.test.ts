@@ -1092,6 +1092,21 @@ describe('assembleArticle', () => {
     expect(out).toContain('# 記事');
   });
 
+  it('B3: the rescue\'s earlier-version check reads the text as saved, markers renumbered', () => {
+    const sources = [{ id: 1, title: 'One', url: 'https://example.org/1' }, { id: 2, title: 'Two', url: 'https://example.org/2' }];
+    const tail = (body: string) => executor.rescueComparableText(executor.rescueSavedTail(local, { steps, results: ['r', body, 'VERDICT: PASS'], skipped: [], sources, today: '2026-11-06', fallbackTitle: 'F' }));
+    // The save renumbers [2, 1] and NFKC-normalizes: these are one version.
+    expect(tail('# T\n\nThe Ａ cache is faster [2, 1].')).toBe(tail('# T\n\nThe A cache is faster [2][1].'));
+    expect(tail('# T\n\nThe A cache is faster [2, 1].')).not.toBe(tail('# T\n\nThe B cache is faster [2, 1].'));
+  });
+
+  it('B3: a rescued text no review read gets the rescue note, not the same-engine note', () => {
+    const out = assembleWith({ usedEngines: [undefined, 'gemini-api', 'gemini-api'], rescued: { step: 1 } });
+    expect(out.split('\n')).toContain('review: unresolved');
+    expect(out.split('\n')).toContain(`review_note: "${executor.ARTICLE_EDITOR_RESCUE_NOTE}"`);
+    expect(out).not.toContain(executor.ARTICLE_SAME_ENGINE_NOTE);
+  });
+
   it('compares the writer of the final version with the last reviewer that ran', () => {
     const results = ['r', '# 一', 'VERDICT: REVISE', '# 二', 'VERDICT: PASS'];
     const skipped = [false, false, false, false, false, true];
