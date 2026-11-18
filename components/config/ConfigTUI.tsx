@@ -39,6 +39,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { buildRecentTerminalLogsText } from '@/lib/terminal-logs';
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { setMcpSkipApprovalFromToggle, syncMcpSkipApprovalFromNative } from '@/lib/mcp-skip-approval';
+import { setApproveAllFromToggle, syncApproveAllFromNative } from '@/lib/approve-all-without-asking';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
@@ -672,9 +673,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         .catch((e: unknown) => {
           logError('ConfigTUI', 'Failed to load notification-trigger flag', e);
         });
-      // Native switch wins (STOP-ALL / token regeneration may have turned it off).
+      // Native switches win (STOP-ALL / token regeneration may have turned them off).
       syncMcpSkipApprovalFromNative().catch((e: unknown) => {
         logError('ConfigTUI', 'Failed to read MCP run-without-approval', e);
+      });
+      syncApproveAllFromNative().catch((e: unknown) => {
+        logError('ConfigTUI', 'Failed to read Skip all approvals', e);
       });
     }
   }, [visible]);
@@ -869,12 +873,16 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         await setMcpSkipApprovalFromToggle(rawValue === true);
         return;
       }
-      if (def.source === 'settings' && def.key === 'approveAllWithoutAsking' && rawValue === true) {
-        // "Skip all approvals" covers MCP run_command / write_file too, and
-        // those are decided natively (headless): turn the native switch on
-        // from this same Settings tap. Turning the master switch off leaves
-        // "MCP: Run without approval" as it is (it has its own row).
-        await setMcpSkipApprovalFromToggle(true);
+      if (def.source === 'settings' && def.key === 'approveAllWithoutAsking') {
+        // The native Keystore-HMAC'd switch is the truth (lib/approve-all-without-asking.ts);
+        // this toggle is the ONLY place that may turn it on. "Skip all
+        // approvals" covers MCP run_command / write_file too, which are decided
+        // natively (headless): turn that native switch on from this same tap.
+        // Turning the master switch off leaves "MCP: Run without approval" as
+        // it is (it has its own row).
+        const on = await setApproveAllFromToggle(rawValue === true);
+        if (on) await setMcpSkipApprovalFromToggle(true);
+        return;
       }
       if (def.source === 'settings') {
         // Handle nested keys

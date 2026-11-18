@@ -73,7 +73,7 @@ describe('shared fixture = the TS code (the Kotlin copies are checked against th
 
   it('every Kotlin copy carries a KEEP IN SYNC note naming its source', () => {
     const kt = fs.readFileSync(path.join(KT_DIR, 'McpRawToolDecision.kt'), 'utf8');
-    for (const src of ['MCP_SHELLY_LAZY_FN', 'mcpIngressEnvPrefix', 'shellQuote', 'runMcpCommand', 'normalizePath', 'resolveWriteTarget', 'snapshotMac', 'policySealAccepts', 'AGENT_REQUEST_FILE_RE']) {
+    for (const src of ['MCP_SHELLY_LAZY_FN', 'mcpIngressEnvPrefix', 'shellQuote', 'runMcpCommand', 'normalizePath', 'resolveWriteTarget', 'snapshotMac', 'policySealAccepts', 'lib/agent-add-queue.ts']) {
       expect(kt).toMatch(new RegExp(`KEEP IN SYNC:[^\\n]*${src}`));
     }
   });
@@ -190,20 +190,20 @@ describe('native headless commands keep the MCP-origin marking', () => {
 
   it('a request native saw appear during its command is MCP-originated', () => {
     const reqId = `${Date.now()}-0000abcd`;
-    applyNativeMcpIngress(JSON.stringify({ windows: [], requests: [{ reqId, callId: 'call-1', principal: 'p'.repeat(32) }] }));
+    applyNativeMcpIngress(JSON.stringify({ ok: true, windows: [], requests: [{ reqId, callId: 'call-1', principal: 'p'.repeat(32) }] }));
     expect(mcpOriginForRequest(reqId)).toEqual({ principal: 'p'.repeat(32), callId: 'call-1', via: 'window' });
   });
 
   it('a request created inside a native window (even long ago) classifies as MCP; outside it does not', () => {
     const start = Date.now() - 3 * 60 * 60_000;
-    applyNativeMcpIngress(JSON.stringify({ windows: [{ callId: 'c2', principal: 'q'.repeat(32), start, end: start + 5_000 }], requests: [] }));
+    applyNativeMcpIngress(JSON.stringify({ ok: true, windows: [{ callId: 'c2', principal: 'q'.repeat(32), start, end: start + 5_000 }], requests: [] }));
     expect(classifyTerminalRequest('r-in', null, [start + 1_000, Date.now()])?.callId).toBe('c2');
     expect(classifyTerminalRequest('r-out', null, [start - 10_000, Date.now()])).toBeNull();
   });
 
-  it('garbage from native adds nothing and unsafe values are sanitized', () => {
+  it('garbage from native taints until a good read; unsafe values are sanitized', () => {
     applyNativeMcpIngress('not json');
-    applyNativeMcpIngress(JSON.stringify({ windows: [{ callId: '$(id)', principal: 'x y', start: 1, end: 2 }], requests: [{ reqId: '../x' }] }));
+    applyNativeMcpIngress(JSON.stringify({ ok: true, windows: [{ callId: '$(id)', principal: 'x y', start: 1, end: 2 }], requests: [{ reqId: '../x' }] }));
     expect(classifyTerminalRequest('r-x', null, [1])).toEqual({ principal: 'unknown', callId: 'unknown', via: 'window' });
     expect(mcpOriginForRequest('../x')).toBeNull();
   });

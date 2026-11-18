@@ -623,6 +623,8 @@ class TerminalEmulatorModule : Module() {
             // right below — an RN reload creates a new Module instance and the
             // old one's sendEvent no longer reaches JS.
             activeInstanceRef = WeakReference(this@TerminalEmulatorModule)
+            // STOP-ALL that survived a restart keeps both approval switches off.
+            appContext.reactContext?.let { runCatching { StopAllSwitches.enforceAtStart(it, "app start") } }
             for (session in sessions.values) {
                 session.emitEvent = ::emitEvent
             }
@@ -1465,10 +1467,16 @@ class TerminalEmulatorModule : Module() {
 
         // ON only from the Settings toggle (lib/mcp-skip-approval.ts
         // setMcpSkipApprovalFromToggle); OFF from anywhere. Returns the
-        // verified state afterwards.
+        // verified state afterwards. Exported to any RN JS on purpose: RN JS is
+        // the trusted base (it holds the signing APIs that answer approvals),
+        // so a native confirmation would add a prompt without adding a
+        // boundary (owner rule: no extra approval prompts; see KeystoreSwitch).
+        // What it stops is a same-uid file / prefs edit.
         AsyncFunction("setMcpSkipApproval") { enabled: Boolean, reason: String? ->
             val context = appContext.reactContext ?: return@AsyncFunction false
             if (enabled) {
+                // Never ON while STOP-ALL is active.
+                if (StopAllSwitches.halted(context)) return@AsyncFunction false
                 McpSkipApprovalStore.setOn(context)
             } else {
                 McpSkipApprovalStore.setOff(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
@@ -1478,7 +1486,8 @@ class TerminalEmulatorModule : Module() {
 
         // Headless MCP run_command windows / agent requests (McpNativeIngress.kt).
         AsyncFunction("getMcpNativeIngress") {
-            McpNativeIngress.snapshotJson()
+            val context = appContext.reactContext ?: return@AsyncFunction "{\"ok\":false}"
+            McpNativeIngress.snapshotJson(context)
         }
 
         // Settings "Sign out of Codex": OFF + stop the tracked host + sweep
@@ -1496,6 +1505,40 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("wakeCodexRemoteHost") {
             CodexRemoteHost.wake()
             null
+        }
+
+        // STOP-ALL (lib/agent-manager.ts haltAllAgents, before anything else):
+        // "MCP: Run without approval" and "Skip all approvals" go OFF here,
+        // whether or not the MCP server is running. Returns true when both
+        // are verifiably off.
+        AsyncFunction("turnOffApprovalSwitchesForStopAll") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            StopAllSwitches.turnOff(context, "STOP-ALL")
+            !McpSkipApprovalStore.isOn(context) && !ApproveAllStore.isOn(context)
+        }
+
+        // "Skip all approvals" master switch (ApproveAllStore, Keystore-HMAC'd).
+        // settings.approveAllWithoutAsking only mirrors it; every decision reads
+        // this (lib/approve-all-without-asking.ts isApproveAllWithoutAskingOn).
+        AsyncFunction("getApproveAllWithoutAsking") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            ApproveAllStore.isOn(context)
+        }
+
+        // ON only from the Settings toggle (lib/approve-all-without-asking.ts
+        // setApproveAllFromToggle); OFF from anywhere. Exported to any RN JS on
+        // purpose (RN JS is the trusted base; see KeystoreSwitch). Refused
+        // (stays OFF) while STOP-ALL is active.
+        AsyncFunction("setApproveAllWithoutAsking") { enabled: Boolean, reason: String? ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            if (enabled) {
+                // Never ON while STOP-ALL is active.
+                if (StopAllSwitches.halted(context)) return@AsyncFunction false
+                ApproveAllStore.setOn(context)
+            } else {
+                ApproveAllStore.setOff(context, (reason ?: "app").take(32).filter { it.isLetterOrDigit() || it == '-' || it == ' ' })
+                ApproveAllStore.isOn(context)
+            }
         }
 
         AsyncFunction("getNotificationReplyEnabled") {

@@ -115,6 +115,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   setMcpSkipApproval?(enabled: boolean, reason?: string | null): Promise<boolean>;
   /** JSON of the headless MCP run_command windows and agent requests (McpNativeIngress.kt). */
   getMcpNativeIngress?(): Promise<string>;
+  /** "Skip all approvals" (ApproveAllStore.kt, Keystore-HMAC'd); the setting only mirrors it. */
+  getApproveAllWithoutAsking?(): Promise<boolean>;
+  /** ON only from the Settings toggle (lib/approve-all-without-asking.ts); refused while STOP-ALL. Resolves the verified state. */
+  setApproveAllWithoutAsking?(enabled: boolean, reason?: string | null): Promise<boolean>;
+  /** STOP-ALL: both approval switches OFF natively. Resolves true when verifiably off. */
+  turnOffApprovalSwitchesForStopAll?(): Promise<boolean>;
   setNotificationReplyEnabled(enabled: boolean): Promise<void>;
   sendNotificationReply(packageName: string, replyText: string): Promise<boolean>;
   findDmPairingCandidates(code: string): Promise<Array<{

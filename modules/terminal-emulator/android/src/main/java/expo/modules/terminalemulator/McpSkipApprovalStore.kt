@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
+import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -12,95 +13,87 @@ import javax.crypto.Mac
 import javax.crypto.SecretKey
 
 /**
- * The authoritative "MCP: Run without approval" switch (settings.mcpSkipApproval
- * only mirrors it). While it is on, the native McpRawToolConsumer runs MCP
- * run_command / write_file calls itself — after the same gate RN uses, but
- * without the on-device approval tap and without RN — so it must not be
- * forgeable by anything that merely runs as the app uid (a shell, an agent CLI
- * worker, a compromised script). Same pattern as CodexRemoteAutostart: a nonce
- * in SharedPreferences together with an HMAC from a non-exportable Android
- * Keystore key, re-keyed on every ON, key deleted on OFF (an old "on" prefs
- * file never verifies again). Any Keystore / prefs error reads as OFF.
+ * A Keystore-verified ON switch (the CodexRemoteAutostart pattern, generalized):
+ * a nonce in SharedPreferences together with an HMAC from a non-exportable
+ * Android Keystore key, re-keyed on every ON, key deleted on OFF (an old "on"
+ * prefs file never verifies again). Any Keystore / prefs error reads as OFF.
+ * File / prefs edits from a shell or an agent worker (same uid) therefore can
+ * not turn it on; a plain AsyncStorage (RKStorage) setting could be.
  *
- * Who may call what:
- *  - [setOn]: ONLY TerminalEmulatorModule.setMcpSkipApproval(true), which RN
- *    calls only from the Settings toggle (lib/mcp-skip-approval.ts
- *    setMcpSkipApprovalFromToggle; components/config/ConfigTUI.tsx).
- *  - [setOff]: anywhere (OFF is the restrictive direction): the toggle, a
- *    settings sync, MCP token regeneration (lib/mcp-server-bridge.ts
- *    revokePendingMCPRequests), and STOP-ALL (McpRawToolConsumer turns it off
- *    when it sees the `.halted` sentinel).
- *
- * Boundary, as for CodexRemoteAutostart: code running as this uid that can
- * drive AndroidKeyStore itself could call [setOn]. File / prefs edits from a
- * shell cannot turn it on.
+ * Who may turn it ON: only TerminalEmulatorModule's setter, which RN calls only
+ * from the Settings toggle. That setter is reachable from any RN JS. We do not
+ * add a native confirmation for it: RN JS is already the trusted base (it holds
+ * the Keystore signing APIs that answer every approval), so code that can run
+ * arbitrary RN JS could approve each request itself anyway, and the owner's
+ * rule is "no extra approval prompts". What this stops is the cheaper attack:
+ * a same-uid process editing files.
  */
-object McpSkipApprovalStore {
-    private const val TAG = "McpSkipApprovalStore"
-    private const val PREFS = "shelly_mcp_skip_approval"
-    private const val KEY_NONCE = "nonce"
-    private const val KEY_MAC = "mac"
-    private const val KEY_ALIAS = "shelly_mcp_skip_approval_v1"
-    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-    private const val DOMAIN = "shelly-mcp-skip-approval-v1:on:"
+class KeystoreSwitch(
+    private val tag: String,
+    private val prefsName: String,
+    private val keyAlias: String,
+    private val domain: String,
+) {
+    private companion object {
+        const val KEY_NONCE = "nonce"
+        const val KEY_MAC = "mac"
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    }
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
-    private fun existingKey(): SecretKey? = keyStore().getKey(KEY_ALIAS, null) as? SecretKey
+    private fun existingKey(): SecretKey? = keyStore().getKey(keyAlias, null) as? SecretKey
 
     private fun newKey(): SecretKey {
-        runCatching { keyStore().deleteEntry(KEY_ALIAS) }
+        runCatching { keyStore().deleteEntry(keyAlias) }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, ANDROID_KEYSTORE)
-        generator.init(KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_SIGN).build())
+        generator.init(KeyGenParameterSpec.Builder(keyAlias, KeyProperties.PURPOSE_SIGN).build())
         return generator.generateKey()
     }
 
     private fun mac(key: SecretKey, nonce: String): String {
         val m = Mac.getInstance("HmacSHA256")
         m.init(key)
-        return m.doFinal("$DOMAIN$nonce".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        return m.doFinal("$domain$nonce".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
     /** Only from the in-app Settings toggle. Returns the verified state afterwards. */
     @Synchronized
-    fun setOn(context: Context): Boolean {
-        return try {
-            val key = newKey()
-            val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
-            val nonce = bytes.joinToString("") { "%02x".format(it) }
-            val ok = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putString(KEY_NONCE, nonce)
-                .putString(KEY_MAC, mac(key, nonce))
-                .commit()
-            if (!ok) {
-                setOffLocked(context)
-                Log.w(TAG, "MCP run without approval: ON not saved; left OFF")
-                false
-            } else {
-                Log.i(TAG, "MCP run without approval: ON (set in app)")
-                isOnLocked(context)
-            }
-        } catch (e: Exception) {
+    fun setOn(context: Context): Boolean = try {
+        val key = newKey()
+        val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val nonce = bytes.joinToString("") { "%02x".format(it) }
+        val ok = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit()
+            .putString(KEY_NONCE, nonce)
+            .putString(KEY_MAC, mac(key, nonce))
+            .commit()
+        if (!ok) {
             setOffLocked(context)
-            Log.w(TAG, "MCP run without approval: ON failed (${e.javaClass.simpleName}); left OFF")
+            Log.w(tag, "ON not saved; left OFF")
             false
+        } else {
+            Log.i(tag, "ON (set in app)")
+            isOnLocked(context)
         }
+    } catch (e: Exception) {
+        setOffLocked(context)
+        Log.w(tag, "ON failed (${e.javaClass.simpleName}); left OFF")
+        false
     }
 
     /** Safe from anywhere (OFF is the restrictive direction). */
     @Synchronized
     fun setOff(context: Context, reason: String) {
         setOffLocked(context)
-        Log.i(TAG, "MCP run without approval: OFF ($reason)")
+        Log.i(tag, "OFF ($reason)")
     }
 
     private fun setOffLocked(context: Context) {
         runCatching {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .remove(KEY_NONCE).remove(KEY_MAC).commit()
+            context.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().remove(KEY_NONCE).remove(KEY_MAC).commit()
         }
-        runCatching { keyStore().deleteEntry(KEY_ALIAS) }
-            .onFailure { Log.w(TAG, "could not delete the skip-approval key (${it.javaClass.simpleName})") }
+        runCatching { keyStore().deleteEntry(keyAlias) }
+            .onFailure { Log.w(tag, "could not delete the key (${it.javaClass.simpleName})") }
     }
 
     /** Verified state. Never throws. */
@@ -108,7 +101,7 @@ object McpSkipApprovalStore {
     fun isOn(context: Context): Boolean = isOnLocked(context)
 
     private fun isOnLocked(context: Context): Boolean = try {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
         val nonce = prefs.getString(KEY_NONCE, null)
         val stored = prefs.getString(KEY_MAC, null)
         val key = if (nonce != null && stored != null) existingKey() else null
@@ -118,7 +111,68 @@ object McpSkipApprovalStore {
             MessageDigest.isEqual(mac(key, nonce).toByteArray(Charsets.UTF_8), stored.toByteArray(Charsets.UTF_8))
         }
     } catch (e: Exception) {
-        Log.w(TAG, "skip-approval state unreadable (${e.javaClass.simpleName}) - treating as OFF")
+        Log.w(tag, "state unreadable (${e.javaClass.simpleName}) - treating as OFF")
         false
+    }
+}
+
+/**
+ * The authoritative "MCP: Run without approval" switch (settings.mcpSkipApproval
+ * only mirrors it). While it is on, the native McpRawToolConsumer runs MCP
+ * run_command / write_file calls itself — after the same gate RN uses, but
+ * without the approval tap and without RN.
+ *
+ *  - ON: TerminalEmulatorModule.setMcpSkipApproval(true), called by RN only
+ *    from the Settings toggles (lib/mcp-skip-approval.ts; ConfigTUI, the
+ *    "MCP: Run without approval" row and the "Skip all approvals" master row).
+ *    Exported to any RN JS on purpose: see [KeystoreSwitch] for why RN JS is
+ *    treated as trusted and no extra native confirmation is added.
+ *  - OFF from anywhere: the toggle, MCP token regeneration, and STOP-ALL
+ *    ([StopAllSwitches]: the native STOP-ALL operation, service / app start
+ *    with `.halted` present, and McpRawToolConsumer when it sees `.halted`).
+ */
+object McpSkipApprovalStore {
+    private val switch = KeystoreSwitch("McpSkipApprovalStore", "shelly_mcp_skip_approval", "shelly_mcp_skip_approval_v1", "shelly-mcp-skip-approval-v1:on:")
+    fun setOn(context: Context): Boolean = switch.setOn(context)
+    fun setOff(context: Context, reason: String) = switch.setOff(context, reason)
+    fun isOn(context: Context): Boolean = switch.isOn(context)
+}
+
+/**
+ * The authoritative "Skip all approvals" master switch
+ * (settings.approveAllWithoutAsking only mirrors it; lib/approve-all-without-asking.ts
+ * reads THIS at every decision). Same rules as [McpSkipApprovalStore]: ON only
+ * from the Settings toggle, OFF on STOP-ALL and MCP token regeneration.
+ */
+object ApproveAllStore {
+    private val switch = KeystoreSwitch("ApproveAllStore", "shelly_approve_all", "shelly_approve_all_v1", "shelly-approve-all-v1:on:")
+    fun setOn(context: Context): Boolean = switch.setOn(context)
+    fun setOff(context: Context, reason: String) = switch.setOff(context, reason)
+    fun isOn(context: Context): Boolean = switch.isOn(context)
+}
+
+/** STOP-ALL turns both switches off (whether or not MCP is running). */
+object StopAllSwitches {
+    fun haltedSentinel(context: Context): File = File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted")
+
+    /** Turns both off now. */
+    fun turnOff(context: Context, reason: String) {
+        runCatching { if (McpSkipApprovalStore.isOn(context)) McpSkipApprovalStore.setOff(context, reason) }
+        runCatching { if (ApproveAllStore.isOn(context)) ApproveAllStore.setOff(context, reason) }
+    }
+
+    /** STOP-ALL is active: `.halted` present, or it cannot be checked. */
+    fun halted(context: Context): Boolean = try {
+        android.system.Os.lstat(haltedSentinel(context).path)
+        true
+    } catch (e: android.system.ErrnoException) {
+        e.errno != android.system.OsConstants.ENOENT
+    } catch (e: Exception) {
+        true
+    }
+
+    /** Service / app start: `.halted` present (or uncheckable) forces both off. */
+    fun enforceAtStart(context: Context, reason: String) {
+        if (halted(context)) turnOff(context, "STOP-ALL at $reason")
     }
 }

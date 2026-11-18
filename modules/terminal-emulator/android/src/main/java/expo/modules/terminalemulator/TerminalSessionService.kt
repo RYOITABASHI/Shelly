@@ -127,6 +127,7 @@ class TerminalSessionService : Service() {
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
         instance = this
+        runCatching { StopAllSwitches.enforceAtStart(applicationContext, "service start") }
         // Drop only ongoing loop notifications whose agent is no longer a
         // continuous, enabled agent on disk (a live loop between iterations
         // keeps its notification and Stop button).

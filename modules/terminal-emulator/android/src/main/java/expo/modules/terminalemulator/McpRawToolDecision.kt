@@ -25,7 +25,7 @@ import org.json.JSONObject
  * runMcpCommand), normalizePath / resolveWriteTarget (lib/agent-boundary-
  * policy.ts, lib/mcp-ingress-gate.ts), snapshotMac / repoPathsFromSnapshot
  * (scripts/shelly-mcp-server.js), policySealAccepts (scripts/shelly-agent-
- * driver.js), agentRequestIds (lib/mcp-server-bridge.ts AGENT_REQUEST_FILE_RE).
+ * driver.js), agentRequestIds (lib/agent-add-queue.ts file names, AGENT_REQUEST_FILE_RE).
  */
 object McpRawToolDecision {
     /** The tools the server routes to `raw-requests/` (RAW_REQUEST_TOOLS). */
@@ -337,13 +337,24 @@ object McpRawToolDecision {
 
     // ── `shelly agent add` requests that appear while a command runs ─────
 
-    private val AGENT_REQUEST_FILE_RE = Regex("^\\.shelly-agent-(?:req|pending)-([0-9]{10,16}-[0-9a-f]{8})$")
+    private val AGENT_REQUEST_FILE_RE = Regex("^\\.shelly-agent-(req|pending|ctl|claim)-((?:ctl-)?[0-9]{10,16}-[0-9a-f]{8})$")
 
-    /** KEEP IN SYNC: lib/mcp-server-bridge.ts AGENT_REQUEST_FILE_RE / agentRequestIdsInHome. */
+    /**
+     * The agent requests in a $HOME listing, keyed as RN's classifier keys them
+     * (lib/agent-add-queue.ts): `<id>` for add requests, `ctl-<id>` for
+     * `shelly agent confirm|reject`. Wider than RN's own agentRequestIdsInHome
+     * (req / pending only): ctl requests and in-progress claims count too, so a
+     * native-run command can mark more, never less.
+     * KEEP IN SYNC: lib/agent-add-queue.ts (file prefixes, REQ_ID_RE) and lib/mcp-native-ingress.ts (id shape).
+     */
     fun agentRequestIds(names: Array<String>?): Set<String>? {
         if (names == null) return null
         val out = HashSet<String>()
-        for (n in names) AGENT_REQUEST_FILE_RE.matchEntire(n)?.let { out.add(it.groupValues[1]) }
+        for (n in names) {
+            val m = AGENT_REQUEST_FILE_RE.matchEntire(n) ?: continue
+            val id = m.groupValues[2]
+            out.add(if (m.groupValues[1] == "ctl") "ctl-$id" else id)
+        }
         return out
     }
 }

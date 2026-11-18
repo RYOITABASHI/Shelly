@@ -32,13 +32,25 @@
  *     answered (owner decision 2026-11-19; approveAllPolicyBlocks);
  *   - unattended runs (the driver / executor decline before RN sees them).
  *
- * The switch is read at the moment of each decision (never cached), so
- * turning it off takes effect immediately. It can only be turned ON from the
- * Settings UI (ConfigTUI); `shelly config set` and every other programmatic
- * path may only turn it OFF (UI_ONLY_ENABLE_SETTINGS).
+ * The truth is NATIVE (ApproveAllStore.kt: SharedPreferences + Android
+ * Keystore HMAC, fail closed to OFF), not the AsyncStorage setting: a same-uid
+ * worker can edit RKStorage, it cannot forge the Keystore HMAC.
+ * settings.approveAllWithoutAsking only mirrors native for the Settings row.
+ * [isApproveAllWithoutAskingOn] asks native at the moment of each decision
+ * (never cached), so turning it off takes effect immediately.
+ *
+ * ON: only [setApproveAllFromToggle] with `true`, called only by the Settings
+ * toggle (ConfigTUI). The native setter is reachable from any RN JS; no extra
+ * native confirmation is added because RN JS is already the trusted base (it
+ * holds the signing APIs that answer every approval, so injected RN JS could
+ * answer each request itself) and the owner's rule is "no extra approval
+ * prompts". Load / sync ([syncApproveAllFromNative]) only copies native into
+ * the setting; `shelly config set` and every other programmatic path may only
+ * turn it OFF (UI_ONLY_ENABLE_SETTINGS). STOP-ALL (native, also at start when
+ * `.halted` exists) and MCP token regeneration turn it OFF.
  */
 import { checkCommandSafety } from '@/lib/command-safety';
-import { dequoteShellWords } from '@/lib/agent-boundary-policy';
+import { classifyProposedCommand, dequoteShellWords } from '@/lib/agent-boundary-policy';
 import {
   runWithoutApprovalAllAllowedFor,
   type AutoApproveVerdict,
@@ -48,27 +60,88 @@ import {
 
 export { UI_ONLY_ENABLE_SETTINGS } from '@/lib/ui-only-settings';
 
-/** The master switch, read now from the settings store (never cached). */
-export function isApproveAllWithoutAskingOn(): boolean {
+type ApproveAllNative = {
+  getApproveAllWithoutAsking?: () => Promise<boolean>;
+  setApproveAllWithoutAsking?: (enabled: boolean, reason?: string | null) => Promise<boolean>;
+};
+
+function nativeModule(): ApproveAllNative | null {
   try {
-    // Lazy: keeps this module loadable in pure tests without the store.
+    // Lazy: keeps this module loadable in pure tests without the native module.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const m = require('@/modules/terminal-emulator/src/TerminalEmulatorModule');
+    return (m?.default ?? m) as ApproveAllNative;
+  } catch {
+    return null;
+  }
+}
+
+function mirrorSetting(value: boolean): void {
+  try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { useSettingsStore } = require('@/store/settings-store');
-    return useSettingsStore.getState().settings.approveAllWithoutAsking === true;
+    const st = useSettingsStore.getState();
+    if ((st.settings.approveAllWithoutAsking === true) !== value) st.updateSettings({ approveAllWithoutAsking: value });
+  } catch {
+    // no store (pure tests)
+  }
+}
+
+/** The master switch, asked of native now (never cached). Any error ⇒ OFF. */
+export async function isApproveAllWithoutAskingOn(): Promise<boolean> {
+  try {
+    return (await nativeModule()?.getApproveAllWithoutAsking?.()) === true;
   } catch {
     return false;
   }
 }
 
+/** The Settings toggle: the only caller allowed to turn native ON. Resolves (and mirrors) the verified state. */
+export async function setApproveAllFromToggle(enabled: boolean): Promise<boolean> {
+  const n = nativeModule();
+  let state = false;
+  try {
+    if (typeof n?.setApproveAllWithoutAsking === 'function') {
+      state = (await n.setApproveAllWithoutAsking(enabled, 'settings toggle')) === true;
+    }
+  } catch {
+    state = await isApproveAllWithoutAskingOn();
+  }
+  mirrorSetting(state);
+  return state;
+}
+
+/** OFF from anywhere (STOP-ALL mirror, token regeneration). Throws when native still says ON. */
+export async function turnOffApproveAll(reason: string): Promise<void> {
+  const n = nativeModule();
+  if (typeof n?.setApproveAllWithoutAsking === 'function') {
+    if ((await n.setApproveAllWithoutAsking(false, reason)) === true) throw new Error('could not turn off Skip all approvals');
+  }
+  mirrorSetting(false);
+}
+
+/** Load / foreground: copy native into the setting (never turns native on). */
+export async function syncApproveAllFromNative(): Promise<boolean> {
+  const state = await isApproveAllWithoutAskingOn();
+  mirrorSetting(state);
+  return state;
+}
+
 /** Boundary signals the master switch may answer. Anything else (secret-read,
- *  destructive, policy-write, indirect-exec, an unknown signal) asks. */
+ *  policy-write, indirect-exec, opaque-script-exec, an unknown signal) asks:
+ *  for an opaque script (`python ~/payload.py`) the text checked here is not
+ *  what runs. destructive inside the home folder IS answered (owner decision
+ *  2026-11-19; CRITICAL ones are refused by approveAllCommandRefusal). */
 export const APPROVE_ALL_ESCALATION_SIGNALS: ReadonlySet<string> = new Set([
   'leaves-root',
   'write-or-exec',
   'network-send',
-  'opaque-script-exec',
   'destructive',
 ]);
+
+/** Boundary signals that keep a `cli` action asking under the master switch
+ *  (the executed program is not the text checked here). */
+export const APPROVE_ALL_CLI_REFUSED_SIGNALS: ReadonlySet<string> = new Set(['opaque-script-exec', 'indirect-exec']);
 
 /** A POLICY-001 verdict as evaluateActionPolicy returns it. */
 export type ApproveAllPolicyVerdictLike = { decision: string; layer?: string | null; ruleId?: string | null } | null | undefined;
@@ -113,6 +186,23 @@ export function approveAllCommandRefusal(command: string, extra: readonly (strin
   for (const text of [raw, dequoted, ...extra.map((e) => String(e ?? ''))]) {
     if (TRUST_STATE_RE.test(text)) return 'trust-state-path';
     if (SECRET_TEXT_RE.test(text)) return 'secret-file';
+  }
+  return null;
+}
+
+/**
+ * A `cli` action whose executed program is not the checked text: the boundary
+ * classifier (classifyProposedCommand, the gate's own) flags it
+ * opaque-script-exec (python / node / bash script.sh / piped interpreter) or
+ * indirect-exec ($(…), eval, xargs …). Judged on the raw and the dequoted
+ * text. null ⇒ fine; otherwise the refusal reason.
+ */
+export function approveAllCliSignalRefusal(command: string): string | null {
+  const raw = String(command ?? '');
+  for (const text of [raw, dequoteShellWords(raw)]) {
+    const verdict = classifyProposedCommand(text, { workspaceRoot: '/', level: 'L2' });
+    const hit = verdict.signals.find((sig) => APPROVE_ALL_CLI_REFUSED_SIGNALS.has(sig));
+    if (hit) return `signal:${hit}`;
   }
   return null;
 }
@@ -203,7 +293,7 @@ export function approveAllActionVerdict(request: ApproveAllActionRequestLike, op
   if (type === 'cli') {
     const command = String(request.command ?? '').trim();
     if (!command) return { ok: false, reason: 'no-command' };
-    const hard = approveAllCommandRefusal(command);
+    const hard = approveAllCommandRefusal(command) ?? approveAllCliSignalRefusal(command);
     if (hard) return { ok: false, reason: hard };
   }
   return { ok: true, kind: 'all' };
@@ -235,7 +325,7 @@ export async function decideApproveAllActionApproval<T extends ApproveAllActionR
   parsed: T,
   opts: ApproveAllActionOpts & {
     /** Re-read of the switch right before minting / answering. */
-    isOn: () => boolean;
+    isOn: () => boolean | Promise<boolean>;
     readMinted: () => Promise<T | null>;
     now?: number;
   },
@@ -243,7 +333,7 @@ export async function decideApproveAllActionApproval<T extends ApproveAllActionR
   const first = approveAllActionVerdict(parsed, { ...opts, allowRnFired: false });
   if (first.ok === false) return first;
   const minted = await opts.readMinted();
-  const refusal = approveAllMintedRefusal(parsed, minted, { ...opts, on: opts.isOn(), allowRnFired: false }, opts.now ?? Date.now());
+  const refusal = approveAllMintedRefusal(parsed, minted, { ...opts, on: (await opts.isOn()) === true, allowRnFired: false }, opts.now ?? Date.now());
   if (refusal) return { ok: false, reason: refusal };
   return { ok: true, minted: minted as T };
 }

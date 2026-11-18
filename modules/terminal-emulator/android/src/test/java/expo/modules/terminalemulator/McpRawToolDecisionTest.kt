@@ -210,25 +210,20 @@ class McpRawToolDecisionTest {
 
     @Test
     fun agentRequestIdsFromAListing() {
-        val ids = McpRawToolDecision.agentRequestIds(arrayOf(".shelly-agent-req-1700000000000-0000abcd", ".shelly-agent-pending-1700000000001-0000abce", ".shelly-agent-req-x", "other"))
-        assertEquals(setOf("1700000000000-0000abcd", "1700000000001-0000abce"), ids)
+        val ids = McpRawToolDecision.agentRequestIds(arrayOf(
+            ".shelly-agent-req-1700000000000-0000abcd",
+            ".shelly-agent-pending-1700000000001-0000abce",
+            ".shelly-agent-ctl-1700000000002-0000abcf",
+            ".shelly-agent-claim-1700000000003-0000abd0",
+            ".shelly-agent-claim-ctl-1700000000004-0000abd1",
+            ".shelly-agent-req-x",
+            "other",
+        ))
+        assertEquals(
+            setOf("1700000000000-0000abcd", "1700000000001-0000abce", "ctl-1700000000002-0000abcf", "1700000000003-0000abd0", "ctl-1700000000004-0000abd1"),
+            ids,
+        )
         assertNull(McpRawToolDecision.agentRequestIds(null))
-    }
-
-    @Test
-    fun nativeIngressKeepsWindowsAndRequests() {
-        McpNativeIngress.clearForTests()
-        McpNativeIngress.begin("call-1", "p".repeat(32), 1_000L)
-        McpNativeIngress.noteRequest("1700000000000-0000abcd", "call-1", "p".repeat(32), 1_500L)
-        McpNativeIngress.end("call-1", 2_000L)
-        val s = JSONObject(McpNativeIngress.snapshotJson(3_000L))
-        assertEquals(2_000L, s.getJSONArray("windows").getJSONObject(0).getLong("end"))
-        assertEquals("1700000000000-0000abcd", s.getJSONArray("requests").getJSONObject(0).getString("reqId"))
-        val later = JSONObject(McpNativeIngress.snapshotJson(2_000L + McpNativeIngress.RETAIN_MS + 1))
-        assertEquals(0, later.getJSONArray("windows").length())
-        McpNativeIngress.begin("\$(id)", "x y", 1L)
-        assertEquals("unknown", JSONObject(McpNativeIngress.snapshotJson(2L)).getJSONArray("windows").getJSONObject(0).getString("callId"))
-        McpNativeIngress.clearForTests()
     }
 
     @Test

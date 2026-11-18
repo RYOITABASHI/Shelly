@@ -33,9 +33,9 @@ const webAgent = { prompt: 'Research the latest news on https://example.com', to
 // ── Escalations ───────────────────────────────────────────────────────────
 
 const esc = (over: Record<string, unknown> = {}) => ({
-  command: 'bash -lc "node build.js && cp out/a.js ~/projects/site/a.js"',
-  signals: ['write-or-exec', 'opaque-script-exec', 'leaves-root'],
-  reason: 'boundary: write-or-exec, opaque-script-exec, leaves-root',
+  command: 'cp out/a.js ~/projects/site/a.js',
+  signals: ['write-or-exec', 'leaves-root'],
+  reason: 'boundary: write-or-exec, leaves-root',
   cwd: '/data/user/0/dev.shelly.terminal/files/home/agent-output',
   workspaceRoot: '/data/user/0/dev.shelly.terminal/files/home/agent-output',
   state: null,
@@ -54,7 +54,7 @@ describe('escalation verdict', () => {
     expect(approveAllEscalationVerdict(esc(), escOpts({ on: false }))).toEqual({ ok: false, reason: 'approve-all-off' });
   });
 
-  it('on: allows what the per-agent "all" level would refuse for soft reasons (scripts, outside root, network)', () => {
+  it('on: allows what the per-agent "all" level would refuse for soft reasons (outside root, network)', () => {
     expect(approveAllEscalationVerdict(esc(), escOpts())).toEqual({ ok: true, kind: 'all' });
     expect(approveAllEscalationVerdict(esc({
       command: 'curl -sS https://api.example.com/status -o status.json',
@@ -65,7 +65,7 @@ describe('escalation verdict', () => {
   });
 
   it.each([
-    ['secret-read'], ['policy-write'], ['indirect-exec'], ['something-new'],
+    ['secret-read'], ['policy-write'], ['indirect-exec'], ['opaque-script-exec'], ['something-new'],
   ])('keeps the %s signal asking', (signal) => {
     expect(approveAllEscalationVerdict(esc({ signals: ['write-or-exec', signal] }), escOpts())).toEqual({ ok: false, reason: `signal:${signal}` });
   });

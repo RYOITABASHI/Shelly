@@ -100,6 +100,7 @@ import {
 import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
+import { isApproveAllWithoutAskingOn, turnOffApproveAll } from '@/lib/approve-all-without-asking';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -672,6 +673,7 @@ export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } 
     // on again in Settings). Not confirmed off = the regeneration fails and
     // the server stays off.
     await turnOffMcpSkipApproval('token regenerated');
+    await turnOffApproveAll('token regenerated');
     // run_agent tickets of the old token: live ones become `cancelled`
     // (an accepted one then never starts). Best effort — tickets are
     // principal-scoped, so the new token can't read them anyway.
@@ -1320,7 +1322,7 @@ async function runAgentTool(
   // re-runs every deny class (STOP-ALL, taint, policy / CRITICAL) and the
   // binding check. The run stays marked as external input (writes, sends
   // and actions refused), exactly as after a tap.
-  if (useSettingsStore.getState().settings.approveAllWithoutAsking === true) {
+  if (await isApproveAllWithoutAskingOn()) {
     logInfo('MCPBridge', `run_agent ${agentId} auto-approved once (approveAllWithoutAsking, principal=${ingress.principal.slice(0, 8)})`);
     return launchRunAgent(agentId, requestId, epoch, ingress, bind, deadlineMs, { via: 'dialog' });
   }

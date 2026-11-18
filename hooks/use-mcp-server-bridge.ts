@@ -64,6 +64,7 @@ import {
 } from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { syncMcpSkipApprovalFromNative } from '@/lib/mcp-skip-approval';
+import { syncApproveAllFromNative } from '@/lib/approve-all-without-asking';
 import {
   effectiveMirrorSettings,
   mcpCleanupAction,
@@ -239,6 +240,8 @@ export function useMCPServerBridge(): void {
   useEffect(() => {
     if (!settingsLoaded) return;
     syncMcpSkipApprovalFromNative().catch((e) => logError('MCPBridge', 'could not read MCP run-without-approval', e));
+    // Same for "Skip all approvals": a loaded ON never survives a native OFF.
+    syncApproveAllFromNative().catch((e) => logError('MCPBridge', 'could not read Skip all approvals', e));
   }, [settingsLoaded]);
 
   useEffect(() => {

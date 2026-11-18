@@ -2508,7 +2508,7 @@ export default function RootLayout() {
     // input, POLICY-001, proactive origin). Judged on the drained AND the
     // minted copy; the switch is re-read right before answering.
     const autoApproveEscalationForApproveAll = async (parsed: AgentEscalationRequest): Promise<boolean> => {
-      if (!isApproveAllWithoutAskingOn()) return false;
+      if (!(await isApproveAllWithoutAskingOn())) return false;
       if (!TerminalEmulator.readAgentEscalationRequest || !TerminalEmulator.resolveAgentEscalationAutoApproval) return false;
       try {
         const agentFor = (agentId: string) => useAgentStore.getState().agents.find((a) => a.id === agentId) ?? null;
@@ -2542,7 +2542,7 @@ export default function RootLayout() {
           policyBlocksAutoAccept = approveAllPolicyBlocks(policy);
         }
         const verdict = approveAllEscalationVerdict(minted, {
-          on: isApproveAllWithoutAskingOn(),
+          on: await isApproveAllWithoutAskingOn(),
           attended: attended && registeredRunOrigin(minted.agentId) === 'user',
           ingressTainted: await isIngressTaintedForApproval(minted.agentId),
           agent: agentFor(minted.agentId),
@@ -2760,7 +2760,7 @@ export default function RootLayout() {
       opts?: {
         closePawPreapproved?: boolean;
         /** Master switch: the minted copy must pass this before anything fires. */
-        verifyMinted?: (minted: AgentActionApprovalRequest) => boolean;
+        verifyMinted?: (minted: AgentActionApprovalRequest) => boolean | Promise<boolean>;
         /** Called once, right after the signed accept was written. */
         onAccepted?: (minted: AgentActionApprovalRequest) => void;
       },
@@ -2777,7 +2777,7 @@ export default function RootLayout() {
         const actionNonce = minted?.actionNonce;
         if (!minted || !requestSha256 || !actionNonce) return false;
         if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
-        if (opts?.verifyMinted && !opts.verifyMinted(minted)) return false;
+        if (opts?.verifyMinted && !(await opts.verifyMinted(minted))) return false;
         if (minted.actionType === 'intent') {
           if (!TerminalEmulator.fireAgentIntent) return false;
           if (intentRequiresHumanReview(minted)) {
@@ -2901,7 +2901,7 @@ export default function RootLayout() {
       parsed: AgentActionApprovalRequest,
       policyBlocksAutoAccept: boolean,
     ): Promise<boolean> => {
-      if (!isApproveAllWithoutAskingOn()) return false;
+      if (!(await isApproveAllWithoutAskingOn())) return false;
       if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
       try {
         const ingressTainted = await isIngressTaintedForApproval(parsed.agentId);
@@ -2924,8 +2924,8 @@ export default function RootLayout() {
             return false;
           }
           return await autoResolveActionApproval(parsed, {
-            verifyMinted: (minted) => {
-              const refusal = approveAllMintedRefusal(parsed, minted, { ...baseOpts, on: isApproveAllWithoutAskingOn(), allowRnFired: true });
+            verifyMinted: async (minted) => {
+              const refusal = approveAllMintedRefusal(parsed, minted, { ...baseOpts, on: await isApproveAllWithoutAskingOn(), allowRnFired: true });
               if (refusal) logInfo('AgentActionApproval', `approve-all not applied run=${parsed.runId} action=intent reason=${refusal}`);
               return refusal === null;
             },

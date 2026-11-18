@@ -37,6 +37,7 @@ export type McpRequestOrigin = {
 export const INGRESS_VALUE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const MARKER_RE = /^ingress=mcp\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9_-]{1,64})$/;
 /** How long after an MCP command ends its window still claims new requests. */
+/** KEEP IN SYNC: McpIngressJournalCore.GRACE_MS (McpNativeIngress.kt). */
 export const MCP_WINDOW_GRACE_MS = 60_000;
 const MAX_WINDOWS = 64;
 const MAX_ORIGINS = 1000;
@@ -81,6 +82,16 @@ const originsByRequest = new Map<string, McpRequestOrigin>();
  * by RN's clock: RN may drain a request long after the command ended.
  */
 let nativeWindows: ExecWindow[] = [];
+/**
+ * The native ingress journal could not be read or verified (lib/mcp-native-ingress.ts):
+ * until a later read succeeds, every agent request classified is MCP-originated
+ * (fail closed: a headless MCP command may have written it).
+ */
+let nativeTaintAll = false;
+
+export function setNativeMcpTaintAll(on: boolean): void {
+  nativeTaintAll = on;
+}
 
 function prune(now: number): void {
   for (let i = windows.length - 1; i >= 0; i--) {
@@ -155,6 +166,7 @@ export function classifyTerminalRequest(
   const known = originsByRequest.get(reqId);
   if (known) return known;
   if (marker) return remember(reqId, { principal: marker.principal, callId: marker.callId, via: 'marker' });
+  if (nativeTaintAll) return remember(reqId, { principal: 'unknown', callId: 'unknown', via: 'window' });
   for (const t of times) {
     const w = Number.isFinite(t) ? mcpWindowAt(t) : null;
     if (w) return remember(reqId, { principal: w.principal, callId: w.callId, via: 'window' });
@@ -175,5 +187,6 @@ export function mcpOriginForRequest(reqId: string | null | undefined): McpReques
 export function __resetMcpIngressOriginForTests(): void {
   windows.length = 0;
   nativeWindows = [];
+  nativeTaintAll = false;
   originsByRequest.clear();
 }

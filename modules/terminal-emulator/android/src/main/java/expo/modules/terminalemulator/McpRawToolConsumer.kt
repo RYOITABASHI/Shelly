@@ -439,30 +439,32 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
         val bashPath = LibExtractor.getBashPath(app)
         NativeExecEnvironment.seedTls(app, homePath)
         val script = NativeExecEnvironment.wrap(libPath, homePath, McpRawToolDecision.execScript(args.command, args.cwd, request.principal, request.callId))
+        // The ingress window is journaled (persistent, Keystore-HMAC'd) BEFORE
+        // the command starts, with the agent requests that already exist: a
+        // request the command writes stays MCP-originated even if this process
+        // dies before RN drains it (McpNativeIngress). No journal, no run.
         val refusal = synchronized(commitLock) {
             val r = recheckLocked(request)
-                ?: if (!IngressAuditWriter.appendNativeMcpLine(app, "mcp_raw_tool_executing", null, request.principal, null, event = event)) {
-                    "audit_failed" to McpRawToolDecision.AUDIT_FAILED_ERROR
-                } else {
-                    null
+                ?: run {
+                    val before = McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull())
+                    if (before == null || !McpNativeIngress.openWindow(app, request.callId, request.principal, before)) {
+                        "journal_failed" to "not run: the MCP ingress journal could not be written"
+                    } else if (!IngressAuditWriter.appendNativeMcpLine(app, "mcp_raw_tool_executing", null, request.principal, null, event = event)) {
+                        McpNativeIngress.closeWindow(app, request.callId, McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull()))
+                        "audit_failed" to McpRawToolDecision.AUDIT_FAILED_ERROR
+                    } else {
+                        null
+                    }
                 }
-            if (r == null) McpNativeIngress.begin(request.callId, request.principal)
             r
         }
         if (refusal != null) return finish(request, claimed, event, "mcp_raw_tool_refused", refusal.first, McpRawToolDecision.errorResult(refusal.second))
-        val before = McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull())
         val out: Array<String> = try {
             ShellyJNI.execSubprocess("/system/bin/linker64", bashPath, libPath, homePath, script, timeout.toInt())
         } finally {
-            val after = McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull())
-            if (after != null) {
-                for (reqId in after) {
-                    if (before != null && before.contains(reqId)) continue
-                    McpNativeIngress.noteRequest(reqId, request.callId, request.principal)
-                    Log.i(TAG, "agent request appeared during a headless MCP command; marked as MCP-originated")
-                }
-            }
-            McpNativeIngress.end(request.callId)
+            // Ids that appeared are recorded; a failed listing leaves the window
+            // open, recovered (fail closed) on the next journal read.
+            McpNativeIngress.closeWindow(app, request.callId, McpRawToolDecision.agentRequestIds(runCatching { home.list() }.getOrNull()))
         }
         val exit = out.getOrNull(0)?.toIntOrNull() ?: -1
         Log.i(TAG, "run_command ran headless exit=$exit")
@@ -504,7 +506,10 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
                 } else if (!IngressAuditWriter.appendNativeMcpLine(app, "mcp_raw_tool_executing", null, request.principal, null, event = event)) {
                     "audit_failed" to McpRawToolDecision.AUDIT_FAILED_ERROR
                 } else {
-                    error = writeVerified(realPath, again.existed, bytes)
+                    error = writeVerified(realPath, bytes) {
+                        val now = McpRawToolDecision.resolveWriteTarget(args.path, roots, deviceFs)
+                        now is McpRawToolDecision.Target.Ok && now.realPath == realPath
+                    }
                     if (error != null) code = "failed"
                     null
                 }
@@ -519,35 +524,71 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
     }
 
     /**
-     * Opens [realPath] without following a final symlink (O_EXCL when it did
-     * not exist at the last check), then checks the opened file itself — its
-     * /proc/self/fd path is [realPath], it is a regular file with one link —
-     * and only then truncates and writes. Null on success, else the error.
+     * Replaces [realPath] by a new file instead of writing into the existing
+     * inode (a hard link swapped in after the check can then never be
+     * rewritten through its other name):
+     *  1. open the parent directory (O_DIRECTORY | O_NOFOLLOW) and check that
+     *     its /proc/self/fd path is exactly the checked real parent;
+     *  2. create a private temp file in it THROUGH that directory fd
+     *     (`/proc/self/fd/<dirfd>/<name>`, O_CREAT | O_EXCL | O_NOFOLLOW, 0600;
+     *     an existing target's permission bits are kept), write, fsync;
+     *  3. right before the rename: [stillChecked] re-resolves the target
+     *     against the allowed roots (must still be [realPath]), the dir fd
+     *     path is re-checked, and an existing target must still be a regular
+     *     file with one link (else refused);
+     *  4. rename the temp file over the target through the same dir fd (atomic;
+     *     it replaces the name, never follows a link), then fsync the dir.
+     * android.system.Os has no renameat; `/proc/self/fd/<dirfd>/…` gives the
+     * same "relative to this opened directory" resolution. Null on success.
      */
-    private fun writeVerified(realPath: String, existed: Boolean, bytes: ByteArray): String? {
-        val flags = OsConstants.O_WRONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC or
-            (if (existed) 0 else OsConstants.O_CREAT or OsConstants.O_EXCL)
-        val fd = try {
-            Os.open(realPath, flags, 384 /* 0600 */)
+    private fun writeVerified(realPath: String, bytes: ByteArray, stillChecked: () -> Boolean): String? {
+        val slash = realPath.lastIndexOf('/')
+        if (slash <= 0 || slash == realPath.length - 1) return "refused: the target has no parent directory"
+        val parent = realPath.substring(0, slash)
+        val leaf = realPath.substring(slash + 1)
+        val dirFd = try {
+            Os.open(parent, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
         } catch (e: android.system.ErrnoException) {
-            return "could not open the file for writing (${android.system.OsConstants.errnoName(e.errno) ?: e.errno})"
+            return "could not open the parent directory (${OsConstants.errnoName(e.errno) ?: e.errno})"
         }
+        val dirPfd = try { ParcelFileDescriptor.dup(dirFd) } catch (e: Exception) { runCatching { Os.close(dirFd) }; return "could not open the parent directory" }
+        var tmpName: String? = null
         try {
-            val st = Os.fstat(fd)
-            if (!OsConstants.S_ISREG(st.st_mode) || st.st_nlink != 1L) {
-                return "refused: the opened target is not a regular file with one link"
+            val dirLink = "/proc/self/fd/${dirPfd.fd}"
+            fun dirIsChecked(): Boolean = runCatching { Os.readlink(dirLink) }.getOrNull() == parent &&
+                OsConstants.S_ISDIR(Os.fstat(dirFd).st_mode)
+            if (!dirIsChecked()) return "refused: the parent directory is not the checked one"
+            fun targetState(): Pair<Boolean, Int>? { // (exists, mode); null = refuse
+                val st = try { Os.lstat("$dirLink/$leaf") } catch (e: android.system.ErrnoException) {
+                    return if (e.errno == OsConstants.ENOENT) false to 384 else null
+                }
+                if (!OsConstants.S_ISREG(st.st_mode) || st.st_nlink != 1L) return null
+                return true to (st.st_mode and 0x1ff)
             }
-            val opened = ParcelFileDescriptor.dup(fd).use { Os.readlink("/proc/self/fd/${it.fd}") }
-            if (opened != realPath) return "refused: the opened file is not the checked target"
-            Os.ftruncate(fd, 0L)
-            // Os.write, not a FileOutputStream: the fd is closed exactly once, below.
-            var off = 0
-            while (off < bytes.size) off += Os.write(fd, bytes, off, bytes.size - off)
+            val before = targetState() ?: return "refused: the target exists and is not a regular file with one link"
+            val name = ".shelly-mcp-write-" + ByteArray(8).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) } + ".tmp"
+            val fd = Os.open("$dirLink/$name", OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 384)
+            tmpName = name
+            try {
+                if (before.first) Os.fchmod(fd, before.second)
+                var off = 0
+                while (off < bytes.size) off += Os.write(fd, bytes, off, bytes.size - off)
+                Os.fsync(fd)
+            } finally {
+                runCatching { Os.close(fd) }
+            }
+            if (!stillChecked() || !dirIsChecked()) return "refused: the target changed before the write"
+            targetState() ?: return "refused: the target exists and is not a regular file with one link"
+            Os.rename("$dirLink/$name", "$dirLink/$leaf")
+            tmpName = null
+            runCatching { Os.fsync(dirFd) }
             return null
         } catch (e: Exception) {
             return "write failed (${e.javaClass.simpleName})"
         } finally {
-            runCatching { Os.close(fd) }
+            tmpName?.let { t -> runCatching { Os.remove("/proc/self/fd/${dirPfd.fd}/$t") } }
+            runCatching { dirPfd.close() }
+            runCatching { Os.close(dirFd) }
         }
     }
 
@@ -567,7 +608,7 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
     private fun haltedOnDisk(): Boolean = McpTypedOpConsumer.haltedOnDisk(agentsDir)
 
     private fun turnOffForStopAll() {
-        if (skipOn()) McpSkipApprovalStore.setOff(app, "STOP-ALL")
+        StopAllSwitches.turnOff(app, "STOP-ALL")
     }
 
     /** policy.json text (null when absent) and whether it matches the native seal. */

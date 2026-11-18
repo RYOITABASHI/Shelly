@@ -247,6 +247,7 @@ object McpServerSupervisor {
      */
     fun onServiceStart(context: Context, reason: String): Boolean {
         val app = context.applicationContext
+        runCatching { StopAllSwitches.enforceAtStart(app, "MCP service start") }
         ensureWatching(app)
         val startGeneration = synchronized(lock) {
             if (desired != null) {

@@ -77,6 +77,7 @@ export const TERMINAL_AGENT_REQUEST_CONFIRM_WINDOW_MS = 30 * 60 * 1000;
 
 export const AGENT_ADD_REQUEST_FILE_PREFIX = '.shelly-agent-req-';
 export const AGENT_ADD_PENDING_FILE_PREFIX = '.shelly-agent-pending-';
+// KEEP IN SYNC: McpRawToolDecision.kt agentRequestIds (req / pending / ctl / claim file names, id shape).
 export const AGENT_ADD_CLAIM_FILE_PREFIX = '.shelly-agent-claim-';
 
 export const AGENT_ADD_MSG_SENT = "Sent to Shelly — confirm the new agent in Shelly's chat";

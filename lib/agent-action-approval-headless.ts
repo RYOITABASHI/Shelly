@@ -185,10 +185,20 @@ export interface HeadlessActionDrainDeps {
   now?: () => number;
   /** MCP ingress taint (Inc 5); defaults to isIngressTaintedForApproval (fails closed). */
   isIngressTainted?: (agentId: string) => Promise<boolean>;
-  /** settings.approveAllWithoutAsking, read at each decision. Absent ⇒ off. */
-  approveAllOn?: () => boolean;
+  /** The native "Skip all approvals" switch (isApproveAllWithoutAskingOn),
+   *  asked at each decision. Absent / rejecting ⇒ off. */
+  approveAllOn?: () => boolean | Promise<boolean>;
   /** Chat audit line of a master-switch auto-accept. */
   auditApproveAll?: (agentId: string, what: string) => void;
+}
+
+/** The master switch now; any error ⇒ off. */
+async function approveAllNow(deps: { approveAllOn?: () => boolean | Promise<boolean> }): Promise<boolean> {
+  try {
+    return (await deps.approveAllOn?.()) === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Keys already handled by this drain (accepted or refused), so a request is
@@ -219,7 +229,7 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
       if (isForegroundActionDrainMounted()) break;
       // Lease taken over (this pass outlived DRAIN_LEASE_MS): stop.
       if (!holdsActionApprovalDrain(token)) break;
-      const approveAll = deps.approveAllOn?.() === true;
+      const approveAll = (await approveAllNow(deps)) === true;
       const parsed = parseHeadlessActionRequest(raw, { approveAll });
       if (!parsed) continue;
       const key = requestKey(parsed);
@@ -253,11 +263,11 @@ export async function drainHeadlessRunWithoutApproval(deps: HeadlessActionDrainD
         });
         if (decision.ok === false) {
           deps.log(`headless run-without-approval not applied run=${parsed.runId} action=${parsed.actionType} reason=${decision.reason}`);
-          if (approveAll && deps.approveAllOn?.() === true) {
+          if (approveAll && (await approveAllNow(deps))) {
             const proactive = deps.originOf(parsed) !== 'user';
             const all = await decideApproveAllActionApproval(parsed, {
               on: true,
-              isOn: () => deps.approveAllOn?.() === true,
+              isOn: () => approveAllNow(deps),
               ingressTainted,
               policyBlocksAutoAccept: approveAllPolicyBlocked || proactive,
               originOf: deps.originOf,

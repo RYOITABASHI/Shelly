@@ -336,14 +336,21 @@ describe('run_command ingress labelling', () => {
     expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('id -u'))).toBe(false);
   });
 
-  it('approveAllWithoutAsking implies mcpSkipApproval for run_command', async () => {
+  it('approveAllWithoutAsking (a settings mirror) never lets RN run a raw tool without the native handoff, nor skip the tap', async () => {
     mockSettings.approveAllWithoutAsking = true;
     try {
       mockFiles.set(`${REQUESTS}/s3.json`, await signedRequest('s3', 'run_command', { command: 'ls -la' }));
       startMCPPoller();
-      await waitFor(() => mockFiles.has(`${RESULTS}/s3.json`));
-      expect(useMcpApprovalStore.getState().current).toBeNull();
-      expect(JSON.parse(mockFiles.get(`${RESULTS}/s3.json`)!).ok).toBe(true);
+      await waitFor(() => !mockFiles.has(`${REQUESTS}/s3.json`));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mockFiles.has(`${RESULTS}/s3.json`)).toBe(false);
+      expect(mockExecCommand.mock.calls.some((c) => String(c[0]).includes('ls -la'))).toBe(false);
+      mockFiles.set(`${REQUESTS}/s5.json`, await signedRequest('s5', 'run_command', { command: 'ls -la' }));
+      mockFiles.set(`${QUEUE}/handoffs/s5`, await handoffTokenForTest('s5'));
+      await waitFor(() => useMcpApprovalStore.getState().current !== null);
+      useMcpApprovalStore.getState().current!.resolve('deny');
+      useMcpApprovalStore.setState({ current: null, queue: [] });
+      await waitFor(() => mockFiles.has(`${RESULTS}/s5.json`));
     } finally {
       delete mockSettings.approveAllWithoutAsking;
     }
@@ -353,6 +360,7 @@ describe('run_command ingress labelling', () => {
     mockSettings.approveAllWithoutAsking = true;
     try {
       mockFiles.set(`${REQUESTS}/s4.json`, await signedRequest('s4', 'run_command', { command: 'rm -rf /' }));
+      mockFiles.set(`${QUEUE}/handoffs/s4`, await handoffTokenForTest('s4'));
       startMCPPoller();
       await waitFor(() => mockFiles.has(`${RESULTS}/s4.json`));
       const res = JSON.parse(mockFiles.get(`${RESULTS}/s4.json`)!);
