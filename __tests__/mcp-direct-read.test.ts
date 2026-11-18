@@ -186,4 +186,306 @@ describe('MCP direct reads', () => {
       expect(res.data.thermal).toBeNull();
     });
   });
+
+  describe('read_agent_audit / read_article_history (fixed files under $HOME/.shelly/agents/logs)', () => {
+    // $HOME = the queue dir's parent, as MCPBridge.kt lays it out.
+    let home: string;
+    let queue: string;
+    let logs: string;
+    beforeEach(() => {
+      home = path.join(dir, 'home');
+      queue = path.join(home, '.shelly-mcp-queue');
+      logs = path.join(home, '.shelly', 'agents', 'logs');
+      fs.mkdirSync(queue, { recursive: true });
+      fs.mkdirSync(path.join(logs, 'a1'), { recursive: true });
+    });
+
+    async function signHere(token = TOKEN, body = bridge.buildSnapshotBody(AGENTS, [REPO])) {
+      fs.writeFileSync(path.join(queue, 'snapshot.json'), JSON.stringify({ body, mac: await sign(token, body) }));
+    }
+    function makeHere(logIo?: { readFdPath: (fd: number) => string | null; beforeOpen: (file: string) => void }) {
+      const fallback = jest.fn(async () => ({ ok: true, data: 'from-queue' }));
+      const callTool = mcp.createDirectReadCallTool({ queueDir: queue, token: TOKEN, fallback, runGit: jest.fn(), ...(logIo ? { logIo } : {}) });
+      return { callTool, fallback };
+    }
+    const auditFile = () => path.join(logs, 'a1', 'plan-executor-audit.jsonl');
+    const line = (i: number) => JSON.stringify({ ts: i, event: 'step_done', stepIndex: i });
+
+    it('returns the newest audit lines of a registered agent, without the queue', async () => {
+      await signHere();
+      fs.writeFileSync(auditFile(), `${[1, 2, 3].map(line).join('\n')}\n`);
+      const { callTool, fallback } = makeHere();
+      const res = await callTool('read_agent_audit', { agentId: 'a1', limit: 2 });
+      expect(res).toEqual({ ok: true, data: { agentId: 'a1', lines: 2, truncated: true, text: `${line(2)}\n${line(3)}`, untrusted: true } });
+      const all = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(all.data.lines).toBe(3);
+      expect(all.data.truncated).toBe(false);
+      expect(fallback).not.toHaveBeenCalled();
+    });
+
+    it('projects audit lines: free-form fields dropped and named, allowlisted strings redacted', async () => {
+      await signHere();
+      fs.writeFileSync(auditFile(), [
+        JSON.stringify({ event: 'x', note: 'key sk-ant-abcdefghijklmnopqrstuvwxyz0123' }),
+        JSON.stringify({ kind: 'k', target: 'https://h/?token=abcdefghijk123', error: 'prose with sk-ant-abcdefghijklmnopqrstuvwxyz9999' }),
+        'not json at all',
+      ].join('\n'));
+      const res = await makeHere().callTool('read_agent_audit', { agentId: 'a1' });
+      expect(res.ok).toBe(true);
+      expect(res.data.text).not.toContain('abcdefghijklmnopqrstuvwxyz');
+      expect(res.data.text).not.toContain('abcdefghijk123');
+      expect(res.data.text.split('\n').map((l: string) => JSON.parse(l))).toEqual([
+        { event: 'x', omittedCount: 1 },
+        { kind: 'k', target: 'https://h/?token=<redacted>', omittedCount: 1 },
+        { unparsed: true },
+      ]);
+    });
+
+    describe('projectAuditLine', () => {
+      const p = (o: unknown) => mcp.projectAuditLine(JSON.stringify(o));
+      it('keeps the executor\'s structural fields (draft_write_failed / draft_saved / article_config_mismatch / after_draft_hook)', () => {
+        expect(p({ ts: '2026-11-18T00:00:00Z', kind: 'draft_write_failed', agentId: 'a1', code: 'broker-refused', target: '/v/x.md', swallowed: true, stepIndex: 3 }))
+          .toEqual({ ts: '2026-11-18T00:00:00Z', kind: 'draft_write_failed', agentId: 'a1', code: 'broker-refused', target: '/v/x.md', swallowed: true, stepIndex: 3 });
+        expect(p({ kind: 'draft_saved', folder: '/v/drafts', file: 'a.md', bytes: 1234 })).toEqual({ kind: 'draft_saved', folder: '/v/drafts', file: 'a.md', bytes: 1234 });
+        expect(p({ kind: 'article_config_mismatch', problems: ['voice.optional differs', 'x'.repeat(500)] }))
+          .toEqual({ kind: 'article_config_mismatch', problems: ['voice.optional differs', 'x'.repeat(200)] });
+        expect(p({ kind: 'after_draft_hook', status: 'ok', draftPresent: true })).toEqual({ kind: 'after_draft_hook', status: 'ok', draftPresent: true });
+      });
+      it('reason only as a code; problems only as strings; objects, nulls and prose dropped', () => {
+        expect(p({ reason: 'stale-lock' })).toEqual({ reason: 'stale-lock' });
+        expect(p({ reason: 'The file at /home/x had sk-ant-abcdefghijklmnopqrstuvwxyz0123' })).toEqual({ omittedCount: 1 });
+        expect(p({ problems: ['a', 1] })).toEqual({ omittedCount: 1 });
+        expect(p({ detail: { secret: 'S' }, preview: 'S', n: null, list: ['S'], bytes: 1e3 })).toEqual({ bytes: 1000, omittedCount: 4 });
+        // Numbers and booleans only under allowlisted keys; unknown key names are never returned.
+        expect(p({ 'sk-ant-abcdefghijklmnopqrstuvwxyz0123': 1, secretCount: 5, leaked: true, ok: false })).toEqual({ ok: false, omittedCount: 3 });
+        expect(p({ omitted: 'forged', omittedCount: 99, unparsed: false })).toEqual({ omittedCount: 3 });
+        expect(p({ exitCode: 1, attempts: 2, halted: false, score: 4.5, minScore: 3.5, overall: 4, unattended: true, recorded: true, restarts: 0, stepsRun: 3, lines: 9, count: 1, attempt: 1, schemaVersion: 2 }))
+          .toEqual({ exitCode: 1, attempts: 2, halted: false, score: 4.5, minScore: 3.5, overall: 4, unattended: true, recorded: true, restarts: 0, stepsRun: 3, lines: 9, count: 1, attempt: 1, schemaVersion: 2 });
+        expect(p({ exitCode: 'prose' })).toEqual({ omittedCount: 1 });
+        expect(mcp.projectAuditLine('[1,2]')).toEqual({ unparsed: true });
+        expect(mcp.projectAuditLine('{"a":')).toEqual({ unparsed: true });
+        expect(p({ status: 'y'.repeat(300) }).status).toHaveLength(200);
+      });
+    });
+
+    describe('the opened descriptor must be where the checks looked (/proc/self/fd)', () => {
+      const hasProc = fs.existsSync('/proc/self/fd');
+      (process.platform === 'win32' ? it.skip : it)('a FIFO swapped in after the lstat is refused promptly (O_NONBLOCK open, fstat check)', async () => {
+        await signHere();
+        fs.writeFileSync(auditFile(), `${line(1)}\n`);
+        const { callTool } = makeHere({
+          readFdPath: (fd: number) => fs.readlinkSync(`/proc/self/fd/${fd}`),
+          beforeOpen: (file: string) => {
+            fs.unlinkSync(file);
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            expect(require('child_process').spawnSync('mkfifo', [file]).status).toBe(0);
+          },
+        });
+        const t0 = Date.now();
+        const res = await callTool('read_agent_audit', { agentId: 'a1' });
+        expect(Date.now() - t0).toBeLessThan(2000);
+        expect(res.ok).toBe(false);
+        expect(res.error).toMatch(/^refused/);
+      });
+      (hasProc ? it : it.skip)('a parent directory swapped for a symlink to an outside dir between the checks and the open is refused', async () => {
+        await signHere();
+        fs.writeFileSync(auditFile(), `${line(1)}\n`);
+        const moved = path.join(dir, 'moved-out');
+        const { callTool } = makeHere({
+          readFdPath: (fd: number) => fs.readlinkSync(`/proc/self/fd/${fd}`),
+          beforeOpen: () => {
+            // Same directory, same file (dev + ino still match), now outside the log tree.
+            fs.renameSync(path.join(logs, 'a1'), moved);
+            fs.symlinkSync(moved, path.join(logs, 'a1'));
+          },
+        });
+        const res = await callTool('read_agent_audit', { agentId: 'a1' });
+        expect(res).toEqual({ ok: false, error: 'refused: the opened file is not inside the log directory' });
+      });
+      it('a mismatching or unreadable /proc link, or no /proc at all, is refused', async () => {
+        await signHere();
+        fs.writeFileSync(auditFile(), `${line(1)}\n`);
+        const noop = () => {};
+        expect((await makeHere({ readFdPath: () => '/elsewhere/plan-executor-audit.jsonl', beforeOpen: noop }).callTool('read_agent_audit', { agentId: 'a1' })).error)
+          .toBe('refused: the opened file is not inside the log directory');
+        expect((await makeHere({ readFdPath: () => { throw new Error('EACCES'); }, beforeOpen: noop }).callTool('read_agent_audit', { agentId: 'a1' })).error)
+          .toBe('refused: cannot confirm where the opened file is');
+        // No /proc/self/fd: refused, never inode-only.
+        expect((await makeHere({ readFdPath: () => null, beforeOpen: noop }).callTool('read_agent_audit', { agentId: 'a1' })).error)
+          .toBe('refused: cannot confirm where the opened file is (no /proc/self/fd)');
+        // The default reader accepts the real file (the expected path is built from realpath(home)).
+        expect((await makeHere().callTool('read_agent_audit', { agentId: 'a1' })).data.text).toBe(line(1));
+      });
+    });
+
+    it('refuses an agent id not in the snapshot, and traversal / malformed ids, without reading', async () => {
+      await signHere();
+      fs.mkdirSync(path.join(logs, 'other'), { recursive: true });
+      fs.writeFileSync(path.join(logs, 'other', 'plan-executor-audit.jsonl'), 'SECRET-OTHER\n');
+      const { callTool, fallback } = makeHere();
+      for (const agentId of ['other', '../a1', 'a1/..', '..', 'a1/../other', '', 'a.1', 'x'.repeat(129)]) {
+        const res = await callTool('read_agent_audit', { agentId });
+        expect(res.ok).toBe(false);
+        expect(JSON.stringify(res)).not.toContain('SECRET-OTHER');
+      }
+      expect((await callTool('read_agent_audit', { agentId: 7 })).ok).toBe(false);
+      expect((await callTool('read_agent_audit', {})).ok).toBe(false);
+      expect(fallback).not.toHaveBeenCalled();
+    });
+
+    it('a missing audit file or log directory is a clear error', async () => {
+      await signHere();
+      const { callTool } = makeHere();
+      const res = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(res).toEqual({ ok: false, error: expect.stringContaining('no audit log for agent a1') });
+      fs.rmSync(path.join(home, '.shelly'), { recursive: true });
+      expect((await callTool('read_agent_audit', { agentId: 'a1' })).error).toContain('no audit log');
+    });
+
+    it('refuses a symlinked or hard-linked audit file and a symlinked log directory', async () => {
+      await signHere();
+      const target = path.join(dir, 'outside.txt');
+      fs.writeFileSync(target, 'OUTSIDE-CONTENT\n');
+      const { callTool } = makeHere();
+      fs.symlinkSync(target, auditFile());
+      let res = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/^refused/);
+      fs.unlinkSync(auditFile());
+      fs.linkSync(target, auditFile());
+      res = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/^refused/);
+      fs.unlinkSync(auditFile());
+      // logs/a1 -> a directory elsewhere that holds a file of the right name
+      const elsewhere = path.join(dir, 'elsewhere');
+      fs.mkdirSync(elsewhere);
+      fs.writeFileSync(path.join(elsewhere, 'plan-executor-audit.jsonl'), 'OUTSIDE-CONTENT\n');
+      fs.rmdirSync(path.join(logs, 'a1'));
+      fs.symlinkSync(elsewhere, path.join(logs, 'a1'));
+      res = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(res.ok).toBe(false);
+      expect(JSON.stringify(res)).not.toContain('OUTSIDE-CONTENT');
+    });
+
+    it('caps lines (max 500) and bytes (max 64 KiB, newest kept)', async () => {
+      await signHere();
+      const many = Array.from({ length: 800 }, (_, i) => line(i));
+      fs.writeFileSync(auditFile(), `${many.join('\n')}\n`);
+      const { callTool } = makeHere();
+      const def = await callTool('read_agent_audit', { agentId: 'a1' });
+      expect(def.data.lines).toBe(mcp.AUDIT_DEFAULT_LIMIT);
+      const max = await callTool('read_agent_audit', { agentId: 'a1', limit: 10_000, maxBytes: 10_000_000 });
+      expect(max.data.lines).toBe(mcp.AUDIT_MAX_LIMIT);
+      expect(max.data.text.split('\n').pop()).toBe(line(799));
+      const small = await callTool('read_agent_audit', { agentId: 'a1', limit: 500, maxBytes: 300 });
+      expect(Buffer.byteLength(small.data.text)).toBeLessThanOrEqual(300);
+      expect(small.data.truncated).toBe(true);
+      expect(small.data.text.split('\n').pop()).toBe(line(799));
+    });
+
+    it('reads only the last 256 KiB of a large audit file and drops the cut first line', async () => {
+      await signHere();
+      // The 256 KiB window starts in the middle of the short line QQQQQQ: a
+      // whole-file read would return QQQQQQ, a tail read without the
+      // fragment drop would return QQQQ. Blank lines are skipped.
+      const tail = `QQQQ${'\n'.repeat(mcp.AUDIT_TAIL_READ_BYTES - 4 - line(1).length - 1)}${line(1)}\n`;
+      fs.writeFileSync(auditFile(), `${'P'.repeat(1000)}\nQQ${tail}`);
+      const res = await makeHere().callTool('read_agent_audit', { agentId: 'a1', limit: 500 });
+      expect(res.data.text).toBe(line(1));
+      expect(res.data.lines).toBe(1);
+      expect(res.data.truncated).toBe(true);
+    });
+
+    it('returns the article history projected to {version, entries:[{title, url, date}]}', async () => {
+      await signHere();
+      const history = {
+        version: 1,
+        access_token: 'TOPLEVEL-SECRET-1',
+        entries: [
+          { title: 'A study', url: 'https://user:pw@example.org/x?sig=SIGNED-SECRET-2&token=abc123456789#frag', date: '2026-11-01', access_token: 'ENTRY-SECRET-3', extra: { k: 'EXTRA-4' } },
+          { title: 'Plain', url: 'http://Example.com/a/b', date: 'yesterday' },
+          { title: 7, url: 'ftp://x/y', date: '2026-01-01' },
+          'not an entry',
+          { title: 'Key sk-ant-abcdefghijklmnopqrstuvwxyz0123 in title', url: 'javascript:alert(1)' },
+        ],
+      };
+      fs.writeFileSync(path.join(logs, 'article-history-science-1.json'), JSON.stringify(history));
+      const { callTool, fallback } = makeHere();
+      const res = await callTool('read_article_history', { stream: 'science-1' });
+      expect(res.ok).toBe(true);
+      expect(res.data.stream).toBe('science-1');
+      expect(res.data.untrusted).toBe(true);
+      expect(res.data.history.version).toBe(1);
+      expect(res.data.history.entries.slice(0, 3)).toEqual([
+        { title: 'A study', url: 'https://example.org/x', date: '2026-11-01' },
+        { title: 'Plain', url: 'http://Example.com/a/b', date: '' },
+        { title: '', url: '', date: '2026-01-01' },
+      ]);
+      expect(res.data.history.entries).toHaveLength(4);
+      expect(res.data.history.entries[3].url).toBe('');
+      expect(res.data.history.entries[3].title).not.toContain('abcdefghijklmnopqrstuvwxyz0123');
+      const text = JSON.stringify(res);
+      for (const secret of ['TOPLEVEL-SECRET-1', 'SIGNED-SECRET-2', 'abc123456789', 'ENTRY-SECRET-3', 'EXTRA-4', 'pw@', 'frag']) expect(text).not.toContain(secret);
+      expect(fallback).not.toHaveBeenCalled();
+    });
+
+    it('history URLs: credentials never survive (tab in userinfo, several @, @ in the path), printable ASCII only', () => {
+      const u = (url: string) => mcp.projectArticleHistory({ entries: [{ url }] }).entries[0].url;
+      expect(u('https://us\ter:pw@evil.example/x')).toBe('');
+      expect(u('https://user:pw\t@host.example/x')).toBe('');
+      expect(u('https://a@b:c@host.example/p')).toBe('https://host.example/p');
+      expect(u('https://u:p@x@host.example:8443/p@q?x=1#y')).toBe('https://host.example:8443/p@q');
+      expect(u('https://host.example/a@b/c')).toBe('https://host.example/a@b/c');
+      expect(u('https://host.example/caf\u00e9')).toBe('');
+      expect(u('https://host.example/a b')).toBe('');
+      expect(u('https://[::1]/x')).toBe('');
+      expect(u('https://host.example:123456/x')).toBe('');
+      expect(u('https://user:pw@/x')).toBe('');
+      expect(u('HTTPS://Host.Example/P')).toBe('https://Host.Example/P');
+      expect(u('ftp://host.example/x')).toBe('');
+    });
+
+    it('article history: at most 30 entries (the newest); other shapes are a plain error', () => {
+      const many = { version: 1, entries: Array.from({ length: 40 }, (_, i) => ({ title: `t${i}`, url: '', date: '' })) };
+      const out = mcp.projectArticleHistory(many);
+      expect(out.entries).toHaveLength(30);
+      expect(out.entries[29].title).toBe('t39');
+      expect(mcp.projectArticleHistory({ version: 1 })).toBeNull();
+      expect(mcp.projectArticleHistory([])).toBeNull();
+      expect(mcp.projectArticleHistory({ entries: 'x' })).toBeNull();
+      expect(mcp.projectArticleHistory({ entries: [] })).toEqual({ version: null, entries: [] });
+    });
+
+    it('article history: bad stream, missing, symlinked, oversized and non-JSON files are refused', async () => {
+      await signHere();
+      const { callTool } = makeHere();
+      for (const stream of ['../x', 'A', 'a/b', '', 'a'.repeat(41), 'a.b', 'x\n']) {
+        expect((await callTool('read_article_history', { stream })).error).toContain('stream must match');
+      }
+      expect((await callTool('read_article_history', { stream: 'none' })).error).toContain('no article history for stream none');
+      const target = path.join(dir, 'outside.json');
+      fs.writeFileSync(target, '{"secret":"OUTSIDE"}');
+      fs.symlinkSync(target, path.join(logs, 'article-history-link.json'));
+      expect((await callTool('read_article_history', { stream: 'link' })).error).toMatch(/^refused/);
+      fs.writeFileSync(path.join(logs, 'article-history-big.json'), JSON.stringify({ x: 'y'.repeat(mcp.ARTICLE_HISTORY_READ_MAX_BYTES) }));
+      expect((await callTool('read_article_history', { stream: 'big' })).error).toContain('larger than');
+      fs.writeFileSync(path.join(logs, 'article-history-bad.json'), '{not json');
+      expect((await callTool('read_article_history', { stream: 'bad' })).error).toContain('not valid JSON');
+      fs.writeFileSync(path.join(logs, 'article-history-shape.json'), '{"secret":"S"}');
+      expect((await callTool('read_article_history', { stream: 'shape' })).error).toBe('the article history is not in the expected format');
+    });
+
+    it('both fall back to the queue when there is no verified snapshot', async () => {
+      fs.writeFileSync(auditFile(), `${line(1)}\n`);
+      const { callTool, fallback } = makeHere();
+      expect(await callTool('read_agent_audit', { agentId: 'a1' })).toEqual({ ok: true, data: 'from-queue' });
+      await signHere('old-token');
+      expect(await callTool('read_article_history', { stream: 's' })).toEqual({ ok: true, data: 'from-queue' });
+      expect(fallback.mock.calls.map((c) => (c as unknown[]).slice(0, 2))).toEqual([
+        ['read_agent_audit', { agentId: 'a1' }],
+        ['read_article_history', { stream: 's' }],
+      ]);
+    });
+  });
 });

@@ -288,6 +288,212 @@ async function readLogs(args: Record<string, unknown>): Promise<ToolResult> {
   return { ok: true, data: { source, lines: capped.returned, truncated: capped.truncated, text: capped.text } };
 }
 
+// ── read_agent_audit / read_article_history (queue fallback) ─────────────
+//
+// The MCP server answers these itself from a verified snapshot
+// (scripts/shelly-mcp-server.js readAgentAudit / readArticleHistory); this is
+// the fallback when it has none. Same caps, validation and answer shape —
+// the constants must match the server's.
+
+export const AUDIT_TAIL_READ_BYTES = 256 * 1024;
+export const AUDIT_DEFAULT_LIMIT = 50;
+export const AUDIT_MAX_LIMIT = 500;
+export const AUDIT_DEFAULT_BYTES = 32 * 1024;
+const AUDIT_MIN_BYTES = 256;
+export const AUDIT_MAX_BYTES = 64 * 1024;
+export const ARTICLE_HISTORY_READ_MAX_BYTES = 64 * 1024;
+const AUDIT_AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const ARTICLE_HISTORY_STREAM_RE = /^[a-z0-9-]{1,40}$/;
+const AGENT_LOGS_PARTS = ['.shelly', 'agents', 'logs'];
+const AGENT_LOG_READ_TIMEOUT_MS = 10_000;
+// Must match scripts/shelly-mcp-server.js (see projectAuditLine there).
+const ARTICLE_HISTORY_MAX_ENTRIES = 30;
+const ARTICLE_HISTORY_TITLE_MAX_CHARS = 160;
+const ARTICLE_HISTORY_URL_MAX_CHARS = 500;
+export const AUDIT_STRING_KEYS: ReadonlySet<string> = new Set(['ts', 'kind', 'event', 'agentId', 'status', 'actionType', 'toolType', 'target', 'code', 'effect', 'origin', 'phase', 'engine', 'folder', 'file', 'verified', 'swallowed', 'round', 'stepIndex', 'durationMs']);
+export const AUDIT_SCALAR_KEYS: ReadonlySet<string> = new Set(['stepIndex', 'durationMs', 'round', 'bytes', 'schemaVersion', 'exitCode', 'attempt', 'attempts', 'count', 'recorded', 'swallowed', 'draftPresent', 'unattended', 'halted', 'ok', 'lines', 'restarts', 'stepsRun', 'score', 'minScore', 'overall']);
+const HISTORY_URL_CHARS_RE = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
+const HISTORY_URL_HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
+const AUDIT_REASON_CODE_RE = /^[a-z0-9_-]{1,40}$/;
+const AUDIT_STRING_MAX_CHARS = 200;
+const AUDIT_PROBLEMS_MAX = 20;
+
+function isPlainJsonObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Redacted, then cut to `max` code points (never a secret cut in half first). */
+function cleanAuditString(v: string, max: number): string {
+  const cps = Array.from(redactForMcp(v));
+  return cps.length <= max ? cps.join('') : cps.slice(0, max).join('');
+}
+
+/**
+ * One audit JSONL line projected to explicit allowlists: numbers and booleans
+ * only under AUDIT_SCALAR_KEYS / AUDIT_STRING_KEYS; strings only under
+ * AUDIT_STRING_KEYS (capped, redacted); `reason` only when it is a code;
+ * `problems` only as an array of strings. Every other key is dropped and only
+ * counted (`omittedCount`), never named. Unparseable or non-object lines
+ * become { unparsed: true }. Pure; must match the server's. Exported for tests.
+ */
+export function projectAuditLine(line: string): Record<string, unknown> {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return { unparsed: true };
+  }
+  if (!isPlainJsonObject(obj)) return { unparsed: true };
+  const out: Record<string, unknown> = {};
+  let omittedCount = 0;
+  for (const [k, v] of Object.entries(obj)) {
+    if (((typeof v === 'number' && Number.isFinite(v)) || typeof v === 'boolean') && (AUDIT_SCALAR_KEYS.has(k) || AUDIT_STRING_KEYS.has(k))) {
+      out[k] = v;
+    } else if (typeof v === 'string' && AUDIT_STRING_KEYS.has(k)) {
+      out[k] = cleanAuditString(v, AUDIT_STRING_MAX_CHARS);
+    } else if (k === 'reason' && typeof v === 'string' && AUDIT_REASON_CODE_RE.test(v)) {
+      out[k] = v;
+    } else if (k === 'problems' && Array.isArray(v) && v.every((p) => typeof p === 'string')) {
+      out[k] = (v as string[]).slice(0, AUDIT_PROBLEMS_MAX).map((p) => cleanAuditString(p, AUDIT_STRING_MAX_CHARS));
+    } else {
+      omittedCount += 1;
+    }
+  }
+  if (omittedCount) out.omittedCount = omittedCount;
+  return out;
+}
+
+/**
+ * scheme://host[:port]/path of an http(s) URL — no userinfo (everything up to
+ * the last `@` of the authority is dropped), query or fragment — redacted, or
+ * ''. Any character outside printable ASCII URL characters gives ''. Pure;
+ * must match the server's. Exported for tests.
+ */
+export function articleHistoryUrl(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length > ARTICLE_HISTORY_URL_MAX_CHARS || !HISTORY_URL_CHARS_RE.test(raw)) return '';
+  const m = /^(https?):\/\/([^/?#]*)([^?#]*)/i.exec(raw);
+  if (!m) return '';
+  const host = m[2].slice(m[2].lastIndexOf('@') + 1);
+  if (!HISTORY_URL_HOST_RE.test(host)) return '';
+  return redactForMcp(`${m[1].toLowerCase()}://${host}${m[3]}`);
+}
+
+export type ProjectedArticleHistory = { version: number | null; entries: { title: string; url: string; date: string }[] };
+
+/**
+ * The executor's article history ({version, entries:[{title, url, date}]}),
+ * projected to exactly those fields; null when the shape is not that. Pure;
+ * must match the server's. Exported for tests.
+ */
+export function projectArticleHistory(parsed: unknown): ProjectedArticleHistory | null {
+  if (!isPlainJsonObject(parsed) || !Array.isArray(parsed.entries)) return null;
+  const entries = (parsed.entries as unknown[]).filter(isPlainJsonObject).slice(-ARTICLE_HISTORY_MAX_ENTRIES).map((e) => ({
+    title: typeof e.title === 'string' ? cleanAuditString(e.title, ARTICLE_HISTORY_TITLE_MAX_CHARS) : '',
+    url: articleHistoryUrl(e.url),
+    date: typeof e.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e.date) ? e.date : '',
+  }));
+  return { version: typeof parsed.version === 'number' && Number.isFinite(parsed.version) ? parsed.version : null, entries };
+}
+
+/**
+ * Shell script that prints one status line — `missing`, `refused`, or
+ * `ok <size>` followed by the last `tailBytes` bytes of the file — for
+ * <home>/<dirs...>/<name>. Refuses a symlinked or non-directory component and
+ * a file that is a symlink, not regular, or has more than one link. The file
+ * is opened once (fd 3) and never reopened by name: its /proc/$$/fd/3 link
+ * must equal the physical path (`cd -P` of home + the parts), and the link
+ * count, size and bytes all come from that descriptor, so a rename of a
+ * parent directory between the checks and the open is caught. No
+ * /proc/$$/fd → refused. A FIFO swapped in after the `-f` test would block
+ * the shell's open (`3<` has no non-blocking form in bash/mksh); that is
+ * bounded by AGENT_LOG_READ_TIMEOUT_MS on execCommand, which kills the
+ * script and answers an error. Every interpolated value is shell-quoted (and
+ * already validated by the caller). Exported for tests.
+ */
+export function agentLogReadScript(home: string, dirs: string[], name: string, tailBytes: number): string {
+  return [
+    `h=$(cd -P -- ${shellQuote(home)} 2>/dev/null && pwd -P) || { echo missing; exit 0; }`,
+    'd="$h"',
+    `for p in ${dirs.map(shellQuote).join(' ')}; do d="$d/$p"; if [ -L "$d" ]; then echo refused; exit 0; fi; if [ ! -e "$d" ]; then echo missing; exit 0; fi; if [ ! -d "$d" ]; then echo refused; exit 0; fi; done`,
+    `f="$d/"${shellQuote(name)}`,
+    'if [ -L "$f" ]; then echo refused; exit 0; fi',
+    'if [ ! -e "$f" ]; then echo missing; exit 0; fi',
+    'if [ ! -f "$f" ]; then echo refused; exit 0; fi',
+    'if [ ! -d "/proc/$$/fd" ]; then echo refused; exit 0; fi',
+    '{',
+    '  w=$(readlink "/proc/$$/fd/3") || { echo refused; exit 0; }',
+    '  [ "$w" = "$f" ] || { echo refused; exit 0; }',
+    '  [ -f "/proc/$$/fd/3" ] || { echo refused; exit 0; }',
+    '  n=$(stat -L -c %h "/proc/$$/fd/3") || { echo refused; exit 0; }',
+    '  [ "$n" = 1 ] || { echo refused; exit 0; }',
+    '  s=$(stat -L -c %s "/proc/$$/fd/3") || { echo refused; exit 0; }',
+    '  echo "ok $s"',
+    `  tail -c ${Math.max(1, Math.floor(tailBytes))} <&3`,
+    '  exit 0',
+    '} 3< "$f"',
+    'echo refused',
+  ].join('\n');
+}
+
+type AgentLogRead = { missing: true } | { error: string } | { size: number; body: string };
+
+async function readAgentLogFile(dirs: string[], name: string, tailBytes: number): Promise<AgentLogRead> {
+  let r: { stdout: string; stderr: string; exitCode: number };
+  try {
+    r = await execCommand(agentLogReadScript(homeDir(), dirs, name, tailBytes), AGENT_LOG_READ_TIMEOUT_MS);
+  } catch {
+    return { error: 'the file could not be read' };
+  }
+  if (r.exitCode !== 0) return { error: 'the file could not be read' };
+  const out = r.stdout || '';
+  const nl = out.indexOf('\n');
+  const head = (nl < 0 ? out : out.slice(0, nl)).trim();
+  if (head === 'missing') return { missing: true };
+  const m = /^ok (\d+)$/.exec(head);
+  if (!m) return { error: 'refused: not a regular single-link file' };
+  return { size: Number(m[1]), body: nl < 0 ? '' : out.slice(nl + 1) };
+}
+
+async function readAgentAuditTool(args: Record<string, unknown>): Promise<ToolResult> {
+  const agentId = typeof args.agentId === 'string' ? args.agentId : '';
+  if (!AUDIT_AGENT_ID_RE.test(agentId)) return { ok: false, error: 'agentId must be an agent id from list_agents' };
+  if (!agentSummaries().some((a) => a.id === agentId)) return { ok: false, error: 'agentId is not a registered agent (see list_agents)' };
+  const limit = clampInt(args.limit, AUDIT_DEFAULT_LIMIT, 1, AUDIT_MAX_LIMIT);
+  const maxBytes = clampInt(args.maxBytes, AUDIT_DEFAULT_BYTES, AUDIT_MIN_BYTES, AUDIT_MAX_BYTES);
+  const read = await readAgentLogFile([...AGENT_LOGS_PARTS, agentId], 'plan-executor-audit.jsonl', AUDIT_TAIL_READ_BYTES);
+  if ('missing' in read) return { ok: false, error: `no audit log for agent ${agentId} yet (it has not run through the plan executor)` };
+  if ('error' in read) return { ok: false, error: read.error };
+  const partial = read.size > AUDIT_TAIL_READ_BYTES;
+  let text = read.body;
+  if (partial) {
+    const nl = text.indexOf('\n');
+    text = nl < 0 ? '' : text.slice(nl + 1);
+  }
+  const lines = text.split('\n').filter((l) => l.trim() !== '').map((l) => JSON.stringify(projectAuditLine(l)));
+  const capped = capLogLines(lines, limit, maxBytes);
+  return { ok: true, data: { agentId, lines: capped.returned, truncated: capped.truncated || partial, text: capped.text, untrusted: true } };
+}
+
+async function readArticleHistoryTool(args: Record<string, unknown>): Promise<ToolResult> {
+  const stream = typeof args.stream === 'string' ? args.stream : '';
+  if (!ARTICLE_HISTORY_STREAM_RE.test(stream)) return { ok: false, error: 'stream must match ^[a-z0-9-]{1,40}$' };
+  const read = await readAgentLogFile(AGENT_LOGS_PARTS, `article-history-${stream}.json`, ARTICLE_HISTORY_READ_MAX_BYTES + 1);
+  if ('missing' in read) return { ok: false, error: `no article history for stream ${stream}` };
+  if ('error' in read) return { ok: false, error: read.error };
+  if (read.size > ARTICLE_HISTORY_READ_MAX_BYTES || utf8Length(read.body) > ARTICLE_HISTORY_READ_MAX_BYTES) {
+    return { ok: false, error: `refused: article history is larger than ${ARTICLE_HISTORY_READ_MAX_BYTES} bytes` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(read.body);
+  } catch {
+    return { ok: false, error: 'the article history is not valid JSON' };
+  }
+  const history = projectArticleHistory(parsed);
+  if (!history) return { ok: false, error: 'the article history is not in the expected format' };
+  return { ok: true, data: { stream, history, untrusted: true } };
+}
+
 // ── get_settings ─────────────────────────────────────────────────────────
 
 /** Setting names whose values are never returned (case-insensitive substring).
@@ -571,6 +777,13 @@ async function callTool(
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
+    }
+    case 'read_agent_audit': {
+      // Reached only when the server had no verified snapshot.
+      return readAgentAuditTool(args);
+    }
+    case 'read_article_history': {
+      return readArticleHistoryTool(args);
     }
     case 'run_command': {
       if (!execEnabled()) {

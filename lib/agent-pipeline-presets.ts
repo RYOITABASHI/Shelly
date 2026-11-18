@@ -555,7 +555,50 @@ export function parseArticlePipelineFile(text: string): { file: ArticlePipelineF
     const error = articleDigestConfigError(raw.digest);
     if (error) return { error };
   }
-  return { file: raw as unknown as ArticlePipelineFile };
+  const file = raw as unknown as ArticlePipelineFile;
+  const crossError = articleDigestStreamsMismatchError(file);
+  if (crossError) return { error: crossError };
+  return { file };
+}
+
+/** The last segment of an output folder (trailing slashes ignored). Pure. */
+function outputFolderBasename(folder: string): string {
+  const trimmed = folder.replace(/\/+$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
+/**
+ * Why the pipelines and the digest do not name the same folders, or null.
+ * The digest finds a stream's drafts only by the folder name in
+ * `streams[].folder` (scanDraftFolders in the executor), so a pipeline whose
+ * outputFolder basename is in no stream saves drafts the digest never sees,
+ * and a stream with no pipeline is reported as missing every day. Both used
+ * to pass silently. No digest, nothing to check. Pure; the executor keeps a
+ * port (articleDigestStreamsMismatch) for its run-time audit line.
+ */
+export function articleDigestStreamsMismatchError(file: ArticlePipelineFile): string | null {
+  if (!file.digest) return null;
+  const streamFolders = new Set(file.digest.streams.map((s) => s.folder));
+  const pipelineFolders = new Set<string>();
+  for (let i = 0; i < file.pipelines.length; i++) {
+    const base = outputFolderBasename(file.pipelines[i].outputFolder);
+    pipelineFolders.add(base);
+    if (!streamFolders.has(base)) {
+      return `pipelines[${i}].outputFolder: folder "${base}" is not in digest.streams, so the digest would never see its drafts`;
+    }
+  }
+  const digestOwn = outputFolderBasename(file.digest.outputFolder);
+  for (let j = 0; j < file.digest.streams.length; j++) {
+    const folder = file.digest.streams[j].folder;
+    // The digest skips its own folder when it scans (scanDraftFolders' skipFolder).
+    if (folder === digestOwn) {
+      return `digest.streams[${j}].folder: "${folder}" is the digest's own outputFolder, which the digest never scans`;
+    }
+    if (!pipelineFolders.has(folder)) {
+      return `digest.streams[${j}].folder: "${folder}" matches no pipeline's outputFolder, so the digest would report it missing every day`;
+    }
+  }
+  return null;
 }
 
 export interface ArticleOutputRoots {

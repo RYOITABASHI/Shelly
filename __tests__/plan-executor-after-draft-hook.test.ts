@@ -138,6 +138,12 @@ function hookAudit(home: string): any[] {
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.event === 'after_draft_hook');
 }
 
+function allAudit(home: string): any[] {
+  const file = path.join(home, `.shelly/agents/logs/${AGENT_ID}/plan-executor-audit.jsonl`);
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+}
+
 function notificationFile(home: string): string {
   return path.join(home, `.shelly/agents/logs/${AGENT_ID}/native-result-notification.json`);
 }
@@ -249,7 +255,67 @@ describe('the after-draft hook', () => {
     expect(String(s.lock).trim()).toMatch(/^\d+$/);
     expect(s.progress).toContain('run_end');
     expect(hookAudit(home).map((e) => e.status)).toEqual(['ok']);
-    expect(Object.keys(hookAudit(home)[0]).sort()).toEqual(['agentId', 'event', 'kind', 'status', 'ts']);
+    expect(Object.keys(hookAudit(home)[0]).sort()).toEqual(['agentId', 'draftPresent', 'event', 'kind', 'status', 'ts']);
+    // Pipeline observability A3: the line says the draft is still where the run put it.
+    expect(hookAudit(home)[0].draftPresent).toBe(true);
+    const saved = allAudit(home).filter((e) => e.event === 'draft_saved');
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ folder: 'SeriesA', file: path.basename(s.argv[0]) });
+  }, 30000);
+
+  it('a hook that moves the draft away is recorded as draftPresent: false (pipeline observability A3)', async () => {
+    const home = makeHome();
+    writeHook(home, "require('fs').unlinkSync(process.argv[2]);\n");
+    goodRun();
+    expectUnharmed(home, await runExecutor(streamPlan(home, makeVault()), home));
+    expect(hookAudit(home)).toEqual([expect.objectContaining({ status: 'ok', draftPresent: false })]);
+  }, 30000);
+
+  it('a run names a folder mismatch between the pipelines and the digest streams (pipeline observability A1)', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({
+      version: 1,
+      pipelines: [{ id: 'example-a', outputFolder: `${vault}/Drafts/SeriesA/` }],
+      digest: { outputFolder: `${vault}/Drafts/Digest/`, streams: [{ folder: 'Series-A', label: 'A' }] },
+    }));
+    goodRun();
+    // A line only: the draft is still saved and the run still succeeds.
+    expectUnharmed(home, await runExecutor(streamPlan(home, vault), home));
+    const mismatch = allAudit(home).filter((e) => e.event === 'article_config_mismatch');
+    expect(mismatch).toHaveLength(1);
+    expect(mismatch[0].problems).toEqual(expect.arrayContaining([
+      'pipelines[0] folder "SeriesA" is not in digest.streams',
+      'digest.streams[0] folder "Series-A" has no pipeline',
+      'this agent\'s folder "SeriesA" is not in the file\'s digest.streams',
+    ]));
+  }, 30000);
+
+  it('a tainted run writes no mismatch line (pipeline observability A1)', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({
+      version: 1,
+      pipelines: [{ id: 'example-a', outputFolder: `${vault}/Drafts/SeriesA/` }],
+      digest: { outputFolder: `${vault}/Drafts/Digest/`, streams: [{ folder: 'Series-A', label: 'A' }] },
+    }));
+    goodRun();
+    await runExecutor(streamPlan(home, vault), home, { SHELLY_CAP_TAINTED: '1' });
+    expect(allAudit(home).some((e) => e.event === 'plan_start')).toBe(true);
+    expect(allAudit(home).some((e) => e.event === 'article_config_mismatch')).toBe(false);
+  }, 30000);
+
+  it('a matching config file leaves no mismatch line (pipeline observability A1)', async () => {
+    const home = makeHome();
+    const vault = makeVault();
+    fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({
+      version: 1,
+      pipelines: [{ id: 'example-a', outputFolder: `${vault}/Drafts/SeriesA/` }],
+      digest: { outputFolder: `${vault}/Drafts/Digest/`, streams: [{ folder: 'SeriesA', label: 'A' }] },
+    }));
+    goodRun();
+    expectUnharmed(home, await runExecutor(streamPlan(home, vault), home));
+    expect(allAudit(home).some((e) => e.event === 'article_config_mismatch')).toBe(false);
   }, 30000);
 
   it('the environment holds no keys and none of the variables stripped from workers', async () => {
@@ -469,6 +535,14 @@ setInterval(() => {}, 1000);
     expect(readRunLog(home).status).toBe('error');
     expect(fs.existsSync(path.join(home, 'seen.json'))).toBe(false);
     expect(hookAudit(home)).toEqual([]);
+    // Pipeline observability A3: the assemble step's draft write is the fatal
+    // path — one explicit audit line, then plan_finish error, never success.
+    const events = allAudit(home);
+    const failed = events.filter((e) => e.event === 'draft_write_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ actionType: 'draft', target: 'primary', swallowed: false, code: 'broker-refused' });
+    expect(events.filter((e) => e.event === 'plan_finish').map((e) => e.status)).toEqual(['error']);
+    expect(events.some((e) => e.event === 'draft_saved')).toBe(false);
   }, 30000);
 
   it('a digest does not call it', async () => {

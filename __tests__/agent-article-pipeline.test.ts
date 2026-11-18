@@ -9,12 +9,14 @@ import { normalizeSteps, REVIEW_OUTPUT_CONTRACT } from '@/lib/agent-orchestratio
 import {
   ARTICLE_ENGINE_TYPES,
   articleDigestConfigError,
+  articleDigestStreamsMismatchError,
   articleOutputFolderError,
   articlePipelineConfigError,
   buildArticlePipeline,
   buildCollectionPipeline,
   isArticlePipelineRequest,
   parseArticlePipelineFile,
+  type ArticleDigestConfig,
   type ArticlePipelineConfig,
   type PipelinePreset,
 } from '@/lib/agent-pipeline-presets';
@@ -418,7 +420,10 @@ describe('the digest', () => {
 
 describe('the config file', () => {
   const text = (file: unknown) => JSON.stringify(file);
-  const good = { version: 1, pipelines: [EXAMPLE_CONFIGS['example-a'], EXAMPLE_CONFIGS['example-queue']], digest: EXAMPLE_DIGEST };
+  // Every digest stream has its pipeline (articleDigestStreamsMismatchError).
+  const ALL_PIPELINES = Object.values(EXAMPLE_CONFIGS);
+  const ALL_IDS = ALL_PIPELINES.map((p) => p.id);
+  const good = { version: 1, pipelines: ALL_PIPELINES, digest: EXAMPLE_DIGEST };
   const reply = (stdout: string, exitCode = 0) => async () => ({ stdout, exitCode });
 
   it('the example in the public doc is a valid file', () => {
@@ -458,7 +463,7 @@ describe('the config file', () => {
   });
 
   it('asks which one when the name is missing or ambiguous', () => {
-    expect(selectArticlePipeline(text(good), '記事パイプラインを作って', ROOTS)).toEqual({ refusal: 'pick', ids: ['example-a', 'example-queue', 'digest'] });
+    expect(selectArticlePipeline(text(good), '記事パイプラインを作って', ROOTS)).toEqual({ refusal: 'pick', ids: [...ALL_IDS, 'digest'] });
     expect(selectArticlePipeline(text(good), '記事パイプライン example-a example-queue', ROOTS)).toMatchObject({ refusal: 'pick' });
   });
 
@@ -499,10 +504,55 @@ describe('the config file', () => {
     const inCustom = { outputFolder: `${ROOTS.custom}/Drafts/` };
     const plain = text({ version: 1, pipelines: [{ ...EXAMPLE_CONFIGS['example-a'], ...inCustom }] });
     const queued = text({ version: 1, pipelines: [{ ...EXAMPLE_CONFIGS['example-queue'], ...inCustom }] });
-    const digest = text({ version: 1, pipelines: [], digest: { ...EXAMPLE_DIGEST, ...inCustom } });
+    const digest = text({ version: 1, pipelines: ALL_PIPELINES, digest: { ...EXAMPLE_DIGEST, ...inCustom } });
     expect(selectArticlePipeline(plain, REQUEST, ROOTS)).toHaveProperty('preset');
     expect(selectArticlePipeline(queued, REQUEST, ROOTS)).toMatchObject({ refusal: 'invalid' });
     expect(selectArticlePipeline(digest, 'digest', ROOTS)).toMatchObject({ refusal: 'invalid' });
+  });
+
+  describe('pipelines and digest streams name the same folders', () => {
+    const withPipelines = (pipelines: ArticlePipelineConfig[], digest: ArticleDigestConfig = EXAMPLE_DIGEST) =>
+      ({ version: 1 as const, pipelines, digest });
+
+    it('passes when every pipeline folder is a stream and every stream has a pipeline', () => {
+      expect(articleDigestStreamsMismatchError(withPipelines(ALL_PIPELINES))).toBeNull();
+      // A trailing slash or none: the basename is the same.
+      const noSlash = ALL_PIPELINES.map((p) => ({ ...p, outputFolder: p.outputFolder.replace(/\/+$/, '') }));
+      expect(articleDigestStreamsMismatchError(withPipelines(noSlash))).toBeNull();
+    });
+
+    it('a file with no digest has nothing to cross-check', () => {
+      expect(articleDigestStreamsMismatchError({ version: 1, pipelines: [EXAMPLE_CONFIGS['example-a']] })).toBeNull();
+    });
+
+    it('refuses a pipeline whose folder is in no stream, naming it', () => {
+      const typo = ALL_PIPELINES.map((p) => (p.id === 'example-a' ? { ...p, outputFolder: `${EXAMPLE_FOLDER}/SeriesAA/` } : p));
+      const error = articleDigestStreamsMismatchError(withPipelines(typo));
+      expect(error).toContain('pipelines[0].outputFolder');
+      expect(error).toContain('"SeriesAA"');
+      const body = text(withPipelines(typo));
+      expect(parseArticlePipelineFile(body)).toEqual({ error });
+      expect(selectArticlePipeline(body, REQUEST, ROOTS)).toEqual({ refusal: 'invalid', detail: error });
+    });
+
+    it('refuses a stream no pipeline writes to, naming it', () => {
+      const missingEn = ALL_PIPELINES.filter((p) => p.id !== 'example-queue-en');
+      const error = articleDigestStreamsMismatchError(withPipelines(missingEn));
+      expect(error).toContain('digest.streams[2].folder');
+      expect(error).toContain('"SeriesBEn"');
+      expect(selectArticlePipeline(text(withPipelines(missingEn)), '記事パイプライン digest', ROOTS)).toEqual({ refusal: 'invalid', detail: error });
+    });
+
+    it('refuses a stream that is the digest\'s own folder, which the digest never scans', () => {
+      const error = articleDigestStreamsMismatchError(withPipelines(ALL_PIPELINES, { ...EXAMPLE_DIGEST, outputFolder: `${EXAMPLE_FOLDER}/SeriesA/` }));
+      expect(error).toContain('digest.streams[0].folder');
+      expect(error).toContain("digest's own outputFolder");
+    });
+
+    it('compares folder names exactly (case matters, as in the digest scan)', () => {
+      const cased = ALL_PIPELINES.map((p) => (p.id === 'example-a' ? { ...p, outputFolder: `${EXAMPLE_FOLDER}/seriesa/` } : p));
+      expect(articleDigestStreamsMismatchError(withPipelines(cased))).toContain('"seriesa"');
+    });
   });
 
   it('compares folders by path segment, across the names of the same storage', () => {
