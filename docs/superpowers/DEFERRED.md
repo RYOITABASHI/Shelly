@@ -6957,3 +6957,13 @@ README用スクリーンショットの実機セッティング中(別セッシ�
 → sync: README Status表の変更なし(内部バグ修正、機能一覧に影響なし)。
 
 **追記(2026-08-25、同日の実機QA報告への対応)**: 実機(build current main, 2026-08-25)で「ローカルcompanionと2往復会話→ヘッダーからGeminiへSWITCH AGENT→宛先スレッドにユーザーメッセージのみ運ばれ、完了済みassistant返信2件が運ばれない」という、まさに上記の未実施実機検証そのものの再現報告を受けた。コード読解では`b810b9ca2`後のlocal-LLM完了時書き込み(`hooks/use-ai-pane-dispatch.ts`のlocal分岐、全箇所`throttledUpdate`経由・`isStreaming:false`/`content`のみで`autoCheckState`/`agentRunLogId`等の除外フィールドは一切セットしない)は正しく見えたため、**ハンドシードではなく実際の`dispatch()`→`ollamaChatStream`完了経路を通してassistantメッセージを生成し、その後`carryForwardOnThreadSwitch`に渡す**回帰テストを新規追加して検証(`__tests__/ai-pane-dispatch-interaction-order.test.tsx`の`G1-P2 carry-forward through the real local-dispatch finalization path`)。**結果: 現行mainのコードでは再現せず、テストはPASS**(user/assistant4件とも正しくcarryされ、`isStreaming`も全メッセージで`falsy`)。既存の`__tests__/ai-pane-companion-thread.test.ts`側のcarry-forwardテスト群(ハンドシードのみ)もあわせて全PASS(85/85)、`npx tsc --noEmit`もclean。よって**この実機報告は`b810b9ca2`(同日マージ済み、`origin/main`にも到達確認済み)より前のビルドに対するものだった可能性が高い**([[feedback_verify_fix_reaches_main]]と同型の状況)。次回オンデバイスQAでは、まず`adb shell dumpsys package dev.shelly.terminal | grep versionCode`等でインストール済みビルドが`b810b9ca2`以降であることを確認してから再現するかどうかを見ること。万一`b810b9ca2`以降のビルドでも再現する場合は、この新規テストが通っている以上、原因はローカルLLM完了パス以外(例: pane-header SWITCH AGENT自体のイベント配線、`AIPane.tsx`の`resolvedConversationKey`エフェクトのタイミング、または`digestConversationForJournal`側の副作用)にある。
+
+---
+
+### 記事パイプライン救済reviseの照合が検出しない残余（2026-11-18, バッチB）
+
+最終 editor 不合格時の救済 revise（`editorRescueContext`）は、採用前に保存される本文で文単位に「符号付き数値とマーカー群の並び」の完全一致を要求する決定的照合（`rescueFactsProblem`）を通す。この照合が検出するのは数値・マーカーの改変だけで、次の2つは原理的に検出できない：(1) 意味の反転（「上昇」→「下落」など、数値もマーカーも変わらない書き換え）、(2) 文内でマーカーが係る節の移動。Codex レビュー round 4 / 8 で設計上の残余として容認済み。担保は3点：救済版は frontmatter が `review: unresolved` になり、注記「編集者の指摘で書き直した版は査読を通していない」が付き、下書き止まり（公開は人の確認を経る）。
+
+逆方向の既知の代償：照合が厳しいため、正当な書き直し（引用文の分割・統合、文内の数値の順序変更、範囲の書き換え `3-5` → `3 to 5`、タイトル中の数値変更など）でも救済が捨てられ、元の版が保存されることがある。失敗の向きは安全側。**watch item**：実機の `editor_rescue_result.reason` の `facts-*` 件数を数回分観察し、採用率が低すぎるようなら緩め方を検討すること。意味反転の実例が観測された場合は、この容認を再検討すること。
+
+→ sync: README Status表の変更なし（内部の品質機構の記録）。
