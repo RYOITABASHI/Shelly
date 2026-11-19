@@ -29,7 +29,7 @@
 
 <p align="center">
   <sub>対応端末: arm64 の Android 7.0 以上（minSdk 24）。APK は約 700 MB あり、初回起動時に同梱ツールを展開するので、その分の空き容量も必要です。<br>
-  新機能: <a href="https://github.com/RYOITABASHI/Shelly/releases/tag/v8.2.0">v8.2.0 リリースノート</a> — エージェントのロール、Codex と Claude Code のステップの並列実行、MONITOR。</sub>
+  新機能: <a href="https://github.com/RYOITABASHI/Shelly/releases/tag/v8.4.1">v8.4.1 リリースノート</a> — 連携図を本 README に掲載。アプリの機能は v8.4.0 から変更なし。</sub>
 </p>
 
 <p align="center">
