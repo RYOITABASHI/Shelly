@@ -373,13 +373,16 @@ describe('text-only steps in a run', () => {
     expect(readAudit(home).filter((e) => e.event === 'cli_branch_start').every((e) => e.textOnly === true)).toBe(true);
   }, 30000);
 
-  it('a CLI write and an HTTP review are told apart, and one CLI on both sides leaves the draft unresolved', async () => {
+  it('one CLI on both sides is a same-family review, and its PASS stands', async () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver([ARTICLE, 'VERDICT: PASS']);
     await runExecutor(writePlan(home, port, basePlan(home, chain(CLAUDE, CLAUDE))), home, driver, recordDir);
     const result = readResult(home);
-    expect(result).toContain('review: unresolved');
-    expect(result).toContain('review_note:');
+    // Owner decision: the same-engine guard was removed, so the reviewer's PASS
+    // is a pass and no same-engine note is written.
+    expect(result).toContain('review: pass');
+    expect(result).not.toContain('review: unresolved');
+    expect(result).not.toContain('執筆と査読が同系統のエンジン');
   }, 30000);
 
   it('a failed write fails the run, with no fallback to an HTTP engine', async () => {

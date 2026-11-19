@@ -1042,7 +1042,6 @@ const LONGFORM_HANDOFF_STOPPED_MESSAGE = 'Skipped: the review loop stopped, so t
 // review_note values: the owner reads these in the digest.
 const ARTICLE_REVIEW_FAILED_NOTE = '査読が動かなかった';
 const ARTICLE_PROMPT_CUT_NOTE = '査読か修正で本文が切れた';
-const ARTICLE_SAME_ENGINE_NOTE = '執筆と査読が同系統のエンジン';
 const ARTICLE_LAST_REVIEW_NOTE = '最後の査読が合格していない';
 const ARTICLE_UNREVIEWED_NOTE = '合格した版を採用できなかった';
 const ARTICLE_ECHO_MIN_CHARS = 12;
@@ -3119,8 +3118,17 @@ function stripArticleSources(text) {
  *    `unknown` when it does not: an unattended chain has no owner material, so
  *    a gone marker means it was dropped. Only the owner writes `ok`, by hand;
  *  - ctx.reviewNotes (the review did not run, or saw a cut text) pin review to
- *    `unresolved` whatever the verdict was, and go into `review_note`; so does
- *    a final writer and last reviewer of one family (ctx.usedEngines);
+ *    `unresolved` whatever the verdict was, and go into `review_note`. A
+ *    last loop review that PASSed without being credited with the adopted
+ *    version, or with the version a recovered title came from
+ *    (it is outside its `of`, the review was an isolated autonomous
+ *    step without carry, ctx.isolation, or it ran inside an effective parallel
+ *    group, whose snapshot is not tracked per member, ctx.parallelGroup) adds
+ *    its own note,
+ *    unless a final review in
+ *    assemble (ctx.finalReview) judged that version (and received the
+ *    title's source version, finalReview.indexes) or an editor rescue
+ *    replaced it;
  *  - saved_at: when the draft was built (ctx.savedAt), which the digest reads
  *    because an owner's edit moves the file's mtime;
  *  - lint: the flagged terms (nothing is rewritten); `lintSources` also checks
@@ -3160,25 +3168,6 @@ function articleQualityFlags(quality, body, sources, materialCount) {
   return flags;
 }
 
-function reviewSharesWriterFamily(adopted, ctx, finalReview) {
-  const engines = ctx.usedEngines || [];
-  const familyOf = (k) => ENGINE_FAMILIES[engines[k]];
-  let reviewer;
-  // v50: the final review in assemble is the one that counts, with its own engine.
-  if (finalReview) {
-    reviewer = ENGINE_FAMILIES[finalReview.engine];
-    return !!reviewer && adopted.some((k) => familyOf(k) === reviewer);
-  }
-  for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
-    const h = handoffOf(ctx.steps, j);
-    if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
-    reviewer = familyOf(j);
-    break;
-  }
-  if (!reviewer) return false;
-  return adopted.some((k) => familyOf(k) === reviewer);
-}
-
 // A whole answer wrapped in a code fence is the article, not code. An article
 // that merely opens with a code sample keeps its fence: the wrapper's closing
 // fence has to be the last line, outside any tagged fence inside it. When in
@@ -3216,6 +3205,14 @@ function articleDraftText(text, ctx) {
 function assembleArticle(local, ctx) {
   const parts = [];
   const adopted = [];
+  // Per part: whether one of its versions cleaned to a draft (adopted skips
+  // parts without one, so its index is not the part's).
+  const hasAdopted = [];
+  // Per part: the step whose version is adopted (undefined without one).
+  const adoptedStep = [];
+  // Per part: the step whose version gave back a lost title line (undefined
+  // when the adopted version has its own, or none was recovered).
+  const titleStep = [];
   let recoveredTitle = false;
   for (const list of local.parts) {
     const versions = list.filter((k) => !ctx.skipped[k] && typeof ctx.results[k] === 'string');
@@ -3229,16 +3226,21 @@ function assembleArticle(local, ctx) {
     const drafts = versions.map((k) => ({ step: k, text: articleDraftText(ctx.results[k], ctx) })).filter((d) => d.text).reverse();
     const texts = drafts.map((d) => d.text);
     if (drafts.length) adopted.push(drafts[0].step);
+    hasAdopted.push(drafts.length > 0);
+    adoptedStep.push(drafts.length ? drafts[0].step : undefined);
     let part = texts[0] || '';
+    let partTitleStep;
     // A revision can lose the title line. The newest earlier version that has
     // one gives it back, so the draft is not named after the agent.
     if (part && !parts.length && !articleTitleLine(part)) {
-      const earlier = texts.map(articleTitleLine).find(Boolean);
+      const earlier = drafts.find((d) => articleTitleLine(d.text));
       if (earlier) {
-        part = `# ${earlier}\n\n${part}`;
+        part = `# ${articleTitleLine(earlier.text)}\n\n${part}`;
         recoveredTitle = true;
+        partTitleStep = earlier.step;
       }
     }
+    titleStep.push(partTitleStep);
     parts.push(part);
   }
   let body = parts.filter(Boolean).join('\n\n');
@@ -3254,18 +3256,40 @@ function assembleArticle(local, ctx) {
   for (let j = ctx.steps.length - 1; j >= 0; j -= 1) {
     const h = handoffOf(ctx.steps, j);
     if (!h || h.kind !== 'review' || ctx.skipped[j] || typeof ctx.results[j] !== 'string') continue;
+    // A local step runs no review model, so its text is never a verdict
+    // (mirror of the review loop's `step.local === undefined` guard).
+    if (ctx.steps[j] && ctx.steps[j].local !== undefined) continue;
     reviewRan = true;
     if (parseReviewVerdict(ctx.results[j]) === 'PASS') review = 'pass';
-    // What that review read is each part's newest version before it. A pass on
-    // an empty revision says nothing about the earlier version adopted instead.
-    reviewedAdopted = local.parts.every((list, p) => {
-      const seen = list.filter((k) => k < j && !ctx.skipped[k] && typeof ctx.results[k] === 'string');
-      return seen.length === 0 || seen[seen.length - 1] === adopted[p];
-    });
+    // What that review read is what its handoff carried (carriedStepContext):
+    // the steps in its `of` that left a result. A part counts as reviewed only
+    // if its adopted version is one of them; a pass on an empty revision says
+    // nothing about the earlier version adopted instead, and a part written
+    // after the review, or left out of its `of`, was never read by it.
+    // A recovered title is held to the same test: the version it came from
+    // must be one of them too, or the review never read that title.
+    // An isolated autonomous API-key review without carry (plan.steps.isolation,
+    // as the step runner reads it) got no prior output at all: it read nothing.
+    // A review that ran as a member of an effective parallel group
+    // (ctx.parallelGroup, planParallelGroups) read the shared pre-group
+    // snapshot (the runner gives every member the snapshot selected via the
+    // group's FIRST member's context, so the first member's `of` applies when
+    // it has a handoff), not its own declared `of`. The snapshot's contents are
+    // not tracked per member: what it saw cannot be established here, so
+    // (fail-closed by design) it is credited with nothing.
+    const iso = Array.isArray(ctx.isolation) ? ctx.isolation[j] : null;
+    const blind = !!iso && typeof iso.base === 'string' && iso.carry !== true;
+    const grouped = (Array.isArray(ctx.parallelGroup) ? ctx.parallelGroup[j] : undefined) !== undefined;
+    const carried = blind || grouped ? [] : h.of.filter((k) => !ctx.skipped[k] && typeof ctx.results[k] === 'string');
+    reviewedAdopted = local.parts.every((_list, p) => !hasAdopted[p]
+      || (carried.includes(adoptedStep[p]) && (titleStep[p] === undefined || carried.includes(titleStep[p]))));
     break;
   }
-  // v50: assemble reviewed the final body itself (see runFinalReview). Its
-  // verdict replaces the loop's only for the very version adopted here.
+  // v50: assemble reviewed the final body again (see runFinalReview). Its
+  // verdict replaces the loop's only for the very version adopted here, and a
+  // recovered title counts as reviewed only when the version it came from was
+  // among the indexes that review received (finalReview.indexes; without
+  // them, only the adopted version itself, which is always in its prompt).
   // B3: the editor's rescue revision replaced the adopted version's text. No
   // review read that text, whatever any review said of the version before it.
   const rescued = !!ctx.rescued && adopted.length === 1 && ctx.rescued.step === adopted[0];
@@ -3274,15 +3298,14 @@ function assembleArticle(local, ctx) {
   if (finalReview) {
     reviewRan = true;
     review = finalReview.verdict === 'PASS' ? 'pass' : 'unresolved';
-    reviewedAdopted = true;
+    const received = Array.isArray(finalReview.indexes) ? finalReview.indexes : [finalReview.step];
+    reviewedAdopted = titleStep.every((k) => k === undefined || received.includes(k));
   }
   // The real reason first: a text the last review rejected, then rewritten, has
   // not been reviewed at all, whatever else also holds.
   const reviewNotes = rescued ? [ARTICLE_EDITOR_RESCUE_NOTE] : reviewRan && review !== 'pass' ? [ARTICLE_LAST_REVIEW_NOTE] : [];
   if (!rescued && review === 'pass' && !reviewedAdopted) reviewNotes.push(ARTICLE_UNREVIEWED_NOTE);
   reviewNotes.push(...(ctx.reviewNotes || []));
-  // B3: no review read a rescued text, so no review shares its writer's family.
-  if (!rescued && reviewSharesWriterFamily(adopted, ctx, finalReview)) reviewNotes.push(ARTICLE_SAME_ENGINE_NOTE);
   if (reviewNotes.length) review = 'unresolved';
   // v38: the ghostwritten section replaces the one marker only when this run's
   // own voice step passed on the very version adopted here. Text in the article
@@ -6432,8 +6455,12 @@ function capLongformResearch(text) {
 // The engines of the other side of the review loop, taken off step i's ladder.
 // This cuts the obvious overlap but cannot guarantee separation: a ladder can
 // still land both sides in one family (Groq and Cerebras). A review of such text
-// moves to the other family (longformIndependentReviewEngine), and assemble still
-// checks what actually ran and pins the review to unresolved if they match.
+// moves to the other family (longformIndependentReviewEngine) only when the
+// plan's vetted pool holds a tool of the other-family type; otherwise the pin is
+// kept (independentReviewTool returns null). Assemble no longer
+// pins a review to unresolved for a family match (the same-family guard was
+// removed, owner decision 2026-11-19); what it checks is coverage: the counted
+// review must actually have read the adopted version.
 function longformOtherRoleTools(list, i) {
   const isReview = (s) => !!s && !!s.handoff && s.handoff.kind === 'review';
   const reviewing = isReview(list[i]);
@@ -12355,6 +12382,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       basePrompt: plan.prompt,
       reviewNotes: Array.from(reviewNotes),
       usedEngines: usedEnginesByStep,
+      isolation: Array.isArray(plan.steps.isolation) ? plan.steps.isolation : null,
+      // Effective group id per step (undefined when the step ran serially).
+      parallelGroup: parallelPlan.group,
       voice: voiceContext(assembleLocal),
       materials: materialsState ? materialsState.entries : [],
     };
@@ -12530,8 +12560,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // be unresolved. When no review passed the version assemble adopts, the
   // chain's last review step is asked once more, on that version, with its own
   // instruction, rules, engine (moved to the other family when the writer's
-  // matches) and data blocks. Returns { step, verdict, engine } or null (the
-  // result as before). One attempt, no ladder, and it ends in time for the
+  // matches) and data blocks. Returns { step, verdict, engine, indexes } or
+  // null (the result as before); indexes lists the steps whose text the
+  // review actually received, which assemble's coverage test checks. One
+  // attempt, no ladder, and it ends in time for the
   // editor and the save; with too little of the run left it does not start.
   // Nothing here can fail the run.
   async function runFinalReview(i, local, ctx, stepOpts) {
@@ -12557,7 +12589,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const versions = local.parts[0].filter((k) => has(k) && articleDraftText(resultsByStep[k], ctx));
       if (!versions.length) return null;
       const draftStep = versions[versions.length - 1];
-      // The same test assemble makes: the last review that ran, and what it read.
+      // Its own approximation, simpler than assemble's coverage test (which also
+      // weighs handoff coverage, isolation and group membership): it looks only at
+      // step order and the last version seen. Accepted because it fails closed: it
+      // can only skip or decline a final review, never credit coverage assemble
+      // would deny.
       for (let k = i - 1; k >= 0; k -= 1) {
         const hk = handoffOf(list, k);
         if (!hk || hk.kind !== 'review' || !has(k)) continue;
@@ -12617,7 +12653,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       audit('final_review', { reviewStep: j, draftStep, verdict, engine });
       progressStepEvent(activeProgress, i, 'tail', { tail: progressTail(`Final review: ${verdict || 'no verdict'}.`) });
       if (!verdict) return null;
-      return { step: draftStep, verdict, engine };
+      return { step: draftStep, verdict, engine, indexes };
     } catch (error) {
       if (error instanceof RunHalted) throw error;
       audit('final_review_failed', { reason: redact(error && error.message ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 120) });
@@ -14705,7 +14741,6 @@ module.exports = {
   LONGFORM_HANDOFF_STOPPED_MESSAGE,
   ARTICLE_REVIEW_FAILED_NOTE,
   ARTICLE_PROMPT_CUT_NOTE,
-  ARTICLE_SAME_ENGINE_NOTE,
   ARTICLE_LAST_REVIEW_NOTE,
   LONGFORM_RETRY_WINDOW_MS,
   LONGFORM_RETRY_WAIT_MS,
