@@ -852,8 +852,8 @@ describe('assembleArticle', () => {
   it('a last review that did not pass is the first reason, whatever else holds', () => {
     const results = ['r', '# 一', 'VERDICT: REVISE', '# 二', 'VERDICT: REVISE', '# 三'];
     const usedEngines = [undefined, 'gemini-api', 'cerebras', 'gemini-api', 'cerebras', 'groq'];
-    const line = assembleWith({ usedEngines }, results).split('\n').find((l: string) => l.startsWith('review_note:'));
-    expect(line).toBe(`review_note: "${executor.ARTICLE_LAST_REVIEW_NOTE}、${executor.ARTICLE_SAME_ENGINE_NOTE}"`);
+    const line = assembleWith({ usedEngines, reviewNotes: ['切れた'] }, results).split('\n').find((l: string) => l.startsWith('review_note:'));
+    expect(line).toBe(`review_note: "${executor.ARTICLE_LAST_REVIEW_NOTE}、切れた"`);
     expect(executor.ARTICLE_LAST_REVIEW_NOTE).toContain('合格していない');
   });
 
@@ -1010,6 +1010,26 @@ describe('assembleArticle', () => {
         expect(out).toContain('合格した版を採用できなかった');
       });
 
+      // The recovered title must have been read by the review that passed.
+      const passOn = (of: number[]) => {
+        const stepsTwo = [...reviseSteps, { instruction: 'v2', handoff: { kind: 'review', of, round: 2 } }];
+        return executor.assembleArticle(chain, { steps: stepsTwo, results: ['r', '# 題\n\n前の本文', 'VERDICT: REVISE\n1. x', '直した本文', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+      };
+
+      it('REGRESSION: a pass that never read the version the title came from leaves the draft unresolved', () => {
+        const out = passOn([0, 3]);
+        expect(out).toContain('review: unresolved');
+        expect(out).toContain('合格した版を採用できなかった');
+        expect(out).toContain('# 題\n\n直した本文');
+      });
+
+      it('a pass that also carried the title source version stands', () => {
+        const out = passOn([0, 1, 3]);
+        expect(out).toContain('review: pass');
+        expect(out).not.toContain('合格した版を採用できなかった');
+        expect(out).toContain('# 題\n\n直した本文');
+      });
+
       it('takes the title from the earlier version and flags it', () => {
         const out = run('# 本当のタイトル\n\n本文');
         expect(out).toContain('title: "本当のタイトル"');
@@ -1077,19 +1097,166 @@ describe('assembleArticle', () => {
     ['Gemini writer, Cerebras reviewer', [undefined, 'gemini-api', 'cerebras']],
     ['Groq writer, Gemini reviewer', [undefined, 'groq', 'gemini-api']],
     ['the local LLM, which no longform ladder reaches', [undefined, 'local', 'local']],
+    ['Groq writer, Cerebras reviewer (same family)', [undefined, 'groq', 'cerebras']],
+    ['Cerebras writer, Groq reviewer (same family)', [undefined, 'cerebras', 'groq']],
+    ['one engine on both sides', [undefined, 'gemini-api', 'gemini-api']],
   ])('%s stands', (_name, usedEngines) => {
     expect(assembleWith({ usedEngines }).split('\n')).toContain('review: pass');
   });
 
-  it.each<[string, Array<string | undefined>]>([
-    ['Groq writer, Cerebras reviewer', [undefined, 'groq', 'cerebras']],
-    ['Cerebras writer, Groq reviewer', [undefined, 'cerebras', 'groq']],
-    ['one engine on both sides', [undefined, 'gemini-api', 'gemini-api']],
-  ])('%s pins unresolved and still saves', (_name, usedEngines) => {
-    const out = assembleWith({ usedEngines });
+  it('a same-family review that did not pass still pins unresolved via the last-review note', () => {
+    const results = ['r', '# 記事', 'VERDICT: REVISE'];
+    const out = assembleWith({ usedEngines: [undefined, 'gemini-api', 'gemini-api'] }, results);
     expect(out.split('\n')).toContain('review: unresolved');
-    expect(out).toContain(executor.ARTICLE_SAME_ENGINE_NOTE);
-    expect(out).toContain('# 記事');
+    expect(out).toContain(executor.ARTICLE_LAST_REVIEW_NOTE);
+  });
+
+  it('REGRESSION: a part written after the review was not reviewed, whatever the engines', () => {
+    const twoParts = { ...local, parts: [[1], [3]] };
+    const results = ['r', '# 一', 'VERDICT: PASS', '二'];
+    for (const usedEngines of [[undefined, 'gemini-api', 'cerebras', 'groq'], [undefined, 'groq', 'cerebras', 'groq']]) {
+      const out = executor.assembleArticle(twoParts, { steps, results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', usedEngines });
+      expect(out.split('\n')).toContain('review: unresolved');
+      expect(out).toContain('合格した版を採用できなかった');
+    }
+  });
+
+  it('REGRESSION: every part written before the review keeps the PASS', () => {
+    const twoParts = { ...local, parts: [[1], [2]] };
+    const twoSteps = [{}, {}, {}, { handoff: { kind: 'review', of: [0, 1, 2], round: 1 } }];
+    const out = executor.assembleArticle(twoParts, { steps: twoSteps, results: ['r', '# 一', '二', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+    expect(out.split('\n')).toContain('review: pass');
+    expect(out).not.toContain('合格した版を採用できなかった');
+  });
+
+  it('REGRESSION: a part the review\'s handoff did not carry was not reviewed, whatever the engines', () => {
+    const twoParts = { ...local, parts: [[1], [2]] };
+    // Step 1 (part 1's adopted version) is written before the review but left out of its `of`.
+    const twoSteps = [{}, {}, {}, { handoff: { kind: 'review', of: [0, 2], round: 1 } }];
+    for (const usedEngines of [[undefined, 'gemini-api', 'cerebras', 'groq'], [undefined, 'groq', 'cerebras', 'groq']]) {
+      const out = executor.assembleArticle(twoParts, { steps: twoSteps, results: ['r', '# 一', '二', 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', usedEngines });
+      expect(out.split('\n')).toContain('review: unresolved');
+      expect(out).toContain('合格した版を採用できなかった');
+    }
+  });
+
+  it.each<[string, number[][], Array<string | undefined>, number[]]>([
+    ['leading', [[1], [2], [3]], ['r', '## Sources\n\n- [1] https://example.com/a', '# 一', '二', 'VERDICT: PASS'], [0, 2, 3]],
+    ['middle', [[1], [2], [3]], ['r', '# 一', '## Sources\n\n- [1] https://example.com/a', '二', 'VERDICT: PASS'], [0, 1, 3]],
+  ])('REGRESSION: a %s part with no draft does not flag the review or break the parts after it', (_where, parts, results, of) => {
+    const threeParts = { ...local, parts };
+    const reviewSteps = [{}, {}, {}, {}, { handoff: { kind: 'review', of, round: 1 } }];
+    const out = executor.assembleArticle(threeParts, { steps: reviewSteps, results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+    expect(out.split('\n')).toContain('review: pass');
+    expect(out).not.toContain('合格した版を採用できなかった');
+    // The part after the empty one still has to be carried.
+    const dropped = executor.assembleArticle(threeParts, { steps: [...reviewSteps.slice(0, 4), { handoff: { kind: 'review', of: of.filter((k) => k !== 3), round: 1 } }], results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+    expect(dropped.split('\n')).toContain('review: unresolved');
+    expect(dropped).toContain('合格した版を採用できなかった');
+  });
+
+  it('REGRESSION: a part with no draft at all does not flag the review', () => {
+    const twoParts = { ...local, parts: [[1], [3]] };
+    const out = executor.assembleArticle(twoParts, { steps, results: ['r', '# 一', 'VERDICT: PASS', '## Sources\n\n- [1] https://example.com/a'], skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+    expect(out.split('\n')).toContain('review: pass');
+    expect(out).not.toContain('合格した版を採用できなかった');
+  });
+
+  describe('a review that ran inside a parallel group', () => {
+    // A group member reads the shared pre-group snapshot, not its `of`. The
+    // group arrays are derived with planParallelGroups (the derivation
+    // assembleContext uses) from steps that, like production plans, do not end
+    // inside the group run: a trailing run would be clamped and could drop it.
+    const emptyRevision = '## Sources\n\n- [1] https://example.com/a';
+    const versioned = { ...local, parts: [[1, 2]] };
+    const groupedSteps = [
+      { instruction: 'r' },
+      { instruction: 'w' },
+      { instruction: 'f' },
+      { instruction: 'va', parallelGroup: 'g', handoff: { kind: 'review', of: [0, 1], round: 1 } },
+      { instruction: 'vb', parallelGroup: 'g', handoff: { kind: 'review', of: [0, 1], round: 1 } },
+      { instruction: 'asm' },
+    ];
+    const groupedResults = ['r', '# 題\n\n元の本文', emptyRevision, 'VERDICT: PASS', 'VERDICT: PASS', 'x'];
+    const derive = (steps: any[]) => executor.planParallelGroups(steps).group;
+    const run = (steps: any[]) =>
+      executor.assembleArticle(versioned, { steps, results: groupedResults, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', parallelGroup: derive(steps) });
+
+    it('REGRESSION: a grouped review is not credited even when the group snapshot contained the adopted draft', () => {
+      // The first member's `of: [0, 1]` selects the snapshot, so it DOES contain
+      // step 1: the second reviewer genuinely read the adopted draft. The
+      // deliberate fail-closed rule still credits a grouped review with nothing,
+      // because what each member received is snapshot-bound and not tracked per
+      // member.
+      expect(derive(groupedSteps)).toEqual([undefined, undefined, undefined, 'g', 'g', undefined]);
+      const out = run(groupedSteps);
+      expect(out).toContain('元の本文');
+      expect(out.split('\n')).toContain('review: unresolved');
+      expect(out).toContain('合格した版を採用できなかった');
+    });
+
+    it('REGRESSION: a grouped review whose snapshot never contained the adopted draft is not credited', () => {
+      // The first member's `of: [0, 2]` selects a snapshot of the research and
+      // the empty revision only: the adopted draft at step 1 was never in it.
+      // The second member's declared `of: [0, 1]` is not what it received.
+      const neverReceived = groupedSteps.map((step, i) =>
+        i === 3 ? { ...step, handoff: { kind: 'review', of: [0, 2], round: 1 } } : step);
+      const out = run(neverReceived);
+      expect(out).toContain('元の本文');
+      expect(out.split('\n')).toContain('review: unresolved');
+      expect(out).toContain('合格した版を採用できなかった');
+    });
+
+    it('REGRESSION: the same review outside any group keeps the PASS', () => {
+      const ungrouped = groupedSteps.map(({ parallelGroup: _group, ...step }) => step);
+      expect(derive(ungrouped).every((g: unknown) => g === undefined)).toBe(true);
+      const out = run(ungrouped);
+      expect(out.split('\n')).toContain('review: pass');
+      expect(out).not.toContain('合格した版を採用できなかった');
+    });
+
+    it('REGRESSION: a part written alongside its reviewer in one group was not reviewed', () => {
+      const twoParts = { ...local, parts: [[1], [2]] };
+      const siblingSteps = [
+        { instruction: 'r' },
+        { instruction: 'a' },
+        { instruction: 'b', parallelGroup: 'g' },
+        { instruction: 'v', parallelGroup: 'g', handoff: { kind: 'review', of: [0, 2], round: 1 } },
+        { instruction: 'asm' },
+      ];
+      const results = ['r', emptyRevision, '# 二\n\n本文', 'VERDICT: PASS', 'x'];
+      const grouping = derive(siblingSteps);
+      expect(grouping).toEqual([undefined, undefined, 'g', 'g', undefined]);
+      const out = executor.assembleArticle(twoParts, { steps: siblingSteps, results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', parallelGroup: grouping });
+      expect(out.split('\n')).toContain('review: unresolved');
+      expect(out).toContain('合格した版を採用できなかった');
+      // Part A has no adopted version: without the group the same fixture passes.
+      const serialSteps = siblingSteps.map(({ parallelGroup: _group, ...step }: any) => step);
+      const serial = executor.assembleArticle(twoParts, { steps: serialSteps, results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F', parallelGroup: derive(serialSteps) });
+      expect(serial.split('\n')).toContain('review: pass');
+    });
+  });
+
+  it('REGRESSION: a local step with a review handoff is never counted as a review', () => {
+    // A local step runs no review model (runLocalStep), so a hand-authored plan
+    // pairing `local` with a review handoff must not turn copied PASS text into
+    // `review: pass`. Same fixture as the ungrouped PASS case, reviewer made local.
+    const localReviewSteps = [
+      { instruction: 'r' },
+      { instruction: 'w' },
+      { instruction: 'f' },
+      { instruction: 'v', local: {}, handoff: { kind: 'review', of: [0, 1], round: 1 } },
+      { instruction: 'asm' },
+    ];
+    const results = ['r', '# 題\n\n元の本文', '## Sources\n\n- [1] https://example.com/a', 'VERDICT: PASS', 'x'];
+    const run = (list: any[]) => executor.assembleArticle({ ...local, parts: [[1, 2]] }, { steps: list, results, skipped: [], sources: [], today: '2026-11-06', fallbackTitle: 'F' });
+    const out = run(localReviewSteps);
+    expect(out).toContain('元の本文');
+    expect(out.split('\n')).toContain('review: unresolved');
+    expect(out.split('\n')).not.toContain('review: pass');
+    // Control: the same step without `local` is a real review and passes.
+    const genuine = run(localReviewSteps.map(({ local: _local, ...step }: any) => step));
+    expect(genuine.split('\n')).toContain('review: pass');
   });
 
   it('B3: the rescue\'s earlier-version check reads the text as saved, markers renumbered', () => {
@@ -1100,18 +1267,17 @@ describe('assembleArticle', () => {
     expect(tail('# T\n\nThe A cache is faster [2, 1].')).not.toBe(tail('# T\n\nThe B cache is faster [2, 1].'));
   });
 
-  it('B3: a rescued text no review read gets the rescue note, not the same-engine note', () => {
+  it('B3: a rescued text no review read gets the rescue note only', () => {
     const out = assembleWith({ usedEngines: [undefined, 'gemini-api', 'gemini-api'], rescued: { step: 1 } });
     expect(out.split('\n')).toContain('review: unresolved');
     expect(out.split('\n')).toContain(`review_note: "${executor.ARTICLE_EDITOR_RESCUE_NOTE}"`);
-    expect(out).not.toContain(executor.ARTICLE_SAME_ENGINE_NOTE);
   });
 
-  it('compares the writer of the final version with the last reviewer that ran', () => {
+  it('a PASS on the final version stands whether or not the last reviewer shares the writer family', () => {
     const results = ['r', '# 一', 'VERDICT: REVISE', '# 二', 'VERDICT: PASS'];
     const skipped = [false, false, false, false, false, true];
     const usedEngines = [undefined, 'gemini-api', 'gemini-api', 'groq', 'cerebras'];
-    expect(assembleWith({ usedEngines }, results, skipped).split('\n')).toContain('review: unresolved');
+    expect(assembleWith({ usedEngines }, results, skipped).split('\n')).toContain('review: pass');
     const fine = [undefined, 'groq', 'groq', 'gemini-api', 'cerebras'];
     expect(assembleWith({ usedEngines: fine }, results, skipped).split('\n')).toContain('review: pass');
   });

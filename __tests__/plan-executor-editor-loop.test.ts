@@ -98,9 +98,55 @@ describe('the editor and the reviewer in one verdict', () => {
     // A verdict on another version, or no verdict, changes nothing.
     expect(lines(executor.assembleArticle(local, ctx({ step: 3, verdict: 'PASS', engine: 'cerebras' })))).toContain('review: unresolved');
     expect(lines(executor.assembleArticle(local, ctx({ step: 5, verdict: null, engine: 'cerebras' })))).toContain('review: unresolved');
-    // A final review by the writer's own family does not count as independent.
+    // Owner decision: a final review by the writer's own family counts (the
+    // same-engine guard was removed), so its PASS is a pass.
     const same = executor.assembleArticle(local, Object.assign(ctx({ step: 5, verdict: 'PASS', engine: 'groq' }), { usedEngines: [undefined, 'gemini-api', 'cerebras', 'gemini-api', 'cerebras', 'cerebras'] }));
-    expect(lines(same)).toContain('review: unresolved');
+    expect(lines(same)).toContain('review: pass');
+    expect(same).not.toContain('執筆と査読が同系統のエンジン');
+  });
+
+  it('REGRESSION: a recovered title counts only when the final review received its source version', () => {
+    const preset = buildArticlePipeline(config());
+    const steps = normalizeSteps(preset.orchestration);
+    const local = steps[steps.length - 1].local;
+    // The adopted version (step 5) lost its title; step 3 gives it back.
+    const results = ['r', 'One', 'VERDICT: REVISE', '# Two', 'VERDICT: REVISE', 'Three'];
+    const ctx = (finalReview: unknown) => ({ steps, results, skipped: [], sources: [], today: '2026-11-10', fallbackTitle: 'F', usedEngines: [], finalReview });
+    const fm = (out: string) => out.slice(0, out.indexOf('\n---\n', 4));
+    const without = executor.assembleArticle(local, ctx({ step: 5, verdict: 'PASS', engine: 'cerebras', indexes: [0, 5] }));
+    expect(fm(without)).toContain('review: unresolved');
+    expect(fm(without)).toContain('合格した版を採用できなかった');
+    expect(without).toContain('# Two\n\nThree');
+    // Without indexes, only the adopted version counts as received.
+    expect(fm(executor.assembleArticle(local, ctx({ step: 5, verdict: 'PASS', engine: 'cerebras' })))).toContain('review: unresolved');
+    const withSource = executor.assembleArticle(local, ctx({ step: 5, verdict: 'PASS', engine: 'cerebras', indexes: [0, 3, 5] }));
+    expect(fm(withSource)).toContain('review: pass');
+    expect(fm(withSource)).not.toContain('合格した版を採用できなかった');
+    expect(withSource).toContain('# Two\n\nThree');
+  });
+
+  it('REGRESSION: a review that received no prior output (isolated, no carry) credits nothing', () => {
+    const preset = buildArticlePipeline(config());
+    const steps = normalizeSteps(preset.orchestration);
+    const local = steps[steps.length - 1].local;
+    const handoffs = steps.map((s: { handoff?: { kind: string } }) => s.handoff?.kind);
+    expect(handoffs.slice(1, 6)).toEqual([undefined, 'review', 'revise', 'review', 'revise']);
+    // The second review passed the first revision; the last revision was skipped.
+    const results = ['r', '# One', 'VERDICT: REVISE', '# Two', 'VERDICT: PASS'];
+    const skipped = [false, false, false, false, false, true];
+    const ctx = (isolation?: unknown) => ({ steps, results, skipped, sources: [], today: '2026-11-10', fallbackTitle: 'F', usedEngines: [], isolation });
+    const fm = (out: string) => out.slice(0, out.indexOf('\n---\n', 4));
+    expect(fm(executor.assembleArticle(local, ctx()))).toContain('review: pass');
+    // The same review, carrying the prior output, still counts.
+    const carrying = new Array(steps.length).fill(null);
+    carrying[4] = { base: 'task', carry: true };
+    expect(fm(executor.assembleArticle(local, ctx(carrying)))).toContain('review: pass');
+    // Blind: its PASS is on text it never saw.
+    const blind = new Array(steps.length).fill(null);
+    blind[4] = { base: 'task', carry: false };
+    const out = fm(executor.assembleArticle(local, ctx(blind)));
+    expect(out).toContain('review: unresolved');
+    expect(out).toContain('合格した版を採用できなかった');
   });
 });
 
