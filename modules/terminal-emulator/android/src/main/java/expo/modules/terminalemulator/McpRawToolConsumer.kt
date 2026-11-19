@@ -531,7 +531,7 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
      * Replaces [realPath] by a new file instead of writing into the existing
      * inode (a hard link swapped in after the check can then never be
      * rewritten through its other name):
-     *  1. open the parent directory (O_DIRECTORY | O_NOFOLLOW) and check that
+     *  1. open the parent directory (O_NOFOLLOW, then fstat S_ISDIR) and check that
      *     its /proc/self/fd path is exactly the checked real parent;
      *  2. create a private temp file in it THROUGH that directory fd
      *     (`/proc/self/fd/<dirfd>/<name>`, O_CREAT | O_EXCL | O_NOFOLLOW, 0600;
@@ -551,9 +551,16 @@ class McpRawToolConsumer(context: Context, private val bridgeKey: String, privat
         val parent = realPath.substring(0, slash)
         val leaf = realPath.substring(slash + 1)
         val dirFd = try {
-            Os.open(parent, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
+            // OsConstants has no O_DIRECTORY (and its value differs between
+            // ABIs), so the directory check is an fstat right after the open.
+            Os.open(parent, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
         } catch (e: android.system.ErrnoException) {
             return "could not open the parent directory (${OsConstants.errnoName(e.errno) ?: e.errno})"
+        }
+        val dirIsDirectory = try { OsConstants.S_ISDIR(Os.fstat(dirFd).st_mode) } catch (e: Exception) { false }
+        if (!dirIsDirectory) {
+            runCatching { Os.close(dirFd) }
+            return "refused: the parent is not a directory"
         }
         val dirPfd = try { ParcelFileDescriptor.dup(dirFd) } catch (e: Exception) { runCatching { Os.close(dirFd) }; return "could not open the parent directory" }
         var tmpName: String? = null

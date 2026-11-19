@@ -239,8 +239,13 @@ object McpRawToolDecision {
                     null
                 } else {
                     val out = ArrayList<String>()
-                    for (i in 0 until repos.length()) out.add(repos.get(i) as? String ?: return null)
-                    out
+                    var ok = true
+                    for (i in 0 until repos.length()) {
+                        val p = repos.get(i) as? String
+                        if (p == null) { ok = false; break }
+                        out.add(p)
+                    }
+                    if (ok) out else null
                 }
             }
         }
