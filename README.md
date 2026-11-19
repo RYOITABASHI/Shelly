@@ -73,6 +73,14 @@
   <a href="#support"><b>Support</b></a>
 </p>
 
+<p align="center">
+  <img src="docs/images/shelly-flow.png" alt="How the pieces connect: you ask from your phone; Muse coordinates; Claude Code develops, Codex works and reviews; Shelly runs code and commands on the phone itself — with preapproval armed, taps are skipped only for run_command and write_file, safety-gate denials still apply, and STOP-ALL turns both preapproval switches off; screen work is delegated to ClosePaw (a separate app); scheduled agents run unattended — all on AI subscriptions and free tiers, no paid APIs" width="900">
+</p>
+
+<p align="center">
+  <sub>One phone. Connected AI. Automated action — with Shelly as the execution hub. How external agents connect: <a href="#external-agents-over-mcp">External agents over MCP</a>.</sub>
+</p>
+
 
 <br>
 
