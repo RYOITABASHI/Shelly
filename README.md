@@ -29,7 +29,7 @@
 
 <p align="center">
   <sub>Runs on arm64 Android phones, Android 7.0+ (minSdk 24). The APK is about 700 MB; leave room for it plus the tools first launch extracts.<br>
-  What's new: <a href="https://github.com/RYOITABASHI/Shelly/releases/tag/v8.2.0">v8.2.0 release notes</a> — agent roles, parallel Codex + Claude Code steps, MONITOR.</sub>
+  What's new: <a href="https://github.com/RYOITABASHI/Shelly/releases/tag/v8.4.1">v8.4.1 release notes</a> — the connected-automation flow diagram joins this README; no functional changes since v8.4.0.</sub>
 </p>
 
 <p align="center">
