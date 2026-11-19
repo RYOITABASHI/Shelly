@@ -73,6 +73,14 @@
   <a href="#サポート"><b>サポート</b></a>
 </p>
 
+<p align="center">
+  <img src="docs/images/shelly-flow-ja.png" alt="連携の全体像：スマホから依頼すると Muse が交通整理し、Claude Code が開発、Codex が作業とコードレビューを担い、Shelly が端末上でコードとコマンドを実行する（事前承認 ON でもタップ省略は run_command／write_file のみ、安全ゲートの拒否は維持、STOP-ALL で両方の事前承認スイッチを OFF）。画面操作は別アプリの ClosePaw に委譲し、登録エージェントをスケジュールで無人実行する。有料 API は使わず、各 AI のサブスクリプションと無料枠で連携する" width="900">
+</p>
+
+<p align="center">
+  <sub>スマホひとつで、頼む。つながる。自動で動く。――実行拠点は Shelly。外部エージェントとの接続は<a href="#外部エージェントと-mcp">外部エージェントと MCP</a>へ。</sub>
+</p>
+
 
 <br>
 
