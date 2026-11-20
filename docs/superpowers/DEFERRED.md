@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-20: Codex（`chore/remove-dead-shizuku-wiring`）が Phase 2（PR #187）後に残った未使用の Shizuku クライアント依存関係・プロバイダー宣言・固定テストを削除。
 - 2026-11-20: Codex（`feat/guardian-drop-shizuku`）がガーディアンの Shizuku 起動待ちと復旧監視を削除。ワイヤレスデバッグの次は Tailscale の接続判定へ進む。
 
 - 2026-11-19: CC（feat/draft-direct-read、バッチC）が MCP の読み取り専用ツール `list_drafts` / `read_draft` を追加（サーバー自身が答えるので Shelly が背面でも下書きを読める）。`read_logs` の常時応答化は評価のみ。DEFERRED に 3 項目（下書き直読みの実機確認・read_logs の評価・共通マスク処理の規則順）。
