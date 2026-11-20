@@ -19,15 +19,12 @@ import {
   GOAL_MAX_CODE_POINTS,
   GOAL_TAILSCALE_CONNECT,
   LOSS_DEBOUNCE_MS,
-  SHIZUKU_RETRY_COOLDOWN_MS,
-  SHIZUKU_WAIT_MS,
   VPN_VERIFY_MS,
   buildAuditLine,
   closePawLine,
   encodeUriComponent,
   goalFor,
   initialState,
-  newRunnerMemory,
   persistableMode,
   reduce,
   restoreState,
@@ -42,7 +39,6 @@ import {
   type GuardianEvent,
   type GuardianState,
   type Ports,
-  type RunnerMemory,
 } from '@/lib/connectivity-guardian-core';
 import { encodeClosePawQueueLine, parseClosePawQueueLine } from '@/lib/closepaw-queue';
 
@@ -55,9 +51,6 @@ type World = {
   adb: number | null;
   /** What a write of 1 actually does: 'applies' | 'ignored' (trust dialog) | 'unreadable'. */
   adbWrite: 'applies' | 'ignored' | 'unreadable';
-  shizuku: boolean;
-  /** Shizuku comes up by itself this many ms after adb_wifi is on (null = never). */
-  shizukuAutoStartMs: number | null;
   vpn: boolean | null;
   preapproved: boolean;
   /** What ClosePaw does to the VPN when asked: 'works' | 'nothing'. */
@@ -78,8 +71,6 @@ function makeDevice(over: Partial<World> = {}) {
     grant: true,
     adb: 0,
     adbWrite: 'applies',
-    shizuku: false,
-    shizukuAutoStartMs: 10_000,
     vpn: false,
     preapproved: true,
     closePawEffect: 'works',
@@ -89,7 +80,6 @@ function makeDevice(over: Partial<World> = {}) {
     ...over,
   };
   let now = 1_000_000;
-  let adbOnAt: number | null = w.adb === 1 ? now : null;
   let unreadable = false;
   const calls: string[] = [];
   const audits: Array<{ seq: string; step: string; action: string; before: string; after: string; outcome: string }> = [];
@@ -124,18 +114,8 @@ function makeDevice(over: Partial<World> = {}) {
       if (w.adbWrite === 'unreadable') unreadable = true;
       if (v === 1 && w.adbWrite === 'ignored') return true;
       w.adb = v;
-      adbOnAt = v === 1 ? now : null;
-      if (v === 0) w.shizuku = false; // Shizuku dies with wireless debugging.
       return true;
     },
-    shizukuAlive: () => {
-      calls.push('ping');
-      if (!w.shizuku && w.shizukuAutoStartMs !== null && adbOnAt !== null && now - adbOnAt >= w.shizukuAutoStartMs) {
-        w.shizuku = true;
-      }
-      return w.shizuku;
-    },
-    wifiUp: () => true,
     vpnUp: () => {
       land();
       return w.vpn;
@@ -165,7 +145,15 @@ function makeDevice(over: Partial<World> = {}) {
   return { w, ports, calls, audits, notes, hooks, now: () => now };
 }
 
-const acts = (calls: string[]) => calls.filter((c) => c !== 'ping');
+function afterAdbReadback(ports: Ports, onVerified: () => void) {
+  const read = ports.readAdbWifi;
+  ports.readAdbWifi = () => {
+    const value = read();
+    if (value === 1) onVerified();
+    return value;
+  };
+}
+
 const effectTypes = (es: Effect[]) => es.map((e) => e.type);
 /** A wall-clock instant for loss / recovery events (the persisted anchor's basis). */
 const T0 = 1_800_000_000_000;
@@ -188,77 +176,63 @@ function drive(s: GuardianState, events: GuardianEvent[]) {
 }
 
 // ── 1 ──────────────────────────────────────────────────────────────────────
-describe('1. connect -> ON order: wifi-debug -> Shizuku -> Tailscale, each skipped when already up', () => {
+describe('1. connect -> ON order: wifi-debug -> Tailscale, each skipped when already up', () => {
   it('Wi-Fi available from idle starts exactly one ON run', () => {
     const t = reduce(initialState(true), { type: 'wifiAvailable' });
     expect(t.state.mode).toBe('ON_RUNNING');
     expect(effectTypes(t.effects)).toEqual(['runOn']);
   });
 
-  it('runs the three steps in order and verifies each', () => {
+  it('runs both steps in order and verifies each', () => {
     const d = makeDevice();
-    const r = runOnSequence(d.ports, newRunnerMemory(), 'on-1');
+    const r = runOnSequence(d.ports, 'on-1');
     expect(r).toBe('done');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:1', 'requestTailscale:connect']);
+    expect(d.calls).toEqual(['writeAdbWifi:1', 'requestTailscale:connect']);
     expect(d.audits.map((a) => `${a.step}:${a.action}:${a.outcome}`)).toEqual([
       'wifi_debug:enable:ok',
-      'shizuku:wait:ok',
       'tailscale:connect:ok',
       'tailscale:wait:settled',
       'sequence:end:done',
     ]);
-    expect(d.w).toMatchObject({ adb: 1, shizuku: true, vpn: true });
-    // Shizuku was waited for (pinged), never started: there is no start port.
-    expect(d.calls.filter((c) => c === 'ping').length).toBeGreaterThan(1);
+    expect(d.w).toMatchObject({ adb: 1, vpn: true });
   });
 
   it('skips every step whose pre-check says already up (idempotent)', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: true });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-2')).toBe('done');
-    expect(acts(d.calls)).toEqual([]);
-    expect(d.audits.map((a) => a.outcome)).toEqual(['already', 'already', 'already', 'done']);
+    const d = makeDevice({ adb: 1, vpn: true });
+    expect(runOnSequence(d.ports, 'on-2')).toBe('done');
+    expect(d.calls).toEqual([]);
+    expect(d.audits.map((a) => a.outcome)).toEqual(['already', 'already', 'done']);
     expect(d.notes).toEqual([]);
   });
 
   it('only the missing step acts', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: false });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-3')).toBe('done');
-    expect(acts(d.calls)).toEqual(['requestTailscale:connect']);
+    const d = makeDevice({ adb: 1, vpn: false });
+    expect(runOnSequence(d.ports, 'on-3')).toBe('done');
+    expect(d.calls).toEqual(['requestTailscale:connect']);
   });
 
   it('missing WRITE_SECURE_SETTINGS grant -> assist, nothing written, sequence ends', () => {
     const d = makeDevice({ grant: false });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-4')).toBe('assist');
-    expect(acts(d.calls)).toEqual([]);
+    expect(runOnSequence(d.ports, 'on-4')).toBe('assist');
+    expect(d.calls).toEqual([]);
     expect(d.notes).toEqual(['grant_missing']);
   });
 
   it('a write that does not take effect (trust dialog pending) aborts ON and notifies; nothing after it runs', () => {
     const d = makeDevice({ adbWrite: 'ignored' });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-5')).toBe('assist');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:1']);
-    expect(d.calls).not.toContain('ping');
+    expect(runOnSequence(d.ports, 'on-5')).toBe('assist');
+    expect(d.calls).toEqual(['writeAdbWifi:1']);
     expect(d.notes).toEqual(['wifi_debug_not_applied']);
     expect(d.audits[0]).toMatchObject({ step: 'wifi_debug', after: 'off', outcome: 'not_applied' });
   });
 
-  it('an unreadable key after the write falls through to the Shizuku wait as the check', () => {
+  it('an unreadable key after the write records an unverified write and proceeds to Tailscale', () => {
     const d = makeDevice({ adbWrite: 'unreadable' });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-6')).toBe('done');
+    expect(runOnSequence(d.ports, 'on-6')).toBe('done');
     expect(d.audits[0]).toMatchObject({ step: 'wifi_debug', after: 'unknown', outcome: 'unverified' });
-    expect(d.audits[1]).toMatchObject({ step: 'shizuku', outcome: 'ok' });
+    expect(d.audits[1]).toMatchObject({ step: 'tailscale', outcome: 'ok' });
   });
 
-  it('Shizuku not up within the bounded wait -> timeout, assist, sequence ends (no Tailscale)', () => {
-    const d = makeDevice({ shizukuAutoStartMs: null });
-    const start = d.now();
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-7')).toBe('assist');
-    expect(d.now() - start).toBeGreaterThanOrEqual(SHIZUKU_WAIT_MS);
-    expect(d.now() - start).toBeLessThan(SHIZUKU_WAIT_MS + ADB_WIFI_VERIFY_MS + 10_000);
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:1']);
-    expect(d.notes).toEqual(['shizuku_timeout']);
-    expect(SHIZUKU_WAIT_MS).toBe(90_000);
-  });
 });
 
 // ── 2 ──────────────────────────────────────────────────────────────────────
@@ -276,9 +250,9 @@ describe('2. loss -> 45 s debounce -> OFF: wireless debugging only (Tailscale st
   });
 
   it('OFF turns wireless debugging off and verifies; Tailscale is left as it is', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: true });
+    const d = makeDevice({ adb: 1, vpn: true });
     expect(runOffSequence(d.ports, 'off-1')).toBe('done');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:0']);
+    expect(d.calls).toEqual(['writeAdbWifi:0']);
     expect(d.audits.map((a) => `${a.step}:${a.action}:${a.before}>${a.after}:${a.outcome}`)).toEqual([
       'wifi_debug:disable:on>off:ok',
       'sequence:end:none>none:done',
@@ -287,7 +261,7 @@ describe('2. loss -> 45 s debounce -> OFF: wireless debugging only (Tailscale st
   });
 
   it('regression (2026-11-17): a Wi-Fi-loss OFF issues NO Tailscale request and no tailscale audit line', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: true, preapproved: true });
+    const d = makeDevice({ adb: 1, vpn: true, preapproved: true });
     let vpnProbes = 0;
     const realVpn = d.ports.vpnUp;
     d.ports.vpnUp = () => {
@@ -298,7 +272,7 @@ describe('2. loss -> 45 s debounce -> OFF: wireless debugging only (Tailscale st
     const lost = reduce({ mode: 'IDLE_ONLINE', lossToken: 0, pending: 'NONE' }, { type: 'wifiLost', now: clk(T0) });
     const fired = reduce(lost.state, { type: 'debounceExpired', token: lost.state.lossToken, wifiUp: false });
     expect(effectTypes(fired.effects)).toEqual(['runOff']);
-    expect(runSequence('off', d.ports, newRunnerMemory(), 'off-9')).toBe('done');
+    expect(runSequence('off', d.ports, 'off-9')).toBe('done');
     expect(d.calls.filter((c) => c.startsWith('requestTailscale'))).toEqual([]);
     expect(d.audits.filter((a) => a.step === 'tailscale')).toEqual([]);
     expect(vpnProbes).toBe(0);
@@ -308,9 +282,9 @@ describe('2. loss -> 45 s debounce -> OFF: wireless debugging only (Tailscale st
 
   it('regression (2026-11-17): OFF no longer depends on the ClosePaw pre-approval', () => {
     // Under the old spec this assisted out (tailscale_preapproval_off) before the wifi-debug step.
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: true, preapproved: false });
+    const d = makeDevice({ adb: 1, vpn: true, preapproved: false });
     expect(runOffSequence(d.ports, 'off-2')).toBe('done');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:0']);
+    expect(d.calls).toEqual(['writeAdbWifi:0']);
     expect(d.w.adb).toBe(0);
     expect(d.notes).toEqual([]);
     expect(d.audits.map((a) => a.outcome)).toEqual(['ok', 'done']);
@@ -319,7 +293,7 @@ describe('2. loss -> 45 s debounce -> OFF: wireless debugging only (Tailscale st
   it('an already-off OFF does nothing', () => {
     const d = makeDevice({ adb: 0, vpn: false });
     expect(runOffSequence(d.ports, 'off-3')).toBe('done');
-    expect(acts(d.calls)).toEqual([]);
+    expect(d.calls).toEqual([]);
   });
 });
 
@@ -448,14 +422,10 @@ describe('5. guardian lock: loss during ON finishes ON, then OFF; never interlea
   });
 
   it('the runner stops after the current step once superseded (never interleaved)', () => {
-    const d = makeDevice({ shizukuAutoStartMs: 6_000 });
-    d.hooks.onSleep = (now) => {
-      if (now > 1_003_000) d.w.superseded = true; // Wi-Fi lost during the Shizuku wait
-    };
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('superseded');
-    expect(d.calls.filter((c) => c.startsWith('requestTailscale'))).toEqual([]);
-    // The Shizuku wait (the step in flight) finished; Tailscale never started.
-    expect(d.audits.find((a) => a.step === 'shizuku')).toMatchObject({ outcome: 'ok' });
+    const d = makeDevice();
+    afterAdbReadback(d.ports, () => { d.w.superseded = true; });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('superseded');
+    expect(d.calls).toEqual(['writeAdbWifi:1']);
     expect(d.audits.at(-2)).toMatchObject({ step: 'tailscale', action: 'check', outcome: 'superseded' });
     // OFF has a single step (wireless debugging): Wi-Fi back before it starts -> nothing written.
     const e = makeDevice({ adb: 1, vpn: true, superseded: true });
@@ -490,7 +460,7 @@ describe('5. guardian lock: loss during ON finishes ON, then OFF; never interlea
 });
 
 // ── 6 ──────────────────────────────────────────────────────────────────────
-describe('6. single-flight Shizuku wait: concurrent triggers produce one wait; no retry storm', () => {
+describe('6. single-flight ON: concurrent triggers produce one run', () => {
   it('more connect / boot triggers while ON runs never start a second ON', () => {
     const out = drive(initialState(true), [
       { type: 'wifiAvailable' },
@@ -501,34 +471,13 @@ describe('6. single-flight Shizuku wait: concurrent triggers produce one wait; n
     expect(effectTypes(out.effects).filter((t) => t === 'runOn')).toEqual(['runOn']);
   });
 
-  it('after a timeout, another trigger inside the cool-down does not wait again or notify again', () => {
-    const mem: RunnerMemory = newRunnerMemory();
-    const d = makeDevice({ shizukuAutoStartMs: null });
-    expect(runOnSequence(d.ports, mem, 'on-1')).toBe('assist');
-    const pingsAfterFirst = d.calls.filter((c) => c === 'ping').length;
-    expect(runOnSequence(d.ports, mem, 'on-2')).toBe('assist');
-    // One pre-check ping only, then the cool-down ends it.
-    expect(d.calls.filter((c) => c === 'ping').length).toBe(pingsAfterFirst + 1);
-    expect(d.notes).toEqual(['shizuku_timeout']);
-    expect(d.audits.filter((a) => a.outcome === 'cooldown')).toHaveLength(1);
-  });
-
-  it('after the cool-down the next trigger waits again', () => {
-    const mem = newRunnerMemory();
-    const d = makeDevice({ shizukuAutoStartMs: null });
-    runOnSequence(d.ports, mem, 'on-1');
-    d.ports.sleep(SHIZUKU_RETRY_COOLDOWN_MS);
-    d.w.shizukuAutoStartMs = 0;
-    expect(runOnSequence(d.ports, mem, 'on-2')).toBe('done');
-    expect(mem.lastShizukuTimeoutAt).toBeNull();
-  });
 });
 
 // ── 7 ──────────────────────────────────────────────────────────────────────
 describe('7. ClosePaw pre-approval OFF -> no dispatch, one notify; ON -> fixed goal, valid closepaw: line', () => {
   it('OFF: never asks ClosePaw, one assist notification', () => {
     const d = makeDevice({ preapproved: false });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('assist');
+    expect(runOnSequence(d.ports, 'on-1')).toBe('assist');
     expect(d.calls.filter((c) => c.startsWith('requestTailscale'))).toEqual([]);
     expect(d.notes).toEqual(['tailscale_preapproval_off']);
     expect(d.audits.find((a) => a.step === 'tailscale')).toMatchObject({ action: 'connect', outcome: 'preapproval_off' });
@@ -537,14 +486,14 @@ describe('7. ClosePaw pre-approval OFF -> no dispatch, one notify; ON -> fixed g
   it('pre-approval OFF has no bearing on the OFF sequence (it never touches Tailscale)', () => {
     const d = makeDevice({ preapproved: false, adb: 1, vpn: true });
     expect(runOffSequence(d.ports, 'off-1')).toBe('done');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:0']);
+    expect(d.calls).toEqual(['writeAdbWifi:0']);
     expect(d.notes).toEqual([]);
   });
 
   it('ON: asks ClosePaw exactly once', () => {
-    const d = makeDevice({ adb: 1, shizuku: true });
-    runOnSequence(d.ports, newRunnerMemory(), 'on-1');
-    expect(acts(d.calls)).toEqual(['requestTailscale:connect']);
+    const d = makeDevice({ adb: 1 });
+    runOnSequence(d.ports, 'on-1');
+    expect(d.calls).toEqual(['requestTailscale:connect']);
   });
 
   it('the line is exactly what `shelly closepaw` would queue and what the parser accepts', () => {
@@ -604,45 +553,33 @@ describe('8. toggle OFF / mirror unreadable -> nothing runs; STOP-ALL -> nothing
 
   it('the runner does nothing when the toggle is off at start', () => {
     const d = makeDevice({ enabled: false, vpn: true, adb: 1 });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('disabled');
+    expect(runOnSequence(d.ports, 'on-1')).toBe('disabled');
     expect(runOffSequence(d.ports, 'off-1')).toBe('disabled');
-    expect(acts(d.calls)).toEqual([]);
+    expect(d.calls).toEqual([]);
     expect(d.notes).toEqual([]);
   });
 
   it('toggle off mid-sequence: the step in flight finishes, no new step starts', () => {
-    const d = makeDevice({ shizukuAutoStartMs: null });
-    d.hooks.onSleep = (now) => {
-      if (now > 1_030_000) d.w.enabled = false;
-    };
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('disabled');
-    expect(acts(d.calls)).toEqual(['writeAdbWifi:1']);
-    expect(d.audits.at(-2)).toMatchObject({ step: 'shizuku', outcome: 'disabled' });
+    const d = makeDevice();
+    afterAdbReadback(d.ports, () => { d.w.enabled = false; });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('disabled');
+    expect(d.calls).toEqual(['writeAdbWifi:1']);
+    expect(d.audits.at(-2)).toMatchObject({ step: 'tailscale', outcome: 'disabled' });
   });
 
   it('STOP-ALL: nothing is written or dispatched', () => {
     const d = makeDevice({ stopAll: true });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('stopped');
+    expect(runOnSequence(d.ports, 'on-1')).toBe('stopped');
     const e = makeDevice({ stopAll: true, adb: 1, vpn: true });
     expect(runOffSequence(e.ports, 'off-1')).toBe('stopped');
-    expect(acts(d.calls)).toEqual([]);
-    expect(acts(e.calls)).toEqual([]);
+    expect(d.calls).toEqual([]);
+    expect(e.calls).toEqual([]);
   });
 
   it('STOP-ALL raised before the Tailscale step: no dispatch', () => {
-    const d = makeDevice({ shizukuAutoStartMs: 3_000 });
-    d.hooks.onSleep = () => {
-      if (d.w.shizuku) d.w.stopAll = true;
-    };
-    d.ports.shizukuAlive = () => {
-      d.calls.push('ping');
-      if (d.now() > 1_003_000) {
-        d.w.shizuku = true;
-        d.w.stopAll = true;
-      }
-      return d.w.shizuku;
-    };
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('stopped');
+    const d = makeDevice();
+    afterAdbReadback(d.ports, () => { d.w.stopAll = true; });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('stopped');
     expect(d.calls.filter((c) => c.startsWith('requestTailscale'))).toEqual([]);
   });
 });
@@ -650,24 +587,24 @@ describe('8. toggle OFF / mirror unreadable -> nothing runs; STOP-ALL -> nothing
 // ── 9 ──────────────────────────────────────────────────────────────────────
 describe("9. verify failure is recorded as failed; ClosePaw's 'success' alone never passes", () => {
   it('ClosePaw says handed off, VPN never comes up -> verify_failed after the bounded wait', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, closePawEffect: 'nothing', dispatchOk: true });
+    const d = makeDevice({ adb: 1, closePawEffect: 'nothing', dispatchOk: true });
     const start = d.now();
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('failed');
+    expect(runOnSequence(d.ports, 'on-1')).toBe('failed');
     expect(d.now() - start).toBeGreaterThanOrEqual(VPN_VERIFY_MS);
     expect(d.audits.find((a) => a.step === 'tailscale')).toMatchObject({ before: 'off', after: 'off', outcome: 'verify_failed' });
     expect(d.notes).toEqual(['tailscale_failed']);
   });
 
   it('a refused hand-off is dispatch_failed, not ok', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, dispatchOk: false, closePawEffect: 'nothing' });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('assist');
+    const d = makeDevice({ adb: 1, dispatchOk: false, closePawEffect: 'nothing' });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('assist');
     expect(d.audits.find((a) => a.step === 'tailscale')!.outcome).toBe('dispatch_failed');
   });
 
   it('an unknown VPN probe never counts as connected (and never dispatches)', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: null });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('failed');
-    expect(acts(d.calls)).toEqual([]);
+    const d = makeDevice({ adb: 1, vpn: null });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('failed');
+    expect(d.calls).toEqual([]);
     expect(d.audits.find((a) => a.step === 'tailscale')!.outcome).toBe('probe_unknown');
   });
 
@@ -735,9 +672,9 @@ describe('10. audit line shape: fixed keys only, no SSID, filename accepted', ()
   });
 
   it('every runner audit is a valid line', () => {
-    const d = makeDevice({ shizukuAutoStartMs: null });
-    runOnSequence(d.ports, newRunnerMemory(), 'on-1');
-    const e = makeDevice({ adb: 1, vpn: true, shizuku: true });
+    const d = makeDevice();
+    runOnSequence(d.ports, 'on-1');
+    const e = makeDevice({ adb: 1, vpn: true });
     runOffSequence(e.ports, 'off-1');
     for (const a of [...d.audits, ...e.audits]) {
       const line = buildAuditLine('2026-11-17T08:00:00.000Z', a.seq, a.step as any, a.action as any, a.before as any, a.after as any, a.outcome as any);
@@ -754,10 +691,10 @@ describe('10. audit line shape: fixed keys only, no SSID, filename accepted', ()
   it('every sequence writes exactly one end line', () => {
     for (const over of [{}, { stopAll: true }, { enabled: false }, { grant: false }, { preapproved: false }]) {
       const d = makeDevice(over);
-      runSequence('on', d.ports, newRunnerMemory(), 'on-1');
+      runSequence('on', d.ports, 'on-1');
       expect(d.audits.filter((a) => a.step === 'sequence')).toHaveLength(1);
       const e = makeDevice({ adb: 1, vpn: true, ...over });
-      runSequence('off', e.ports, newRunnerMemory(), 'off-1');
+      runSequence('off', e.ports, 'off-1');
       expect(e.audits.filter((a) => a.step === 'sequence')).toHaveLength(1);
     }
   });
@@ -781,7 +718,7 @@ describe('12. boot with Wi-Fi up -> callbacks re-registered + ON enqueued; toggl
     const t = reduce(restoreState(true, 'idle_online', 2), { type: 'boot', enabled: true, wifiUp: false, now: clk(T0) });
     expect(t.state.mode).toBe('LOSS_PENDING');
     expect(t.effects).toEqual([{ type: 'registerCallbacks' }, { type: 'armDebounce', token: 3, delayMs: LOSS_DEBOUNCE_MS }]);
-    // Shizuku died with the reboot: coming back to Wi-Fi runs ON.
+    // Coming back to Wi-Fi after reboot runs ON.
     expect(effectTypes(reduce(t.state, { type: 'wifiAvailable' }).effects)).toEqual(['cancelDebounce', 'runOn']);
   });
 
@@ -874,7 +811,6 @@ function guardianHarness(start: GuardianState, over: Partial<World> = {}, wifiUp
   d.hooks.onSleep = tick;
   d.ports.superseded = () =>
     running === 'on' ? s.pending === 'LOSS' || s.pending === 'OFF' : running === 'off' ? s.pending === 'ON' : false;
-  const mem = newRunnerMemory();
   let n = 0;
   const drain = () => {
     while (queue.length > 0) {
@@ -882,7 +818,7 @@ function guardianHarness(start: GuardianState, over: Partial<World> = {}, wifiUp
       running = kind;
       const seq = `${kind}-${++n}`;
       order.push(`start:${seq}`);
-      const res = runSequence(kind, d.ports, mem, seq);
+      const res = runSequence(kind, d.ports, seq);
       order.push(`end:${seq}:${res}`);
       running = null;
       apply({ type: 'sequenceDone', kind, interrupted: res === 'superseded' });
@@ -922,7 +858,7 @@ function guardianHarness(start: GuardianState, over: Partial<World> = {}, wifiUp
 
 describe('13. coordinator gate round 1: a dispatched ClosePaw request settles before its sequence ends', () => {
   it('Wi-Fi lost and back (since 2026-11-17): OFF never dispatches, and the next ON finds Tailscale already up', () => {
-    const h = guardianHarness({ mode: 'IDLE_ONLINE', lossToken: 0, pending: 'NONE' }, { adb: 1, shizuku: true, vpn: true });
+    const h = guardianHarness({ mode: 'IDLE_ONLINE', lossToken: 0, pending: 'NONE' }, { adb: 1, vpn: true });
     h.apply({ type: 'wifiLost', now: clk(T0) });
     h.setWifi(false);
     h.idle(LOSS_DEBOUNCE_MS + 5_000);
@@ -938,7 +874,7 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
 
   it('connect in flight when Wi-Fi is lost -> ON waits for it to settle, then OFF turns only wireless debugging off', () => {
     // ClosePaw takes 60 s to act on the connect; the debounce (45 s from the loss) expires meanwhile.
-    const h = guardianHarness(initialState(true), { adb: 1, shizuku: true, vpn: false, closePawDelayMs: 60_000 });
+    const h = guardianHarness(initialState(true), { adb: 1, vpn: false, closePawDelayMs: 60_000 });
     h.at(5_000, false); // Wi-Fi lost 5 s after the dispatch
     h.apply({ type: 'wifiAvailable' });
     h.idle(10 * 60_000);
@@ -946,7 +882,7 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
     expect(h.d.w.vpn).toBe(true); // Tailscale stays up off Wi-Fi (mobile data)
     expect(h.d.w.adb).toBe(0);
     const onSeq = h.d.audits.filter((a) => a.seq === 'on-1').map((a) => `${a.step}:${a.action}:${a.outcome}`);
-    expect(onSeq).toEqual(['wifi_debug:check:already', 'shizuku:check:already', 'tailscale:connect:superseded', 'tailscale:wait:settled', 'sequence:end:superseded']);
+    expect(onSeq).toEqual(['wifi_debug:check:already', 'tailscale:connect:superseded', 'tailscale:wait:settled', 'sequence:end:superseded']);
     expect(h.order).toEqual(['start:on-1', 'end:on-1:superseded', 'start:off-2', 'end:off-2:done']);
     expect(h.d.audits.filter((a) => a.seq === 'off-2' && a.step === 'tailscale')).toEqual([]);
     expect(h.d.calls.filter((c) => c.startsWith('requestTailscale'))).toEqual(['requestTailscale:connect']);
@@ -956,7 +892,7 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
     ['toggle off', { enabled: false } as Partial<World>, 'disabled'],
     ['STOP-ALL', { stopAll: true } as Partial<World>, 'stopped'],
   ])('%s after the dispatch still waits for the run to settle', (_n, flip, result) => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: false, closePawDelayMs: 40_000 });
+    const d = makeDevice({ adb: 1, vpn: false, closePawDelayMs: 40_000 });
     const real = d.ports.requestTailscale;
     d.ports.requestTailscale = () => {
       const id = real();
@@ -964,23 +900,22 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
       return id;
     };
     const t0 = d.now();
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe(result);
+    expect(runOnSequence(d.ports, 'on-1')).toBe(result);
     expect(d.now() - t0).toBeGreaterThanOrEqual(40_000);
     expect(d.w.vpn).toBe(true);
     expect(d.audits.map((a) => `${a.step}:${a.action}:${a.outcome}`)).toEqual([
       'wifi_debug:check:already',
-      'shizuku:check:already',
       `tailscale:connect:${result}`,
       'tailscale:wait:settled',
       `sequence:end:${result}`,
     ]);
-    expect(acts(d.calls)).toEqual(['requestTailscale:connect']);
+    expect(d.calls).toEqual(['requestTailscale:connect']);
   });
 
   it('a run that never settles is bounded by CLOSEPAW_SETTLE_MS (counted from the dispatch) and audited', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: false, settleAfterActMs: null });
+    const d = makeDevice({ adb: 1, vpn: false, settleAfterActMs: null });
     const t0 = d.now();
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('done');
+    expect(runOnSequence(d.ports, 'on-1')).toBe('done');
     expect(d.now() - t0).toBeGreaterThanOrEqual(CLOSEPAW_SETTLE_MS);
     expect(d.now() - t0).toBeLessThan(CLOSEPAW_SETTLE_MS + 5_000);
     expect(d.audits.at(-2)).toMatchObject({ step: 'tailscale', action: 'wait', outcome: 'settle_timeout' });
@@ -988,21 +923,21 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
   });
 
   it("settling is sequencing only: a settled run with the VPN unchanged is still verify_failed", () => {
-    const d = makeDevice({ adb: 1, shizuku: true, closePawEffect: 'nothing' });
-    expect(runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toBe('failed');
-    expect(d.audits.map((a) => a.outcome)).toEqual(['already', 'already', 'verify_failed', 'settled', 'failed']);
+    const d = makeDevice({ adb: 1, closePawEffect: 'nothing' });
+    expect(runOnSequence(d.ports, 'on-1')).toBe('failed');
+    expect(d.audits.map((a) => a.outcome)).toEqual(['already', 'verify_failed', 'settled', 'failed']);
   });
 
   it('no dispatch, no settle wait (already / preapproval off / refused hand-off)', () => {
     for (const over of [{ vpn: true }, { preapproved: false }, { dispatchOk: false }] as Array<Partial<World>>) {
-      const d = makeDevice({ adb: 1, shizuku: true, ...over });
-      runOnSequence(d.ports, newRunnerMemory(), 'on-1');
+      const d = makeDevice({ adb: 1, ...over });
+      runOnSequence(d.ports, 'on-1');
       expect(d.audits.some((a) => a.action === 'wait' && a.step === 'tailscale')).toBe(false);
     }
   });
 
   it('an exception after the dispatch still waits for the run to settle (try / finally)', () => {
-    const d = makeDevice({ adb: 1, shizuku: true, vpn: false, closePawDelayMs: 20_000 });
+    const d = makeDevice({ adb: 1, vpn: false, closePawDelayMs: 20_000 });
     const realVpn = d.ports.vpnUp;
     let dispatched = false;
     const realReq = d.ports.requestTailscale;
@@ -1019,7 +954,7 @@ describe('13. coordinator gate round 1: a dispatched ClosePaw request settles be
       return realVpn();
     };
     const t0 = d.now();
-    expect(() => runOnSequence(d.ports, newRunnerMemory(), 'on-1')).toThrow('probe crashed');
+    expect(() => runOnSequence(d.ports, 'on-1')).toThrow('probe crashed');
     expect(d.now() - t0).toBeGreaterThanOrEqual(20_000);
     expect(d.audits.at(-1)).toMatchObject({ step: 'tailscale', action: 'wait', outcome: 'settled' });
   });
@@ -1045,7 +980,7 @@ describe('14. coordinator gate round 1: process death during ON never loses the 
       expect(effectTypes(fired.effects)).toEqual(['runOff']);
     }
     // End to end: the OFF cleanup actually turns wireless debugging off.
-    const h = guardianHarness(s, { adb: 1, shizuku: true, vpn: false }, false);
+    const h = guardianHarness(s, { adb: 1, vpn: false }, false);
     h.apply({ type: 'reconcile', wifiUp: false, now: clk(T0) });
     h.idle(5 * 60_000);
     expect(h.state().mode).toBe('IDLE_OFFLINE');
@@ -1083,7 +1018,7 @@ describe('14. coordinator gate round 1: process death during ON never loses the 
     expect(rec.state.mode).toBe('OFF_RUNNING');
     expect(rec.effects).toEqual([{ type: 'runOff' }]);
     // End to end with the harness: wireless debugging ends up off.
-    const h = guardianHarness(s, { adb: 1, shizuku: true, vpn: true }, false);
+    const h = guardianHarness(s, { adb: 1, vpn: true }, false);
     h.apply({ type: 'reconcile', wifiUp: false, now: clk(T0 + 60_000) });
     h.idle(10 * 60_000);
     expect(h.state().mode).toBe('IDLE_OFFLINE');
@@ -1123,7 +1058,7 @@ describe('14. coordinator gate round 1: process death during ON never loses the 
     // A missed available while idle offline runs ON; a missed loss after ON arms the debounce.
     expect(effectTypes(reduce(initialState(true), { type: 'reconcile', wifiUp: true, now: clk(T0) }).effects)).toEqual(['runOn']);
     expect(effectTypes(reduce(online, { type: 'reconcile', wifiUp: false, now: clk(T0) }).effects)).toEqual(['armDebounce']);
-    // The plain online state still arms without a rerun (Shizuku is up).
+    // The plain online state still arms without a rerun.
     expect(reduce(online, { type: 'wifiLost', now: clk(T0) }).state.pending).toBe('NONE');
   });
 });
@@ -1142,7 +1077,7 @@ describe('15. coordinator gate round 1: the service is resident exactly while an
   });
 
   it('a full cycle: resident from ON until OFF completes, then not; toggle off ends it', () => {
-    const h = guardianHarness(initialState(true), { adb: 1, shizuku: true, vpn: false });
+    const h = guardianHarness(initialState(true), { adb: 1, vpn: false });
     expect(wantsResident(h.state())).toBe(false);
     h.apply({ type: 'wifiAvailable' });
     expect(h.state().mode).toBe('IDLE_ONLINE');
@@ -1182,7 +1117,7 @@ describe('15. coordinator gate round 2: recovery never resets a live loss deboun
   });
 
   it('end to end: cleanup still lands 45 s after the loss although the app starts 40 s in', () => {
-    const h = guardianHarness(online, { adb: 1, shizuku: true, vpn: false }, true);
+    const h = guardianHarness(online, { adb: 1, vpn: false }, true);
     const lossAt = h.d.now();
     h.setWifi(false);
     h.apply({ type: 'wifiLost', now: clk(lossAt) });

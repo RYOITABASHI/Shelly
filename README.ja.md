@@ -528,7 +528,7 @@ Shelly は、スマホの上で動くローカルファーストの実行と同�
 
 **下書きの事前承認。** 下書きだけの宛先（note、Substack）については、持ち主が Shelly の AI ペインで指示を打つことで、宛先ごとに事前承認を ON にできます――例えば "save drafts to note and Substack without approval"。ON になった宛先のキュー済み下書きは、宛先ごとの確認と 1 日の上限（既定 5 件）のもとで、タップなしに保存されます。"stop saving drafts without approval" か設定のトグルで OFF になります。
 
-**接続性ガーディアン。** オプトインの設定自動化（**Wi-Fi-linked autopilot**、既定 OFF）が、この連携への到達可能性を保つのを助けます。Wi-Fi が接続するとワイヤレスデバッグを ON にして Shizuku が使えるようになるのを待ち、Wi-Fi が切れて約 45 秒たつと、Tailscale は接続したままワイヤレスデバッグを OFF にするので、MCP サーバーにはモバイルデータでも届き続けます。初回だけ `WRITE_SECURE_SETTINGS` の付与が必要です。
+**接続性ガーディアン。** オプトインの設定自動化（**Wi-Fi-linked autopilot**、既定 OFF）が、この連携への到達可能性を保つのを助けます。Wi-Fi が接続するとワイヤレスデバッグを ON にし、Tailscale が切れていて事前承認がオンなら接続します。Wi-Fi が切れて約 45 秒たつと、Tailscale は接続したままワイヤレスデバッグを OFF にするので、MCP サーバーにはモバイルデータでも届き続けます。初回だけ `WRITE_SECURE_SETTINGS` の付与が必要です。
 
 ### エージェントのロール
 
