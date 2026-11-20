@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=62
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=63
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -263,7 +263,11 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // body actually cites in its programmatic "## Sources" (first-use order, body
 // markers renumbered to match; markers with no listed source are dropped, the
 // sourced-briefing finalize convention). Materials ([M1]) are listed as before.
-const EXECUTOR_SCRIPT_VERSION = 62;
+// v63 (2026-11-20): run-start hot reload of article tunables. An article run
+// (not a digest, never a tainted run) lays engines per phase, editor.minScore
+// and a lower reviewRounds from ~/.shelly/agents/article-pipelines.json over a
+// copy of its plan (articleConfigOverlay); audit line article_config_reloaded.
+const EXECUTOR_SCRIPT_VERSION = 63;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -5334,11 +5338,7 @@ function articleDigestStreamsMismatchUnsafe(home, plan, f) {
   // Resolved like the scan resolves it (path.resolve: `.`, `..`, doubled and
   // trailing slashes), with the same storage under its other names folded
   // (canonicalFolder in lib/agent-pipeline-presets.ts). '' for no usable path.
-  const norm = (folder) => {
-    const raw = str(folder);
-    if (!raw.startsWith('/')) return '';
-    return path.posix.resolve(raw).replace(/^\/storage\/(?:emulated\/0|self\/primary)(?=\/|$)/, '/sdcard');
-  };
+  const norm = articleFolderKey;
   const basename = (folder) => {
     const n = norm(folder);
     return n && n !== '/' ? path.posix.basename(n) : '';
@@ -5410,6 +5410,190 @@ function articleDigestStreamsMismatchUnsafe(home, plan, f) {
   return Array.from(new Set(problems)).slice(0, ARTICLE_MISMATCH_MAX_PROBLEMS);
 }
 const ARTICLE_MISMATCH_MAX_PROBLEMS = 20;
+
+// A folder resolved like the scan resolves it (path.resolve: `.`, `..`, doubled
+// and trailing slashes), with the same storage under its other names folded
+// (canonicalFolder in lib/agent-pipeline-presets.ts). '' for no usable path.
+function articleFolderKey(folder) {
+  const raw = typeof folder === 'string' ? folder : '';
+  if (!raw.startsWith('/')) return '';
+  return path.posix.resolve(raw).replace(/^\/storage\/(?:emulated\/0|self\/primary)(?=\/|$)/, '/sdcard');
+}
+
+// ── Run-start hot reload of article tunables (v63) ──────────────────────────
+// An article agent's plan is built once from ~/.shelly/agents/article-pipelines.json
+// (lib/agent-pipeline-presets.ts buildArticlePipeline). The owner edits the file
+// to switch an engine or tune the loop, and those edits now reach the next run
+// without re-creating the agent, but ONLY these leaves, which do not change the
+// agent's authority envelope:
+//   engines.research -> the research step's tool (the first model step);
+//   engines.write    -> the write step's tool and every revise step's tool;
+//   engines.review   -> every review step's tool;
+//   editor.minScore  -> the assemble step's local.editor.minScore;
+//   reviewRounds     -> a lower bound on the review loop: review / revise steps
+//                       of a later round settle SKIPPED (the chain's structure is
+//                       untouched). A file asking for more rounds than the plan
+//                       has steps for keeps the plan's rounds.
+// An engine is the unit: {type, model, searchMode} for HTTP engines and
+// {type:'cli', cli, textOnly:true, model} for a text-only CLI, rebuilt from those
+// keys only. Research may move to an HTTP engine or (only when it already was
+// one) stay the Codex web-search CLI; nothing here grants web search, adds a
+// cliWorker, pins an unpinned step or touches plan.tool / toolLadder / prompt /
+// instructions / output / actions / local step content other than minScore. A
+// field absent or malformed in the file keeps the plan's value, an engine whose
+// result the plan refusals (textOnlyPlanRefusal, longformPlanRefusal) would
+// reject keeps the plan's value, and any error keeps the whole plan. The plan is
+// copied, never mutated. Not on a digest plan (its only engine is plan.tool) and
+// never on a tainted run (run() checks).
+const ARTICLE_RELOAD_HTTP_TYPES = new Set(['gemini-api', 'cerebras', 'groq', 'perplexity']);
+const ARTICLE_RELOAD_ID_RE = /^[a-z0-9-]{1,32}$/;
+
+function articleReloadIsObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+// The step tool lib/agent-pipeline-presets.ts would write for this engine, or
+// null when the file's value is malformed or not allowed for `phase`.
+// `storedTool` decides whether a research step may stay the web-search CLI.
+function articleReloadEngine(raw, phase, storedTool) {
+  if (!articleReloadIsObject(raw) || typeof raw.type !== 'string') return null;
+  if (raw.model !== undefined && (typeof raw.model !== 'string' || !TEXT_ONLY_MODEL_RE.test(raw.model))) return null;
+  const model = raw.model !== undefined ? { model: raw.model } : {};
+  const only = (keys) => Object.keys(raw).every((k) => keys.indexOf(k) !== -1);
+  if (raw.type === 'cli') {
+    if (raw.textOnly !== true || !CLI_STEP_ENGINES.has(raw.cli)) return null;
+    if (phase === 'research') {
+      // Only a research step that already is the web-search CLI may stay one.
+      const wasWebSearch = articleReloadIsObject(storedTool) && storedTool.type === 'cli' && storedTool.webSearch === true;
+      if (!wasWebSearch || raw.cli !== 'codex' || raw.webSearch !== true || !only(['type', 'cli', 'textOnly', 'webSearch', 'model'])) return null;
+      return Object.assign({ type: 'cli', cli: 'codex', textOnly: true, webSearch: true }, model);
+    }
+    if (raw.webSearch !== undefined || !only(['type', 'cli', 'textOnly', 'model'])) return null;
+    return Object.assign({ type: 'cli', cli: raw.cli, textOnly: true }, model);
+  }
+  if (!ARTICLE_RELOAD_HTTP_TYPES.has(raw.type) || raw.webSearch !== undefined) return null;
+  if (raw.searchMode !== undefined) {
+    if (phase !== 'research' || raw.type !== 'perplexity' || raw.searchMode !== 'academic') return null;
+  }
+  if (!only(phase === 'research' ? ['type', 'model', 'searchMode'] : ['type', 'model'])) return null;
+  return Object.assign({ type: raw.type }, model, raw.searchMode !== undefined ? { searchMode: raw.searchMode } : {});
+}
+
+// Key-order-free equality of two engine descriptors (plain JSON values).
+function articleReloadSameEngine(a, b) {
+  const canon = (v) => (articleReloadIsObject(v) ? Object.keys(v).sort().map((k) => [k, v[k]]) : v);
+  return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+}
+
+/**
+ * The plan with the file's tunables laid over it: { plan, changed, pipeline,
+ * reviewRoundsCap }. `plan` is the input object itself when nothing changed,
+ * else a copy. `changed` names the fields whose value actually changed.
+ * `reviewRoundsCap` is a number only when the file lowers the plan's rounds.
+ * Pure (no I/O); throws nothing.
+ */
+function articleConfigOverlay(plan, parsed) {
+  const none = { plan, changed: [], pipeline: null, reviewRoundsCap: null };
+  try {
+    return articleConfigOverlayUnsafe(plan, parsed) || none;
+  } catch (_) {
+    return none;
+  }
+}
+
+function articleConfigOverlayUnsafe(plan, parsed) {
+  if (!plan || !plan.steps || plan.steps.longform !== true || !Array.isArray(plan.steps.list) || isDigestPlan(plan)) return null;
+  if (plan.continuous || (plan.agent && plan.agent.autonomous === true)) return null;
+  if (!articleReloadIsObject(parsed) || !Array.isArray(parsed.pipelines)) return null;
+  const want = articleFolderKey(plan.output && plan.output.outputDir);
+  if (!want || want === '/') return null;
+  const matches = parsed.pipelines.filter((p) => articleReloadIsObject(p) && articleFolderKey(p.outputFolder) === want);
+  if (matches.length !== 1) return null;
+  const entry = matches[0];
+  const pipeline = typeof entry.id === 'string' && ARTICLE_RELOAD_ID_RE.test(entry.id) ? entry.id : null;
+
+  const list = plan.steps.list;
+  const modelIdx = [];
+  list.forEach((s, i) => { if (s && s.local === undefined && !s.apiCall) modelIdx.push(i); });
+  const plainModel = modelIdx.filter((i) => list[i].handoff === undefined);
+  const researchAt = plainModel.length >= 2 ? plainModel[0] : -1;
+  const writeAt = plainModel.length >= 2 ? plainModel[1] : -1;
+  const kindAt = (kind) => modelIdx.filter((i) => { const h = handoffOf(list, i); return !!h && h.kind === kind; });
+  // The plan the builder makes: exactly research and write before the loop.
+  if (researchAt === -1 || plainModel.length !== 2) return null;
+  const phases = {
+    research: [researchAt],
+    write: [writeAt].concat(kindAt('revise')),
+    review: kindAt('review'),
+  };
+
+  let current = plan;
+  const changed = [];
+  const stepCopy = (p, i, patch) => {
+    const nextList = p.steps.list.slice();
+    nextList[i] = Object.assign({}, p.steps.list[i], patch);
+    return Object.assign({}, p, { steps: Object.assign({}, p.steps, { list: nextList }) });
+  };
+  const engines = articleReloadIsObject(entry.engines) ? entry.engines : {};
+  for (const phase of ['research', 'write', 'review']) {
+    const indexes = phases[phase];
+    if (!indexes.length || engines[phase] === undefined) continue;
+    // Only steps that carry their own pinned engine, with nothing on them this
+    // overlay would have to reason about.
+    if (indexes.some((i) => {
+      const s = list[i];
+      return !articleReloadIsObject(s.tool) || s.paidPin !== undefined || s.parallelGroup !== undefined || s.role !== undefined;
+    })) continue;
+    const tool = articleReloadEngine(engines[phase], phase, list[indexes[0]].tool);
+    if (!tool) continue;
+    if (indexes.every((i) => articleReloadSameEngine(list[i].tool, tool))) continue;
+    // A CLI needs the plan's own cliWorker policy, which only creation grants.
+    if (tool.type === 'cli' && !articleReloadIsObject(plan.cliWorker)) continue;
+    let next = current;
+    for (const i of indexes) next = stepCopy(next, i, { tool: Object.assign({}, tool) });
+    if (textOnlyPlanRefusal(next) || longformPlanRefusal(next)) continue;
+    current = next;
+    changed.push(`engines.${phase}`);
+  }
+
+  // editor.minScore: the assemble step's editor.
+  const editorFile = articleReloadIsObject(entry.editor) ? entry.editor.minScore : undefined;
+  if (typeof editorFile === 'number' && Number.isFinite(editorFile) && editorFile >= 1 && editorFile <= 5 && Number.isInteger(editorFile * 2)) {
+    const at = current.steps.list.findIndex((s) => !!s && articleReloadIsObject(s.local) && s.local.kind === 'assemble' && articleReloadIsObject(s.local.editor));
+    if (at !== -1 && current.steps.list[at].local.editor.minScore !== editorFile) {
+      const s = current.steps.list[at];
+      const local = Object.assign({}, s.local, { editor: Object.assign({}, s.local.editor, { minScore: editorFile }) });
+      const next = stepCopy(current, at, { local });
+      if (normalizeStepLocal(local, at) && !textOnlyPlanRefusal(next) && !longformPlanRefusal(next)) {
+        current = next;
+        changed.push('editor.minScore');
+      }
+    }
+  }
+
+  // reviewRounds: lower only (the plan has no steps for more rounds).
+  let reviewRoundsCap = null;
+  const rounds = entry.reviewRounds;
+  if (rounds === 2 || rounds === 3) {
+    const planRounds = phases.review.reduce((m, i) => Math.max(m, handoffOf(list, i).round), 0);
+    if (planRounds > rounds && rounds >= 1) {
+      reviewRoundsCap = rounds;
+      changed.push('reviewRounds');
+    }
+  }
+  return { plan: current, changed, pipeline, reviewRoundsCap };
+}
+
+// This run's review-round bound from the reloaded config (run() sets it), or null.
+let activeReviewRoundsCap = null;
+const HANDOFF_ROUND_CAPPED_MESSAGE = 'Skipped: the pipeline config now runs fewer review rounds.';
+
+/** Whether step i is a review / revise of a round the reloaded config dropped. */
+function reviewRoundCapped(steps, i, cap) {
+  if (typeof cap !== 'number') return false;
+  const h = handoffOf(steps, i);
+  return !!h && (h.kind === 'review' || h.kind === 'revise') && h.round > cap;
+}
 
 /**
  * The materials root the owner pinned for this stream in
@@ -13561,8 +13745,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // v31: a stopped loop skips every hand-off left, including a round-2 review
     // whose revise never ran and so has nothing to read.
     const loopStoppedHere = handoffLoopStopped && plan.steps.list[i].handoff !== undefined;
-    if (loopStoppedHere || shouldSkipHandoffStep(plan.steps.list, i, resultsByStep, skippedByStep)) {
-      const skipMessage = loopStoppedHere ? LONGFORM_HANDOFF_STOPPED_MESSAGE : HANDOFF_PASS_SKIP_MESSAGE;
+    // v63: a round the owner's file dropped (reviewRounds lowered) settles
+    // SKIPPED like a round after a PASS; the steps stay where they are.
+    const roundCapped = !loopStoppedHere && reviewRoundCapped(plan.steps.list, i, activeReviewRoundsCap);
+    if (loopStoppedHere || roundCapped || shouldSkipHandoffStep(plan.steps.list, i, resultsByStep, skippedByStep)) {
+      const skipMessage = loopStoppedHere ? LONGFORM_HANDOFF_STOPPED_MESSAGE : roundCapped ? HANDOFF_ROUND_CAPPED_MESSAGE : HANDOFF_PASS_SKIP_MESSAGE;
       skippedByStep[i] = true;
       records.push({ index: i, instruction: plan.steps.list[i].instruction, status: 'skipped', durationMs: 0, outputPreview: skipMessage });
       progressState(activeProgress, i, 'SKIPPED', skipMessage);
@@ -13572,7 +13759,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         event: 'handoff_skipped',
         agentId: plan.agent.id,
         stepIndex: i,
-        reason: loopStoppedHere ? 'review loop stopped' : 'review passed',
+        reason: loopStoppedHere ? 'review loop stopped' : roundCapped ? 'review rounds lowered' : 'review passed',
       });
       i += 1;
       continue;
@@ -13842,6 +14029,31 @@ async function run(args) {
           problems: mismatch,
         });
       } catch (_) {}
+    }
+  }
+  // v63: run-start hot reload of the article tunables (articleConfigOverlay):
+  // same place and guard as A1. A copy of the plan, never the loaded object;
+  // plan.tool is never touched. Nothing here can fail the run.
+  activeReviewRoundsCap = null;
+  if (plan.steps && plan.steps.longform === true && !opts.tainted && !ingressTainted()) {
+    try {
+      const reload = articleConfigOverlay(plan, readArticlePipelineFileForAudit(home, fs));
+      if (reload.changed.length && reload.plan && reload.plan.tool === plan.tool) {
+        plan = reload.plan;
+        activeReviewRoundsCap = reload.reviewRoundsCap;
+        try {
+          appendJsonl(paths.planAuditFile, {
+            ts: new Date().toISOString(),
+            kind: 'plan.executor',
+            event: 'article_config_reloaded',
+            agentId: plan.agent.id,
+            pipeline: reload.pipeline,
+            fields: reload.changed,
+          });
+        } catch (_) {}
+      }
+    } catch (_) {
+      activeReviewRoundsCap = null;
     }
   }
   // Live progress (v12): opened only once this run holds the agent lock, so a
@@ -14729,6 +14941,8 @@ module.exports = {
   withoutAuthorViewSection,
   readPinnedVoiceOptional,
   articleDigestStreamsMismatch,
+  articleConfigOverlay,
+  reviewRoundCapped,
   writeDraftOutputs,
   buildVoiceWritePrompt,
   buildVoiceReviewPrompt,
