@@ -40,13 +40,6 @@ android {
 }
 
 dependencies {
-  // Connectivity guardian (ShizukuLiveness.kt): Shizuku client API, used ONLY
-  // for Shizuku.pingBinder(). The provider artifact supplies
-  // rikka.shizuku.ShizukuProvider (declared in this module's manifest) and the
-  // moe.shizuku.manager.permission.API_V23 uses-permission. Apache-2.0,
-  // Maven Central, minSdk 24 (= Shelly's).
-  implementation 'dev.rikka.shizuku:api:13.1.5'
-  implementation 'dev.rikka.shizuku:provider:13.1.5'
   // TriggerDebouncerTest.kt — see that file's doc comment: not yet wired into
   // a CI test task (build-android.yml only runs assembleRelease), but placed
   // in the idiomatic src/test/java location so `./gradlew :terminal-emulator:testDebugUnitTest`

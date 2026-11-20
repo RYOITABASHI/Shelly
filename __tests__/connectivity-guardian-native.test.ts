@@ -21,7 +21,6 @@ const wifiDebug = read(`${KT}/WifiDebugControl.kt`);
 const tailscale = read(`${KT}/TailscaleControl.kt`);
 const moduleKt = read(`${KT}/TerminalEmulatorModule.kt`);
 const manifest = read('modules/terminal-emulator/android/src/main/AndroidManifest.xml');
-const gradle = read('modules/terminal-emulator/android/build.gradle');
 const appConfig = read('app.config.ts');
 const auditWriter = read(`${KT}/IngressAuditWriter.kt`);
 const guardianSources: Record<string, string> = {
@@ -472,15 +471,7 @@ describe('11. source lockstep: manifest, FGS type, never main display, never lau
     }
   });
 
-  it('the Shizuku provider is the README block, in the module manifest', () => {
-    expect(manifest).toMatch(
-      /<provider\s+android:name="rikka\.shizuku\.ShizukuProvider"\s+android:authorities="\$\{applicationId\}\.shizuku"\s+android:multiprocess="false"\s+android:enabled="true"\s+android:exported="true"\s+android:permission="android\.permission\.INTERACT_ACROSS_USERS_FULL" \/>/,
-    );
-  });
-
-  it('Gradle pulls the Shizuku api + provider 13.1.5; app.config declares WRITE_SECURE_SETTINGS', () => {
-    expect(gradle).toContain("implementation 'dev.rikka.shizuku:api:13.1.5'");
-    expect(gradle).toContain("implementation 'dev.rikka.shizuku:provider:13.1.5'");
+  it('app.config declares WRITE_SECURE_SETTINGS', () => {
     expect(appConfig).toContain('"WRITE_SECURE_SETTINGS",');
   });
 

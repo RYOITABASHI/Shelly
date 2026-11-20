@@ -140,19 +140,6 @@
       android:name=".ConnectivityGuardianEventReceiver"
       android:exported="false" />
 
-    <!-- Shizuku client binder delivery (dev.rikka.shizuku:provider), used
-         ONLY for Shizuku.pingBinder() by ShizukuLiveness.kt (never a
-         permission request, never a bound service). Exactly the block from
-         Shizuku-API's README; INTERACT_ACROSS_USERS_FULL keeps normal apps
-         out (only the Shizuku server, running as shell/root, calls it). -->
-    <provider
-      android:name="rikka.shizuku.ShizukuProvider"
-      android:authorities="${applicationId}.shizuku"
-      android:multiprocess="false"
-      android:enabled="true"
-      android:exported="true"
-      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
-
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">
