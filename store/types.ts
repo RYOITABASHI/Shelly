@@ -504,10 +504,9 @@ export type AppSettings = {
   codexRemoteAutostart?: boolean;
   /**
    * "Wi-Fi連動オートパイロット" (connectivity guardian, default false). On Wi-Fi
-   * connect / boot: wireless debugging ON -> wait for Shizuku's own
-   * auto-start -> Tailscale connected (via fixed ClosePaw goals, only while
+   * connect / boot: wireless debugging ON -> Tailscale connected (via fixed ClosePaw goals, only while
    * "Run ClosePaw without approval" is on; otherwise a notification). On
-   * Wi-Fi loss (45 s debounce): Tailscale off -> wireless debugging OFF.
+   * Wi-Fi loss (45 s debounce): wireless debugging OFF. Tailscale stays connected.
    * Native (ConnectivityGuardian.kt); this flag is mirrored to the Keystore
    * store by lib/connectivity-guardian-mirror.ts.
    */

@@ -13,10 +13,8 @@ package expo.modules.terminalemulator
  * Change both together.
  *
  * Owner decisions (Phase 2 addendum, 2026-11-17):
- *  - The guardian NEVER starts Shizuku. ON writes adb_wifi_enabled=1 and then
- *    waits (polls pingBinder) for Shizuku's own auto-start, bounded.
  *  - A write that does not take effect (e.g. "Allow wireless debugging on
- *    this network?" is pending) or a ping timeout ends ON with an assist
+ *    this network?" is pending) ends ON with an assist
  *    notification. No dialog is ever accepted; no UI is driven for it.
  *  - Tailscale only through fixed ClosePaw goals while the ClosePaw shell
  *    pre-approval is ON (OFF = notify only). Connected-or-not is decided ONLY
@@ -24,35 +22,10 @@ package expo.modules.terminalemulator
  *  - Tailscale is connect-only (owner decision 2026-11-17): it stays
  *    connected after Wi-Fi is lost, mobile data included. OFF only writes
  *    adb_wifi_enabled=0; it never touches Tailscale or dispatches ClosePaw.
- *
- * Shizuku watchdog (owner direction 2026-11-20, after One UI's battery
- * management killed the Shizuku server while Wi-Fi stayed up and no
- * connectivity event fired): while the guardian is settled online, a
- * 15-minute tick (and every reconcile / Wi-Fi-available point) observes
- * Shizuku's liveness ([observeShizukuWatchdog]: STOP-ALL first). Dead ->
- * re-run the ON sequence as a recovery ([Effect.RunShizukuRecovery]: the
- * same runner, wireless debugging cycled OFF -> ON when it is already on, so
- * Shizuku's OWN auto-start sees a fresh trigger). Still never starts Shizuku.
- * At most [SHIZUKU_WATCHDOG_MAX_ATTEMPTS] recovery starts per Wi-Fi session,
- * [SHIZUKU_WATCHDOG_BACKOFF_MS] apart (start to start); then one give-up
- * notification and silence until the session resets. The count is monotonic
- * within a session (gate round 1, 2026-11-20): a success does not reset it and
- * a healthy tick does not revive a given-up session; only a Wi-Fi reconnect, a
- * guardian re-enable, a boot, or 24 h of OBSERVED health (gate round 2:
- * alive ticks at most [SHIZUKU_WATCHDOG_HEALTHY_GAP_MS] apart on one boot;
- * STOP-ALL and unknown readings credit nothing,
- * [SHIZUKU_WATCHDOG_HEALTHY_RESET_MS]) opens a new one. A recovery cut short
- * (STOP-ALL, toggle off, superseded, gates failing at its completion, or its
- * checkpoint not written) is refunded, and never turns into a plain ON (gate
- * round 2). The recovery intent is durable: a process death between the
- * checkpoint and the run re-runs it as a recovery. Policy: [reduceWithWatchdog].
  */
 object ConnectivityGuardianCore {
     // ── Constants (lockstep with lib/connectivity-guardian-core.ts) ──
     const val LOSS_DEBOUNCE_MS = 45_000L
-    const val SHIZUKU_WAIT_MS = 90_000L
-    const val SHIZUKU_POLL_MS = 3_000L
-    const val SHIZUKU_RETRY_COOLDOWN_MS = 120_000L
     const val ADB_WIFI_VERIFY_MS = 6_000L
     const val ADB_WIFI_POLL_MS = 1_000L
     const val VPN_VERIFY_MS = 180_000L
@@ -66,23 +39,6 @@ object ConnectivityGuardianCore {
     const val AUDIT_FILE = "connectivity-guardian.jsonl"
     const val AUDIT_KIND = "wifi_guardian"
     const val GOAL_MAX_CODE_POINTS = 2000
-    /** Shizuku watchdog: tick cadence while settled online. */
-    const val SHIZUKU_WATCHDOG_TICK_MS = 15L * 60_000L
-    /** Shizuku watchdog: minimum time between two recovery starts (checked
-     *  by the tick against the clock; no second timer). */
-    const val SHIZUKU_WATCHDOG_BACKOFF_MS = 30L * 60_000L
-    /** Shizuku watchdog: recoveries per Wi-Fi session before giving up. */
-    const val SHIZUKU_WATCHDOG_MAX_ATTEMPTS = 3
-    /** Shizuku watchdog: this much OBSERVED health (the sum of gaps between
-     *  consecutive alive ticks, see [SHIZUKU_WATCHDOG_HEALTHY_GAP_MS]) ends the
-     *  session (attempts, backoff, give-up). */
-    const val SHIZUKU_WATCHDOG_HEALTHY_RESET_MS = 24L * 60L * 60_000L
-    /** Shizuku watchdog: the longest gap between two alive ticks (same boot)
-     *  that counts as observed health (gate round 2). */
-    const val SHIZUKU_WATCHDOG_HEALTHY_GAP_MS = 30L * 60_000L
-    /** Recovery cycle: wireless debugging stays OFF this long (adbd stops)
-     *  before it is written ON again. */
-    const val WIFI_DEBUG_CYCLE_PAUSE_MS = 2_000L
 
     // ── Fixed ClosePaw goals (code constants, single line, never user input) ──
     const val TAILSCALE_PACKAGE = "com.tailscale.ipn"
@@ -118,27 +74,6 @@ object ConnectivityGuardianCore {
         val lossArmed: Boolean = false,
         val lossElapsedMs: Long? = null,
         val lossBootId: Long? = null,
-        /** Shizuku watchdog, per Wi-Fi session (persisted): recoveries started.
-         *  Monotonic within the session (a success does not lower it). */
-        val wdAttempts: Int = 0,
-        /** elapsedRealtime at which the last finished recovery STARTED running,
-         *  and its boot (backoff basis, start to start). Set from SequenceDone.start. */
-        val wdLastAttemptElapsedMs: Long? = null,
-        val wdBootId: Long? = null,
-        /** The give-up notification was sent this session: sticky until the session resets. */
-        val wdGaveUp: Boolean = false,
-        /** The running (or owed) ON is a watchdog recovery. Persisted (gate
-         *  round 2) so a process death between the checkpoint and the run
-         *  re-runs it as a recovery; restored only onto an owed ON. */
-        val wdRecovering: Boolean = false,
-        /** Observed-healthy time accumulated this session (persisted, gate
-         *  round 2). [SHIZUKU_WATCHDOG_HEALTHY_RESET_MS] of it resets the session. */
-        val wdHealthyAccumMs: Long = 0L,
-        /** The last alive tick (elapsedRealtime) and its boot: the start of the
-         *  next creditable gap. null = the chain is broken (first observation,
-         *  STOP-ALL, an unknown reading): the next alive tick credits nothing. */
-        val wdHealthyLastElapsedMs: Long? = null,
-        val wdHealthyBootId: Long? = null,
     )
 
     /** A recovery-grade reading of "now": wall clock (informational, legacy
@@ -154,25 +89,11 @@ object ConnectivityGuardianCore {
         object WifiAvailable : Event()
         data class WifiLost(val now: LossClock) : Event()
         data class DebounceExpired(val token: Long, val wifiUp: Boolean) : Event()
-        /** interrupted = the runner returned "superseded" (stopped before its last step).
-         *  shizukuUp = a fresh liveness read after an ON ended (the recovery's
-         *  success test; false whenever the run was stopped or interrupted);
-         *  stopped = it ended "stopped" / "disabled"; start = the clock just
-         *  before the runner began (an ON's; the recovery backoff anchor). */
-        data class SequenceDone(
-            val kind: SeqKind,
-            val interrupted: Boolean = false,
-            val shizukuUp: Boolean = false,
-            val stopped: Boolean = false,
-            val start: LossClock? = null,
-        ) : Event()
+        /** interrupted = the runner returned "superseded" (stopped before its last step). */
+        data class SequenceDone(val kind: SeqKind, val interrupted: Boolean = false) : Event()
         /** A recovery entry point (app start, watchdog, service start) probed
          *  Wi-Fi: bring the state in line with it. */
         data class Reconcile(val wifiUp: Boolean, val now: LossClock) : Event()
-        /** Shizuku watchdog observation (tick alarm or an opportunistic check),
-         *  built only by [observeShizukuWatchdog]: stopAll true = nothing else
-         *  was read; wifiUp null = cannot tell; alive null = not read. */
-        data class ShizukuWatchdogTick(val stopAll: Boolean, val wifiUp: Boolean?, val alive: Boolean?, val now: LossClock) : Event()
     }
 
     sealed class Effect {
@@ -182,16 +103,6 @@ object ConnectivityGuardianCore {
         object CancelDebounce : Effect()
         object RegisterCallbacks : Effect()
         object UnregisterCallbacks : Effect()
-        /** (Re)arm the watchdog tick alarm (same request code: replaces). */
-        data class ArmShizukuWatchdog(val delayMs: Long) : Effect()
-        /** Cancel the watchdog tick alarm (Wi-Fi loss / guardian off). */
-        object CancelShizukuWatchdog : Effect()
-        /** Run the ON sequence as a watchdog recovery (wireless debugging cycled). */
-        object RunShizukuRecovery : Effect()
-        /** The one give-up notification of a Wi-Fi session. */
-        object NotifyShizukuWatchdogGaveUp : Effect()
-        /** One watchdog audit line ([SHIZUKU_WATCHDOG_EVENTS]). */
-        data class ShizukuWatchdogAudit(val event: String, val attempt: Int) : Effect()
     }
 
     data class Transition(val state: State, val effects: List<Effect>)
@@ -251,39 +162,10 @@ object ConnectivityGuardianCore {
      *  without a durable "in_flight" record, so RunOn is dropped and ON stays
      *  owed in memory (online, pending ON: the next Wi-Fi callback or
      *  reconcile retries, and checkpoints again). Every other effect stays:
-     *  OFF is the cleanup itself. A dropped watchdog recovery is refunded
-     *  (its attempt and its started line) and NOT turned into a plain ON: the
-     *  state stays settled online and the tick is re-armed, so the next tick
-     *  retries it as a recovery (gate round 1). The detected-dead line stays:
-     *  that observation was real. */
-    fun withoutUndurableOn(t: Transition): Transition {
-        val recovery = t.effects.any { it is Effect.RunShizukuRecovery }
-        val plain = t.effects.any { it is Effect.RunOn }
-        if (!recovery && !plain) return t
-        val effects = t.effects.filter { it !is Effect.RunOn && it !is Effect.RunShizukuRecovery && !isRecoveryStarted(it) }
-        val base = if (recovery) refundedAttempt(t.state) else t.state
-        if (plain) return Transition(cleared(base).copy(mode = Mode.IDLE_ONLINE, pending = Pending.ON, wdRecovering = false), effects)
-        return Transition(
-            cleared(base).copy(mode = Mode.IDLE_ONLINE, pending = Pending.NONE, wdRecovering = false),
-            effects + Effect.ArmShizukuWatchdog(SHIZUKU_WATCHDOG_TICK_MS),
-        )
-    }
-
-    /** A recovery that never really ran (dropped at the checkpoint, never
-     *  dispatched): its attempt is given back (and, back at 0, the backoff
-     *  anchor goes too; a lower count keeps the previous attempt's anchor,
-     *  which is still the last real start). Not recovering any more. */
-    private fun refundedAttempt(s: State): State {
-        val r = refundedCount(s)
-        return if (r.wdAttempts > 0) r else r.copy(wdLastAttemptElapsedMs = null, wdBootId = null)
-    }
-
-    /** The attempt given back, the backoff anchor untouched. Not recovering any more. */
-    private fun refundedCount(s: State): State =
-        s.copy(wdAttempts = maxOf(0, s.wdAttempts - 1), wdRecovering = false)
-
-    private fun isRecoveryStarted(e: Effect): Boolean =
-        e is Effect.ShizukuWatchdogAudit && e.event == WD_RECOVERY_STARTED
+     *  OFF is the cleanup itself. */
+    fun withoutUndurableOn(t: Transition): Transition =
+        if (t.effects.none { it is Effect.RunOn }) t
+        else Transition(cleared(t.state).copy(mode = Mode.IDLE_ONLINE, pending = Pending.ON), t.effects.filter { it !is Effect.RunOn })
 
     /** The alarm fired (or was given up): nothing is outstanding any more.
      *  The anchor stays (a restored pending OFF still knows its deadline passed). */
@@ -377,7 +259,6 @@ object ConnectivityGuardianCore {
             if (!e.wifiUp) {
                 // Rebooted / updated away from Wi-Fi after an ON, or during the
                 // debounce (the alarm did not survive): (re)arm the loss.
-                // A reboot / update also took Shizuku down: ON must run again on regain.
                 if (s.mode == Mode.IDLE_ONLINE) {
                     val t = armLoss(s, e.now, true)
                     return Transition(t.state, listOf<Effect>(Effect.RegisterCallbacks) + t.effects)
@@ -470,301 +351,13 @@ object ConnectivityGuardianCore {
         }
     }
 
-    // ── Shizuku watchdog ──
-    const val WD_DETECTED_DEAD = "shizuku_watchdog_detected_dead"
-    const val WD_RECOVERY_STARTED = "shizuku_watchdog_recovery_started"
-    const val WD_RECOVERY_SUCCEEDED = "shizuku_watchdog_recovery_succeeded"
-    const val WD_RECOVERY_FAILED = "shizuku_watchdog_recovery_failed"
-    const val WD_GAVE_UP = "shizuku_watchdog_gave_up"
-    val SHIZUKU_WATCHDOG_EVENTS: List<String> = listOf(
-        "shizuku_watchdog_detected_dead", "shizuku_watchdog_recovery_started", "shizuku_watchdog_recovery_succeeded",
-        "shizuku_watchdog_recovery_failed", "shizuku_watchdog_gave_up",
-    )
-
-    /** The probes one watchdog observation reads, in [observeShizukuWatchdog]'s order. */
-    interface WatchdogProbes {
-        /** STOP-ALL (`.halted`); unreadable = true. */
-        fun stopAll(): Boolean
-        /** Wi-Fi with INTERNET up; null = cannot tell. */
-        fun wifiUp(): Boolean?
-        /** Shizuku.pingBinder(); any error = false. */
-        fun shizukuAlive(): Boolean
-    }
-
-    /** STOP-ALL first: while it is on nothing else is read. Shizuku is pinged
-     *  only with Wi-Fi known to be up. */
-    fun observeShizukuWatchdog(p: WatchdogProbes, now: LossClock): Event.ShizukuWatchdogTick {
-        if (p.stopAll()) return Event.ShizukuWatchdogTick(true, null, null, now)
-        val wifi = p.wifiUp()
-        if (wifi != true) return Event.ShizukuWatchdogTick(false, wifi, null, now)
-        return Event.ShizukuWatchdogTick(false, true, p.shizukuAlive(), now)
-    }
-
-    /** The probes read when a sequence ends, in [sequenceDoneFor]'s order. */
-    interface CompletionProbes : WatchdogProbes {
-        /** The guardian toggle mirror; unreadable = false. */
-        fun enabled(): Boolean
-    }
-
-    /** The [Event.SequenceDone] for a sequence that returned [result]
-     *  (gate round 2: the gates are read again AT COMPLETION, not taken from
-     *  the runner's return code). [start]: the clock just before the runner
-     *  began (kept for an ON only).
-     *   - stopped / disabled / superseded: no ping; stopped unless superseded,
-     *     interrupted when superseded.
-     *   - otherwise, STOP-ALL first, then the toggle, then (recovery only)
-     *     Wi-Fi: any of them failing now = stopped (a recovery is refunded; a
-     *     plain ON ignores it). STOP-ALL raised, the guardian turned off or
-     *     Wi-Fi lost during the last step / end audit can never count.
-     *   - all gates pass: only a recovery pings Shizuku (its success test). A
-     *     plain ON is never pinged: nothing reads shizukuUp for it. */
-    fun sequenceDoneFor(kind: SeqKind, result: String, recovery: Boolean, start: LossClock, p: CompletionProbes): Event.SequenceDone {
-        val st = if (kind == SeqKind.ON) start else null
-        if (isAbort(result)) {
-            return Event.SequenceDone(kind, interrupted = result == "superseded", shizukuUp = false, stopped = result != "superseded", start = st)
-        }
-        if (kind != SeqKind.ON) return Event.SequenceDone(kind)
-        if (p.stopAll() || !p.enabled() || (recovery && p.wifiUp() != true)) {
-            return Event.SequenceDone(kind, stopped = true, start = st)
-        }
-        if (!recovery) return Event.SequenceDone(kind, start = st)
-        return Event.SequenceDone(kind, shizukuUp = p.shizukuAlive(), start = st)
-    }
-
-    /** Online, nothing running, nothing owed: the only state the watchdog acts in. */
-    fun settledOnline(s: State): Boolean = s.mode == Mode.IDLE_ONLINE && s.pending == Pending.NONE
-
-    /** A new Wi-Fi session for the watchdog: counters, backoff, give-up,
-     *  recovery intent and the observed-healthy accumulation cleared. */
-    fun freshWatchdog(s: State): State =
-        s.copy(
-            wdAttempts = 0, wdLastAttemptElapsedMs = null, wdBootId = null, wdGaveUp = false, wdRecovering = false,
-            wdHealthyAccumMs = 0L, wdHealthyLastElapsedMs = null, wdHealthyBootId = null,
-        )
-
-    /** A dead tick: no health observed; the accumulation starts over. */
-    private fun withoutHealthyWindow(s: State): State =
-        s.copy(wdHealthyAccumMs = 0L, wdHealthyLastElapsedMs = null, wdHealthyBootId = null)
-
-    /** STOP-ALL or an unknown reading: the time since the last alive tick was
-     *  not observed, so the chain breaks (the next alive tick is a first
-     *  observation and credits nothing); what was already observed is kept. */
-    private fun withHealthyChainBroken(s: State): State =
-        s.copy(wdHealthyLastElapsedMs = null, wdHealthyBootId = null)
-
-    /** An alive tick (gate round 2: observed health, not a start timestamp).
-     *  The gap since the previous alive tick is credited only when that tick
-     *  exists (chain not broken), both boots are known and equal, and
-     *  0 <= gap <= [SHIZUKU_WATCHDOG_HEALTHY_GAP_MS]. Credited up to
-     *  [SHIZUKU_WATCHDOG_HEALTHY_RESET_MS]: the session resets. A chain that
-     *  exists but cannot be proven continuous (boot unknown / changed, gap out
-     *  of range) zeroes the accumulation; a broken chain (STOP-ALL, unknown
-     *  reading) keeps it and credits nothing. This tick always becomes the
-     *  next gap's start. */
-    private fun healthyTick(s: State, now: LossClock): State {
-        val last = s.wdHealthyLastElapsedMs
-        val boot = s.wdHealthyBootId
-        val delta = now.elapsedMs - (last ?: now.elapsedMs)
-        val credited = last != null && boot != null && now.bootId != null && boot == now.bootId &&
-            delta >= 0L && delta <= SHIZUKU_WATCHDOG_HEALTHY_GAP_MS
-        val base = when {
-            last == null -> s
-            !credited -> s.copy(wdHealthyAccumMs = 0L)
-            s.wdHealthyAccumMs + delta >= SHIZUKU_WATCHDOG_HEALTHY_RESET_MS -> freshWatchdog(s)
-            else -> s.copy(wdHealthyAccumMs = s.wdHealthyAccumMs + delta)
-        }
-        return base.copy(wdHealthyLastElapsedMs = now.elapsedMs, wdHealthyBootId = now.bootId)
-    }
-
-    /** Restores the persisted watchdog session onto a restored state. The
-     *  recovery intent survives only onto an owed ON (the "in_flight" restore:
-     *  online, pending ON) with an attempt counted for it (gate round 2). */
-    fun restoreWatchdog(
-        s: State,
-        attempts: Int,
-        lastAttemptElapsedMs: Long?,
-        bootId: Long?,
-        gaveUp: Boolean,
-        healthyAccumMs: Long = 0L,
-        healthyLastElapsedMs: Long? = null,
-        healthyBootId: Long? = null,
-        recovering: Boolean = false,
-    ): State {
-        if (s.mode == Mode.DISABLED) return s
-        val n = attempts.coerceIn(0, SHIZUKU_WATCHDOG_MAX_ATTEMPTS)
-        return s.copy(
-            wdAttempts = n,
-            wdLastAttemptElapsedMs = lastAttemptElapsedMs,
-            wdBootId = bootId?.takeIf { lastAttemptElapsedMs != null },
-            wdGaveUp = gaveUp,
-            wdRecovering = recovering && n > 0 && s.mode == Mode.IDLE_ONLINE && s.pending == Pending.ON,
-            wdHealthyAccumMs = healthyAccumMs.coerceIn(0L, SHIZUKU_WATCHDOG_HEALTHY_RESET_MS),
-            wdHealthyLastElapsedMs = healthyLastElapsedMs,
-            wdHealthyBootId = healthyBootId?.takeIf { healthyLastElapsedMs != null },
-        )
-    }
-
-    /** Wi-Fi was absent (or being given up) before this event. */
-    private fun wasOffline(s: State): Boolean =
-        s.mode == Mode.IDLE_OFFLINE || s.mode == Mode.LOSS_PENDING || s.mode == Mode.OFF_RUNNING ||
-            (s.mode == Mode.ON_RUNNING && (s.pending == Pending.LOSS || s.pending == Pending.OFF))
-
-    /** Events that open a new watchdog session: Wi-Fi reconnect, guardian
-     *  re-enable (from DISABLED only: RN rewrites the mirror at every app
-     *  start), boot / app update. (The fourth reset, 24 h of continuous
-     *  health, is the tick's.) */
-    private fun opensSession(s: State, e: Event): Boolean = when (e) {
-        is Event.Enable -> s.mode == Mode.DISABLED
-        is Event.Boot -> true
-        is Event.WifiAvailable -> wasOffline(s)
-        is Event.Reconcile -> e.wifiUp && wasOffline(s)
-        is Event.DebounceExpired -> e.wifiUp && wasOffline(s)
-        else -> false
-    }
-
-    /** Backoff since the last recovery start passed. A different (known) boot
-     *  or a monotonic clock that reads earlier = the clock restarted: passed
-     *  (the per-session cap still bounds the attempts). */
-    fun watchdogBackoffPassed(s: State, now: LossClock): Boolean {
-        val last = s.wdLastAttemptElapsedMs ?: return true
-        val boot = s.wdBootId
-        if (boot != null && now.bootId != null && boot != now.bootId) return true
-        val dt = now.elapsedMs - last
-        return dt < 0L || dt >= SHIZUKU_WATCHDOG_BACKOFF_MS
-    }
-
-    /** The event takes Wi-Fi away or turns the guardian off: the watchdog
-     *  tick must not outlive settled-online (gate round 1). Rule: WifiLost,
-     *  Disable, Reconcile that probed Wi-Fi down, or a DebounceExpired that
-     *  starts the OFF path. Cancelling is idempotent, so it is emitted for
-     *  these events whatever the state was. */
-    private fun disarmsWatchdog(e: Event, fx: List<Effect>): Boolean = when (e) {
-        is Event.WifiLost, is Event.Disable -> true
-        is Event.Reconcile -> !e.wifiUp
-        is Event.DebounceExpired -> fx.any { it is Effect.RunOff }
-        else -> false
-    }
-
-    /** The guardian's transition function: [reduce] plus the Shizuku watchdog
-     *  layer (session resets, recovery outcome, tick arming / disarming). Pure.
-     *
-     *  Recovery outcome (gate round 1): an interrupted recovery (STOP-ALL,
-     *  toggle off, superseded) is refunded and checked FIRST, so a lucky ping
-     *  cannot count it as a success. Gate round 3: the refund gives the
-     *  attempt back but keeps the cooldown: e.start (when known) stamps the
-     *  backoff anchor, else the anchor is left as it was; a late STOP-ALL
-     *  cannot shorten the 30-minute spacing between recovery starts. A recovery that ran to its end is audited
-     *  succeeded or failed and stamps the backoff anchor with its start
-     *  (start to start); the attempt count is never lowered by a success. A
-     *  plain ON changes no watchdog state.
-     *
-     *  Gate round 2: a refunded recovery with no ON owed ([Pending.NONE]) never
-     *  becomes a plain ON. [reduce] reads an interrupted ON as "Wi-Fi came
-     *  back: finish it", but a recovery is superseded by its own Wi-Fi
-     *  re-probe too, and a plain ON has no such probe (it could write
-     *  adb_wifi_enabled=1 with Wi-Fi down). Its RunOn is dropped and the
-     *  state settles online (the tick re-arms; the loss flow / next tick
-     *  re-derive anything genuinely owed). A pending ON is a real obligation
-     *  and keeps its RunOn. And the recovery intent is durable: an ON owed
-     *  with [State.wdRecovering] still set (only the restored owed ON after a
-     *  death between checkpoint and dispatch) runs as [Effect.RunShizukuRecovery],
-     *  so the attempt already counted is resolved by its own outcome. */
-    fun reduceWithWatchdog(s: State, e: Event): Transition {
-        if (e is Event.ShizukuWatchdogTick) return watchdogTick(s, e)
-        val base = if (opensSession(s, e)) freshWatchdog(s) else s
-        val t = reduce(base, e)
-        var st = t.state
-        val fx = t.effects.toMutableList()
-        if (e is Event.SequenceDone && e.kind == SeqKind.ON && s.mode == Mode.ON_RUNNING && s.wdRecovering) {
-            val n = s.wdAttempts
-            if (e.stopped || e.interrupted) {
-                // Cut short before it could finish: no attempt burned, nothing audited.
-                // But it was dispatched and began (it may have cycled wireless
-                // debugging), so its start still governs the cooldown (gate
-                // round 3): the anchor is set from e.start even at count 0, and
-                // never cleared.
-                st = refundedCount(st)
-                val start = e.start
-                if (start != null) st = st.copy(wdLastAttemptElapsedMs = start.elapsedMs, wdBootId = start.bootId)
-                if (s.pending == Pending.NONE && fx.any { it is Effect.RunOn }) {
-                    // Nothing owed: never a plain ON (it has no Wi-Fi probe).
-                    fx.removeAll { it is Effect.RunOn }
-                    st = st.copy(mode = Mode.IDLE_ONLINE, pending = Pending.NONE)
-                }
-            } else {
-                st = st.copy(wdRecovering = false)
-                val start = e.start
-                if (start != null) st = st.copy(wdLastAttemptElapsedMs = start.elapsedMs, wdBootId = start.bootId)
-                if (e.shizukuUp) {
-                    fx += Effect.ShizukuWatchdogAudit(WD_RECOVERY_SUCCEEDED, n)
-                } else {
-                    fx += Effect.ShizukuWatchdogAudit(WD_RECOVERY_FAILED, n)
-                    if (n >= SHIZUKU_WATCHDOG_MAX_ATTEMPTS && !s.wdGaveUp) {
-                        fx += Effect.ShizukuWatchdogAudit(WD_GAVE_UP, n)
-                        fx += Effect.NotifyShizukuWatchdogGaveUp
-                        st = st.copy(wdGaveUp = true)
-                    }
-                }
-            }
-        }
-        // An ON started here: a recovery whose intent survived (restored owed
-        // ON) runs as one; any other ON is plain, not a recovery.
-        if (fx.any { it is Effect.RunOn }) {
-            if (st.wdRecovering) fx[fx.indexOfFirst { it is Effect.RunOn }] = Effect.RunShizukuRecovery
-            else st = st.copy(wdRecovering = false)
-        }
-        // Entering the settled-online state starts the tick.
-        if (settledOnline(st) && !settledOnline(s)) fx += Effect.ArmShizukuWatchdog(SHIZUKU_WATCHDOG_TICK_MS)
-        // Leaving it through a loss / toggle off stops it.
-        if (disarmsWatchdog(e, fx)) fx += Effect.CancelShizukuWatchdog
-        return Transition(st, fx)
-    }
-
-    /** One watchdog observation. Acts only while settled online. */
-    private fun watchdogTick(s: State, e: Event.ShizukuWatchdogTick): Transition {
-        val same = Transition(s, emptyList())
-        // Toggle off, offline, a sequence running or owed: the guardian's own
-        // flow owns the state (and re-arms the tick when it settles online).
-        if (!settledOnline(s)) return same
-        // STOP-ALL first: nothing run, counted, audited or re-armed. A later
-        // check (reconcile, Wi-Fi available) or settling online again re-arms
-        // the tick. The healthy chain breaks: STOP-ALL time is not observed.
-        if (e.stopAll) return Transition(withHealthyChainBroken(s), emptyList())
-        val rearm = Effect.ArmShizukuWatchdog(SHIZUKU_WATCHDOG_TICK_MS)
-        // Wi-Fi down: inert (the loss flow owns it). Unknown: look again later.
-        // Either way nothing was observed: the healthy chain breaks.
-        if (e.wifiUp == false) return Transition(withHealthyChainBroken(s), emptyList())
-        val alive = e.alive
-        if (e.wifiUp == null || alive == null) return Transition(withHealthyChainBroken(s), listOf(rearm))
-        // Alive: the session is NOT reset (monotonic); only 24 h of observed
-        // health resets it ([healthyTick]).
-        if (alive) return Transition(healthyTick(s, e.now), listOf(rearm))
-        val sd = withoutHealthyWindow(s)
-        if (sd.wdGaveUp) return Transition(sd, listOf(rearm))
-        if (sd.wdAttempts >= SHIZUKU_WATCHDOG_MAX_ATTEMPTS) {
-            return Transition(
-                sd.copy(wdGaveUp = true),
-                listOf(Effect.ShizukuWatchdogAudit(WD_GAVE_UP, sd.wdAttempts), Effect.NotifyShizukuWatchdogGaveUp, rearm),
-            )
-        }
-        val dead = Effect.ShizukuWatchdogAudit(WD_DETECTED_DEAD, sd.wdAttempts)
-        if (!watchdogBackoffPassed(sd, e.now)) return Transition(sd, listOf(dead, rearm))
-        val n = sd.wdAttempts + 1
-        // The backoff anchor is NOT stamped here: the run may start much later
-        // (service start, alarm hop). SequenceDone.start stamps it.
-        return Transition(
-            sd.copy(mode = Mode.ON_RUNNING, pending = Pending.NONE, wdAttempts = n, wdRecovering = true),
-            listOf(dead, Effect.ShizukuWatchdogAudit(WD_RECOVERY_STARTED, n), Effect.RunShizukuRecovery),
-        )
-    }
-
     // ── Step runner ──
     // Closed value sets (lockstep with the TS STEPS / ACTIONS / LEVELS / OUTCOMES / ASSIST_REASONS).
-    val STEPS: List<String> = listOf("wifi_debug", "shizuku", "tailscale", "sequence")
+    val STEPS: List<String> = listOf("wifi_debug", "tailscale", "sequence")
     val ACTIONS: List<String> = listOf("check", "enable", "disable", "wait", "connect", "end")
     val LEVELS: List<String> = listOf("on", "off", "unknown", "none")
     val OUTCOMES: List<String> = listOf(
-        "already", "ok", "unverified", "not_applied", "grant_missing", "write_failed", "timeout", "cooldown",
+        "already", "ok", "unverified", "not_applied", "grant_missing", "write_failed", "timeout",
         "probe_unknown", "preapproval_off", "dispatch_failed", "verify_failed", "stopped", "disabled", "superseded",
         "done", "assist", "failed", "settled", "settle_timeout",
     )
@@ -776,8 +369,8 @@ object ConnectivityGuardianCore {
 
     fun isClosePawSettled(status: String?): Boolean = status != null && status in CLOSEPAW_SETTLED_STATUSES
     val ASSIST_REASONS: List<String> = listOf(
-        "grant_missing", "wifi_debug_not_applied", "wifi_debug_off_failed", "shizuku_timeout", "tailscale_preapproval_off",
-        "tailscale_failed", "shizuku_watchdog_gave_up",
+        "grant_missing", "wifi_debug_not_applied", "wifi_debug_off_failed", "tailscale_preapproval_off",
+        "tailscale_failed",
     )
 
     interface Ports {
@@ -794,12 +387,6 @@ object ConnectivityGuardianCore {
         /** adb_wifi_enabled: 1 / 0, or null when it cannot be read. */
         fun readAdbWifi(): Int?
         fun writeAdbWifi(value: Int): Boolean
-        /** Shizuku.pingBinder(); any error = false. */
-        fun shizukuAlive(): Boolean
-        /** Wi-Fi with INTERNET up; null = cannot tell. Read by a watchdog
-         *  recovery before its first write (a queued recovery may start after
-         *  Wi-Fi left). */
-        fun wifiUp(): Boolean?
         /** TRANSPORT_VPN present: true / false, or null when it cannot be told. */
         fun vpnUp(): Boolean?
         /** ClosePawShellPreapproval.isOn(). */
@@ -813,11 +400,6 @@ object ConnectivityGuardianCore {
         fun closePawSettled(reqId: String): Boolean
         fun audit(seq: String, step: String, action: String, before: String, after: String, outcome: String)
         fun notifyAssist(reason: String)
-    }
-
-    /** Cross-run memory of the runner (in-process only). */
-    class RunnerMemory {
-        @Volatile var lastShizukuTimeoutAt: Long? = null
     }
 
     private fun gate(p: Ports): String = when {
@@ -854,14 +436,12 @@ object ConnectivityGuardianCore {
         }
     }
 
-    /** [quiet]: a watchdog recovery; its step failures are audited but not
-     *  notified (the watchdog's single give-up notification speaks for it). */
-    private class Run(val p: Ports, val seq: String, val quiet: Boolean = false) {
+    private class Run(val p: Ports, val seq: String) {
         var notified = false
         fun audit(step: String, action: String, before: String, after: String, outcome: String) =
             p.audit(seq, step, action, before, after, outcome)
         fun assist(reason: String) {
-            if (notified || quiet) return
+            if (notified) return
             notified = true
             p.notifyAssist(reason)
         }
@@ -878,30 +458,14 @@ object ConnectivityGuardianCore {
         }
     }
 
-    /** ON: wireless debugging -> wait for Shizuku -> Tailscale. Result is one
-     *  of done / assist / failed / stopped / disabled / superseded.
-     *  [recovery] (Shizuku watchdog): Wi-Fi is probed again before any write
-     *  and once more right before the enable write (not known up =
-     *  superseded, fail closed); wireless debugging that is
-     *  already on is cycled OFF -> ON first, so Shizuku's own auto-start sees
-     *  a fresh trigger; step failures are not notified. */
-    fun runOnSequence(p: Ports, mem: RunnerMemory, seq: String, recovery: Boolean = false): String {
-        val r = Run(p, seq, recovery)
+    /** ON: wireless debugging -> Tailscale. Result is one
+     *  of done / assist / failed / stopped / disabled / superseded. */
+    fun runOnSequence(p: Ports, seq: String): String {
+        val r = Run(p, seq)
 
         // 1. Wireless debugging.
         r.gated("wifi_debug")?.let { return r.end(it) }
-        if (recovery && p.wifiUp() != true) {
-            // Queued while settled online, but Wi-Fi left before it ran: no write.
-            r.audit("wifi_debug", "check", "none", "none", "superseded")
-            return r.end("superseded")
-        }
-        var adbBefore = p.readAdbWifi()
-        if (recovery && adbBefore == 1) {
-            val cycled = cycleWifiDebugOff(r)
-            if (cycled != null) return r.end(cycled)
-            r.gated("wifi_debug")?.let { return r.end(it) }
-            adbBefore = p.readAdbWifi()
-        }
+        val adbBefore = p.readAdbWifi()
         if (adbBefore == 1) {
             r.audit("wifi_debug", "check", "on", "on", "already")
         } else {
@@ -909,13 +473,6 @@ object ConnectivityGuardianCore {
                 r.audit("wifi_debug", "enable", adbLevel(adbBefore), adbLevel(adbBefore), "grant_missing")
                 r.assist("grant_missing")
                 return r.end("assist")
-            }
-            if (recovery && p.wifiUp() != true) {
-                // Gate round 4: Wi-Fi left during the cycle pause (or since the
-                // first probe). Never write wireless debugging on without Wi-Fi;
-                // the loss flow owns the OFF state.
-                r.audit("wifi_debug", "enable", adbLevel(adbBefore), adbLevel(adbBefore), "superseded")
-                return r.end("superseded")
             }
             if (!p.writeAdbWifi(1)) {
                 r.audit("wifi_debug", "enable", adbLevel(adbBefore), adbLevel(p.readAdbWifi()), "write_failed")
@@ -933,7 +490,7 @@ object ConnectivityGuardianCore {
                     return r.end(verified)
                 }
                 verified == "ok" -> r.audit("wifi_debug", "enable", adbLevel(adbBefore), "on", "ok")
-                // The hidden key cannot be read back: the Shizuku wait is the check.
+                // The hidden key cannot be read back; record the write as unverified.
                 last == null -> r.audit("wifi_debug", "enable", adbLevel(adbBefore), "unknown", "unverified")
                 else -> {
                     // Did not take effect (e.g. the network-trust dialog is
@@ -945,72 +502,9 @@ object ConnectivityGuardianCore {
             }
         }
 
-        // 2. Shizuku: never started by the guardian; wait for its own auto-start.
-        r.gated("shizuku")?.let { return r.end(it) }
-        if (p.shizukuAlive()) {
-            mem.lastShizukuTimeoutAt = null
-            r.audit("shizuku", "check", "on", "on", "already")
-        } else {
-            val lastTimeout = mem.lastShizukuTimeoutAt
-            if (lastTimeout != null && p.nowMs() - lastTimeout < SHIZUKU_RETRY_COOLDOWN_MS) {
-                r.audit("shizuku", "wait", "off", "off", "cooldown")
-                return r.end("assist")
-            }
-            val waited = pollUntil(p, SHIZUKU_WAIT_MS, SHIZUKU_POLL_MS) { p.shizukuAlive() }
-            if (isAbort(waited)) {
-                r.audit("shizuku", "wait", "off", "off", waited)
-                return r.end(waited)
-            }
-            if (waited == "timeout") {
-                mem.lastShizukuTimeoutAt = p.nowMs()
-                r.audit("shizuku", "wait", "off", "off", "timeout")
-                r.assist("shizuku_timeout")
-                return r.end("assist")
-            }
-            mem.lastShizukuTimeoutAt = null
-            r.audit("shizuku", "wait", "off", "on", "ok")
-        }
-
-        // 3. Tailscale.
+        // 2. Tailscale.
         val t = tailscaleStep(r)
         return r.end(t ?: "done")
-    }
-
-    /** Recovery only: wireless debugging on -> off (verified), then a short
-     *  pause. Null = off (or unreadable: the Shizuku wait is the check), go on
-     *  to the normal enable step; else the sequence result. */
-    private fun cycleWifiDebugOff(r: Run): String? {
-        val p = r.p
-        if (!p.hasWriteSecureSettings()) {
-            r.audit("wifi_debug", "disable", "on", "on", "grant_missing")
-            r.assist("grant_missing")
-            return "assist"
-        }
-        if (!p.writeAdbWifi(0)) {
-            r.audit("wifi_debug", "disable", "on", adbLevel(p.readAdbWifi()), "write_failed")
-            r.assist("wifi_debug_off_failed")
-            return "assist"
-        }
-        var last: Int? = null
-        val verified = pollUntil(p, ADB_WIFI_VERIFY_MS, ADB_WIFI_POLL_MS) {
-            last = p.readAdbWifi()
-            last == 0
-        }
-        if (isAbort(verified)) {
-            r.audit("wifi_debug", "disable", "on", adbLevel(last), verified)
-            return verified
-        }
-        if (verified == "ok") {
-            r.audit("wifi_debug", "disable", "on", "off", "ok")
-        } else if (last == null) {
-            r.audit("wifi_debug", "disable", "on", "unknown", "unverified")
-        } else {
-            r.audit("wifi_debug", "disable", "on", adbLevel(last), "verify_failed")
-            r.assist("wifi_debug_off_failed")
-            return "failed"
-        }
-        p.sleep(WIFI_DEBUG_CYCLE_PAUSE_MS)
-        return null
     }
 
     /** OFF: wireless debugging only. Tailscale is never touched here (it
@@ -1048,7 +542,7 @@ object ConnectivityGuardianCore {
             return r.end("done")
         }
         if (last == null) {
-            // Cannot confirm it is off: tell the owner (no Shizuku check stands in here).
+            // Cannot confirm it is off: tell the owner.
             r.audit("wifi_debug", "disable", adbLevel(adbBefore), "unknown", "unverified")
             r.assist("wifi_debug_off_failed")
             return r.end("assist")
@@ -1137,8 +631,8 @@ object ConnectivityGuardianCore {
     }
 
     /** Runs one whole sequence (exactly one `end` audit line). */
-    fun runSequence(kind: SeqKind, p: Ports, mem: RunnerMemory, seq: String, recovery: Boolean = false): String =
-        if (kind == SeqKind.ON) runOnSequence(p, mem, seq, recovery) else runOffSequence(p, seq)
+    fun runSequence(kind: SeqKind, p: Ports, seq: String): String =
+        if (kind == SeqKind.ON) runOnSequence(p, seq) else runOffSequence(p, seq)
 
     // ── Audit line ──
     val AUDIT_KEYS: List<String> = listOf("ts", "kind", "seq", "step", "action", "before", "after", "outcome")
@@ -1153,16 +647,6 @@ object ConnectivityGuardianCore {
         if (before !in LEVELS || after !in LEVELS || outcome !in OUTCOMES) return null
         return "{\"ts\":\"$tsIso\",\"kind\":\"$AUDIT_KIND\",\"seq\":\"$seq\",\"step\":\"$step\"," +
             "\"action\":\"$action\",\"before\":\"$before\",\"after\":\"$after\",\"outcome\":\"$outcome\"}"
-    }
-
-    /** Shizuku watchdog line: same file and kind, its own fixed keys. */
-    val SHIZUKU_WATCHDOG_AUDIT_KEYS: List<String> = listOf("ts", "kind", "step", "event", "attempt")
-
-    fun buildShizukuWatchdogAuditLine(tsIso: String, event: String, attempt: Int): String? {
-        if (!TS_RE.matches(tsIso) || event !in SHIZUKU_WATCHDOG_EVENTS) return null
-        if (attempt < 0 || attempt > SHIZUKU_WATCHDOG_MAX_ATTEMPTS) return null
-        return "{\"ts\":\"$tsIso\",\"kind\":\"$AUDIT_KIND\",\"step\":\"shizuku_watchdog\"," +
-            "\"event\":\"$event\",\"attempt\":$attempt}"
     }
 
     // ── ClosePaw queue line ──

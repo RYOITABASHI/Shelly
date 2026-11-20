@@ -16,7 +16,7 @@ import android.util.Log
 /**
  * Foreground service (specialUse, subtype connectivity_guardian) that keeps
  * the Shelly process alive while the connectivity guardian runs an ON / OFF
- * sequence (up to a few minutes: the 90 s Shizuku wait, the Tailscale
+ * sequence (up to a few minutes: the Tailscale
  * verification and the ClosePaw settle wait), and stays RESIDENT while an
  * OFF obligation may exist (ConnectivityGuardianCore.wantsResident: online
  * after ON, the loss debounce), so the in-process Wi-Fi loss callback is live
@@ -125,7 +125,7 @@ class ConnectivityGuardianService : Service() {
         }
         val notification = builder
             .setContentTitle("Shelly - Wi-Fi autopilot")
-            .setContentText("Checking wireless debugging, Shizuku and Tailscale…")
+            .setContentText("Checking wireless debugging and Tailscale…")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setOngoing(true)
             .build()

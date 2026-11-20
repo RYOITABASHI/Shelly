@@ -30,8 +30,8 @@ import expo.modules.terminalemulator.ConnectivityGuardianCore.State
 /**
  * Wi-Fi connectivity guardian ("Wi-Fi連動オートパイロット", default OFF).
  *
- * On Wi-Fi connect (and at boot): wireless debugging ON -> wait for Shizuku's
- * own auto-start -> Tailscale connected. On Wi-Fi loss, after a 45 s debounce
+ * On Wi-Fi connect (and at boot): wireless debugging ON ->
+ * Tailscale connected. On Wi-Fi loss, after a 45 s debounce
  * (cancelled if Wi-Fi comes back): wireless debugging OFF only; Tailscale is
  * left connected (mobile data too, owner decision 2026-11-17). Decisions are ConnectivityGuardianCore's (android-free,
  * mirrored in lib/connectivity-guardian-core.ts); this object owns the
@@ -70,24 +70,8 @@ import expo.modules.terminalemulator.ConnectivityGuardianCore.State
  *  - Audit: IngressAuditWriter -> ~/.shelly/agents/audits/
  *    connectivity-guardian.jsonl, fixed fields only (no SSID / BSSID).
  *  - STOP-ALL (`.halted`) and the toggle are checked before every step.
- *  - Shizuku watchdog (2026-11-20): while settled online, an exact-when-
- *    allowed 15-minute tick alarm (ACTION_SHIZUKU_WATCHDOG, armed by the
- *    core's ArmShizukuWatchdog) and every reconcile / Wi-Fi-available point
- *    observe liveness through ConnectivityGuardianCore.observeShizukuWatchdog
- *    (STOP-ALL first). A recovery is the ON sequence re-run on the same
- *    worker with wireless debugging cycled OFF -> ON (after re-probing
- *    Wi-Fi: gone = superseded, no write); policy (start-to-start backoff, a
- *    monotonic per-session cap reset only by Wi-Fi reconnect / re-enable /
- *    boot / 24 h of observed health, the single give-up notification,
- *    refunds for interrupted runs, the durable recovery intent) is
- *    ConnectivityGuardianCore.reduceWithWatchdog's. A sequence's end is
- *    built by ConnectivityGuardianCore.sequenceDoneFor with the gates read
- *    again at completion (STOP-ALL, toggle, Wi-Fi for a recovery); the
- *    success ping is taken only for a recovery that passes them, and the
- *    tick alarm is cancelled on Wi-Fi loss / toggle off
- *    (CancelShizukuWatchdog). The watchdog never starts Shizuku either.
  *
- * Never: starts Shizuku, requests Shizuku permission, accepts any dialog,
+ * Never: accepts any dialog,
  * calls ClosePawHandoff's launch entry directly, or asks for the main
  * display. ClosePaw is reached only through TailscaleControl's seam (the
  * unchanged handleLine decision point), only while ClosePawShellPreapproval
@@ -100,14 +84,12 @@ object ConnectivityGuardian {
     const val ACTION_DEBOUNCE = "expo.modules.terminalemulator.GUARDIAN_DEBOUNCE"
     const val ACTION_RUN = "expo.modules.terminalemulator.GUARDIAN_RUN"
     const val ACTION_WATCHDOG = "expo.modules.terminalemulator.GUARDIAN_WATCHDOG"
-    const val ACTION_SHIZUKU_WATCHDOG = "expo.modules.terminalemulator.GUARDIAN_SHIZUKU_WATCHDOG"
     const val EXTRA_TOKEN = "token"
 
     private const val RC_WIFI = 0x5747A001
     private const val RC_DEBOUNCE = 0x5747A002
     private const val RC_RUN = 0x5747A003
     private const val RC_WATCHDOG = 0x5747A004
-    private const val RC_SHIZUKU_WATCHDOG = 0x5747A005
 
     private const val STATE_PREFS = "shelly_connectivity_guardian_state"
     private const val KEY_MODE = "mode"
@@ -120,25 +102,12 @@ object ConnectivityGuardian {
     private const val KEY_LOSS_ELAPSED = "lossElapsedMs"
     private const val KEY_LOSS_BOOT = "lossBootId"
     private const val KEY_SEQ = "seq"
-    /** Shizuku watchdog session (ConnectivityGuardianCore.State.wd*). */
-    private const val KEY_WD_ATTEMPTS = "wdAttempts"
-    private const val KEY_WD_LAST_ELAPSED = "wdLastAttemptElapsedMs"
-    private const val KEY_WD_BOOT = "wdBootId"
-    private const val KEY_WD_GAVE_UP = "wdGaveUp"
-    private const val KEY_WD_HEALTHY_ACCUM = "wdHealthyAccumMs"
-    private const val KEY_WD_HEALTHY_LAST = "wdHealthyLastElapsedMs"
-    private const val KEY_WD_HEALTHY_BOOT = "wdHealthyBootId"
-    /** The recovery intent (gate round 2): restored only onto an owed ON. */
-    private const val KEY_WD_RECOVERING = "wdRecovering"
 
     const val ASSIST_CHANNEL_ID = "shelly_connectivity_guardian_assist"
     const val ASSIST_NOTIFICATION_ID = 7738
 
     private var state: State? = null
-    private val memory = ConnectivityGuardianCore.RunnerMemory()
     private var queued: SeqKind? = null
-    /** The queued ON is a Shizuku watchdog recovery. */
-    private var queuedRecovery = false
     /** drain() calls not finished yet (the service never stops under one). */
     private val activeDrains = AtomicInteger(0)
     private var inProcessCallback: ConnectivityManager.NetworkCallback? = null
@@ -188,17 +157,6 @@ object ConnectivityGuardian {
             false -> onEvent(app, Event.Reconcile(false, lossClock(app)))
             null -> Unit
         }
-        // Every reconcile point is also an opportunistic Shizuku watchdog check.
-        shizukuWatchdogCheck(app)
-    }
-
-    /** One Shizuku watchdog observation (tick alarm, reconcile, Wi-Fi
-     *  available). The core reads STOP-ALL first and acts only while settled
-     *  online; toggle OFF = nothing read. */
-    fun shizukuWatchdogCheck(context: Context) {
-        val app = context.applicationContext
-        if (!ConnectivityGuardianStore.isOn(app)) return
-        onEvent(app, ConnectivityGuardianCore.observeShizukuWatchdog(AndroidWatchdogProbes(app), lossClock(app)))
     }
 
     /** Service start (ConnectivityGuardianService.onStartCommand): a cold
@@ -236,7 +194,6 @@ object ConnectivityGuardian {
             ACTION_WIFI_AVAILABLE -> {
                 ensureInProcessCallback(app)
                 if (isWifiUp(app) == true) onEvent(app, Event.WifiAvailable)
-                shizukuWatchdogCheck(app)
             }
             ACTION_DEBOUNCE -> {
                 ensureInProcessCallback(app)
@@ -254,11 +211,6 @@ object ConnectivityGuardian {
                 reconcile(app)
                 // An inexact alarm is not an FGS-start exemption: only the
                 // exact-alarm run hop may bring residency back.
-                ensureResident(app, exemptNow = false)
-            }
-            ACTION_SHIZUKU_WATCHDOG -> {
-                ensureInProcessCallback(app)
-                shizukuWatchdogCheck(app)
                 ensureResident(app, exemptNow = false)
             }
         }
@@ -284,23 +236,13 @@ object ConnectivityGuardian {
     private fun currentState(context: Context): State {
         state?.let { return it }
         val prefs = context.getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE)
-        val restored = ConnectivityGuardianCore.restoreWatchdog(
-            ConnectivityGuardianCore.restoreState(
-                ConnectivityGuardianStore.isOn(context),
-                prefs.getString(KEY_MODE, null),
-                prefs.getLong(KEY_LOSS_TOKEN, 0L),
-                if (prefs.contains(KEY_LOSS_AT)) prefs.getLong(KEY_LOSS_AT, 0L) else null,
-                if (prefs.contains(KEY_LOSS_ELAPSED)) prefs.getLong(KEY_LOSS_ELAPSED, 0L) else null,
-                if (prefs.contains(KEY_LOSS_BOOT)) prefs.getLong(KEY_LOSS_BOOT, 0L) else null,
-            ),
-            prefs.getInt(KEY_WD_ATTEMPTS, 0),
-            if (prefs.contains(KEY_WD_LAST_ELAPSED)) prefs.getLong(KEY_WD_LAST_ELAPSED, 0L) else null,
-            if (prefs.contains(KEY_WD_BOOT)) prefs.getLong(KEY_WD_BOOT, 0L) else null,
-            prefs.getBoolean(KEY_WD_GAVE_UP, false),
-            prefs.getLong(KEY_WD_HEALTHY_ACCUM, 0L),
-            if (prefs.contains(KEY_WD_HEALTHY_LAST)) prefs.getLong(KEY_WD_HEALTHY_LAST, 0L) else null,
-            if (prefs.contains(KEY_WD_HEALTHY_BOOT)) prefs.getLong(KEY_WD_HEALTHY_BOOT, 0L) else null,
-            prefs.getBoolean(KEY_WD_RECOVERING, false),
+        val restored = ConnectivityGuardianCore.restoreState(
+            ConnectivityGuardianStore.isOn(context),
+            prefs.getString(KEY_MODE, null),
+            prefs.getLong(KEY_LOSS_TOKEN, 0L),
+            if (prefs.contains(KEY_LOSS_AT)) prefs.getLong(KEY_LOSS_AT, 0L) else null,
+            if (prefs.contains(KEY_LOSS_ELAPSED)) prefs.getLong(KEY_LOSS_ELAPSED, 0L) else null,
+            if (prefs.contains(KEY_LOSS_BOOT)) prefs.getLong(KEY_LOSS_BOOT, 0L) else null,
         )
         state = restored
         return restored
@@ -309,7 +251,7 @@ object ConnectivityGuardian {
     @Synchronized
     fun onEvent(context: Context, event: Event) {
         val before = currentState(context)
-        val reduced = ConnectivityGuardianCore.reduceWithWatchdog(before, event)
+        val reduced = ConnectivityGuardianCore.reduce(before, event)
         // Durable checkpoint BEFORE any effect: an ON may write
         // adb_wifi_enabled=1 only once "in_flight" is on disk, so a process
         // death mid-ON always leaves the cleanup owed (commit, not apply).
@@ -327,19 +269,6 @@ object ConnectivityGuardian {
             if (lossElapsed != null) edit.putLong(KEY_LOSS_ELAPSED, lossElapsed) else edit.remove(KEY_LOSS_ELAPSED)
             val lossBoot = reduced.state.lossBootId
             if (lossBoot != null) edit.putLong(KEY_LOSS_BOOT, lossBoot) else edit.remove(KEY_LOSS_BOOT)
-            // The watchdog session (attempts, backoff anchor, give-up, observed
-            // health, recovery intent) rides the same commit.
-            edit.putInt(KEY_WD_ATTEMPTS, reduced.state.wdAttempts).putBoolean(KEY_WD_GAVE_UP, reduced.state.wdGaveUp)
-                .putBoolean(KEY_WD_RECOVERING, reduced.state.wdRecovering)
-                .putLong(KEY_WD_HEALTHY_ACCUM, reduced.state.wdHealthyAccumMs)
-            val wdLast = reduced.state.wdLastAttemptElapsedMs
-            if (wdLast != null) edit.putLong(KEY_WD_LAST_ELAPSED, wdLast) else edit.remove(KEY_WD_LAST_ELAPSED)
-            val wdBoot = reduced.state.wdBootId
-            if (wdBoot != null) edit.putLong(KEY_WD_BOOT, wdBoot) else edit.remove(KEY_WD_BOOT)
-            val wdHealthyLast = reduced.state.wdHealthyLastElapsedMs
-            if (wdHealthyLast != null) edit.putLong(KEY_WD_HEALTHY_LAST, wdHealthyLast) else edit.remove(KEY_WD_HEALTHY_LAST)
-            val wdHealthyBoot = reduced.state.wdHealthyBootId
-            if (wdHealthyBoot != null) edit.putLong(KEY_WD_HEALTHY_BOOT, wdHealthyBoot) else edit.remove(KEY_WD_HEALTHY_BOOT)
             edit.commit()
         }.getOrDefault(false)
         val t = if (durable) reduced else ConnectivityGuardianCore.withoutUndurableOn(reduced)
@@ -348,9 +277,8 @@ object ConnectivityGuardian {
         if (before.mode != t.state.mode) Log.i(TAG, "${before.mode} -> ${t.state.mode} (${event.javaClass.simpleName})")
         for (effect in t.effects) {
             when (effect) {
-                is Effect.RunOn -> { queued = SeqKind.ON; queuedRecovery = false; startRunner(context, allowAlarmHop = true) }
-                is Effect.RunOff -> { queued = SeqKind.OFF; queuedRecovery = false; startRunner(context, allowAlarmHop = true) }
-                is Effect.RunShizukuRecovery -> { queued = SeqKind.ON; queuedRecovery = true; startRunner(context, allowAlarmHop = true) }
+                is Effect.RunOn -> { queued = SeqKind.ON; startRunner(context, allowAlarmHop = true) }
+                is Effect.RunOff -> { queued = SeqKind.OFF; startRunner(context, allowAlarmHop = true) }
                 is Effect.ArmDebounce -> if (!armDebounce(context, effect.token, effect.delayMs)) {
                     // No alarm is outstanding: the next reconcile (watchdog,
                     // app / service start) re-arms for the remaining budget.
@@ -359,10 +287,6 @@ object ConnectivityGuardian {
                 is Effect.CancelDebounce -> cancelDebounce(context)
                 is Effect.RegisterCallbacks -> ensureRegistered(context)
                 is Effect.UnregisterCallbacks -> unregisterAll(context)
-                is Effect.ArmShizukuWatchdog -> armShizukuWatchdog(context, effect.delayMs)
-                is Effect.CancelShizukuWatchdog -> cancelShizukuWatchdog(context)
-                is Effect.NotifyShizukuWatchdogGaveUp -> notifyAssist(context, "shizuku_watchdog_gave_up")
-                is Effect.ShizukuWatchdogAudit -> auditShizukuWatchdog(context, effect.event, effect.attempt)
             }
         }
         // Left the resident window (OFF done, toggle off): let the service go.
@@ -388,15 +312,8 @@ object ConnectivityGuardian {
         scheduleRunHop(context)
     }
 
-    /** The queued kind and whether it is a Shizuku watchdog recovery. */
     @Synchronized
-    private fun takeQueued(): Pair<SeqKind, Boolean>? {
-        val kind = queued ?: return null
-        val recovery = queuedRecovery && kind == SeqKind.ON
-        queued = null
-        queuedRecovery = false
-        return Pair(kind, recovery)
-    }
+    private fun takeQueued(): SeqKind? = queued.also { queued = null }
 
     /** The opposite intent arrived while [kind] runs (the core's pending flag). */
     @Synchronized
@@ -427,24 +344,16 @@ object ConnectivityGuardian {
             try {
                 prelude?.let { p -> runCatching(p) }
                 while (true) {
-                    val (kind, recovery) = takeQueued() ?: break
+                    val kind = takeQueued() ?: break
                     val seq = nextSeq(app, kind)
-                    // The recovery backoff anchor: when the run really started.
-                    val start = lossClock(app)
                     val result = runCatching {
-                        ConnectivityGuardianCore.runSequence(kind, AndroidPorts(app, kind), memory, seq, recovery)
+                        ConnectivityGuardianCore.runSequence(kind, AndroidPorts(app, kind), seq)
                     }.getOrElse {
                         Log.w(TAG, "sequence $seq crashed type=${it.javaClass.simpleName}")
                         "failed"
                     }
-                    Log.i(TAG, "sequence $seq${if (recovery) " (shizuku watchdog recovery)" else ""} -> $result")
-                    // Gate round 2: the gates are read again NOW (STOP-ALL first,
-                    // the toggle, Wi-Fi for a recovery), not taken from the
-                    // return code; only a recovery that passes them all is
-                    // pinged (its success test). A run cut short, or whose gates
-                    // fail at completion, is reported stopped / interrupted.
-                    val done = ConnectivityGuardianCore.sequenceDoneFor(kind, result, recovery, start, AndroidWatchdogProbes(app))
-                    onEvent(app, done)
+                    Log.i(TAG, "sequence $seq -> $result")
+                    onEvent(app, Event.SequenceDone(kind, result == "superseded"))
                 }
             } finally {
                 activeDrains.decrementAndGet()
@@ -556,7 +465,6 @@ object ConnectivityGuardian {
             runCatching { (app.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(p) }
             p.cancel()
         }
-        cancelShizukuWatchdog(app)
     }
 
     // ── Alarms ───────────────────────────────────────────────────────────
@@ -622,47 +530,14 @@ object ConnectivityGuardian {
         }
     }
 
-    /** The Shizuku watchdog tick: same mechanism as the debounce (exact when
-     *  allowed, monotonic clock, same request code replaces). False = not armed
-     *  (the next reconcile point re-arms it). */
-    private fun armShizukuWatchdog(context: Context, delayMs: Long): Boolean = try {
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = alarmPendingIntent(context, ACTION_SHIZUKU_WATCHDOG, RC_SHIZUKU_WATCHDOG, 0L, PendingIntent.FLAG_UPDATE_CURRENT)
-        if (pi == null) {
-            false
-        } else {
-            val at = SystemClock.elapsedRealtime() + delayMs
-            if (canExact(am)) am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi)
-            else am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi)
-            true
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "shizuku watchdog alarm not armed type=${e.javaClass.simpleName}")
-        false
-    }
-
-    private fun cancelShizukuWatchdog(context: Context) {
-        val pi = alarmPendingIntent(context, ACTION_SHIZUKU_WATCHDOG, RC_SHIZUKU_WATCHDOG, 0L, PendingIntent.FLAG_NO_CREATE) ?: return
-        runCatching { (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi) }
-        pi.cancel()
-    }
-
-    private fun auditShizukuWatchdog(context: Context, event: String, attempt: Int) {
-        Log.i(TAG, "$event attempt=$attempt")
-        val line = ConnectivityGuardianCore.buildShizukuWatchdogAuditLine(isoUtc(System.currentTimeMillis()), event, attempt)
-        if (line != null) IngressAuditWriter.append(context, null, ConnectivityGuardianCore.AUDIT_FILE, line)
-    }
-
     // ── Assist notification ──────────────────────────────────────────────
 
     fun assistText(reason: String): String = when (reason) {
         "grant_missing" -> "Wireless debugging could not be switched: Shelly is missing the WRITE_SECURE_SETTINGS grant. Nothing else was changed."
         "wifi_debug_off_failed" -> "Wireless debugging could not be turned off (or Shelly could not confirm it). Turn it off yourself in Developer options if you need it off."
         "wifi_debug_not_applied" -> "Wireless debugging did not turn on. If Android asks \"Allow wireless debugging on this network?\", decide it yourself in Settings; Shelly never answers it."
-        "shizuku_timeout" -> "Shizuku did not start within 90 seconds after wireless debugging came on. Open Shizuku and start it if you need it."
         "tailscale_preapproval_off" -> "Tailscale is not connected, but \"Run ClosePaw without approval\" is off, so Shelly did not connect it. Connect Tailscale yourself if you need it."
         "tailscale_failed" -> "Tailscale could not be connected (or Shelly could not confirm it). Check Tailscale yourself."
-        "shizuku_watchdog_gave_up" -> "Shizuku stopped while Wi-Fi stayed connected, and 3 tries to bring it back (switching wireless debugging off and on so Shizuku restarts itself) did not work. Open Shizuku and start it yourself; Shelly tries again after the next Wi-Fi reconnect."
         else -> "Wi-Fi autopilot needs your attention."
     }
 
@@ -707,15 +582,6 @@ object ConnectivityGuardian {
         return fmt.format(Date(ts))
     }
 
-    /** The watchdog's observation probes, and (with [enabled]) the
-     *  completion-time gates of [ConnectivityGuardianCore.sequenceDoneFor]. */
-    private class AndroidWatchdogProbes(private val app: Context) : ConnectivityGuardianCore.CompletionProbes {
-        override fun stopAll(): Boolean = ClosePawHandoff.isStopAllOn(app)
-        override fun enabled(): Boolean = ConnectivityGuardianStore.isOn(app)
-        override fun wifiUp(): Boolean? = ConnectivityGuardian.isWifiUp(app)
-        override fun shizukuAlive(): Boolean = ShizukuLiveness.isAlive()
-    }
-
     private class AndroidPorts(private val app: Context, private val kind: SeqKind) : ConnectivityGuardianCore.Ports {
         // Monotonic (TriggerDebouncer contract): budgets survive wall-clock jumps.
         override fun nowMs(): Long = SystemClock.elapsedRealtime()
@@ -726,8 +592,6 @@ object ConnectivityGuardian {
         override fun hasWriteSecureSettings(): Boolean = WifiDebugControl.hasGrant(app)
         override fun readAdbWifi(): Int? = WifiDebugControl.read(app)
         override fun writeAdbWifi(value: Int): Boolean = WifiDebugControl.write(app, value)
-        override fun shizukuAlive(): Boolean = ShizukuLiveness.isAlive()
-        override fun wifiUp(): Boolean? = ConnectivityGuardian.isWifiUp(app)
         override fun vpnUp(): Boolean? = TailscaleControl.isVpnUp(app)
         override fun closePawPreapproved(): Boolean = ClosePawShellPreapproval.isOn(app)
         override fun requestTailscale(): String? = TailscaleControl.requestTailscale(app)

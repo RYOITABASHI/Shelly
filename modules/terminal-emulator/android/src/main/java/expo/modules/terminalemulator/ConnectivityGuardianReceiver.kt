@@ -32,8 +32,8 @@ class ConnectivityGuardianReceiver : BroadcastReceiver() {
 
 /**
  * The guardian's own broadcasts: the Wi-Fi PendingIntent callback
- * (ACTION_WIFI_AVAILABLE), the loss-debounce alarm, the run hop alarm, the
- * watchdog alarm and the Shizuku watchdog tick alarm. NOT exported: only Shelly's own PendingIntents (sent by
+ * (ACTION_WIFI_AVAILABLE), the loss-debounce alarm, the run hop alarm and the
+ * watchdog alarm. NOT exported: only Shelly's own PendingIntents (sent by
  * ConnectivityService / AlarmManager on Shelly's behalf) reach it.
  */
 class ConnectivityGuardianEventReceiver : BroadcastReceiver() {
@@ -42,8 +42,7 @@ class ConnectivityGuardianEventReceiver : BroadcastReceiver() {
             ConnectivityGuardian.ACTION_WIFI_AVAILABLE,
             ConnectivityGuardian.ACTION_DEBOUNCE,
             ConnectivityGuardian.ACTION_RUN,
-            ConnectivityGuardian.ACTION_WATCHDOG,
-            ConnectivityGuardian.ACTION_SHIZUKU_WATCHDOG -> Unit
+            ConnectivityGuardian.ACTION_WATCHDOG -> Unit
             else -> return
         }
         val pending = goAsync()

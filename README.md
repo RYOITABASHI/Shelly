@@ -532,7 +532,7 @@ Still refused or still asked under both switches: anything the safety gate denie
 
 **Draft preapproval.** For draft-only destinations (note, Substack), the owner can arm preapproval per destination by typing the instruction in Shelly's AI pane — for example "save drafts to note and Substack without approval". Queued drafts for an armed destination are then saved without a tap, with per-destination checks and a daily cap (default 5). "stop saving drafts without approval" or the Settings toggle turns it off.
 
-**Connectivity guardian.** An opt-in Settings automation (**Wi-Fi-linked autopilot**, off by default) helps keep this integration reachable. When Wi-Fi connects, it turns wireless debugging on and waits for Shizuku to become available; about 45 seconds after Wi-Fi disconnects, it turns wireless debugging off while Tailscale stays connected, so the MCP server stays reachable over mobile data. It needs a one-time `WRITE_SECURE_SETTINGS` grant.
+**Connectivity guardian.** An opt-in Settings automation (**Wi-Fi-linked autopilot**, off by default) helps keep this integration reachable. When Wi-Fi connects, it turns wireless debugging on and connects Tailscale if needed and preapproved; about 45 seconds after Wi-Fi disconnects, it turns wireless debugging off while Tailscale stays connected, so the MCP server stays reachable over mobile data. It needs a one-time `WRITE_SECURE_SETTINGS` grant.
 
 ### Agent roles
 

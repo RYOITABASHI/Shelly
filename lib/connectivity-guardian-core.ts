@@ -12,16 +12,13 @@
  * sets, step order) by reading the Kotlin source.
  *
  * Nothing here talks to Android. The runner gets everything through [Ports]:
- * production wires them to Settings.Global (WifiDebugControl), Shizuku's
- * pingBinder (ShizukuLiveness), ConnectivityManager's TRANSPORT_VPN probe and
- * the ClosePaw hand-off seam (TailscaleControl), IngressAuditWriter and an
- * assist notification.
+ * production wires them to Settings.Global (WifiDebugControl),
+ * ConnectivityManager's TRANSPORT_VPN probe, the ClosePaw hand-off seam
+ * (TailscaleControl), IngressAuditWriter and an assist notification.
  *
  * Owner decisions this encodes (Phase 2 addendum, 2026-11-17):
- *  - The guardian NEVER starts Shizuku. ON writes adb_wifi_enabled=1, then
- *    waits (polls pingBinder) for Shizuku's own auto-start, bounded.
  *  - A write that does not take effect (e.g. Android's "Allow wireless
- *    debugging on this network?" dialog is pending) or a ping timeout ends
+ *    debugging on this network?" dialog is pending) ends
  *    the ON sequence with an assist notification. No dialog is ever accepted.
  *  - Tailscale is driven only through fixed ClosePaw goals, only while the
  *    ClosePaw shell pre-approval switch is ON; OFF = notify only. Whether
@@ -29,34 +26,10 @@
  *  - Tailscale is connect-only (owner decision 2026-11-17): it stays
  *    connected after Wi-Fi is lost, mobile data included. OFF only writes
  *    adb_wifi_enabled=0; it never touches Tailscale or dispatches ClosePaw.
- *
- * Shizuku watchdog (owner direction 2026-11-20): while the guardian is settled
- * online, a 15-minute tick (and every reconcile / Wi-Fi-available point)
- * observes Shizuku (observeShizukuWatchdog: STOP-ALL first). Dead -> re-run
- * the ON sequence as a recovery (wireless debugging cycled OFF -> ON when it
- * is already on, so Shizuku's OWN auto-start sees a fresh trigger; Shizuku is
- * still never started). At most SHIZUKU_WATCHDOG_MAX_ATTEMPTS recovery starts
- * per Wi-Fi session, SHIZUKU_WATCHDOG_BACKOFF_MS apart (start to start); then
- * one give-up notification and silence until the session resets. The count is
- * monotonic within a session (gate round 1, 2026-11-20): a success does not
- * reset it and a healthy tick does not revive a given-up session; only a Wi-Fi
- * reconnect, a guardian re-enable, a boot, or 24 h of OBSERVED health (gate
- * round 2: alive ticks at most SHIZUKU_WATCHDOG_HEALTHY_GAP_MS apart on one
- * boot; STOP-ALL and unknown readings credit nothing,
- * SHIZUKU_WATCHDOG_HEALTHY_RESET_MS) opens a new one. A recovery cut short
- * (STOP-ALL, toggle off, superseded, gates failing at its completion, or its
- * checkpoint not written) is refunded, and never turns into a plain ON (gate
- * round 2). The recovery intent is durable: a process death between the
- * checkpoint and the run re-runs it as a recovery. Policy: reduceWithWatchdog.
  */
 
 // ── Constants (lockstep with ConnectivityGuardianCore.kt) ─────────────────
 export const LOSS_DEBOUNCE_MS = 45_000;
-export const SHIZUKU_WAIT_MS = 90_000;
-export const SHIZUKU_POLL_MS = 3_000;
-/** After a Shizuku wait timed out, another trigger inside this window does
- *  not wait again (no retry storm); it ends the sequence quietly. */
-export const SHIZUKU_RETRY_COOLDOWN_MS = 120_000;
 export const ADB_WIFI_VERIFY_MS = 6_000;
 export const ADB_WIFI_POLL_MS = 1_000;
 export const VPN_VERIFY_MS = 180_000;
@@ -70,23 +43,6 @@ export const CLOSEPAW_SETTLE_POLL_MS = 2_000;
 export const AUDIT_FILE = 'connectivity-guardian.jsonl';
 export const AUDIT_KIND = 'wifi_guardian';
 export const GOAL_MAX_CODE_POINTS = 2000;
-/** Shizuku watchdog: tick cadence while settled online. */
-export const SHIZUKU_WATCHDOG_TICK_MS = 15 * 60_000;
-/** Shizuku watchdog: minimum time between two recovery starts (checked by the
- *  tick against the clock; no second timer). */
-export const SHIZUKU_WATCHDOG_BACKOFF_MS = 30 * 60_000;
-/** Shizuku watchdog: recoveries per Wi-Fi session before giving up. */
-export const SHIZUKU_WATCHDOG_MAX_ATTEMPTS = 3;
-/** Shizuku watchdog: this much OBSERVED health (the sum of gaps between
- *  consecutive alive ticks, see SHIZUKU_WATCHDOG_HEALTHY_GAP_MS) ends the
- *  session (attempts, backoff, give-up). */
-export const SHIZUKU_WATCHDOG_HEALTHY_RESET_MS = 24 * 60 * 60_000;
-/** Shizuku watchdog: the longest gap between two alive ticks (same boot) that
- *  counts as observed health (gate round 2). */
-export const SHIZUKU_WATCHDOG_HEALTHY_GAP_MS = 30 * 60_000;
-/** Recovery cycle: wireless debugging stays OFF this long (adbd stops) before
- *  it is written ON again. */
-export const WIFI_DEBUG_CYCLE_PAUSE_MS = 2_000;
 
 // ── Fixed ClosePaw goals (code constants, single line, never user input) ──
 export const TAILSCALE_PACKAGE = 'com.tailscale.ipn';
@@ -125,27 +81,6 @@ export interface GuardianState {
    *  for [lossToken] and it has not fired yet. A fresh process starts without
    *  it, so recovery re-arms for the remaining budget. */
   lossArmed?: true;
-  /** Shizuku watchdog, per Wi-Fi session (persisted): recoveries started.
-   *  Monotonic within the session (a success does not lower it). Absent = 0. */
-  wdAttempts?: number;
-  /** elapsedRealtime at which the last finished recovery STARTED running, and
-   *  its boot (backoff basis, start to start). Set from SequenceDone.start. */
-  wdLastAttemptElapsedMs?: number;
-  wdBootId?: number;
-  /** The give-up notification was sent this session: sticky until the session resets. */
-  wdGaveUp?: true;
-  /** Observed-healthy time accumulated this session (persisted, gate round 2).
-   *  SHIZUKU_WATCHDOG_HEALTHY_RESET_MS of it resets the session. Absent = 0. */
-  wdHealthyAccumMs?: number;
-  /** The last alive tick (elapsedRealtime) and its boot: the start of the next
-   *  creditable gap. Absent = the chain is broken (first observation, STOP-ALL,
-   *  an unknown reading): the next alive tick credits nothing. */
-  wdHealthyLastElapsedMs?: number;
-  wdHealthyBootId?: number;
-  /** The running (or owed) ON is a watchdog recovery. Persisted (gate round 2)
-   *  so a process death between the checkpoint and the run re-runs it as a
-   *  recovery; restored only onto an owed ON. */
-  wdRecovering?: true;
 }
 
 /** A recovery-grade reading of "now": wall clock (informational, legacy
@@ -165,19 +100,11 @@ export type GuardianEvent =
   | { type: 'wifiAvailable' }
   | { type: 'wifiLost'; now: LossClock }
   | { type: 'debounceExpired'; token: number; wifiUp: boolean }
-  /** interrupted = the runner returned 'superseded' (stopped before its last step).
-   *  shizukuUp = a fresh liveness read after an ON ended (the recovery's success
-   *  test; false whenever the run was stopped or interrupted); stopped = it
-   *  ended 'stopped' / 'disabled'; start = the clock just before the runner
-   *  began (an ON's; the recovery backoff anchor). */
-  | { type: 'sequenceDone'; kind: SeqKind; interrupted?: boolean; shizukuUp?: boolean; stopped?: boolean; start?: LossClock | null }
+  /** interrupted = the runner returned 'superseded' (stopped before its last step). */
+  | { type: 'sequenceDone'; kind: SeqKind; interrupted?: boolean }
   /** A recovery entry point (app start, watchdog, service start) probed
    *  Wi-Fi: bring the state in line with it. */
-  | { type: 'reconcile'; wifiUp: boolean; now: LossClock }
-  /** Shizuku watchdog observation (tick alarm or an opportunistic check), built
-   *  only by observeShizukuWatchdog: stopAll true = nothing else was read;
-   *  wifiUp null = cannot tell; alive null = not read. */
-  | { type: 'shizukuWatchdogTick'; stopAll: boolean; wifiUp: boolean | null; alive: boolean | null; now: LossClock };
+  | { type: 'reconcile'; wifiUp: boolean; now: LossClock };
 
 export type Effect =
   | { type: 'runOn' }
@@ -185,17 +112,7 @@ export type Effect =
   | { type: 'armDebounce'; token: number; delayMs: number }
   | { type: 'cancelDebounce' }
   | { type: 'registerCallbacks' }
-  | { type: 'unregisterCallbacks' }
-  /** (Re)arm the watchdog tick alarm (same request code: replaces). */
-  | { type: 'armShizukuWatchdog'; delayMs: number }
-  /** Cancel the watchdog tick alarm (Wi-Fi loss / guardian off). */
-  | { type: 'cancelShizukuWatchdog' }
-  /** Run the ON sequence as a watchdog recovery (wireless debugging cycled). */
-  | { type: 'runShizukuRecovery' }
-  /** The one give-up notification of a Wi-Fi session. */
-  | { type: 'notifyShizukuWatchdogGaveUp' }
-  /** One watchdog audit line (SHIZUKU_WATCHDOG_EVENTS). */
-  | { type: 'shizukuWatchdogAudit'; event: ShizukuWatchdogEvent; attempt: number };
+  | { type: 'unregisterCallbacks' };
 
 export interface Transition {
   state: GuardianState;
@@ -266,45 +183,13 @@ export function wantsResident(s: GuardianState): boolean {
 /** The state write did not reach disk. ON must not mutate anything without a
  *  durable 'in_flight' record, so runOn is dropped and ON stays owed in memory
  *  (online, pending ON: the next Wi-Fi callback or reconcile retries, and
- *  checkpoints again). Every other effect stays: OFF is the cleanup itself.
- *  A dropped watchdog recovery is refunded (its attempt and its started line)
- *  and NOT turned into a plain ON: the state stays settled online and the tick
- *  is re-armed, so the next tick retries it as a recovery (gate round 1). The
- *  detected-dead line stays: that observation was real. */
+ *  checkpoints again). Every other effect stays: OFF is the cleanup itself. */
 export function withoutUndurableOn(t: Transition): Transition {
-  const recovery = t.effects.some((e) => e.type === 'runShizukuRecovery');
-  const plain = t.effects.some((e) => e.type === 'runOn');
-  if (!recovery && !plain) return t;
-  const effects = t.effects.filter((e) => e.type !== 'runOn' && e.type !== 'runShizukuRecovery' && !isRecoveryStarted(e));
-  const base = recovery ? refundedAttempt(t.state) : t.state;
-  const { wdRecovering: _r, ...rest } = cleared(base);
-  if (plain) return { state: { ...rest, mode: 'IDLE_ONLINE', pending: 'ON' }, effects };
+  if (!t.effects.some((e) => e.type === 'runOn')) return t;
   return {
-    state: { ...rest, mode: 'IDLE_ONLINE', pending: 'NONE' },
-    effects: [...effects, { type: 'armShizukuWatchdog', delayMs: SHIZUKU_WATCHDOG_TICK_MS }],
+    state: { ...cleared(t.state), mode: 'IDLE_ONLINE', pending: 'ON' },
+    effects: t.effects.filter((e) => e.type !== 'runOn'),
   };
-}
-
-/** A recovery that never really ran (dropped at the checkpoint, never
- *  dispatched): its attempt is given back (and, back at 0, the backoff anchor
- *  goes too; a lower count keeps the previous attempt's anchor, which is still
- *  the last real start). Not recovering any more. */
-function refundedAttempt(s: GuardianState): GuardianState {
-  const r = refundedCount(s);
-  if ((r.wdAttempts ?? 0) > 0) return r;
-  const { wdLastAttemptElapsedMs: _l, wdBootId: _b, ...bare } = r;
-  return bare;
-}
-
-/** The attempt given back, the backoff anchor untouched. Not recovering any more. */
-function refundedCount(s: GuardianState): GuardianState {
-  const n = Math.max(0, (s.wdAttempts ?? 0) - 1);
-  const { wdRecovering: _r, wdAttempts: _a, ...rest } = s;
-  return n > 0 ? { ...rest, wdAttempts: n } : rest;
-}
-
-function isRecoveryStarted(e: Effect): boolean {
-  return e.type === 'shizukuWatchdogAudit' && e.event === WD_RECOVERY_STARTED;
 }
 
 /** The alarm fired (or was given up): nothing is outstanding any more. The
@@ -412,7 +297,6 @@ export function reduce(s: GuardianState, e: GuardianEvent): Transition {
     if (!e.wifiUp) {
       // Rebooted / updated away from Wi-Fi after an ON, or during the
       // debounce (the alarm did not survive): (re)arm the loss.
-      // A reboot / update also took Shizuku down: ON must run again on regain.
       if (s.mode === 'IDLE_ONLINE') {
         const t = armLoss(s, e.now, true);
         return { state: t.state, effects: [reg, ...t.effects] };
@@ -521,345 +405,8 @@ export function reduce(s: GuardianState, e: GuardianEvent): Transition {
   }
 }
 
-// ── Shizuku watchdog ───────────────────────────────────────────────────────
-export const WD_DETECTED_DEAD = 'shizuku_watchdog_detected_dead';
-export const WD_RECOVERY_STARTED = 'shizuku_watchdog_recovery_started';
-export const WD_RECOVERY_SUCCEEDED = 'shizuku_watchdog_recovery_succeeded';
-export const WD_RECOVERY_FAILED = 'shizuku_watchdog_recovery_failed';
-export const WD_GAVE_UP = 'shizuku_watchdog_gave_up';
-export type ShizukuWatchdogEvent =
-  | 'shizuku_watchdog_detected_dead'
-  | 'shizuku_watchdog_recovery_started'
-  | 'shizuku_watchdog_recovery_succeeded'
-  | 'shizuku_watchdog_recovery_failed'
-  | 'shizuku_watchdog_gave_up';
-export const SHIZUKU_WATCHDOG_EVENTS: readonly ShizukuWatchdogEvent[] = [
-  'shizuku_watchdog_detected_dead', 'shizuku_watchdog_recovery_started', 'shizuku_watchdog_recovery_succeeded',
-  'shizuku_watchdog_recovery_failed', 'shizuku_watchdog_gave_up',
-];
-
-/** The probes one watchdog observation reads, in observeShizukuWatchdog's order. */
-export interface WatchdogProbes {
-  /** STOP-ALL (`.halted`); unreadable = true. */
-  stopAll(): boolean;
-  /** Wi-Fi with INTERNET up; null = cannot tell. */
-  wifiUp(): boolean | null;
-  /** Shizuku.pingBinder(); any error = false. */
-  shizukuAlive(): boolean;
-}
-
-type WatchdogTick = Extract<GuardianEvent, { type: 'shizukuWatchdogTick' }>;
-
-/** STOP-ALL first: while it is on nothing else is read. Shizuku is pinged only
- *  with Wi-Fi known to be up. */
-export function observeShizukuWatchdog(p: WatchdogProbes, now: LossClock): WatchdogTick {
-  if (p.stopAll()) return { type: 'shizukuWatchdogTick', stopAll: true, wifiUp: null, alive: null, now };
-  const wifi = p.wifiUp();
-  if (wifi !== true) return { type: 'shizukuWatchdogTick', stopAll: false, wifiUp: wifi, alive: null, now };
-  return { type: 'shizukuWatchdogTick', stopAll: false, wifiUp: true, alive: p.shizukuAlive(), now };
-}
-
-/** The probes read when a sequence ends, in sequenceDoneFor's order. */
-export interface CompletionProbes extends WatchdogProbes {
-  /** The guardian toggle mirror; unreadable = false. */
-  enabled(): boolean;
-}
-
-type SequenceDone = Extract<GuardianEvent, { type: 'sequenceDone' }>;
-
-/** The sequenceDone event for a sequence that returned [result] (gate round 2:
- *  the gates are read again AT COMPLETION, not taken from the runner's return
- *  code). [start]: the clock just before the runner began (kept for an ON
- *  only).
- *   - stopped / disabled / superseded: no ping; stopped unless superseded,
- *     interrupted when superseded.
- *   - otherwise, STOP-ALL first, then the toggle, then (recovery only) Wi-Fi:
- *     any of them failing now = stopped (a recovery is refunded; a plain ON
- *     ignores it). STOP-ALL raised, the guardian turned off or Wi-Fi lost
- *     during the last step / end audit can never count.
- *   - all gates pass: only a recovery pings Shizuku (its success test). A
- *     plain ON is never pinged: nothing reads shizukuUp for it. */
-export function sequenceDoneFor(
-  kind: SeqKind,
-  result: SequenceResult,
-  recovery: boolean,
-  start: LossClock,
-  p: CompletionProbes,
-): SequenceDone {
-  const st = kind === 'on' ? start : null;
-  if (isAbort(result)) {
-    return { type: 'sequenceDone', kind, interrupted: result === 'superseded', shizukuUp: false, stopped: result !== 'superseded', start: st };
-  }
-  if (kind !== 'on') return { type: 'sequenceDone', kind, interrupted: false, shizukuUp: false, stopped: false, start: null };
-  if (p.stopAll() || !p.enabled() || (recovery && p.wifiUp() !== true)) {
-    return { type: 'sequenceDone', kind, interrupted: false, shizukuUp: false, stopped: true, start: st };
-  }
-  if (!recovery) return { type: 'sequenceDone', kind, interrupted: false, shizukuUp: false, stopped: false, start: st };
-  return { type: 'sequenceDone', kind, interrupted: false, shizukuUp: p.shizukuAlive(), stopped: false, start: st };
-}
-
-/** Online, nothing running, nothing owed: the only state the watchdog acts in. */
-export function settledOnline(s: GuardianState): boolean {
-  return s.mode === 'IDLE_ONLINE' && s.pending === 'NONE';
-}
-
-/** A new Wi-Fi session for the watchdog: counters, backoff, give-up, recovery
- *  intent and the observed-healthy accumulation cleared. */
-export function freshWatchdog(s: GuardianState): GuardianState {
-  const { wdAttempts: _a, wdLastAttemptElapsedMs: _l, wdBootId: _b, wdGaveUp: _g, wdRecovering: _r, ...rest } = s;
-  return withoutHealthyWindow(rest);
-}
-
-/** A dead tick: no health observed; the accumulation starts over. */
-function withoutHealthyWindow(s: GuardianState): GuardianState {
-  const { wdHealthyAccumMs: _h, ...rest } = withHealthyChainBroken(s);
-  return rest;
-}
-
-/** STOP-ALL or an unknown reading: the time since the last alive tick was not
- *  observed, so the chain breaks (the next alive tick is a first observation
- *  and credits nothing); what was already observed is kept. */
-function withHealthyChainBroken(s: GuardianState): GuardianState {
-  const { wdHealthyLastElapsedMs: _l, wdHealthyBootId: _hb, ...rest } = s;
-  return rest;
-}
-
-/** An alive tick (gate round 2: observed health, not a start timestamp). The
- *  gap since the previous alive tick is credited only when that tick exists
- *  (chain not broken), both boots are known and equal, and
- *  0 <= gap <= SHIZUKU_WATCHDOG_HEALTHY_GAP_MS. Credited up to
- *  SHIZUKU_WATCHDOG_HEALTHY_RESET_MS: the session resets. A chain that exists
- *  but cannot be proven continuous (boot unknown / changed, gap out of range)
- *  zeroes the accumulation; a broken chain (STOP-ALL, unknown reading) keeps
- *  it and credits nothing. This tick always becomes the next gap's start. */
-function healthyTick(s: GuardianState, now: LossClock): GuardianState {
-  const last = s.wdHealthyLastElapsedMs;
-  const boot = s.wdHealthyBootId ?? null;
-  const accum = s.wdHealthyAccumMs ?? 0;
-  const delta = now.elapsedMs - (last ?? now.elapsedMs);
-  const credited =
-    last !== undefined && boot !== null && now.bootId !== null && boot === now.bootId &&
-    delta >= 0 && delta <= SHIZUKU_WATCHDOG_HEALTHY_GAP_MS;
-  let base: GuardianState;
-  if (last === undefined) base = s;
-  else if (!credited) base = withoutHealthyWindow(s);
-  else if (accum + delta >= SHIZUKU_WATCHDOG_HEALTHY_RESET_MS) base = freshWatchdog(s);
-  else base = { ...s, wdHealthyAccumMs: accum + delta };
-  const { wdHealthyBootId: _hb, ...rest } = base;
-  return { ...rest, wdHealthyLastElapsedMs: now.elapsedMs, ...(now.bootId === null ? {} : { wdHealthyBootId: now.bootId }) };
-}
-
-/** Restores the persisted watchdog session onto a restored state. The recovery
- *  intent survives only onto an owed ON (the 'in_flight' restore: online,
- *  pending ON) with an attempt counted for it (gate round 2). */
-export function restoreWatchdog(
-  s: GuardianState,
-  attempts: number,
-  lastAttemptElapsedMs: number | null,
-  bootId: number | null,
-  gaveUp: boolean,
-  healthyAccumMs = 0,
-  healthyLastElapsedMs: number | null = null,
-  healthyBootId: number | null = null,
-  recovering = false,
-): GuardianState {
-  if (s.mode === 'DISABLED') return s;
-  const n = Math.min(SHIZUKU_WATCHDOG_MAX_ATTEMPTS, Math.max(0, Math.trunc(attempts)));
-  const accum = Math.min(SHIZUKU_WATCHDOG_HEALTHY_RESET_MS, Math.max(0, healthyAccumMs));
-  const owed = s.mode === 'IDLE_ONLINE' && s.pending === 'ON';
-  return {
-    ...freshWatchdog(s),
-    ...(n === 0 ? {} : { wdAttempts: n }),
-    ...(lastAttemptElapsedMs === null ? {} : { wdLastAttemptElapsedMs: lastAttemptElapsedMs }),
-    ...(lastAttemptElapsedMs === null || bootId === null ? {} : { wdBootId: bootId }),
-    ...(gaveUp ? { wdGaveUp: true as const } : {}),
-    ...(recovering && n > 0 && owed ? { wdRecovering: true as const } : {}),
-    ...(accum === 0 ? {} : { wdHealthyAccumMs: accum }),
-    ...(healthyLastElapsedMs === null ? {} : { wdHealthyLastElapsedMs: healthyLastElapsedMs }),
-    ...(healthyLastElapsedMs === null || healthyBootId === null ? {} : { wdHealthyBootId: healthyBootId }),
-  };
-}
-
-/** Wi-Fi was absent (or being given up) before this event. */
-function wasOffline(s: GuardianState): boolean {
-  return (
-    s.mode === 'IDLE_OFFLINE' ||
-    s.mode === 'LOSS_PENDING' ||
-    s.mode === 'OFF_RUNNING' ||
-    (s.mode === 'ON_RUNNING' && (s.pending === 'LOSS' || s.pending === 'OFF'))
-  );
-}
-
-/** Events that open a new watchdog session: Wi-Fi reconnect, guardian re-enable
- *  (from DISABLED only: RN rewrites the mirror at every app start), boot / app
- *  update. (The fourth reset, 24 h of continuous health, is the tick's.) */
-function opensSession(s: GuardianState, e: GuardianEvent): boolean {
-  switch (e.type) {
-    case 'enable':
-      return s.mode === 'DISABLED';
-    case 'boot':
-      return true;
-    case 'wifiAvailable':
-      return wasOffline(s);
-    case 'reconcile':
-    case 'debounceExpired':
-      return e.wifiUp && wasOffline(s);
-    default:
-      return false;
-  }
-}
-
-/** Backoff since the last recovery start passed. A different (known) boot or a
- *  monotonic clock that reads earlier = the clock restarted: passed (the
- *  per-session cap still bounds the attempts). */
-export function watchdogBackoffPassed(s: GuardianState, now: LossClock): boolean {
-  if (s.wdLastAttemptElapsedMs === undefined) return true;
-  const boot = s.wdBootId ?? null;
-  if (boot !== null && now.bootId !== null && boot !== now.bootId) return true;
-  const dt = now.elapsedMs - s.wdLastAttemptElapsedMs;
-  return dt < 0 || dt >= SHIZUKU_WATCHDOG_BACKOFF_MS;
-}
-
-/** The event takes Wi-Fi away or turns the guardian off: the watchdog tick
- *  must not outlive settled-online (gate round 1). Rule: WifiLost, Disable,
- *  Reconcile that probed Wi-Fi down, or a DebounceExpired that starts the OFF
- *  path. Cancelling is idempotent, so it is emitted for these events whatever
- *  the state was. */
-function disarmsWatchdog(e: GuardianEvent, fx: Effect[]): boolean {
-  switch (e.type) {
-    case 'wifiLost':
-    case 'disable':
-      return true;
-    case 'reconcile':
-      return !e.wifiUp;
-    case 'debounceExpired':
-      return fx.some((x) => x.type === 'runOff');
-    default:
-      return false;
-  }
-}
-
-/** The guardian's transition function: reduce plus the Shizuku watchdog layer
- *  (session resets, recovery outcome, tick arming / disarming). Pure.
- *
- *  Recovery outcome (gate round 1): an interrupted recovery (STOP-ALL, toggle
- *  off, superseded) is refunded and checked FIRST, so a lucky ping cannot
- *  count it as a success. Gate round 3: the refund gives the attempt back but
- *  keeps the cooldown: e.start (when known) stamps the backoff anchor, else
- *  the anchor is left as it was; a late STOP-ALL cannot shorten the 30-minute
- *  spacing between recovery starts. A recovery that ran to its end is audited succeeded
- *  or failed and stamps the backoff anchor with its start (start to start);
- *  the attempt count is never lowered by a success. A plain ON changes no
- *  watchdog state.
- *
- *  Gate round 2: a refunded recovery with no ON owed (pending NONE) never
- *  becomes a plain ON. reduce reads an interrupted ON as "Wi-Fi came back:
- *  finish it", but a recovery is superseded by its own Wi-Fi re-probe too, and
- *  a plain ON has no such probe (it could write adb_wifi_enabled=1 with Wi-Fi
- *  down). Its runOn is dropped and the state settles online (the tick re-arms;
- *  the loss flow / next tick re-derive anything genuinely owed). A pending ON
- *  is a real obligation and keeps its runOn. And the recovery intent is
- *  durable: an ON owed with wdRecovering still set (only the restored owed ON
- *  after a death between checkpoint and dispatch) runs as runShizukuRecovery,
- *  so the attempt already counted is resolved by its own outcome. */
-export function reduceWithWatchdog(s: GuardianState, e: GuardianEvent): Transition {
-  if (e.type === 'shizukuWatchdogTick') return watchdogTick(s, e);
-  const base = opensSession(s, e) ? freshWatchdog(s) : s;
-  const t = reduce(base, e);
-  let st = t.state;
-  let fx = [...t.effects];
-  if (e.type === 'sequenceDone' && e.kind === 'on' && s.mode === 'ON_RUNNING' && s.wdRecovering === true) {
-    const n = s.wdAttempts ?? 0;
-    if (e.stopped === true || e.interrupted === true) {
-      // Cut short before it could finish: no attempt burned, nothing audited.
-      // But it was dispatched and began (it may have cycled wireless
-      // debugging), so its start still governs the cooldown (gate round 3):
-      // the anchor is set from e.start even at count 0, and never cleared.
-      st = refundedCount(st);
-      if (e.start != null) st = withAttemptAnchor(st, e.start);
-      if (s.pending === 'NONE' && fx.some((x) => x.type === 'runOn')) {
-        // Nothing owed: never a plain ON (it has no Wi-Fi probe).
-        fx = fx.filter((x) => x.type !== 'runOn');
-        st = { ...st, mode: 'IDLE_ONLINE', pending: 'NONE' };
-      }
-    } else {
-      const { wdRecovering: _r, ...rest } = st;
-      st = e.start == null ? rest : withAttemptAnchor(rest, e.start);
-      if (e.shizukuUp === true) {
-        fx.push({ type: 'shizukuWatchdogAudit', event: WD_RECOVERY_SUCCEEDED, attempt: n });
-      } else {
-        fx.push({ type: 'shizukuWatchdogAudit', event: WD_RECOVERY_FAILED, attempt: n });
-        if (n >= SHIZUKU_WATCHDOG_MAX_ATTEMPTS && s.wdGaveUp !== true) {
-          fx.push({ type: 'shizukuWatchdogAudit', event: WD_GAVE_UP, attempt: n });
-          fx.push({ type: 'notifyShizukuWatchdogGaveUp' });
-          st = { ...st, wdGaveUp: true };
-        }
-      }
-    }
-  }
-  // An ON started here: a recovery whose intent survived (restored owed ON)
-  // runs as one; any other ON is plain, not a recovery.
-  if (fx.some((x) => x.type === 'runOn')) {
-    if (st.wdRecovering === true) {
-      fx = fx.map((x): Effect => (x.type === 'runOn' ? { type: 'runShizukuRecovery' } : x));
-    } else {
-      const { wdRecovering: _r, ...rest } = st;
-      st = rest;
-    }
-  }
-  // Entering the settled-online state starts the tick.
-  if (settledOnline(st) && !settledOnline(s)) fx.push({ type: 'armShizukuWatchdog', delayMs: SHIZUKU_WATCHDOG_TICK_MS });
-  // Leaving it through a loss / toggle off stops it.
-  if (disarmsWatchdog(e, fx)) fx.push({ type: 'cancelShizukuWatchdog' });
-  return { state: st, effects: fx };
-}
-
-/** The backoff anchor: the clock at which the recovery started running. */
-function withAttemptAnchor(s: GuardianState, start: LossClock): GuardianState {
-  const { wdBootId: _b, ...rest } = s;
-  return { ...rest, wdLastAttemptElapsedMs: start.elapsedMs, ...(start.bootId === null ? {} : { wdBootId: start.bootId }) };
-}
-
-/** One watchdog observation. Acts only while settled online. */
-function watchdogTick(s: GuardianState, e: WatchdogTick): Transition {
-  const same: Transition = { state: s, effects: [] };
-  // Toggle off, offline, a sequence running or owed: the guardian's own flow
-  // owns the state (and re-arms the tick when it settles online).
-  if (!settledOnline(s)) return same;
-  // STOP-ALL first: nothing run, counted, audited or re-armed. A later check
-  // (reconcile, Wi-Fi available) or settling online again re-arms the tick.
-  // The healthy chain breaks: STOP-ALL time is not observed.
-  if (e.stopAll) return { state: withHealthyChainBroken(s), effects: [] };
-  const rearm: Effect = { type: 'armShizukuWatchdog', delayMs: SHIZUKU_WATCHDOG_TICK_MS };
-  // Wi-Fi down: inert (the loss flow owns it). Unknown: look again later.
-  // Either way nothing was observed: the healthy chain breaks.
-  if (e.wifiUp === false) return { state: withHealthyChainBroken(s), effects: [] };
-  if (e.wifiUp === null || e.alive === null) return { state: withHealthyChainBroken(s), effects: [rearm] };
-  // Alive: the session is NOT reset (monotonic); only 24 h of observed health
-  // resets it (healthyTick).
-  if (e.alive) return { state: healthyTick(s, e.now), effects: [rearm] };
-  const sd = withoutHealthyWindow(s);
-  const attempts = sd.wdAttempts ?? 0;
-  if (sd.wdGaveUp === true) return { state: sd, effects: [rearm] };
-  if (attempts >= SHIZUKU_WATCHDOG_MAX_ATTEMPTS) {
-    return {
-      state: { ...sd, wdGaveUp: true },
-      effects: [{ type: 'shizukuWatchdogAudit', event: WD_GAVE_UP, attempt: attempts }, { type: 'notifyShizukuWatchdogGaveUp' }, rearm],
-    };
-  }
-  const dead: Effect = { type: 'shizukuWatchdogAudit', event: WD_DETECTED_DEAD, attempt: attempts };
-  if (!watchdogBackoffPassed(sd, e.now)) return { state: sd, effects: [dead, rearm] };
-  const n = attempts + 1;
-  // The backoff anchor is NOT stamped here: the run may start much later
-  // (service start, alarm hop). SequenceDone.start stamps it.
-  return {
-    state: { ...sd, mode: 'ON_RUNNING', pending: 'NONE', wdAttempts: n, wdRecovering: true },
-    effects: [dead, { type: 'shizukuWatchdogAudit', event: WD_RECOVERY_STARTED, attempt: n }, { type: 'runShizukuRecovery' }],
-  };
-}
-
 // ── Step runner ────────────────────────────────────────────────────────────
-export type Step = 'wifi_debug' | 'shizuku' | 'tailscale' | 'sequence';
+export type Step = 'wifi_debug' | 'tailscale' | 'sequence';
 export type Action = 'check' | 'enable' | 'disable' | 'wait' | 'connect' | 'end';
 export type Level = 'on' | 'off' | 'unknown' | 'none';
 export type Outcome =
@@ -870,7 +417,6 @@ export type Outcome =
   | 'grant_missing'
   | 'write_failed'
   | 'timeout'
-  | 'cooldown'
   | 'probe_unknown'
   | 'preapproval_off'
   | 'dispatch_failed'
@@ -884,11 +430,11 @@ export type Outcome =
   | 'settled'
   | 'settle_timeout';
 
-export const STEPS: readonly Step[] = ['wifi_debug', 'shizuku', 'tailscale', 'sequence'];
+export const STEPS: readonly Step[] = ['wifi_debug', 'tailscale', 'sequence'];
 export const ACTIONS: readonly Action[] = ['check', 'enable', 'disable', 'wait', 'connect', 'end'];
 export const LEVELS: readonly Level[] = ['on', 'off', 'unknown', 'none'];
 export const OUTCOMES: readonly Outcome[] = [
-  'already', 'ok', 'unverified', 'not_applied', 'grant_missing', 'write_failed', 'timeout', 'cooldown',
+  'already', 'ok', 'unverified', 'not_applied', 'grant_missing', 'write_failed', 'timeout',
   'probe_unknown', 'preapproval_off', 'dispatch_failed', 'verify_failed', 'stopped', 'disabled', 'superseded',
   'done', 'assist', 'failed', 'settled', 'settle_timeout',
 ];
@@ -907,13 +453,11 @@ export type AssistReason =
   | 'grant_missing'
   | 'wifi_debug_not_applied'
   | 'wifi_debug_off_failed'
-  | 'shizuku_timeout'
   | 'tailscale_preapproval_off'
-  | 'tailscale_failed'
-  | 'shizuku_watchdog_gave_up';
+  | 'tailscale_failed';
 export const ASSIST_REASONS: readonly AssistReason[] = [
-  'grant_missing', 'wifi_debug_not_applied', 'wifi_debug_off_failed', 'shizuku_timeout', 'tailscale_preapproval_off',
-  'tailscale_failed', 'shizuku_watchdog_gave_up',
+  'grant_missing', 'wifi_debug_not_applied', 'wifi_debug_off_failed', 'tailscale_preapproval_off',
+  'tailscale_failed',
 ];
 
 export interface Ports {
@@ -930,11 +474,6 @@ export interface Ports {
   /** adb_wifi_enabled: 1 / 0, or null when it cannot be read. */
   readAdbWifi(): number | null;
   writeAdbWifi(value: number): boolean;
-  /** Shizuku.pingBinder(); any error = false. */
-  shizukuAlive(): boolean;
-  /** Wi-Fi with INTERNET up; null = cannot tell. Read by a watchdog recovery
-   *  before its first write (a queued recovery may start after Wi-Fi left). */
-  wifiUp(): boolean | null;
   /** TRANSPORT_VPN present: true / false, or null when it cannot be told. */
   vpnUp(): boolean | null;
   /** ClosePawShellPreapproval.isOn(). */
@@ -948,15 +487,6 @@ export interface Ports {
   closePawSettled(reqId: string): boolean;
   audit(seq: string, step: Step, action: Action, before: Level, after: Level, outcome: Outcome): void;
   notifyAssist(reason: AssistReason): void;
-}
-
-/** Cross-run memory of the runner (in-process only). */
-export interface RunnerMemory {
-  lastShizukuTimeoutAt: number | null;
-}
-
-export function newRunnerMemory(): RunnerMemory {
-  return { lastShizukuTimeoutAt: null };
 }
 
 type Abort = 'stopped' | 'disabled' | 'superseded';
@@ -996,16 +526,14 @@ function pollUntil(p: Ports, budgetMs: number, pollMs: number, probe: () => bool
 
 export type SequenceResult = 'done' | 'assist' | 'failed' | 'stopped' | 'disabled' | 'superseded';
 
-/** [quiet]: a watchdog recovery; its step failures are audited but not
- *  notified (the watchdog's single give-up notification speaks for it). */
 class Run {
   notified = false;
-  constructor(readonly p: Ports, readonly seq: string, readonly quiet = false) {}
+  constructor(readonly p: Ports, readonly seq: string) {}
   audit(step: Step, action: Action, before: Level, after: Level, outcome: Outcome) {
     this.p.audit(this.seq, step, action, before, after, outcome);
   }
   assist(reason: AssistReason) {
-    if (this.notified || this.quiet) return;
+    if (this.notified) return;
     this.notified = true;
     this.p.notifyAssist(reason);
   }
@@ -1022,30 +550,14 @@ class Run {
   }
 }
 
-/** ON: wireless debugging → wait for Shizuku → Tailscale. [recovery] (Shizuku
- *  watchdog): Wi-Fi is probed again before any write and once more right
- *  before the enable write (not known up = superseded, fail closed); wireless debugging that is already on is cycled OFF → ON
- *  first, so Shizuku's own auto-start sees a fresh trigger; step failures are
- *  not notified. */
-export function runOnSequence(p: Ports, mem: RunnerMemory, seq: string, recovery = false): SequenceResult {
-  const r = new Run(p, seq, recovery);
+/** ON: wireless debugging → Tailscale. */
+export function runOnSequence(p: Ports, seq: string): SequenceResult {
+  const r = new Run(p, seq);
 
   // 1. Wireless debugging.
-  let stop = r.gated('wifi_debug');
+  const stop = r.gated('wifi_debug');
   if (stop) return r.end(stop);
-  if (recovery && p.wifiUp() !== true) {
-    // Queued while settled online, but Wi-Fi left before it ran: no write.
-    r.audit('wifi_debug', 'check', 'none', 'none', 'superseded');
-    return r.end('superseded');
-  }
-  let adbBefore = p.readAdbWifi();
-  if (recovery && adbBefore === 1) {
-    const cycled = cycleWifiDebugOff(r);
-    if (cycled !== null) return r.end(cycled);
-    stop = r.gated('wifi_debug');
-    if (stop) return r.end(stop);
-    adbBefore = p.readAdbWifi();
-  }
+  const adbBefore = p.readAdbWifi();
   if (adbBefore === 1) {
     r.audit('wifi_debug', 'check', 'on', 'on', 'already');
   } else {
@@ -1053,13 +565,6 @@ export function runOnSequence(p: Ports, mem: RunnerMemory, seq: string, recovery
       r.audit('wifi_debug', 'enable', adbLevel(adbBefore), adbLevel(adbBefore), 'grant_missing');
       r.assist('grant_missing');
       return r.end('assist');
-    }
-    if (recovery && p.wifiUp() !== true) {
-      // Gate round 4: Wi-Fi left during the cycle pause (or since the first
-      // probe). Never write wireless debugging on without Wi-Fi; the loss flow
-      // owns the OFF state.
-      r.audit('wifi_debug', 'enable', adbLevel(adbBefore), adbLevel(adbBefore), 'superseded');
-      return r.end('superseded');
     }
     if (!p.writeAdbWifi(1)) {
       r.audit('wifi_debug', 'enable', adbLevel(adbBefore), adbLevel(p.readAdbWifi()), 'write_failed');
@@ -1078,7 +583,7 @@ export function runOnSequence(p: Ports, mem: RunnerMemory, seq: string, recovery
     if (verified === 'ok') {
       r.audit('wifi_debug', 'enable', adbLevel(adbBefore), 'on', 'ok');
     } else if (last === null) {
-      // The hidden key cannot be read back: the Shizuku wait is the check.
+      // The hidden key cannot be read back; record the write as unverified.
       r.audit('wifi_debug', 'enable', adbLevel(adbBefore), 'unknown', 'unverified');
     } else {
       // Did not take effect (e.g. the network-trust dialog is pending).
@@ -1089,73 +594,9 @@ export function runOnSequence(p: Ports, mem: RunnerMemory, seq: string, recovery
     }
   }
 
-  // 2. Shizuku: never started by the guardian; wait for its own auto-start.
-  stop = r.gated('shizuku');
-  if (stop) return r.end(stop);
-  if (p.shizukuAlive()) {
-    mem.lastShizukuTimeoutAt = null;
-    r.audit('shizuku', 'check', 'on', 'on', 'already');
-  } else {
-    const last = mem.lastShizukuTimeoutAt;
-    if (last !== null && p.nowMs() - last < SHIZUKU_RETRY_COOLDOWN_MS) {
-      r.audit('shizuku', 'wait', 'off', 'off', 'cooldown');
-      return r.end('assist');
-    }
-    const waited = pollUntil(p, SHIZUKU_WAIT_MS, SHIZUKU_POLL_MS, () => p.shizukuAlive());
-    if (isAbort(waited)) {
-      r.audit('shizuku', 'wait', 'off', 'off', waited);
-      return r.end(waited);
-    }
-    if (waited === 'timeout') {
-      mem.lastShizukuTimeoutAt = p.nowMs();
-      r.audit('shizuku', 'wait', 'off', 'off', 'timeout');
-      r.assist('shizuku_timeout');
-      return r.end('assist');
-    }
-    mem.lastShizukuTimeoutAt = null;
-    r.audit('shizuku', 'wait', 'off', 'on', 'ok');
-  }
-
-  // 3. Tailscale.
+  // 2. Tailscale.
   const t = tailscaleStep(r);
   return r.end(t ?? 'done');
-}
-
-/** Recovery only: wireless debugging on → off (verified), then a short pause.
- *  null = off (or unreadable: the Shizuku wait is the check), go on to the
- *  normal enable step; else the sequence result. */
-function cycleWifiDebugOff(r: Run): SequenceResult | null {
-  const p = r.p;
-  if (!p.hasWriteSecureSettings()) {
-    r.audit('wifi_debug', 'disable', 'on', 'on', 'grant_missing');
-    r.assist('grant_missing');
-    return 'assist';
-  }
-  if (!p.writeAdbWifi(0)) {
-    r.audit('wifi_debug', 'disable', 'on', adbLevel(p.readAdbWifi()), 'write_failed');
-    r.assist('wifi_debug_off_failed');
-    return 'assist';
-  }
-  let last: number | null = null;
-  const verified = pollUntil(p, ADB_WIFI_VERIFY_MS, ADB_WIFI_POLL_MS, () => {
-    last = p.readAdbWifi();
-    return last === 0;
-  });
-  if (isAbort(verified)) {
-    r.audit('wifi_debug', 'disable', 'on', adbLevel(last), verified);
-    return verified;
-  }
-  if (verified === 'ok') {
-    r.audit('wifi_debug', 'disable', 'on', 'off', 'ok');
-  } else if (last === null) {
-    r.audit('wifi_debug', 'disable', 'on', 'unknown', 'unverified');
-  } else {
-    r.audit('wifi_debug', 'disable', 'on', adbLevel(last), 'verify_failed');
-    r.assist('wifi_debug_off_failed');
-    return 'failed';
-  }
-  p.sleep(WIFI_DEBUG_CYCLE_PAUSE_MS);
-  return null;
 }
 
 /** OFF: wireless debugging only. Tailscale is never touched here (it stays
@@ -1194,7 +635,7 @@ export function runOffSequence(p: Ports, seq: string): SequenceResult {
     return r.end('done');
   }
   if (last === null) {
-    // Cannot confirm it is off: tell the owner (no Shizuku check stands in here).
+    // Cannot confirm it is off: tell the owner.
     r.audit('wifi_debug', 'disable', adbLevel(adbBefore), 'unknown', 'unverified');
     r.assist('wifi_debug_off_failed');
     return r.end('assist');
@@ -1284,8 +725,8 @@ function awaitSettle(r: Run, reqId: string, dispatchedAt: number): void {
 }
 
 /** Runs one whole sequence (exactly one `end` audit line). */
-export function runSequence(kind: SeqKind, p: Ports, mem: RunnerMemory, seq: string, recovery = false): SequenceResult {
-  return kind === 'on' ? runOnSequence(p, mem, seq, recovery) : runOffSequence(p, seq);
+export function runSequence(kind: SeqKind, p: Ports, seq: string): SequenceResult {
+  return kind === 'on' ? runOnSequence(p, seq) : runOffSequence(p, seq);
 }
 
 // ── Audit line ─────────────────────────────────────────────────────────────
@@ -1309,18 +750,6 @@ export function buildAuditLine(
   return (
     `{"ts":"${tsIso}","kind":"${AUDIT_KIND}","seq":"${seq}","step":"${step}",` +
     `"action":"${action}","before":"${before}","after":"${after}","outcome":"${outcome}"}`
-  );
-}
-
-/** Shizuku watchdog line: same file and kind, its own fixed keys. */
-export const SHIZUKU_WATCHDOG_AUDIT_KEYS = ['ts', 'kind', 'step', 'event', 'attempt'] as const;
-
-export function buildShizukuWatchdogAuditLine(tsIso: string, event: string, attempt: number): string | null {
-  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/.test(tsIso)) return null;
-  if (!(SHIZUKU_WATCHDOG_EVENTS as readonly string[]).includes(event)) return null;
-  if (!Number.isInteger(attempt) || attempt < 0 || attempt > SHIZUKU_WATCHDOG_MAX_ATTEMPTS) return null;
-  return (
-    `{"ts":"${tsIso}","kind":"${AUDIT_KIND}","step":"shizuku_watchdog",` + `"event":"${event}","attempt":${attempt}}`
   );
 }
 
