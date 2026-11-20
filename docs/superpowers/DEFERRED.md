@@ -256,6 +256,11 @@ Why not now: MCP ingress の Inc 5 以降が先。
 - **残り**: 古い `versions/` の削除（1 版 344MB、削除処理なし）、`previous` と自動ロールバック、失敗版の保留（Inc 5）。Ed25519 署名（§6.7、オーナーの Secret 登録が必要）。`codex-runtime.json` を読む切替前の APK への案内は無い（APK 更新で解消）。`codex-runtime-latest` の古いアセットの掃除。
 - **署名鍵の交代**: Termux が `termux-autobuilds` の鍵を替えると Bump は赤くなる（意図どおり）。新しい鍵を確かめて `scripts/termux-autobuilds.gpg` と `TERMUX_SIGNING_FINGERPRINTS` を更新する。
 
+### 記事の書き直しフィードバック（executor v64、Phase 1）— 起動の動詞 `run-agent:` は Phase 2 (P2)
+executor v64（ブランチ `feat/recovery-feedback`、実機未検証）で、tainted でない記事の実行は開始時に `~/.shelly/agents/recovery-feedback.json` を読み、その pipeline・今日の日付・attempt 1 か 2 の項目があれば、queue-pop はその `topic` を使って `_queue.md` を読みも書きもせず（tick なし、queue-refill も何もしない。材料 `materials` は読まない: ドロップファイルの話題行にローカルファイルを選ばせない）、write ステップだけに `# Previous attempt review (data)` ブロック（4000 字まで）が入る。受領は `recovery-feedback-receipts.jsonl` に 1 行、監査は `article_recovery_feedback_applied`（pipeline と attempt のみ）。
+- **未対応（既知の後続、Phase 2）**: 外部スクリプトから書き直しを起動する command-queue の動詞 `run-agent:`（スクリプト起点のローカル起動）。フィードバックの読み口は起動経路に依らない（スケジュール・Run now・将来の動詞のどれでも同じ判定）。
+- **注意**: `recovery-feedback.json` はゲートの `policy-write` 保護の名前に入っていない（ブロックはデータ扱いで権限は増えないが、ワーカーが書けると話題の固定と注記の差し込みはできる）。保護の追加は別変更。
+
 ### 記事パイプラインの設定の再読込（executor v63）— 実行開始時のみ。スケジュール（cron）の再読込は未対応 (P2)
 executor v63（ブランチ `feat/pipeline-config-hotreload`、実機未検証）で、記事エージェントの実行は開始時に `~/.shelly/agents/article-pipelines.json` を読み直し、出力フォルダ（`path.resolve`＋`/storage` の別名の畳み込み、A1 と同じ）がちょうど 1 つ一致した pipeline から、権限を変えない値だけを plan のコピーに重ねる: `engines.research` / `engines.write`（write と各 revise）/ `engines.review`、`editor.minScore`、`reviewRounds` を下げる方向のみ（上の round の review / revise を SKIPPED にする。ステップは増やせないので上げる変更は効かない）。tainted 実行・ダイジェスト・一致 0 件／2 件以上・読めないファイルでは何もしない。CLI エンジンへの切り替えは plan に `cliWorker` があるときだけ、Web 検索 CLI の調査は元からそうだった plan だけ。監査は値が変わったときだけ `article_config_reloaded`（pipeline id とフィールド名のみ）。
 - **未対応（既知の後続）**: **スケジュール（cron）の再読込はこの変更に含まない。** 発火時刻は RN／ネイティブ側（`AgentAlarmScheduler`）がエージェントストアの定義から張るので、executor が実行時に読み直しても次回の時刻は変わらない。`schedule` を変えたらエージェントの再作成が今も必要。プロンプト・指示・保存先・lint・voice・materials・fetchSources・editor のエンジンと rubric・`engines.agent`（plan.tool）も従来どおり作成時の値のまま（意図的、権限・内容の封じ込めに関わるため）。
