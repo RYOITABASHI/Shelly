@@ -135,6 +135,7 @@ function makeDevice(over: Partial<World> = {}) {
       }
       return w.shizuku;
     },
+    wifiUp: () => true,
     vpnUp: () => {
       land();
       return w.vpn;

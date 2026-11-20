@@ -50,6 +50,7 @@ class ConnectivityGuardianCoreTest {
             calls += "adb:$value"; adb = value; if (value == 1) shizuku = true; return true
         }
         override fun shizukuAlive() = shizuku
+        override fun wifiUp(): Boolean? = true
         var vpnProbes = 0
         override fun vpnUp(): Boolean? { vpnProbes++; land(); return vpn }
         override fun closePawPreapproved() = preapproved

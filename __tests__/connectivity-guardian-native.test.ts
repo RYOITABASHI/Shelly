@@ -206,8 +206,18 @@ describe('lockstep: ConnectivityGuardianCore.kt <-> lib/connectivity-guardian-co
         'try {\n    return verifyTailscale(r, action, before);\n  } finally {\n    awaitSettle(r, reqId, dispatchedAt);\n  }',
       ],
       [
-        'Transition(cleared(t.state).copy(mode = Mode.IDLE_ONLINE, pending = Pending.ON), t.effects.filter { it !is Effect.RunOn })',
-        "state: { ...cleared(t.state), mode: 'IDLE_ONLINE', pending: 'ON' },\n    effects: t.effects.filter((e) => e.type !== 'runOn'),",
+        // A dropped ON leaves ON owed; a dropped watchdog recovery is refunded,
+        // stays settled online and re-arms the tick (never claims a started recovery).
+        'val effects = t.effects.filter { it !is Effect.RunOn && it !is Effect.RunShizukuRecovery && !isRecoveryStarted(it) }',
+        "const effects = t.effects.filter((e) => e.type !== 'runOn' && e.type !== 'runShizukuRecovery' && !isRecoveryStarted(e));",
+      ],
+      [
+        'if (plain) return Transition(cleared(base).copy(mode = Mode.IDLE_ONLINE, pending = Pending.ON, wdRecovering = false), effects)',
+        "if (plain) return { state: { ...rest, mode: 'IDLE_ONLINE', pending: 'ON' }, effects };",
+      ],
+      [
+        'cleared(base).copy(mode = Mode.IDLE_ONLINE, pending = Pending.NONE, wdRecovering = false),\n            effects + Effect.ArmShizukuWatchdog(SHIZUKU_WATCHDOG_TICK_MS),',
+        "state: { ...rest, mode: 'IDLE_ONLINE', pending: 'NONE' },\n    effects: [...effects, { type: 'armShizukuWatchdog', delayMs: SHIZUKU_WATCHDOG_TICK_MS }],",
       ],
       ['if (p.nowMs() - dispatchedAt >= CLOSEPAW_SETTLE_MS) {', 'if (p.nowMs() - dispatchedAt >= CLOSEPAW_SETTLE_MS) {'],
       [
@@ -294,10 +304,35 @@ describe('5 (native). guardian lock: one worker thread runs every sequence', () 
     expect(guardian).toContain('Executors.newSingleThreadExecutor');
     const drain = fn(guardian, 'fun drain(');
     expect(drain).toContain('worker.execute');
-    expect(drain).toContain('ConnectivityGuardianCore.runSequence(kind, AndroidPorts(app, kind), memory, seq)');
-    expect(drain).toContain('onEvent(app, Event.SequenceDone(kind, result == "superseded"))');
+    expect(drain).toContain('ConnectivityGuardianCore.runSequence(kind, AndroidPorts(app, kind), memory, seq, recovery)');
+    // Gate round 2: the SequenceDone comes from the core's sequenceDoneFor
+    // (completion-time gates, ping only for a recovery); the start clock (the
+    // recovery backoff anchor) is read before the runner.
+    expect(drain).toContain('val done = ConnectivityGuardianCore.sequenceDoneFor(kind, result, recovery, start, AndroidWatchdogProbes(app))');
+    expect(drain).toContain('onEvent(app, done)');
+    expect(code(drain)).not.toContain('ShizukuLiveness');
+    expect(drain.indexOf('val start = lossClock(app)')).toBeGreaterThan(-1);
+    expect(drain.indexOf('val start = lossClock(app)')).toBeLessThan(drain.indexOf('ConnectivityGuardianCore.runSequence('));
+    const ev = fn(guardian, 'fun onEvent(');
+    expect(ev).toContain('is Effect.CancelShizukuWatchdog -> cancelShizukuWatchdog(context)');
+    for (const k of ['KEY_WD_HEALTHY_LAST', 'KEY_WD_HEALTHY_BOOT']) {
+      expect(ev.indexOf(k)).toBeGreaterThan(-1);
+      expect(ev.indexOf(k)).toBeLessThan(ev.indexOf('edit.commit()'));
+      expect(fn(guardian, 'private fun currentState(')).toContain(`prefs.contains(${k})`);
+    }
+    // Gate round 2: the recovery intent and the observed-healthy accumulation
+    // ride the same checkpoint commit and are read back on restore.
+    for (const [k, read] of [
+      ['KEY_WD_RECOVERING', 'prefs.getBoolean(KEY_WD_RECOVERING, false)'],
+      ['KEY_WD_HEALTHY_ACCUM', 'prefs.getLong(KEY_WD_HEALTHY_ACCUM, 0L)'],
+    ] as const) {
+      expect(ev.indexOf(k)).toBeGreaterThan(-1);
+      expect(ev.indexOf(k)).toBeLessThan(ev.indexOf('edit.commit()'));
+      expect(fn(guardian, 'private fun currentState(')).toContain(read);
+    }
+    expect(guardian).toContain('private const val KEY_WD_RECOVERING = "wdRecovering"');
     expect(code(guardian).match(/runSequence\(/g)).toHaveLength(1);
-    expect(fn(guardian, 'fun onEvent(')).toContain('ConnectivityGuardianCore.reduce(before, event)');
+    expect(fn(guardian, 'fun onEvent(')).toContain('ConnectivityGuardianCore.reduceWithWatchdog(before, event)');
     expect(guardian).toMatch(/@Synchronized\s+fun onEvent\(/);
   });
 
@@ -584,7 +619,7 @@ describe('16 (native). coordinator gate round 1: settle, recovery reconcile, res
     );
     const drain = fn(guardian, 'fun drain(');
     expect(drain.indexOf('prelude?.let { p -> runCatching(p) }')).toBeGreaterThan(drain.indexOf('worker.execute'));
-    expect(drain.indexOf('prelude?.let { p -> runCatching(p) }')).toBeLessThan(drain.indexOf('val kind = takeQueued()'));
+    expect(drain.indexOf('prelude?.let { p -> runCatching(p) }')).toBeLessThan(drain.indexOf('val (kind, recovery) = takeQueued()'));
     const rec = fn(guardian, 'fun reconcile(');
     expect(rec).toContain('if (!ConnectivityGuardianStore.isOn(app)) return');
     expect(rec).toContain('true -> onEvent(app, Event.Reconcile(true, lossClock(app)))');
