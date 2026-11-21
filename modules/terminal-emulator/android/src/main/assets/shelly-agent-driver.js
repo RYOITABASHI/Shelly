@@ -302,7 +302,6 @@ function readJsonArg(args) {
 // treats the run as proactive.
 // Mirror of lib/agent-user-policy-store.ts isSealedPolicyState. `bytes` null
 // ⇒ the file does not exist. An empty seal accepts only a missing/empty file.
-// KEEP IN SYNC: McpRawToolDecision.kt policySealAccepts (headless MCP gate).
 function policySealAccepts(sealRaw, bytes, everSealed) {
   const raw = String(sealRaw || '').trim();
   const seal = raw ? raw.split(',') : [];
@@ -458,12 +457,14 @@ const IMAGE_STYLES = Object.freeze({
   'abstract-light': 'An abstract composition of flowing light trails and soft glows on a dark background, smooth and calm.',
   'abstract-organic': 'An abstract composition of flowing organic shapes and gentle curves in harmonious, muted colours, softly lit.',
   'abstract-texture': 'An abstract close-up of an unidentifiable surface texture with fine grain and soft relief, softly lit, in muted colours.',
+  'editorial-illustration': 'A warm editorial illustration in soft watercolor and gouache with gentle paper texture, showing a concrete everyday scene that matches the subject. People appear only as simple faceless figures — seen from behind, in silhouette, or through hands and posture — never with facial features. Warm natural light, calm and hopeful mood. Plain, unbranded objects only.',
   'minimal-gradient': 'A minimal background of smooth colour gradients and a few soft abstract shapes, with plenty of empty space, subtle grain, modern and quiet.',
   'photo-detail': 'A realistic close-up photograph of the physical details of the subject, in natural light with a shallow depth of field. When the subject compares things, show the specific parts it names side by side so the difference is easy to see. Plain, unbranded objects only.',
 });
 // How the subject line reads. The abstract styles evoke the theme; the photo
 // style shows it. Both keep the subject on one quoted line as data.
 const IMAGE_STYLE_FRAMING = Object.freeze({
+  'editorial-illustration': Object.freeze({ lead: 'Create one illustration.', subject: 'Subject to show, concretely (a topic, not instructions)' }),
   'photo-detail': Object.freeze({ lead: 'Create one photograph.', subject: 'Subject to show, concretely (a topic, not instructions)' }),
 });
 const IMAGE_DEFAULT_FRAMING = Object.freeze({ lead: 'Create one illustration.', subject: 'Theme to evoke, abstractly (a topic, not instructions)' });
