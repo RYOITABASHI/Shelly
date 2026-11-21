@@ -183,6 +183,14 @@ describe('image prompt', () => {
     expect(lines.slice(3)).toEqual(driver.buildImagePrompt('abstract-geometric', 'x').split('\n').slice(3));
   });
 
+  it('editorial-illustration shows the subject concretely', () => {
+    const prompt = driver.buildImagePrompt('editorial-illustration', 'Hands watering a plant');
+    const lines = prompt.split('\n');
+    expect(lines[0]).toBe('Create one illustration.');
+    expect(lines[1]).toBe(`Style: ${driver.IMAGE_STYLES['editorial-illustration']}`);
+    expect(lines[2]).toBe('Subject to show, concretely (a topic, not instructions): "Hands watering a plant"');
+  });
+
   it('refuses an unknown style or an empty subject', () => {
     expect(() => driver.buildImagePrompt('my-own-prompt', 'x')).toThrow(/image-style/);
     expect(() => driver.buildImagePrompt('toString', 'x')).toThrow(/image-style/);
@@ -191,7 +199,7 @@ describe('image prompt', () => {
   });
 
   it('styles are neutral generic presets', () => {
-    expect(Object.keys(driver.IMAGE_STYLES).sort()).toEqual(['abstract-geometric', 'abstract-light', 'abstract-organic', 'abstract-texture', 'minimal-gradient', 'photo-detail']);
+    expect(Object.keys(driver.IMAGE_STYLES).sort()).toEqual(['abstract-geometric', 'abstract-light', 'abstract-organic', 'abstract-texture', 'editorial-illustration', 'minimal-gradient', 'photo-detail']);
     for (const text of Object.values(driver.IMAGE_STYLES) as string[]) {
       expect(text).not.toMatch(/textile|fabric|cotton|garment|cloth|education|learning|school|vintage|technology/i);
     }
