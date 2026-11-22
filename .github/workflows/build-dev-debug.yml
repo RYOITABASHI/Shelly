@@ -11,6 +11,13 @@ permissions:
   contents: read
   actions: read
 
+env:
+  # android/app/build.gradle refuses to configure on CI without a
+  # signing mode. The debug build type always signs with the project's
+  # debug keystore regardless of this value; legacy-debug is set only
+  # to satisfy that gate.
+  SHELLY_SIGNING_MODE: legacy-debug
+
 jobs:
   quality:
     runs-on: ubuntu-latest
