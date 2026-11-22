@@ -34,7 +34,7 @@
  * also stops the server and its foreground service natively (OFF wins).
  * Ordering: the mirror is narrowed before anything narrower is committed
  * (narrower settings on disk: the persist hook below; startup: before the
- * fallible token work, which only runs once that clear is confirmed; token
+ * token publication and server start, which require a confirmed clear; token
  * replacement: McpTokenDeps.invalidateMirror)
  * and widened only after the wider state is committed (settings: only to
  * what is on disk, effectiveMirrorSettings; token: after it is saved).
@@ -50,11 +50,13 @@ import { AppState } from 'react-native';
 import * as Crypto from 'expo-crypto';
 import { registerSettingsPersistHook, settingsPersistIdle, useSettingsStore } from '@/store/settings-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
+import { clearMcpTokenSecret, getConnectorSecret, saveMcpTokenSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
 import {
+  beginMCPRequestRevocation,
   DEVICE_REFRESH_MS,
   refreshMCPDeviceSnapshot,
+  resetMcpOmissionSwitches,
   revokePendingMCPRequests,
   setMCPBridgeKey,
   startMCPPoller,
@@ -81,9 +83,11 @@ import {
 } from '@/lib/mcp-autostart-mirror';
 import {
   MCP_SERVER_PORT,
-  getOrCreateToken,
+  MCP_TOKEN_CONNECTOR_ID,
+  MCP_TOKEN_FIELD,
   getOrCreateTokenInLock,
   regenerateToken,
+  stopAndConfirmMcpServer,
   withMcpServerLock,
   type McpServerControl,
   type McpTokenDeps,
@@ -95,22 +99,43 @@ import type { Sha256 } from '@/lib/mcp-request-auth';
 const expoSha256: Sha256 = async (data) =>
   new Uint8Array(await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, new Uint8Array(data)));
 
+const tokenFingerprint = (token: string) =>
+  Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, token);
+
 const tokenDeps: McpTokenDeps = {
-  store: { get: getConnectorSecret, save: saveConnectorSecret },
+  store: { get: getConnectorSecret, save: (_id, _field, value) => saveMcpTokenSecret(value) },
   randomBytes: (n) => Crypto.getRandomBytesAsync(n),
   encode: base64UrlFromBytes,
   // Always-allow cascade, step 2: only rules of the new token's principal may
   // remain (step 1, before the save, removed all: revokePending below).
   purgeOtherClientRules: (token) => purgeMcpAlwaysAllowRulesForNewToken(token, expoSha256),
+  readMirror: async () => (await TerminalEmulator.getMCPAutostartToken?.()) ?? null,
+  readFingerprint: () => TerminalEmulator.getMCPTokenFingerprint(),
+  fingerprintOf: tokenFingerprint,
+  revokeFingerprint: async () => {
+    if (await TerminalEmulator.revokeMCPTokenFingerprint() !== true) {
+      throw new Error('could not persist the MCP token revocation');
+    }
+  },
+  writeFingerprint: async (token) => {
+    if (await TerminalEmulator.setMCPTokenFingerprint(await tokenFingerprint(token)) !== true) {
+      throw new Error('could not persist the MCP token fingerprint');
+    }
+  },
   // A new token must reach the native auto-start mirror too.
-  onSaved: (token) =>
-    mirrorTokenChange(TerminalEmulator, effectiveMirrorSettings(useSettingsStore.getState().settings), token),
+  onSaved: async (token) => {
+    await mirrorTokenChange(TerminalEmulator, effectiveMirrorSettings(useSettingsStore.getState().settings), token);
+    await refreshStageInstallMirror();
+  },
   // ...and the old one must be gone from it before the token is replaced.
   invalidateMirror: async () => {
     if (!(await writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))) {
       throw new Error('could not clear the native MCP auto-start mirror; token left unchanged');
     }
   },
+  revokePriorPrincipal: () => revokePendingMCPRequests({ tokenRevoked: true }),
+  resetOmissionSwitches: resetMcpOmissionSwitches,
+  confirmListenerStopped: (oldToken) => stopAndConfirmMcpServer(serverControl, oldToken),
 };
 
 /**
@@ -190,12 +215,55 @@ const serverControl: McpServerControl = {
   revokePending: () => revokePendingMCPRequests({ tokenRevoked: true }),
 };
 
-/** Returns the persisted MCP bearer token, generating and saving a fresh
- *  one on first use. Exported so Settings UI can show/copy it without
- *  duplicating the generation logic. Takes the server lock (creation and
- *  regeneration are serialized); never call it from inside the lock. */
+async function refreshStageInstallMirror(): Promise<void> {
+  try {
+    if (await TerminalEmulator.refreshStageInstallResultMirror?.() === false) {
+      logError('MCPBridge', 'could not refresh the stage install result mirror');
+    }
+  } catch (error) {
+    logError('MCPBridge', 'could not refresh the stage install result mirror', error);
+  }
+}
+
+async function getReconciledTokenInLock(beforeResolve?: (narrow: boolean) => Promise<boolean | void>): Promise<string> {
+  let stored: string | null;
+  let mirror: string | null = null;
+  let mirrorUnknown = false;
+  let fingerprint: string | null;
+  let fingerprintMismatch: boolean;
+  try {
+    // Compare before any narrowing clear erases the native credential.
+    stored = await tokenDeps.store.get(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD);
+    try {
+      mirror = (await tokenDeps.readMirror?.()) ?? null;
+    } catch {
+      mirrorUnknown = true;
+    }
+    fingerprint = await tokenDeps.readFingerprint();
+    fingerprintMismatch = stored !== null && fingerprint !== null
+      && await tokenFingerprint(stored) !== fingerprint;
+  } catch (error) {
+    await beforeResolve?.(true);
+    throw error;
+  }
+  // The mint path requires its own confirmed mirror clear before save.
+  const narrowing = Boolean(stored && (mirrorUnknown || (!fingerprintMismatch && (!mirror || mirror === stored))));
+  const forceRecovery = await beforeResolve?.(narrowing) === false;
+  return getOrCreateTokenInLock(tokenDeps, {
+    stored,
+    mirror,
+    mirrorUnknown,
+    fingerprint,
+    fingerprintMismatch,
+    publishExisting: beforeResolve !== undefined,
+    forceRecovery,
+    clearStored: clearMcpTokenSecret,
+  });
+}
+
+/** Returns the reconciled bearer token under the same lock as startup. */
 export async function getOrCreateMCPToken(): Promise<string> {
-  return getOrCreateToken(tokenDeps);
+  return withMcpServerLock(() => getReconciledTokenInLock());
 }
 
 /** Replaces the MCP bearer token and, if the server is running, restarts it
@@ -251,11 +319,16 @@ export function useMCPServerBridge(): void {
       // side may have started headless, and its foreground service), and
       // drop a snapshot a left-running server was still serving from.
       stopMCPSnapshotPublisher();
-      void withMcpServerLock(() => writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))
-        .then((ok) => {
-          if (!ok) logError('MCPBridge', 'could not clear the native MCP auto-start mirror');
-        })
-        .catch(() => {});
+      const finishRevocation = beginMCPRequestRevocation();
+      void withMcpServerLock(async () => {
+        const revoke = finishRevocation().catch((error) =>
+          logError('MCPBridge', 'could not clear the request queue while stopping', error),
+        );
+        if (!(await writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))) {
+          logError('MCPBridge', 'could not clear the native MCP auto-start mirror');
+        }
+        await revoke;
+      }).catch((error) => logError('MCPBridge', 'server shutdown failed', error));
       return;
     }
     let cancelled = false;
@@ -266,29 +339,17 @@ export function useMCPServerBridge(): void {
     void settingsPersistIdle().then(() => withMcpServerLock(async () => {
       if (cancelled) return;
       try {
-        // Narrow first: the token work below can fail, and a failure must
-        // not leave a mirror broader than these settings (e.g. exec ON from
-        // an earlier process while Settings now say OFF) for a reboot /
-        // update to restore. Clearing also stops a headless server; the
-        // start below brings it back with these switches.
-        // Fail closed: without a CONFIRMED clear nothing else happens — no
-        // token load / create, no mirror write, no start (the native OFF
-        // path still stops a headless server). The mirror ceiling stays
-        // unchanged, so the next run of this effect (app start, or any
-        // MCP switch change written to settings) tries the clear again,
-        // like the settings persist barrier skipping a write it could not
-        // order behind a confirmed clear.
-        if (mirrorMayBeBroaderThan(switchesFromSettings(effectiveMirrorSettings(useSettingsStore.getState().settings)))) {
-          if (!(await writeMcpAutostartMirror(TerminalEmulator, { enabled: false }))) {
-            logError(
-              'MCPBridge',
-              'could not clear a possibly broader native MCP auto-start mirror; server not started (retried on the next start / MCP settings change)',
-            );
-            return;
+        const token = await getReconciledTokenInLock(async (narrow) => {
+          if (cancelled) throw new Error('MCP startup cancelled');
+          if (!narrow || !mirrorMayBeBroaderThan(switchesFromSettings(effectiveMirrorSettings(useSettingsStore.getState().settings)))) return true;
+          try {
+            if (await writeMcpAutostartMirror(TerminalEmulator, { enabled: false })) return true;
+            logError('MCPBridge', 'could not clear a possibly broader native MCP auto-start mirror');
+          } catch (error) {
+            logError('MCPBridge', 'could not clear a possibly broader native MCP auto-start mirror', error);
           }
-        }
-        if (cancelled) return;
-        const token = await getOrCreateTokenInLock(tokenDeps);
+          return false;
+        });
         if (cancelled) return;
         // Mirror first, so a reboot after this point auto-starts with exactly
         // these settings and this token. A failure only disables auto-start.
@@ -297,6 +358,7 @@ export function useMCPServerBridge(): void {
           mirrorStateFromSettings(effectiveMirrorSettings(useSettingsStore.getState().settings), token),
         );
         if (!mirrored) logError('MCPBridge', 'native MCP auto-start mirror not written; auto-start is off');
+        await refreshStageInstallMirror();
         if (cancelled) return;
         try {
           await revokePendingMCPRequests();
@@ -343,7 +405,10 @@ export function useMCPServerBridge(): void {
       stopMCPSnapshotPublisher({ keepFile: action === 'keep' });
       setMCPBridgeKey(null);
       if (action === 'stop') {
-        void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
+        // The OFF effect invalidates approvals before scheduling its stop.
+        if (settings.mcpServerEnabled === true) {
+          void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
+        }
       } else {
         logInfo('MCPBridge', 'bridge unmounted with the server still enabled; left to the native supervisor');
       }

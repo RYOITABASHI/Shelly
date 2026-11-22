@@ -3,8 +3,15 @@ package expo.modules.terminalemulator
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import java.net.ConnectException
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,8 +41,9 @@ object MCPBridge {
     private const val TAG = "MCPBridge"
     private const val PORT = 8767 // keep in sync with lib/mcp-token.ts MCP_SERVER_PORT
     private const val STOP_GRACE_MS = 2000L
+    private const val SERVER_SCRIPT = ".shelly-mcp-server.js"
 
-    private var process: Process? = null
+    @Volatile private var process: Process? = null
     /** The bridge key the running process was started with (never logged). */
     private var processBridgeKey: String? = null
     /** Token + tool switches the running process was started with (never logged). */
@@ -45,10 +53,11 @@ object MCPBridge {
     private var processDiagnostics = false
     private var processTypedOps = false
     private val BRIDGE_KEY_RE = Regex("^[0-9a-f]{64}$")
-    /** Same rule as the script's TOKEN_RE: one stdin line, no spaces / controls. */
-    private val TOKEN_RE = Regex("^[\\x21-\\x7e]{1,1024}$")
 
     fun isRunning(): Boolean = process?.let { isAlive(it) } == true
+
+    @Synchronized
+    internal fun runningToken(): String? = processToken
 
     // Process.isAlive / waitFor(long, TimeUnit) / destroyForcibly() are API 26;
     // minSdk is 24, so API 24/25 use exitValue() polling and destroy() only.
@@ -98,13 +107,14 @@ object MCPBridge {
      * on the process's stdin, never in its environment (/proc/<pid>/environ
      * is readable by the same uid). Framing, kept in sync with
      * scripts/shelly-mcp-server.js readStartupSecretsFromStdin():
-     *   line 1: token      (printable ASCII 0x21-0x7e, 1..1024 chars)
+     *   line 1: token      (base64url per the autostart store)
      *   line 2: bridge key (64 lowercase hex)
      * each terminated by '\n', then stdin is closed (EOF). Neither is logged.
      */
     @Synchronized
     fun start(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String): Boolean {
-        if (!TOKEN_RE.matches(token)) {
+        // The autostart store defines the single native rule for the token line.
+        if (!McpAutostartStore.isValidToken(token)) {
             // Also guarantees the token can't break the stdin line framing.
             Log.e(TAG, "no or malformed token provided")
             return false
@@ -125,18 +135,23 @@ object MCPBridge {
                 processDiagnostics == diagnostics && processTypedOps == typedOps
             ) return true
             Log.i(TAG, "restarting the MCP server (new bridge key or changed settings)")
-            stop()
+            if (!stop(context)) return false
         }
 
         val homeDir = HomeInitializer.getHomeDir(context)
         val libDir = LibExtractor.getLibDir(context)
-        val scriptPath = File(homeDir, ".shelly-mcp-server.js").absolutePath
+        val scriptPath = File(homeDir, SERVER_SCRIPT).absolutePath
         val nodePath = File(libDir, "node").absolutePath
         val queueDir = File(homeDir, ".shelly-mcp-queue")
         queueDir.mkdirs()
 
         if (!File(scriptPath).exists() || !File(nodePath).exists()) {
             Log.e(TAG, "MCP runtime not extracted yet (script or node binary missing)")
+            return false
+        }
+
+        if (!isRunning() && !killOrphanListeners(context)) {
+            Log.e(TAG, "MCP orphan cleanup or listener exit could not be confirmed")
             return false
         }
 
@@ -200,9 +215,8 @@ object MCPBridge {
      * SIGKILL if it hasn't exited within the grace period.
      */
     @Synchronized
-    fun stop() {
-        val proc = process ?: return
-        process = null
+    fun stop(context: Context): Boolean {
+        val proc = process ?: return killOrphanListeners(context)
         processBridgeKey = null
         processToken = null
         try {
@@ -220,5 +234,177 @@ object MCPBridge {
         } catch (_: Exception) {
             runCatching { forceKill(proc) }
         }
+        // Retain the handle after an unconfirmed stop so it can be retried.
+        if (isAlive(proc)) return false
+        process = null
+        return killOrphanListeners(context)
+    }
+
+    internal fun isListenerPresent(): Boolean = !listenerIsGone()
+
+    private sealed interface OrphanScan {
+        data class Match(val pid: Int, val exe: String, val argv: ByteBuffer, val startTime: Long) : OrphanScan
+        object NoMatch : OrphanScan
+        object Unknown : OrphanScan
+    }
+
+    private fun identifyOrphan(
+        pid: Int, nodePath: String, scriptPath: String, queuePath: String,
+        resolvedLinker: String, expectedNode: String, captured: OrphanScan.Match? = null,
+    ): OrphanScan {
+        if (pid <= 0 || pid == android.os.Process.myPid()) return OrphanScan.NoMatch
+        val dir = File("/proc/$pid")
+
+        fun readStartTime(): Long {
+            val stat = File(dir, "stat").readText()
+            val commEnd = stat.lastIndexOf(')')
+            check(commEnd >= 0)
+            // The remainder starts at field 3. Start time is field 22.
+            return stat.substring(commEnd + 1).trim().split(Regex("\\s+"))[19].toLong()
+        }
+
+        val uid = try {
+            Os.stat(dir.path).st_uid
+        } catch (error: ErrnoException) {
+            return if (error.errno == OsConstants.ENOENT) OrphanScan.NoMatch else OrphanScan.Unknown
+        } catch (_: Exception) {
+            return OrphanScan.Unknown
+        }
+        if (uid != android.os.Process.myUid()) return OrphanScan.NoMatch
+
+        return try {
+            val startTime = readStartTime()
+            val cmdline = File(dir, "cmdline").readBytes()
+            if (captured != null) {
+                val argvBytes = ByteBuffer.wrap(cmdline).asReadOnlyBuffer()
+                if (readStartTime() != startTime) return OrphanScan.Unknown
+                if (startTime != captured.startTime || argvBytes != captured.argv) return OrphanScan.NoMatch
+                val exe = Os.readlink("${dir.path}/exe")
+                if (readStartTime() != startTime) return OrphanScan.Unknown
+                if (exe.removeSuffix(" (deleted)") != captured.exe.removeSuffix(" (deleted)")) {
+                    return OrphanScan.Unknown
+                }
+                return OrphanScan.Match(pid, exe, argvBytes, startTime)
+            }
+            val argv = cmdline.toString(Charsets.UTF_8).split('\u0000').dropLastWhile { it.isEmpty() }
+            val linker = "/system/bin/linker64"
+            val viaLinker = argv.getOrNull(0) == linker && argv.getOrNull(1) == nodePath
+            val scriptIndex = when {
+                viaLinker -> 2
+                argv.getOrNull(0) == nodePath -> 1
+                else -> return OrphanScan.NoMatch
+            }
+            if (argv.getOrNull(scriptIndex + 1) != queuePath ||
+                argv.getOrNull(scriptIndex + 2) != PORT.toString()
+            ) return OrphanScan.NoMatch
+            val script = File(argv[scriptIndex])
+            val resolved = if (script.isAbsolute) script else File(Os.readlink("${dir.path}/cwd"), argv[scriptIndex])
+            if (resolved.canonicalPath != scriptPath) return OrphanScan.NoMatch
+
+            val exe = Os.readlink("${dir.path}/exe")
+            if (!(viaLinker && (exe == linker || exe == resolvedLinker)) &&
+                exe != expectedNode && exe != "$expectedNode (deleted)") {
+                return OrphanScan.NoMatch
+            }
+            if (readStartTime() != startTime) return OrphanScan.Unknown
+            OrphanScan.Match(pid, exe, ByteBuffer.wrap(cmdline).asReadOnlyBuffer(), startTime)
+        } catch (_: Exception) {
+            // A missing proc entry means the process exited. A missing identity
+            // file under an existing entry leaves the scan inconclusive.
+            try {
+                Os.stat(dir.path)
+                OrphanScan.Unknown
+            } catch (error: ErrnoException) {
+                if (error.errno == OsConstants.ENOENT) OrphanScan.NoMatch else OrphanScan.Unknown
+            } catch (_: Exception) {
+                OrphanScan.Unknown
+            }
+        }
+    }
+
+    @Synchronized
+    internal fun killOrphanListeners(context: Context): Boolean {
+        if (isRunning()) return listenerIsGone()
+        val home = HomeInitializer.getHomeDir(context)
+        val node = File(LibExtractor.getLibDir(context), "node").absolutePath
+        val script = runCatching { File(home, SERVER_SCRIPT).canonicalPath }.getOrNull() ?: return false
+        val queue = McpTypedOpConsumer.queueDir(context).absolutePath
+
+        val resolvedLinker = runCatching {
+            val target = Os.readlink("/system/bin/linker64")
+            if (target.startsWith("/")) target else File("/system/bin/", target).canonicalPath
+        }.getOrDefault("/system/bin/linker64")
+        val expectedNode = runCatching { File(node).canonicalPath }.getOrDefault(node)
+
+        fun identify(pid: Int): OrphanScan =
+            identifyOrphan(pid, node, script, queue, resolvedLinker, expectedNode)
+
+        fun reread(identity: OrphanScan.Match): OrphanScan =
+            identifyOrphan(identity.pid, node, script, queue, resolvedLinker, expectedNode, captured = identity)
+
+        fun survivors(identities: List<OrphanScan.Match>): List<OrphanScan.Match>? =
+            identities.mapNotNull { identity ->
+                when (val current = reread(identity)) {
+                    OrphanScan.Unknown -> return null
+                    OrphanScan.NoMatch -> null
+                    is OrphanScan.Match -> current
+                }
+            }
+
+        fun signal(identities: List<OrphanScan.Match>, signal: Int): List<OrphanScan.Match>? {
+            val signaled = mutableListOf<OrphanScan.Match>()
+            for (identity in identities) {
+                // android.system.Os does not expose pidfd, so recheck the full identity before kill.
+                when (val current = reread(identity)) {
+                    OrphanScan.Unknown -> return null
+                    OrphanScan.NoMatch -> Unit
+                    is OrphanScan.Match -> {
+                        runCatching { Os.kill(current.pid, signal) }
+                        signaled.add(current)
+                    }
+                }
+            }
+            return signaled
+        }
+
+        fun waitForExit(identities: List<OrphanScan.Match>, timeoutMs: Long): List<OrphanScan.Match>? {
+            val deadline = SystemClock.uptimeMillis() + timeoutMs
+            var remaining = survivors(identities) ?: return null
+            while (remaining.isNotEmpty() && SystemClock.uptimeMillis() < deadline) {
+                SystemClock.sleep(50)
+                remaining = survivors(remaining) ?: return null
+            }
+            return remaining
+        }
+
+        val entries = try {
+            File("/proc").list() ?: return false
+        } catch (_: SecurityException) {
+            return false
+        }
+        val orphans = mutableListOf<OrphanScan.Match>()
+        for (entry in entries) {
+            val pid = entry.toIntOrNull() ?: continue
+            when (val identity = identify(pid)) {
+                is OrphanScan.Match -> orphans.add(identity)
+                OrphanScan.NoMatch -> Unit
+                OrphanScan.Unknown -> return false
+            }
+        }
+        val terminated = signal(orphans, OsConstants.SIGTERM) ?: return false
+        val remaining = waitForExit(terminated, STOP_GRACE_MS) ?: return false
+        val killed = signal(remaining, OsConstants.SIGKILL) ?: return false
+        val survivors = waitForExit(killed, 250L) ?: return false
+        return survivors.isEmpty() && listenerIsGone()
+    }
+
+    /** An app process restart can leave a listener without a tracked Process. */
+    private fun listenerIsGone(): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress("127.0.0.1", PORT), 250) }
+        false
+    } catch (_: ConnectException) {
+        true
+    } catch (_: Exception) {
+        false
     }
 }

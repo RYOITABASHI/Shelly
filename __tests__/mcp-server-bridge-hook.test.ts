@@ -1,9 +1,9 @@
 /**
  * hooks/use-mcp-server-bridge.ts at hook level (Codex review 2026-11-15,
- * findings 2 and 3): the effect must clear a mirror that may be broader than
- * the current settings BEFORE the fallible token work, and the settings
+ * findings 2 and 3): the effect compares credentials before clearing the mirror and must clear
+ * a possibly broader mirror before token publication or start. The settings
  * persist barrier must clear the mirror for a restrictive change. Final gate
- * (item A): an unconfirmed startup clear fails closed — no token work, no
+ * (item A): an unconfirmed startup clear fails closed — no token publication, no
  * start — and the next effect run retries it.
  *
  * The unit project has no React renderer (testEnvironment 'node', see
@@ -12,9 +12,25 @@
  * lib/mcp-autostart-mirror.ts are the real modules; the native module keeps
  * an in-memory mirror + server.
  */
+import { createHash } from 'node:crypto';
+
 type Mirror = { exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean; token: string } | null;
 
+const fingerprintOf = (token: string) => createHash('sha256').update(token).digest('hex');
+
+const tombstone = `revoked:${fingerprintOf("simulated native nonce")}`;
+
 const native = {
+  fingerprint: null as string | null,
+  getMCPTokenFingerprint: jest.fn(async () => native.fingerprint),
+  revokeMCPTokenFingerprint: jest.fn(async () => {
+    native.fingerprint = tombstone;
+    return true;
+  }),
+  setMCPTokenFingerprint: jest.fn(async (fingerprint: string) => {
+    native.fingerprint = fingerprint;
+    return true;
+  }),
   mirror: null as Mirror,
   running: null as { token: string; exec: boolean; readTerminal: boolean; diagnostics: boolean; typedOps: boolean } | null,
   log: [] as string[],
@@ -34,10 +50,13 @@ const native = {
     native.running = { token, exec, readTerminal, diagnostics, typedOps };
     return true;
   }),
+  getMCPAutostartToken: jest.fn(async (): Promise<string | null> => native.mirror?.token ?? null),
+  refreshStageInstallResultMirror: jest.fn(async () => true),
   stopMCPServer: jest.fn(async () => {
     native.log.push('stop');
     native.mirror = null;
     native.running = null;
+    return true;
   }),
   isMCPServerRunning: jest.fn(async () => native.running !== null),
 };
@@ -79,24 +98,29 @@ jest.mock('@/lib/secure-store', () => ({
     if (secrets.getFails) throw new Error('SecureStore read failed (simulated)');
     return secrets.value;
   }),
-  saveConnectorSecret: jest.fn(async (_id: string, _f: string, v: string) => {
+  clearMcpTokenSecret: jest.fn(async () => { secrets.value = null; }),
+  saveMcpTokenSecret: jest.fn(async (v: string) => {
     if (secrets.saveFails) throw new Error('SecureStore write failed (simulated)');
     secrets.value = v;
   }),
 }));
 jest.mock('expo-crypto', () => ({
+  CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
+  digestStringAsync: jest.fn(async (_algorithm: string, token: string) => fingerprintOf(token)),
   getRandomBytesAsync: jest.fn(async (n: number) => new Uint8Array(n).fill(7)),
 }));
 jest.mock('@/lib/x-oauth', () => ({
-  base64UrlFromBytes: () => 'A'.repeat(43),
+  base64UrlFromBytes: jest.fn(() => 'A'.repeat(43)),
 }));
 jest.mock('react-native', () => ({
   AppState: { currentState: 'active', addEventListener: () => ({ remove: () => {} }) },
 }));
 jest.mock('@/lib/mcp-server-bridge', () => ({
+  beginMCPRequestRevocation: jest.fn(() => jest.fn(async () => {})),
   DEVICE_REFRESH_MS: 60_000,
   refreshMCPDeviceSnapshot: jest.fn(async () => {}),
   revokePendingMCPRequests: jest.fn(async () => {}),
+  resetMcpOmissionSwitches: jest.fn(async () => {}),
   setMCPBridgeKey: jest.fn(),
   startMCPPoller: jest.fn(),
   startMCPSnapshotPublisher: jest.fn(),
@@ -105,7 +129,7 @@ jest.mock('@/lib/mcp-server-bridge', () => ({
 }));
 jest.mock('@/lib/debug-logger', () => ({ logError: jest.fn(), logInfo: jest.fn() }));
 
-import { mcpSettingsPersistHook, useMCPServerBridge } from '@/hooks/use-mcp-server-bridge';
+import { getOrCreateMCPToken, mcpSettingsPersistHook, regenerateMCPToken, useMCPServerBridge } from '@/hooks/use-mcp-server-bridge';
 import {
   effectiveMirrorSettings,
   mirrorTokenChange,
@@ -113,6 +137,7 @@ import {
   noteSettingsWritten,
   resetMcpMirrorCeilingForTests,
 } from '@/lib/mcp-autostart-mirror';
+import { beginMCPRequestRevocation, revokePendingMCPRequests } from '@/lib/mcp-server-bridge';
 import { withMcpServerLock } from '@/lib/mcp-token';
 
 const drain = () => withMcpServerLock(async () => {});
@@ -126,6 +151,7 @@ const pendingCleanups: Array<() => void> = [];
 
 afterEach(() => {
   while (pendingCleanups.length) pendingCleanups.pop()!();
+  jest.restoreAllMocks();
 });
 
 /** Mounts the hook with the current settings and lets the startup finish. */
@@ -151,8 +177,10 @@ async function mount(): Promise<() => void> {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('no loopback listener'));
   resetMcpMirrorCeilingForTests();
   native.mirror = null;
+  native.fingerprint = null;
   native.running = null;
   native.log = [];
   secrets.value = 'T'.repeat(43);
@@ -171,7 +199,7 @@ function setPersisted(settings: Record<string, unknown>): void {
 
 describe('bridge startup narrows the mirror before fallible token work (finding 3)', () => {
   it('fresh process, both permissions OFF, token READ fails: the old broader mirror is cleared', async () => {
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) }; // left by an earlier process
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) }; // left by an earlier process
     secrets.getFails = true;
     await mount();
     expect(native.mirror).toBeNull();
@@ -180,7 +208,7 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
   });
 
   it('fresh process, both permissions OFF, no token and creation fails: the old broader mirror is cleared', async () => {
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
     secrets.value = null;
     secrets.saveFails = true;
     await mount();
@@ -208,10 +236,196 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
 
   it('writes exactly the current settings and starts when the token works', async () => {
     setPersisted({ mcpServerEnabled: true, mcpExecEnabled: true, mcpReadTerminalEnabled: false });
-    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
     await mount();
     expect(native.log).toEqual(['mirror:off', 'mirror:on exec=true read=false', 'start exec=true read=false']);
     expect(native.mirror).toEqual({ exec: true, readTerminal: false, diagnostics: false, typedOps: false, token: 'T'.repeat(43) });
+  });
+
+  it('records the existing token fingerprint before returning it for Settings Copy', async () => {
+    native.setMCPTokenFingerprint.mockResolvedValueOnce(false);
+    await expect(getOrCreateMCPToken()).rejects.toThrow('could not persist the MCP token fingerprint');
+    expect(native.fingerprint).toBeNull();
+
+    await expect(getOrCreateMCPToken()).resolves.toBe(secrets.value);
+    expect(native.fingerprint).toBe(fingerprintOf(secrets.value!));
+  });
+
+  it('tombstones before clearing the mirror when only the mirror exists', async () => {
+    secrets.value = null;
+    native.mirror = { exec: false, readTerminal: false, diagnostics: false, typedOps: false, token: 'T'.repeat(43) };
+    await regenerateMCPToken();
+    expect(native.revokeMCPTokenFingerprint).toHaveBeenCalledTimes(1);
+    expect(native.revokeMCPTokenFingerprint.mock.invocationCallOrder[0]).toBeLessThan(
+      native.setMCPAutostartMirror.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('records the startup token fingerprint before serving it', async () => {
+    await mount();
+    expect(native.fingerprint).toBe(fingerprintOf('T'.repeat(43)));
+    expect(native.setMCPTokenFingerprint.mock.invocationCallOrder[0]).toBeLessThan(
+      native.startMCPServer.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not start or enable autostart when the fingerprint write fails', async () => {
+    native.setMCPTokenFingerprint.mockResolvedValueOnce(false);
+    await mount();
+    expect(native.startMCPServer).not.toHaveBeenCalled();
+    expect(native.mirror).toBeNull();
+  });
+
+  it('revokes a token whose fingerprint differs even when the mirror agrees with SecureStore', async () => {
+    native.fingerprint = fingerprintOf('O'.repeat(43));
+    native.mirror = { exec: false, readTerminal: false, diagnostics: false, typedOps: false, token: 'T'.repeat(43) };
+    await mount();
+    expect(revokePendingMCPRequests).toHaveBeenCalledWith({ tokenRevoked: true });
+    expect(native.mirror?.token).toBe('A'.repeat(43));
+    expect(native.fingerprint).toBe(fingerprintOf('A'.repeat(43)));
+  });
+
+  it('recovers on startup when the mirror read fails with a stored token', async () => {
+    native.getMCPAutostartToken.mockRejectedValueOnce(new Error('mirror unreadable'));
+    await mount();
+    expect(native.revokeMCPTokenFingerprint).toHaveBeenCalledTimes(1);
+    expect(revokePendingMCPRequests).toHaveBeenCalledWith({ tokenRevoked: true });
+    expect(native.startMCPServer).toHaveBeenCalledTimes(1);
+    expect(native.running?.token).toBe('A'.repeat(43));
+    expect(native.mirror?.token).toBe('A'.repeat(43));
+  });
+
+  it('recovers on startup after a tombstoned rotation is interrupted before saving', async () => {
+    const oldToken = secrets.value!;
+    native.fingerprint = fingerprintOf(oldToken);
+    secrets.saveFails = true;
+
+    await expect(regenerateMCPToken()).rejects.toThrow('SecureStore write failed');
+    expect(secrets.value).toBe(oldToken);
+    expect(native.fingerprint).toBe(tombstone);
+    expect(native.fingerprint).not.toBe(fingerprintOf(secrets.value!));
+
+    secrets.saveFails = false;
+    jest.mocked(revokePendingMCPRequests).mockClear();
+    await mount();
+    expect(revokePendingMCPRequests).toHaveBeenNthCalledWith(1, { tokenRevoked: true });
+    expect(native.running?.token).toBe('A'.repeat(43));
+    expect(native.fingerprint).toBe(fingerprintOf('A'.repeat(43)));
+  });
+
+  it('commits a recovery tombstone before clearing or revoking the old credentials', async () => {
+    const { clearMcpTokenSecret, saveMcpTokenSecret } = jest.requireMock('@/lib/secure-store');
+    native.fingerprint = fingerprintOf('O'.repeat(43));
+    secrets.saveFails = true;
+
+    await expect(getOrCreateMCPToken()).rejects.toThrow('SecureStore write failed');
+    expect(native.fingerprint).toBe(tombstone);
+    expect(native.startMCPServer).not.toHaveBeenCalled();
+    const tombstoneOrder = native.revokeMCPTokenFingerprint.mock.invocationCallOrder[0];
+    for (const step of [clearMcpTokenSecret, native.setMCPAutostartMirror, revokePendingMCPRequests, saveMcpTokenSecret]) {
+      expect(tombstoneOrder).toBeLessThan(step.mock.invocationCallOrder[0]);
+    }
+  });
+
+  it('preserves the fingerprint through OFF and reconciles stale SecureStore on the next startup', async () => {
+    await mount();
+    setPersisted({ mcpServerEnabled: false });
+    await mount();
+    expect(native.mirror).toBeNull();
+    expect(native.fingerprint).toBe(fingerprintOf('T'.repeat(43)));
+
+    expect(revokePendingMCPRequests).not.toHaveBeenCalledWith({ tokenRevoked: true });
+
+    secrets.value = 'O'.repeat(43);
+    resetMcpMirrorCeilingForTests();
+    setPersisted({ mcpServerEnabled: true });
+    await mount();
+    expect(revokePendingMCPRequests).toHaveBeenCalledWith({ tokenRevoked: true });
+    expect(native.mirror?.token).toBe('A'.repeat(43));
+    expect(native.fingerprint).toBe(fingerprintOf('A'.repeat(43)));
+  });
+
+  it('revokes the mismatched startup credentials before minting and serving a fresh token', async () => {
+    const { saveMcpTokenSecret } = jest.requireMock('@/lib/secure-store');
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
+
+    await mount();
+
+    expect(native.getMCPAutostartToken).toHaveBeenCalledTimes(1);
+    expect(revokePendingMCPRequests).toHaveBeenNthCalledWith(1, { tokenRevoked: true });
+    expect(jest.mocked(revokePendingMCPRequests).mock.invocationCallOrder[0]).toBeLessThan(
+      saveMcpTokenSecret.mock.invocationCallOrder[0],
+    );
+    expect(native.mirror?.token).toBe('A'.repeat(43));
+    expect(native.running?.token).toBe('A'.repeat(43));
+    expect(native.refreshStageInstallResultMirror).toHaveBeenCalled();
+  });
+
+  it('keeps token recovery pending when the revocation barrier fails', async () => {
+    const { saveMcpTokenSecret } = jest.requireMock('@/lib/secure-store');
+    const oldMirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'O'.repeat(43) };
+    native.mirror = oldMirror;
+    jest.mocked(revokePendingMCPRequests).mockRejectedValueOnce(new Error('revocation unconfirmed'));
+
+    const cleanup = await mount();
+
+    expect(saveMcpTokenSecret).not.toHaveBeenCalled();
+    expect(native.startMCPServer).not.toHaveBeenCalled();
+    expect(native.mirror).toBeNull();
+    expect(secrets.value).toBeNull();
+    cleanup();
+    await mount();
+    expect(native.running?.token).toBe('A'.repeat(43));
+  });
+
+  it('begins pending-request revocation immediately on OFF while the server lock is busy', async () => {
+    const cleanup = await mount();
+    jest.mocked(revokePendingMCPRequests).mockClear();
+    setPersisted({ mcpServerEnabled: false });
+    cleanup();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const busy = withMcpServerLock(() => wait);
+    const mounted = mount();
+    const finish = jest.mocked(beginMCPRequestRevocation).mock.results[0]?.value;
+    try {
+      expect(beginMCPRequestRevocation).toHaveBeenCalledTimes(1);
+      expect(beginMCPRequestRevocation).toHaveBeenCalledWith();
+      expect(finish).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await busy;
+      await mounted;
+    }
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(revokePendingMCPRequests).not.toHaveBeenCalled();
+    expect(native.running).toBeNull();
+    expect(native.mirror).toBeNull();
+  });
+
+  it.each(['T'.repeat(43), null])('uses plain queue cleanup even if cleanup fails (stored token: %s)', async (token) => {
+    secrets.value = token;
+    const revocation = jest.mocked(revokePendingMCPRequests);
+    if (!token) revocation.mockResolvedValueOnce(undefined);
+    revocation.mockRejectedValueOnce(new Error('queue cleanup failed'));
+
+    await mount();
+
+    expect(revocation.mock.calls).toEqual(token ? [[]] : [[{ tokenRevoked: true }], []]);
+    expect(native.startMCPServer).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects minting when prior-principal revocation cannot confirm the stage-install clear', async () => {
+    secrets.value = null;
+    const { saveMcpTokenSecret } = jest.requireMock('@/lib/secure-store');
+    const error = new Error('could not confirm that the latest stage install result was cleared');
+    jest.mocked(revokePendingMCPRequests).mockRejectedValueOnce(error);
+
+    await expect(getOrCreateMCPToken()).rejects.toBe(error);
+
+    expect(revokePendingMCPRequests).toHaveBeenCalledWith({ tokenRevoked: true });
+    expect(saveMcpTokenSecret).not.toHaveBeenCalled();
+    expect(secrets.value).toBeNull();
   });
 
   it('typed ops turned OFF while every other switch stays ON: the mirror is narrowed before the token read fails', async () => {
@@ -267,25 +481,25 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
     expect(native.log).toEqual(['mirror:on exec=false read=false', 'start exec=false read=false']);
   });
 
-  it('unconfirmed clear: fails closed before any token work and never starts the server (final gate, item A)', async () => {
-    native.mirror = { exec: true, readTerminal: true, token: 'O'.repeat(43) };
-    secrets.getFails = true; // token work would fail too: it must not even be tried
-    const { getConnectorSecret, saveConnectorSecret } = jest.requireMock('@/lib/secure-store');
+  it('unconfirmed clear: fails closed before token publication and never starts the server (final gate, item A)', async () => {
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
+    secrets.getFails = true;
+    const { getConnectorSecret, saveMcpTokenSecret } = jest.requireMock('@/lib/secure-store');
     getConnectorSecret.mockClear();
-    saveConnectorSecret.mockClear();
+    saveMcpTokenSecret.mockClear();
     native.setMCPAutostartMirror.mockImplementationOnce(async () => {
       native.log.push('mirror:off unconfirmed');
       return false;
     });
     await mount();
-    expect(getConnectorSecret).not.toHaveBeenCalled();
-    expect(saveConnectorSecret).not.toHaveBeenCalled();
+    expect(getConnectorSecret).toHaveBeenCalledTimes(1);
+    expect(saveMcpTokenSecret).not.toHaveBeenCalled();
     expect(native.startMCPServer).not.toHaveBeenCalled();
     expect(native.log).toEqual(['mirror:off unconfirmed']);
   });
 
-  it('unconfirmed clear with a working token: still no token load / create and no start', async () => {
-    native.mirror = { exec: true, readTerminal: true, token: 'O'.repeat(43) };
+  it('unconfirmed clear with a working token: prevents token creation and server start', async () => {
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
     secrets.value = null; // would create a token
     native.setMCPAutostartMirror.mockImplementationOnce(async () => false);
     await mount();
@@ -294,14 +508,14 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
     expect(native.log.some((l) => l.startsWith('mirror:on'))).toBe(false);
   });
 
-  it('a clear that throws counts as unconfirmed: no token work, no start, retried next time', async () => {
-    native.mirror = { exec: true, readTerminal: true, token: 'O'.repeat(43) };
+  it('a clear that throws counts as unconfirmed: no token save or start, retried next time', async () => {
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
     secrets.value = null;
     native.setMCPAutostartMirror.mockImplementationOnce(async () => {
       throw new Error('native clear failed (simulated)');
     });
     const cleanup = await mount();
-    expect(jest.requireMock('@/lib/secure-store').getConnectorSecret).not.toHaveBeenCalled();
+    expect(jest.requireMock('@/lib/secure-store').getConnectorSecret).toHaveBeenCalledTimes(1);
     expect(secrets.value).toBeNull();
     expect(native.startMCPServer).not.toHaveBeenCalled();
     cleanup();
@@ -310,19 +524,98 @@ describe('bridge startup narrows the mirror before fallible token work (finding 
     expect(native.startMCPServer).toHaveBeenCalledTimes(1);
   });
 
-  it('unconfirmed clear: the next trigger retries the clear, then proceeds once it is confirmed', async () => {
-    native.mirror = { exec: true, readTerminal: true, token: 'O'.repeat(43) };
+  it.each([true, false])('unconfirmed narrowing reaches recovery, with confirmed recovery clear: %s', async (confirmed) => {
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token: 'T'.repeat(43) };
+    native.getMCPAutostartToken.mockRejectedValueOnce(new Error('mirror unreadable'));
     native.setMCPAutostartMirror.mockImplementationOnce(async () => {
       native.log.push('mirror:off unconfirmed');
       return false;
     });
-    const cleanup = await mount();
-    expect(native.startMCPServer).not.toHaveBeenCalled();
-    cleanup();
-    native.log = [];
-    await mount(); // next app start / settings-driven re-run
-    expect(native.log).toEqual(['mirror:off', 'mirror:on exec=false read=false', 'start exec=false read=false']);
-    expect(native.running).toMatchObject({ exec: false, readTerminal: false });
+    if (!confirmed) native.setMCPAutostartMirror.mockResolvedValueOnce(false);
+
+    await mount();
+
+    expect(native.revokeMCPTokenFingerprint).toHaveBeenCalledTimes(1);
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(2, false, false, false, false, false, null);
+    if (confirmed) {
+      expect(secrets.value).toBe('A'.repeat(43));
+      expect(native.running).toMatchObject({ token: 'A'.repeat(43), exec: false, readTerminal: false });
+    } else {
+      expect(jest.requireMock('@/lib/secure-store').saveMcpTokenSecret).not.toHaveBeenCalled();
+      expect(native.startMCPServer).not.toHaveBeenCalled();
+    }
+  });
+
+  it('adopts matching credentials after a confirmed narrowing clear', async () => {
+    const token = 'T'.repeat(43);
+    secrets.value = token;
+    native.fingerprint = fingerprintOf(token);
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token };
+
+    await mount();
+
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(1, false, false, false, false, false, null);
+    expect(native.revokeMCPTokenFingerprint).not.toHaveBeenCalled();
+    expect(jest.requireMock('@/lib/secure-store').saveMcpTokenSecret).not.toHaveBeenCalled();
+    expect(jest.requireMock('@/lib/x-oauth').base64UrlFromBytes).not.toHaveBeenCalled();
+    expect(native.mirror).toEqual({ token, exec: false, readTerminal: false, diagnostics: false, typedOps: false });
+    expect(native.running).toMatchObject({ token, exec: false, readTerminal: false });
+  });
+
+  it.each([true, false])('matching credentials recover after a failed narrowing clear (recovery clear confirmed: %s)', async (confirmed) => {
+    const token = 'T'.repeat(43);
+    secrets.value = token;
+    native.fingerprint = fingerprintOf(token);
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token };
+    native.setMCPAutostartMirror.mockResolvedValueOnce(false);
+    if (!confirmed) native.setMCPAutostartMirror.mockResolvedValueOnce(false);
+
+    await mount();
+
+    expect(native.revokeMCPTokenFingerprint).toHaveBeenCalledTimes(1);
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(1, false, false, false, false, false, null);
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(2, false, false, false, false, false, null);
+    const revokeOrder = native.revokeMCPTokenFingerprint.mock.invocationCallOrder[0];
+    const [, recoveryClearOrder] = native.setMCPAutostartMirror.mock.invocationCallOrder;
+    expect(revokeOrder).toBeLessThan(recoveryClearOrder);
+    const mint = jest.requireMock('@/lib/x-oauth').base64UrlFromBytes;
+    if (confirmed) {
+      expect(recoveryClearOrder).toBeLessThan(mint.mock.invocationCallOrder[0]);
+      expect(secrets.value).toBe('A'.repeat(43));
+      expect(native.running).toMatchObject({ token: 'A'.repeat(43), exec: false, readTerminal: false });
+    } else {
+      expect(mint).not.toHaveBeenCalled();
+      expect(jest.requireMock('@/lib/secure-store').saveMcpTokenSecret).not.toHaveBeenCalled();
+      expect(native.startMCPServer).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([true, false])('matching credentials recover after a rejected narrowing clear (recovery clear confirmed: %s)', async (confirmed) => {
+    const token = 'T'.repeat(43);
+    secrets.value = token;
+    native.fingerprint = fingerprintOf(token);
+    native.mirror = { exec: true, readTerminal: true, diagnostics: true, typedOps: true, token };
+    native.setMCPAutostartMirror.mockRejectedValueOnce(new Error('native clear failed (simulated)'));
+    if (!confirmed) native.setMCPAutostartMirror.mockResolvedValueOnce(false);
+
+    await mount();
+
+    expect(native.revokeMCPTokenFingerprint).toHaveBeenCalledTimes(1);
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(1, false, false, false, false, false, null);
+    expect(native.setMCPAutostartMirror).toHaveBeenNthCalledWith(2, false, false, false, false, false, null);
+    const revokeOrder = native.revokeMCPTokenFingerprint.mock.invocationCallOrder[0];
+    const [, recoveryClearOrder] = native.setMCPAutostartMirror.mock.invocationCallOrder;
+    expect(revokeOrder).toBeLessThan(recoveryClearOrder);
+    const mint = jest.requireMock('@/lib/x-oauth').base64UrlFromBytes;
+    if (confirmed) {
+      expect(recoveryClearOrder).toBeLessThan(mint.mock.invocationCallOrder[0]);
+      expect(secrets.value).toBe('A'.repeat(43));
+      expect(native.running).toMatchObject({ token: 'A'.repeat(43), exec: false, readTerminal: false });
+    } else {
+      expect(mint).not.toHaveBeenCalled();
+      expect(jest.requireMock('@/lib/secure-store').saveMcpTokenSecret).not.toHaveBeenCalled();
+      expect(native.startMCPServer).not.toHaveBeenCalled();
+    }
   });
 
   it('with everything ON nothing can be broader, so a fresh start does not clear first', async () => {

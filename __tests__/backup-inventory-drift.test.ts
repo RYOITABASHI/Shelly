@@ -6,6 +6,7 @@ import * as path from 'path';
 
 jest.mock('expo-secure-store', () => ({}));
 import { API_KEY_NAMES } from '@/lib/secure-store';
+import { classifyHomePath, validateTarEntries } from '@/lib/backup/rules';
 import {
   FIXED_SECURE_KEYS,
   LEGACY_SECURE_KEYS,
@@ -42,6 +43,16 @@ function resolveConst(src: string, ident: string): string | null {
 const ALLOWED_DYNAMIC: Record<string, string[]> = {
   'lib/secure-store.ts': ['`${KEY_PREFIX}${name}`', 'key'],
 };
+
+it.each([
+  '.shelly-mcp-queue/',
+  '.shelly-mcp-queue/stage-install-last.json',
+  '.shelly-mcp-queue/request-123.json',
+  '.shelly-mcp-queue/result-123.json',
+])('keeps %s out of both backup capture and tar restore', (name) => {
+  expect(classifyHomePath(name, 0, { includeLarge: true })).toBe('exclude');
+  expect(validateTarEntries([`./${name}`])).toMatchObject({ ok: false });
+});
 
 describe('SecureStore inventory drift', () => {
   const inventory = new Set(buildSecureStoreInventory([]));
@@ -98,7 +109,7 @@ describe('SecureStore inventory drift', () => {
     expect(problems).toEqual([]);
   });
 
-  it('inventory covers API keys, fixed keys and system connectors, and restore allows them', () => {
+  it('inventories all known keys and rejects the device-local MCP token at restore', () => {
     for (const n of API_KEY_NAMES) {
       expect(inventory.has(apiKeySecureKey(n))).toBe(true);
       expect(isRestorableSecureKey(apiKeySecureKey(n))).toBe(true);
@@ -109,6 +120,7 @@ describe('SecureStore inventory drift', () => {
     }
     expect(inventory.has('shelly_memory_v2_dek')).toBe(true);
     expect(inventory.has('shelly_social-connector.mcp-server.token')).toBe(true);
+    expect(isRestorableSecureKey('shelly_social-connector.mcp-server.token')).toBe(false);
     expect(isRestorableSecureKey('shelly_claudeAuthToken')).toBe(false);
     expect(isRestorableSecureKey('random_key')).toBe(false);
   });

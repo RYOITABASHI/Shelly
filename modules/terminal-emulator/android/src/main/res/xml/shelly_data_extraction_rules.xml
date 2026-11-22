@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+  <cloud-backup>
+    <exclude domain="sharedpref" path="SecureStore.xml" />
+    <exclude domain="sharedpref" path="stage-install-results.xml" />
+    <exclude domain="sharedpref" path="shelly_mcp_autostart.xml" />
+    <exclude domain="file" path="home/.shelly-mcp-queue" />
+  </cloud-backup>
+  <device-transfer>
+    <exclude domain="sharedpref" path="SecureStore.xml" />
+    <exclude domain="sharedpref" path="stage-install-results.xml" />
+    <exclude domain="sharedpref" path="shelly_mcp_autostart.xml" />
+    <exclude domain="file" path="home/.shelly-mcp-queue" />
+  </device-transfer>
+</data-extraction-rules>

@@ -58,6 +58,8 @@ import {
   type UntrustedInputAgentLike,
 } from '@/lib/agent-run-without-approval';
 
+import { withMcpServerLock } from '@/lib/mcp-token';
+
 export { UI_ONLY_ENABLE_SETTINGS } from '@/lib/ui-only-settings';
 
 type ApproveAllNative = {
@@ -147,9 +149,9 @@ export async function setApproveAllFromToggle(enabled: boolean): Promise<boolean
   const n = nativeModule();
   let state = false;
   try {
-    if (typeof n?.setApproveAllWithoutAsking === 'function') {
-      state = (await n.setApproveAllWithoutAsking(enabled, 'settings toggle')) === true;
-    }
+    const set = async () => typeof n?.setApproveAllWithoutAsking === 'function' &&
+      (await n.setApproveAllWithoutAsking(enabled, 'settings toggle')) === true;
+    state = await (enabled ? withMcpServerLock(set) : set());
   } catch {
     state = await isApproveAllWithoutAskingOn();
   }
@@ -160,9 +162,9 @@ export async function setApproveAllFromToggle(enabled: boolean): Promise<boolean
 /** OFF from anywhere (STOP-ALL mirror, token regeneration). Throws when native still says ON. */
 export async function turnOffApproveAll(reason: string): Promise<void> {
   const n = nativeModule();
-  if (typeof n?.setApproveAllWithoutAsking === 'function') {
-    if ((await n.setApproveAllWithoutAsking(false, reason)) === true) throw new Error('could not turn off Skip all approvals');
-  }
+  const reset = await n?.setApproveAllWithoutAsking?.(false, reason);
+  const durable = await n?.getApproveAllWithoutAsking?.();
+  if (reset !== false || durable !== false) throw new Error('could not turn off Skip all approvals');
   mirrorSetting(false);
 }
 

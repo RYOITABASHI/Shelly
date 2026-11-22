@@ -164,17 +164,19 @@ object McpServerSupervisor {
     fun startFromApp(context: Context, token: String, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, bridgeKey: String): Boolean {
         val app = context.applicationContext
         val ok = synchronized(lock) {
+            prepareRuntime(app, "app start")
             generation += 1
             // A new bridge key is the native queueEpoch: the old consumer stops
             // (waiting for its request in progress) and its pending typed
             // requests are cleared before the new server can write any.
             retireStaleTypedOpConsumerLocked(bridgeKey, typedOps)
             retireStaleRawToolConsumerLocked(bridgeKey, token, exec)
-            val started = MCPBridge.start(app, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)
+            val request = Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true)
+            val started = spawnWithFingerprint(app, request) == true
             // Nothing wanted => nothing running: MCPBridge.start can refuse
             // (bad key / blank token) before touching an older process.
-            if (!started) MCPBridge.stop()
-            desired = if (started) Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true) else null
+            if (!started) MCPBridge.stop(app)
+            desired = if (started) request else null
             resetBackoff()
             if (started) {
                 startedAt = System.currentTimeMillis()
@@ -191,21 +193,29 @@ object McpServerSupervisor {
         return ok
     }
 
-    /** In-app stop, or the setting turned OFF. Nothing is wanted afterwards. */
-    fun stop(context: Context, reason: String) {
+    /** In-app stop, or the setting turned OFF. Returns whether listener exit was confirmed. */
+    fun stop(context: Context, reason: String): Boolean {
         val app = context.applicationContext
-        synchronized(lock) {
+        val stopped = synchronized(lock) {
             generation += 1
             desired = null
             resetBackoff()
-            MCPBridge.stop()
+            val exited = MCPBridge.stop(app)
             // Server stop / token revoke: consumer stopped, pending typed requests cleared.
             syncTypedOpConsumerLocked(app)
             syncRawToolConsumerLocked(app)
             stopServiceLocked(app)
             lock.notifyAll()
+            exited
         }
-        Log.i(TAG, "stopped ($reason)")
+        if (stopped) {
+            Log.i(TAG, "stopped ($reason)")
+        } else {
+            Log.w(TAG, "stop not confirmed ($reason)")
+            // An unconfirmed explicit OFF leaves the watchdog running to retry, like cold OFF.
+            ensureWatching(app)
+        }
+        return stopped
     }
 
     /**
@@ -216,6 +226,7 @@ object McpServerSupervisor {
         val app = context.applicationContext
         if (!McpAutostartStore.isOn(app)) {
             Log.i(TAG, "$reason: MCP server auto-start not wanted (setting off or mirror unreadable)")
+            ensureWatching(app)
             return
         }
         Log.i(TAG, "$reason: starting the MCP server foreground service")
@@ -264,8 +275,7 @@ object McpServerSupervisor {
         }
         // Slow (may extract the runtime): done outside the lock, so the
         // result is re-validated below.
-        runCatching { ensureRuntime(app) }
-            .onFailure { Log.w(TAG, "$reason: runtime extraction failed (${it.javaClass.simpleName}); will retry", it) }
+        prepareRuntime(app, reason)
         synchronized(lock) {
             if (desired != null) { lock.notifyAll(); return true } // the app won the race
             if (generation != startGeneration) {
@@ -284,9 +294,10 @@ object McpServerSupervisor {
             val key = newBridgeKey()
             retireStaleTypedOpConsumerLocked(key, cfg.typedOps)
             retireStaleRawToolConsumerLocked(key, cfg.token, cfg.exec)
-            val ok = MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key)
+            val request = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
+            val ok = spawnWithFingerprint(app, request) ?: return false
             // Wanted even if this attempt failed: the watchdog retries with backoff.
-            desired = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
+            desired = request
             syncTypedOpConsumerLocked(app)
             syncRawToolConsumerLocked(app)
             resetBackoff()
@@ -301,6 +312,21 @@ object McpServerSupervisor {
         }
         return true
     }
+
+    /** Null means the credential was refused. Runtime preparation precedes this call. */
+    private fun spawnWithFingerprint(app: Context, request: Desired): Boolean? =
+        synchronized(McpTokenFingerprintStore.monitor) {
+            // A start that begins after a tombstone commits never spawns the old bearer.
+            // A spawn already in flight is the revocation flow's stop step's responsibility.
+            if (!McpAutostartStore.isValidToken(request.token) ||
+                !McpTokenFingerprintStore.matches(app, request.token)
+            ) {
+                Log.i(TAG, "MCP start refused: token fingerprint mismatch")
+                return@synchronized null
+            }
+            MCPBridge.start(app, request.token, request.exec, request.readTerminal,
+                request.diagnostics, request.typedOps, request.bridgeKey)
+        }
 
     // ── Watchdog ────────────────────────────────────────────────────────
 
@@ -328,10 +354,29 @@ object McpServerSupervisor {
     /** Returns how long to wait before the next pass. */
     private fun reconcile(app: Context): Long {
         return synchronized(lock) {
-            val d = desired ?: return POLL_MS
+            val running = MCPBridge.isRunning()
+            if (running && !McpTokenFingerprintStore.matches(app, MCPBridge.runningToken())) {
+                stop(app, "running token fingerprint mismatch")
+                return POLL_MS
+            }
+            val d = desired
             val now = System.currentTimeMillis()
+            if (d == null) {
+                // Fingerprint gating applies to START decisions, not to honouring OFF.
+                // Start paths hold lock across spawn and desired assignment, so OFF cannot stop a start in flight.
+                if (now >= nextAttemptAt) {
+                    if (MCPBridge.stop(app)) {
+                        resetBackoff()
+                        nextAttemptAt = now + POLL_MS
+                    } else {
+                        failures += 1
+                        nextAttemptAt = now + backoffMs(failures)
+                    }
+                }
+                return POLL_MS
+            }
             restoreServiceIfNeededLocked(app, now)
-            if (MCPBridge.isRunning()) {
+            if (running) {
                 if (failures > 0 && now - startedAt >= HEALTHY_AFTER_MS) resetBackoff()
                 return POLL_MS
             }
@@ -354,14 +399,20 @@ object McpServerSupervisor {
                     return POLL_MS
                 }
                 use = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, d.bridgeKey, fromApp = false)
+            }
+            prepareRuntime(app, "watchdog restart")
+            retireStaleTypedOpConsumerLocked(use.bridgeKey, use.typedOps)
+            retireStaleRawToolConsumerLocked(use.bridgeKey, use.token, use.exec)
+            val ok = spawnWithFingerprint(app, use)
+            if (ok == null) {
+                stop(app, "restart token fingerprint mismatch")
+                return POLL_MS
+            }
+            if (!d.fromApp) {
                 desired = use
-                // The mirror's typed-ops switch may have changed (same key).
                 syncTypedOpConsumerLocked(app)
                 syncRawToolConsumerLocked(app)
             }
-            runCatching { ensureRuntime(app) }
-                .onFailure { Log.w(TAG, "runtime extraction before restart failed (${it.javaClass.simpleName})") }
-            val ok = MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.typedOps, use.bridgeKey)
             if (ok) startedAt = now
             failures += 1
             nextAttemptAt = now + backoffMs(failures)
@@ -452,6 +503,11 @@ object McpServerSupervisor {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
+
+    private fun prepareRuntime(app: Context, reason: String) {
+        runCatching { ensureRuntime(app) }
+            .onFailure { Log.w(TAG, "$reason: runtime extraction failed (${it.javaClass.simpleName})", it) }
+    }
 
     /** The extracted runtime is current for this APK (see the class doc). */
     private fun ensureRuntime(app: Context) {

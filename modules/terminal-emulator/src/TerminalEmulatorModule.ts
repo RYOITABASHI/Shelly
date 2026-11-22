@@ -161,7 +161,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   isNetworkUnmetered?(): Promise<boolean>;
   installApk(apkPath: string): Promise<void>;
   stageInstallGeneration(): number;
-  invalidateStageInstalls?(): void;
+  refreshStageInstallResultMirror?(): Promise<boolean>;
+  invalidateStageInstalls?(clearLastResult?: boolean): boolean;
   resolveStageInstallPath(apkPath: string, deadlineMs: number): Promise<
     { path: string; sha256: string } | { error: string; code?: 'timeout' }
   >;
@@ -173,6 +174,11 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     | { status: 'pending' }
     | { status: 'success' | 'user_action_required'; at: number }
     | { status: 'failure'; statusCode: number; message: string; at: number }
+  >;
+  getLastStageInstallResult?(): Promise<
+    | { status: 'none' }
+    | { status: 'success'; at: number; sessionId?: number }
+    | { status: 'failure'; statusCode: number; message: string; at: number; sessionId?: number }
   >;
   /** Toggle FLAG_SECURE on the activity window (no screenshots / recents thumbnail). Optional: older native builds lack it. */
   setWindowSecure?(secure: boolean): Promise<boolean>;
@@ -669,7 +675,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** Stops the server; nothing is wanted afterwards (the native watchdog
    *  does not restart it and the MCP foreground service stops). Also clears
    *  the auto-start mirror; RN rewrites it for the new state. */
-  stopMCPServer(): Promise<void>;
+  getMCPAutostartToken?(): Promise<string | null>;
+
+  getMCPTokenFingerprint(): Promise<string | null>;
+  revokeMCPTokenFingerprint(): Promise<boolean>;
+  setMCPTokenFingerprint(fingerprint: string): Promise<boolean>;
+  stopMCPServer(): Promise<boolean>;
   /** True while the server runs OR is wanted and about to be restarted by
    *  the native watchdog (McpServerSupervisor.isRunningOrWanted). */
   isMCPServerRunning(): Promise<boolean>;

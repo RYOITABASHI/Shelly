@@ -81,19 +81,21 @@ class KeystoreSwitch(
         false
     }
 
-    /** Safe from anywhere (OFF is the restrictive direction). */
+    /** Safe from anywhere (OFF is the restrictive direction). Reports the durable prefs commit. */
     @Synchronized
-    fun setOff(context: Context, reason: String) {
-        setOffLocked(context)
-        Log.i(tag, "OFF ($reason)")
+    fun setOff(context: Context, reason: String): Boolean {
+        val committed = setOffLocked(context)
+        if (committed) Log.i(tag, "OFF ($reason)") else Log.w(tag, "OFF commit failed ($reason)")
+        return committed
     }
 
-    private fun setOffLocked(context: Context) {
-        runCatching {
+    private fun setOffLocked(context: Context): Boolean {
+        val committed = runCatching {
             context.getSharedPreferences(prefsName, Context.MODE_PRIVATE).edit().remove(KEY_NONCE).remove(KEY_MAC).commit()
-        }
+        }.getOrDefault(false)
         runCatching { keyStore().deleteEntry(keyAlias) }
             .onFailure { Log.w(tag, "could not delete the key (${it.javaClass.simpleName})") }
+        return committed
     }
 
     /** Verified state. Never throws. */
@@ -190,17 +192,23 @@ object ApprovalSwitches {
         { StopAllSwitches.halted(context) }, { McpSkipApprovalStore.setOn(context) }, { McpSkipApprovalStore.setOff(context, "STOP-ALL active") },
     )
 
-    /** Returns whether it still reads ON. */
+    /** Returns whether it still reads ON. Throws when the OFF commit was not confirmed. */
     fun disableMcpSkip(context: Context, reason: String): Boolean =
-        ApprovalSwitchCore.disable({ McpSkipApprovalStore.setOff(context, reason) }, { McpSkipApprovalStore.isOn(context) })
+        ApprovalSwitchCore.disable(
+            { check(McpSkipApprovalStore.setOff(context, reason)) { "could not persist MCP approval switch OFF" } },
+            { McpSkipApprovalStore.isOn(context) },
+        )
 
     fun enableApproveAll(context: Context): Boolean = ApprovalSwitchCore.enable(
         { StopAllSwitches.halted(context) }, { ApproveAllStore.setOn(context) }, { ApproveAllStore.setOff(context, "STOP-ALL active") },
     )
 
-    /** Returns whether it still reads ON. */
+    /** Returns whether it still reads ON. Throws when the OFF commit was not confirmed. */
     fun disableApproveAll(context: Context, reason: String): Boolean =
-        ApprovalSwitchCore.disable({ ApproveAllStore.setOff(context, reason) }, { ApproveAllStore.isOn(context) })
+        ApprovalSwitchCore.disable(
+            { check(ApproveAllStore.setOff(context, reason)) { "could not persist master approval switch OFF" } },
+            { ApproveAllStore.isOn(context) },
+        )
 
     /** The master-switch decision token (see ApprovalSwitchCore), or null when it may not answer. */
     fun approveAllToken(context: Context): Long? =

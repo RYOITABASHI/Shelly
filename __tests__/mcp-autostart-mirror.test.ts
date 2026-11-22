@@ -156,7 +156,14 @@ describe('token lifecycle → mirror (McpTokenDeps.onSaved)', () => {
       },
       randomBytes: async (len) => new Uint8Array(len).fill(++n),
       encode: (b) => `tok-${b[0]}`,
+      revokePriorPrincipal: async () => {},
+      resetOmissionSwitches: async () => {},
+      readFingerprint: async () => null,
+      revokeFingerprint: async () => {},
+      writeFingerprint: async () => {},
+      confirmListenerStopped: async () => {},
       onSaved: onSaved ? jest.fn(onSaved) : undefined,
+      invalidateMirror: async () => {},
     };
     return deps;
   }
@@ -165,7 +172,7 @@ describe('token lifecycle → mirror (McpTokenDeps.onSaved)', () => {
     let live = running;
     const server: McpServerControl = {
       isRunning: async () => live,
-      stop: async () => { calls.push('stop'); live = false; },
+      stop: async () => { calls.push('stop'); live = false; return true; },
       start: async (t) => { calls.push(`start:${t}`); live = true; return true; },
       revokePending: async () => { calls.push('revoke'); },
     };
@@ -192,7 +199,7 @@ describe('token lifecycle → mirror (McpTokenDeps.onSaved)', () => {
     const origSave = deps.store.save;
     deps.store.save = async (id, f, v) => { order.push(`save:${v}`); return origSave(id, f, v); };
     const { server } = makeServer(true);
-    server.stop = async () => { order.push('stop'); };
+    server.stop = async () => { order.push('stop'); return true; };
     server.revokePending = async () => { order.push('revoke'); };
     server.start = async (t) => { order.push(`start:${t}`); return true; };
     const result = await regenerateToken(deps, server);
@@ -279,14 +286,21 @@ describe('token creation vs regeneration race (finding 4: one lock for all token
       // until the regeneration was requested; later ones resolve at once.
       randomBytes: (n) => (++calls === 1 ? gate.promise : Promise.resolve(new Uint8Array(n).fill(calls))),
       encode: (b) => `tok-${b[0]}`,
+      revokePriorPrincipal: async () => {},
+      resetOmissionSwitches: async () => {},
+      readFingerprint: async () => null,
+      revokeFingerprint: async () => {},
+      writeFingerprint: async () => {},
+      confirmListenerStopped: async () => {},
       onSaved: async (t) => { mirrored.push(t); },
       invalidateMirror: async () => { mirrored.push('<cleared>'); },
     };
     let live: string | null = null;
     const server: McpServerControl = {
       isRunning: async () => live !== null,
-      stop: async () => { live = null; },
+      stop: async () => { live = null; return true; },
       start: async (t) => { live = t; return true; },
+      revokePending: async () => {},
     };
     live = 'already-running';
 
@@ -315,6 +329,13 @@ describe('token creation vs regeneration race (finding 4: one lock for all token
       store: { get: async () => 'existing', save: async () => {} },
       randomBytes: async (n) => new Uint8Array(n),
       encode: () => 'x',
+      invalidateMirror: async () => {},
+      revokePriorPrincipal: async () => {},
+      resetOmissionSwitches: async () => {},
+      readFingerprint: async () => null,
+      revokeFingerprint: async () => {},
+      writeFingerprint: async () => {},
+      confirmListenerStopped: async () => {},
     };
     await expect(withMcpServerLock(() => getOrCreateTokenInLock(deps))).resolves.toBe('existing');
   });
@@ -330,6 +351,18 @@ describe('mirror ceiling (what the durable mirror may still hold)', () => {
     expect(mirrorMayBeBroaderThan(sw(true, true, true, false, true))).toBe(true);
     expect(mirrorMayBeBroaderThan(sw(true, false, true, true, true))).toBe(true);
     expect(mirrorMayBeBroaderThan(sw(false, false, false))).toBe(true);
+  });
+
+  it('keeps the previous ceiling when native refuses to clear the legacy mirror', async () => {
+    const { native, calls } = makeNative([true, false, true]);
+    const enabled = { ...sw(true, true, false), enabled: true as const, token: 'legacy-token' };
+    const off = sw(false, false, false);
+    expect(await writeMcpAutostartMirror(native, enabled)).toBe(true);
+    expect(await writeMcpAutostartMirror(native, { enabled: false })).toBe(false);
+    expect(mirrorMayBeBroaderThan(off)).toBe(true);
+    expect(calls[1]).toEqual([false, false, false, false, false, null]);
+    expect(await writeMcpAutostartMirror(native, { enabled: false })).toBe(true);
+    expect(mirrorMayBeBroaderThan(off)).toBe(false);
   });
 
   it('tracks successful writes exactly, and a failed ON write as possibly-either', async () => {
@@ -440,7 +473,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
     expect(receiver).toMatch(/action != Intent\.ACTION_BOOT_COMPLETED && action != Intent\.ACTION_MY_PACKAGE_REPLACED\) return/);
     expect(receiver).toContain('McpServerSupervisor.requestAutostart');
     const req = supervisor.slice(supervisor.indexOf('fun requestAutostart'));
-    expect(req.slice(0, 500)).toMatch(/if \(!McpAutostartStore\.isOn\(app\)\)[\s\S]*?return/);
+    expect(req.slice(0, 500)).toMatch(/if \(!McpAutostartStore\.isOn\(app\)\) \{[^}]*ensureWatching\(app\)\s*return\s*\}/);
   });
 
   it('the service starts foreground with the specialUse type behind an API 34 check', () => {
@@ -475,7 +508,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
     const start = supervisor.slice(supervisor.indexOf('fun onServiceStart'), supervisor.indexOf('// ── Watchdog'));
     // The mirror is re-read and the generation re-checked UNDER the lock,
     // after the slow extraction, so an OFF during extraction wins.
-    expect(start).toMatch(/ensureRuntime\(app\)[\s\S]*synchronized\(lock\)[\s\S]*generation != startGeneration[\s\S]*McpAutostartStore\.read\(app\)[\s\S]*MCPBridge\.start\(/);
+    expect(start).toMatch(/prepareRuntime\(app, reason\)[\s\S]*synchronized\(lock\)[\s\S]*generation != startGeneration[\s\S]*McpAutostartStore\.read\(app\)[\s\S]*spawnWithFingerprint\(app, request\)/);
     for (const fn of ['fun startFromApp', 'fun stop(']) {
       const body = supervisor.slice(supervisor.indexOf(fn), supervisor.indexOf(fn) + 600);
       expect(body).toMatch(/generation \+= 1/);
@@ -483,7 +516,52 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
     expect(supervisor).toMatch(/HomeInitializer\.initialize\(app\)/);
     expect(supervisor).toMatch(/LibExtractor\.ensureExtracted\(app\)/);
     const reconcile = supervisor.slice(supervisor.indexOf('private fun reconcile'));
-    expect(reconcile).toMatch(/if \(!d\.fromApp\)[\s\S]*McpAutostartStore\.read\(app\)[\s\S]*MCPBridge\.start\(/);
+    expect(reconcile).toMatch(/if \(!d\.fromApp\)[\s\S]*McpAutostartStore\.read\(app\)[\s\S]*prepareRuntime\(app, "watchdog restart"\)[\s\S]*spawnWithFingerprint\(app, use\)/);
+  });
+
+  it('scans for orphans with or without a tracked process, even before any listener binds', () => {
+    const stop = bridge.slice(bridge.indexOf('fun stop('), bridge.indexOf('internal fun isListenerPresent'));
+    expect(stop).toMatch(/val proc = process \?: return killOrphanListeners\(context\)/);
+    expect(stop).toMatch(/if \(isAlive\(proc\)\) return false\s*process = null\s*return killOrphanListeners\(context\)/);
+    expect(bridge).toMatch(/if \(!isRunning\(\) && !killOrphanListeners\(context\)\)/);
+  });
+
+  it('requires exact orphan identity and refuses an inconclusive scan', () => {
+    const identify = bridge.slice(bridge.indexOf('private fun identifyOrphan'), bridge.indexOf('internal fun killOrphanListeners'));
+    expect(identify).toMatch(/val linker = "\/system\/bin\/linker64"\s*val viaLinker = argv\.getOrNull\(0\) == linker && argv\.getOrNull\(1\) == nodePath/);
+    expect(identify).toMatch(/val scriptIndex = when \{\s*viaLinker -> 2\s*argv\.getOrNull\(0\) == nodePath -> 1\s*else -> return OrphanScan\.NoMatch\s*\}/);
+    expect(identify).toMatch(/if \(argv\.getOrNull\(scriptIndex \+ 1\) != queuePath \|\|\s*argv\.getOrNull\(scriptIndex \+ 2\) != PORT\.toString\(\)\s*\) return OrphanScan\.NoMatch/);
+    expect(identify).toMatch(/val script = File\(argv\[scriptIndex\]\)\s*val resolved = if \(script\.isAbsolute\) script else File\(Os\.readlink\("\$\{dir\.path\}\/cwd"\), argv\[scriptIndex\]\)\s*if \(resolved\.canonicalPath != scriptPath\) return OrphanScan\.NoMatch/);
+    expect(identify).not.toMatch(/\.any\s*\{|script\.name/);
+    expect(bridge).toMatch(/Os\.readlink\("\/system\/bin\/linker64"\)/);
+    expect(bridge).toMatch(/if \(target\.startsWith\("\/"\)\) target else File\("\/system\/bin\/", target\)\.canonicalPath\s*\}\.getOrDefault\("\/system\/bin\/linker64"\)/);
+    expect(bridge).toMatch(/val expectedNode = runCatching \{ File\(node\)\.canonicalPath \}\.getOrDefault\(node\)/);
+    expect(identify).toMatch(/val exe = Os\.readlink\("\$\{dir\.path\}\/exe"\)\s*if \(!\(viaLinker && \(exe == linker \|\| exe == resolvedLinker\)\) &&\s*exe != expectedNode && exe != "\$expectedNode \(deleted\)"\s*\) \{\s*return OrphanScan\.NoMatch/);
+    expect(identify).toMatch(/if \(uid != android\.os\.Process\.myUid\(\)\) return OrphanScan\.NoMatch/);
+    expect(identify).toMatch(/if \(readStartTime\(\) != startTime\) return OrphanScan\.Unknown\s*OrphanScan\.Match\(pid, exe, ByteBuffer\.wrap\(cmdline\)\.asReadOnlyBuffer\(\), startTime\)/);
+    expect(identify).toMatch(/if \(startTime != captured\.startTime \|\| argvBytes != captured\.argv\) return OrphanScan\.NoMatch/);
+    expect(identify).toMatch(/if \(exe\.removeSuffix\(" \(deleted\)"\) != captured\.exe\.removeSuffix\(" \(deleted\)"\)\) \{\s*return OrphanScan\.Unknown\s*\}\s*return OrphanScan\.Match\(pid, exe, argvBytes, startTime\)/);
+    expect(bridge).toMatch(/when \(val current = reread\(identity\)\) \{\s*OrphanScan\.Unknown -> return null\s*OrphanScan\.NoMatch -> null\s*is OrphanScan\.Match -> current/);
+    expect(bridge).toMatch(/when \(val current = reread\(identity\)\) \{\s*OrphanScan\.Unknown -> return null\s*OrphanScan\.NoMatch -> Unit\s*is OrphanScan\.Match -> \{\s*runCatching \{ Os\.kill\(current\.pid, signal\) \}\s*signaled\.add\(current\)/);
+    expect(bridge).toMatch(/File\("\/proc"\)\.list\(\) \?: return false/);
+    expect(bridge).toMatch(/OrphanScan\.Unknown -> return false[\s\S]*?signal\(orphans, OsConstants\.SIGTERM\)/);
+
+    const stop = supervisor.slice(supervisor.indexOf('fun stop('), supervisor.indexOf('return stopped') + 14);
+    expect(stop).toMatch(/if \(stopped\)[\s\S]*?else \{[\s\S]*?ensureWatching\(app\)[\s\S]*?return stopped/);
+
+    const off = supervisor.slice(supervisor.indexOf('if (d == null)', supervisor.indexOf('private fun reconcile')),
+      supervisor.indexOf('restoreServiceIfNeededLocked(app, now)', supervisor.indexOf('private fun reconcile')));
+    expect(off).toMatch(/if \(now >= nextAttemptAt\) \{\s*if \(MCPBridge\.stop\(app\)\)/);
+    expect(off).not.toMatch(/isListenerPresent|\brunning\b/);
+    expect(off).toMatch(/failures \+= 1\s*nextAttemptAt = now \+ backoffMs\(failures\)/);
+    expect(off).toMatch(/resetBackoff\(\)\s*nextAttemptAt = now \+ POLL_MS/);
+  });
+
+  it('classifies a decrypted blob with no usable token as a read failure', () => {
+    const readToken = store.slice(store.indexOf('internal fun readToken('), store.indexOf('private fun decrypt('));
+    expect(readToken).toMatch(/val token = runCatching \{ JSONObject\(decrypted\).*\}\.getOrNull\(\)/);
+    expect(readToken).toMatch(/if \(token != null && isValidToken\(token\)\) TokenRead\.Present\(token\) else TokenRead\.Failed/);
+    expect(readToken.match(/TokenRead\.Absent/g)).toHaveLength(2);
   });
 
   it('MCPBridge never reuses a process started with other settings or token', () => {
@@ -516,7 +594,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
   it('the module routes start/stop through the supervisor and OFF clears + stops', () => {
     expect(moduleKt).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
     const mirror = moduleKt.slice(moduleKt.indexOf('AsyncFunction("setMCPAutostartMirror")'));
-    expect(mirror.slice(0, 900)).toMatch(/if \(!enabled\) \{[\s\S]*?val cleared = McpAutostartStore\.clear\(context, "settings off"\)\s*McpServerSupervisor\.stop\(context, "settings off"\)\s*cleared\s*\}/);
+    expect(mirror.slice(0, 900)).toMatch(/if \(!enabled\) \{[\s\S]*?val cleared = McpAutostartStore\.clear\(context, "settings off"\)\s*val stopped = McpServerSupervisor\.stop\(context, "settings off"\)\s*cleared && stopped\s*\}/);
     // No API hands a bridge key to JS.
     expect(moduleKt).not.toMatch(/AsyncFunction\("get\w*BridgeKey/);
   });
@@ -560,7 +638,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
     const destroyed = supervisor.slice(supervisor.indexOf('fun onServiceDestroyed'), supervisor.indexOf('fun onServiceStart('));
     expect(destroyed).not.toContain('synchronized');
     const reconcile = supervisor.slice(supervisor.indexOf('private fun reconcile'));
-    expect(reconcile).toMatch(/val d = desired \?: return POLL_MS[\s\S]*?restoreServiceIfNeededLocked\(app, now\)/);
+    expect(reconcile).toMatch(/val d = desired\s+val now = System\.currentTimeMillis\(\)\s+if \(d == null\) \{[\s\S]*?\n {16}return POLL_MS\s+\}\s+restoreServiceIfNeededLocked\(app, now\)/);
     const restore = supervisor.slice(supervisor.indexOf('private fun restoreServiceIfNeededLocked'));
     expect(restore.slice(0, 600)).toMatch(/if \(serviceAlive \|\| now < serviceRetryAt\) return[\s\S]*startServiceLocked\(app, "restore"\)[\s\S]*backoffMs\(serviceRestores\)/);
   });
@@ -578,7 +656,7 @@ describe('native wiring (structural; Kotlin compiles in CI)', () => {
 
   it('an app stop clears the auto-start mirror before stopping (finding 1)', () => {
     const fn = moduleKt.slice(moduleKt.indexOf('AsyncFunction("stopMCPServer")'));
-    expect(fn.slice(0, 400)).toMatch(/McpAutostartStore\.clear\(context, "app stop"\)\s*McpServerSupervisor\.stop\(context, "app stop"\)/);
+    expect(fn.slice(0, 400)).toMatch(/val cleared = McpAutostartStore\.clear\(context, "app stop"\)\s*val stopped = McpServerSupervisor\.stop\(context, "app stop"\)\s*cleared && stopped/);
   });
 
   it('the plan executor and the server script pair stay untouched by this feature', () => {

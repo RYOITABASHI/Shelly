@@ -194,8 +194,8 @@ describe('wrappers on a build without the native store', () => {
   });
 
   it('purge is confirmed: there is no store, so no rule can exist', async () => {
-    expect(await purgeMcpAlwaysAllowRulesExcept(null)).toBe(true);
-    expect(await purgeMcpAlwaysAllowRulesExcept(P1)).toBe(true);
+    expect(await purgeMcpAlwaysAllowRulesExcept(null)).toBe(false);
+    expect(await purgeMcpAlwaysAllowRulesExcept(P1)).toBe(false);
   });
 });
 

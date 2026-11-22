@@ -965,9 +965,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             onPress: () => {
               regenerateMCPToken()
                 .then((result) => {
-                  if (result.check === 'old_token_accepted') {
-                    Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_old_still_accepted'));
-                  } else if (result.check === 'restart_failed') {
+                  if (result.check === 'restart_failed') {
                     Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_restart_failed'));
                   } else if (result.check === 'failed_server_off') {
                     Alert.alert(

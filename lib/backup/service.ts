@@ -63,7 +63,9 @@ import {
 import {
   APPROVAL_SECURE_KEYS,
   CLOSEPAW_PREAPPROVAL_KEY,
+  NON_RESTORABLE_SECURE_KEYS,
   POLICY_SEAL_KEY,
+  isReservedConnectorId,
   TRUST_ALLOW_SEAL_KEY,
   buildSecureStoreInventory,
   connectorsFromAsyncStorage,
@@ -82,6 +84,7 @@ export const BACKUP_DOWNLOAD_DIR = '/sdcard/Download';
 export const BACKUP_TMP_REL = '.shelly-backup-tmp';
 export const BACKUP_PAYLOAD_SCHEMA = 2;
 const SOCIAL_CONNECTORS_ASYNC_KEY = 'shelly_social_connectors';
+const SETTINGS_ASYNC_KEY = 'shelly_settings';
 export const DM_PAIRINGS_REL = '.shelly/agents/dm-pairings.json';
 /** Bundle files handled by the approval step, never by the generic loop. */
 const APPROVAL_FILES = new Set<string>([USER_POLICY_RELATIVE_PATH, DM_PAIRINGS_REL]);
@@ -123,6 +126,8 @@ export type BackupDeps = {
   minN?: number;
   /** Native policy-seal mirror (TerminalEmulator.setAgentPolicySeal). */
   setNativePolicySeal?: (value: string) => Promise<void>;
+  /** Stop MCP and confirm that its native auto-start credentials are cleared. */
+  clearMcpAfterSettingsRestore(): Promise<void>;
   downloadDir?: string;
 };
 
@@ -325,6 +330,7 @@ export async function runBackup(deps: BackupDeps, opts: BackupOptions): Promise<
     const inventory = buildSecureStoreInventory(connectorsFromAsyncStorage(asyncStorage[SOCIAL_CONNECTORS_ASYNC_KEY]));
     const secureStore: Record<string, string> = {};
     for (const key of inventory) {
+      if (NON_RESTORABLE_SECURE_KEYS.has(key)) continue;
       let v: string | null = null;
       try {
         v = await deps.secureStore.getItemAsync(key);
@@ -614,6 +620,7 @@ export async function applyRestore(deps: BackupDeps, opened: OpenedBackup, opts:
   if (opts.tarPath !== null && !isSafeAbsolutePath(opts.tarPath)) throw new BackupError('bad_path', 'Tar file path is not valid');
 
   await resetTmp(deps);
+  let settingsWriteAttempted = false;
   try {
     // 1. tar: copy into app-private tmp FIRST, then hash / list / validate /
     //    extract ONLY that copy (no TOCTOU window on world-writable /sdcard).
@@ -656,19 +663,34 @@ export async function applyRestore(deps: BackupDeps, opened: OpenedBackup, opts:
     for (const [k, v] of Object.entries(payload.asyncStorage)) {
       const d = asyncKeyDecision(k);
       if (d === 'restore' || (d === 'approval' && approvals)) {
-        pairs.push([k, v]);
+        let value = v;
+        if (k === SOCIAL_CONNECTORS_ASYNC_KEY) {
+          const connectors = safeJson(v);
+          if (!Array.isArray(connectors)) continue;
+          value = JSON.stringify(connectors.filter((connector) =>
+            connector !== null && typeof connector === 'object' && !Array.isArray(connector)
+            && !isReservedConnectorId(connector.id)));
+        }
+        pairs.push([k, value]);
         settingsKeys.push(k);
       } else {
         skippedSettingsKeys.push({ key: k, reason: d === 'approval' ? 'approval_not_selected' : d === 'deny' ? 'install_specific' : 'unknown_key' });
       }
     }
-    if (pairs.length) await deps.asyncStorage.multiSet(pairs);
+    if (pairs.length) {
+      settingsWriteAttempted = settingsKeys.includes(SETTINGS_ASYNC_KEY);
+      await deps.asyncStorage.multiSet(pairs);
+    }
 
     // 3. SecureStore — inventoried keys; approval keys only via step 5
     const apiKeys: string[] = [];
     const skippedSecureKeys: { name: string; reason: string }[] = [];
     for (const [k, v] of Object.entries(payload.secureStore)) {
       if (APPROVAL_SECURE_KEYS.includes(k)) continue;
+      if (NON_RESTORABLE_SECURE_KEYS.has(k)) {
+        skippedSecureKeys.push({ name: secureKeyDisplayName(k), reason: 'device_local_credential' });
+        continue;
+      }
       if (!isRestorableSecureKey(k)) {
         skippedSecureKeys.push({ name: secureKeyDisplayName(k), reason: 'unknown_key' });
         continue;
@@ -769,6 +791,9 @@ export async function applyRestore(deps: BackupDeps, opened: OpenedBackup, opts:
     };
   } finally {
     await cleanupTmp(deps);
+    // A failed write may have partially applied, and a later restore step
+    // can also fail after settings reached disk. Clear before either return.
+    if (settingsWriteAttempted) await deps.clearMcpAfterSettingsRestore();
   }
 }
 

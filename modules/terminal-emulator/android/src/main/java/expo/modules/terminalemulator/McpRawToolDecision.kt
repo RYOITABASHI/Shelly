@@ -43,7 +43,7 @@ object McpRawToolDecision {
     // ── Messages (lib/mcp-server-bridge.ts wording where RN has one) ──────
 
     const val EXEC_DISABLED_ERROR = "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)"
-    const val REVOKED_ERROR = "cancelled: the MCP token was regenerated"
+    const val REVOKED_ERROR = "cancelled: the MCP token is no longer valid"
     const val COMMAND_REQUIRED = "command is required"
     const val EXPIRED_ERROR = "the request expired before it could run"
     const val SKIP_TURNED_OFF_ERROR = "MCP: Run without approval was turned off before this call ran; call it again (it will need the approval tap)"

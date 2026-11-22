@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings as BaseAppSettings, SocialConnectorMeta } from './types';
+import { isReservedConnectorId } from '@/lib/backup/secure-store-inventory';
 import {
   saveApiKey,
   loadApiKeys,
@@ -492,7 +493,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (Array.isArray(parsed)) {
           socialConnectors = parsed.filter(
             (c): c is SocialConnectorMeta =>
-              !!c && typeof c === 'object' && typeof c.id === 'string' && isSafeConnectorId(c.id),
+              !!c && typeof c === 'object' && typeof c.id === 'string' &&
+              isSafeConnectorId(c.id) && !isReservedConnectorId(c.id),
           );
         }
       } catch (err) {
@@ -749,6 +751,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (!isSafeConnectorId(id)) {
       throw new Error(`Connector id must be alphanumeric/hyphen only: ${id}`);
     }
+    if (isReservedConnectorId(id)) {
+      throw new Error(`Connector id is system-reserved: ${id}`);
+    }
     if (!isSocialPlatform(platform)) {
       throw new Error(`Unknown social platform: ${platform}`);
     }
@@ -802,6 +807,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   removeSocialConnector: async (id: string) => {
     if (!isSafeConnectorId(id)) return;
+    if (isReservedConnectorId(id)) {
+      throw new Error(`Connector id is system-reserved: ${id}`);
+    }
     const existing = get().socialConnectors.find((c) => c.id === id);
     // 1. Delete every secret field from SecureStore (declared fields + the
     //    full known-field union as belt-and-braces).

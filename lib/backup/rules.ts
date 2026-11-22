@@ -69,6 +69,7 @@ export const EXCLUDED_HOME_PATHS: readonly string[] = Object.freeze([
   '.shelly-cli.staging',
   '.shelly-trash',
   '.shelly-backup-tmp',
+  '.shelly-mcp-queue', // device-local requests, results and signed stage_install mirror
   '.shelly-auth-snapshots', // stale moved-aside credential snapshots
   '.shelly-install-results',
   '.shelly/tmp',
