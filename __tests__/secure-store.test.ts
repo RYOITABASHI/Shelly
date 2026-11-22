@@ -39,8 +39,10 @@ import {
   getApiKey,
   deleteApiKey,
   saveConnectorSecret,
+  saveMcpTokenSecret,
   getConnectorSecret,
   deleteConnectorSecret,
+  deleteAllConnectorSecrets,
 } from '@/lib/secure-store';
 
 describe('secure-store — saveApiKey', () => {
@@ -79,6 +81,32 @@ describe('secure-store — saveConnectorSecret', () => {
     mockSecureStoreValues.clear();
     nextSetItemShouldFail = false;
     jest.clearAllMocks();
+  });
+
+  it('refuses writes to the system-reserved connector secret', async () => {
+    await expect(saveConnectorSecret('mcp-server', 'token', 'value')).rejects.toThrow('reserved');
+    expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('refuses reserved connector mutations after coercing the id and field', async () => {
+    const id = ['mcp-server'] as unknown as string;
+    const field = ['token'] as unknown as string;
+    await expect(saveConnectorSecret(id, field, 'value')).rejects.toThrow('reserved');
+    await expect(deleteConnectorSecret(id, field)).rejects.toThrow('reserved');
+    await expect(deleteAllConnectorSecrets(id, ['other', field])).rejects.toThrow('reserved');
+    expect(SecureStore.setItemAsync).not.toHaveBeenCalled();
+    expect(SecureStore.deleteItemAsync).not.toHaveBeenCalled();
+  });
+
+  it('persists the bearer token through the dedicated MCP writer', async () => {
+    await saveMcpTokenSecret('bearer');
+    await expect(getConnectorSecret('mcp-server', 'token')).resolves.toBe('bearer');
+  });
+
+  it('refuses single-field and bulk deletion of the system-reserved connector secret', async () => {
+    await expect(deleteConnectorSecret('mcp-server', 'token')).rejects.toThrow('reserved');
+    await expect(deleteAllConnectorSecrets('mcp-server', ['other', 'token'])).rejects.toThrow('reserved');
+    expect(SecureStore.deleteItemAsync).not.toHaveBeenCalled();
   });
 
   it('resolves normally when the underlying write succeeds', async () => {

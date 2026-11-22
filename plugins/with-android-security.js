@@ -2,6 +2,7 @@
  * Expo config plugin: harden Android security settings.
  *
  * - Sets android:allowBackup="false" to prevent adb backup data leakage
+ * - Excludes MCP state from Android data extraction
  * - Adds network_security_config.xml to restrict cleartext traffic to localhost only
  * - Removes global usesCleartextTraffic in favor of the network security config
  */
@@ -44,6 +45,7 @@ function withAndroidSecurity(config) {
     const app = config.modResults.manifest.application?.[0];
     if (app?.$) {
       app.$["android:allowBackup"] = "false";
+      app.$["android:dataExtractionRules"] = "@xml/shelly_data_extraction_rules";
       app.$["android:networkSecurityConfig"] =
         "@xml/network_security_config";
       // Remove global usesCleartextTraffic — now handled by network_security_config

@@ -98,7 +98,7 @@ describe('the master switch is native', () => {
       expect(src).not.toMatch(/[^t] isApproveAllWithoutAskingOn\(\)/);
     }
     expect(read('lib/mcp-server-bridge.ts')).toContain('await isApproveAllWithoutAskingOn()');
-    expect(read('lib/mcp-server-bridge.ts')).toContain("await turnOffApproveAll('token regenerated')");
+    expect(read('lib/mcp-server-bridge.ts')).toContain("turnOffApproveAll(reason)");
     const config = read('components/config/ConfigTUI.tsx');
     expect(config).toMatch(/def\.key === 'approveAllWithoutAsking'\) \{[\s\S]{0,700}setApproveAllFromToggle\(rawValue === true\)/);
     // Only lib/approve-all-without-asking.ts calls the native setter.

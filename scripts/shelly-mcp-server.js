@@ -134,12 +134,19 @@ const RESULT_MAX_BYTES = 64 * 1024 * 1024;
 const RESULT_TIMEOUT_MS = 100_000;
 const QUEUE_READ_TIMEOUT_MS = 10_000;
 const DEVICE_LIVE_REFRESH_TIMEOUT_MS = 8_000;
-const QUEUE_READ_TOOLS = new Set(['get_settings', 'read_logs', 'read_terminal_output']);
+const QUEUE_READ_TOOLS = new Set(['get_settings', 'read_logs', 'read_terminal_output', 'stage_install_result']);
 
 // KEEP IN SYNC: McpTypedOpDecision.kt isRnLive / HEARTBEAT_*_MS.
 const HEARTBEAT_LIVE_MS = 2_000;
 const HEARTBEAT_FUTURE_MS = 1_000;
 const HEARTBEAT_MAX_BYTES = 64;
+
+function pausedBridgeReadError(toolName) {
+  return {
+    ok: false,
+    error: `${toolName} cannot be answered right now: Shelly is in the background and its bridge is paused (open Shelly and try again)`,
+  };
+}
 
 function rnLiveFromHeartbeat(queueDir, nowMs) {
   const heartbeatPath = path.join(queueDir, 'bridge-heartbeat');
@@ -341,6 +348,11 @@ const TOOLS = [
       },
       required: ['series', 'file'],
     },
+  },
+  {
+    name: 'stage_install_result',
+    description: 'Reads the single latest recorded terminal stage_install outcome (success or failure), including after Shelly restarts. It does not return pending installs or a history.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'read_logs',
@@ -588,10 +600,7 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
   return function callTool(toolName, args, ingress, opts) {
     const isRead = QUEUE_READ_TOOLS.has(toolName) || DIRECT_READ_TOOLS.has(toolName);
     if (isRead && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
-      return Promise.resolve({
-        ok: false,
-        error: `${toolName} cannot be answered right now: Shelly is in the background and its bridge is paused (open Shelly and try again)`,
-      });
+      return Promise.resolve(pausedBridgeReadError(toolName));
     }
     const override = opts?.timeoutMs;
     const timeoutMs = Number.isFinite(override) && override > 0
@@ -644,8 +653,9 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
 // The snapshot carries an HMAC keyed by the bearer token, so a file planted
 // in the queue dir by anything that doesn't hold the token is ignored and
 // the call falls back to the queue (the old behaviour). read_terminal_output,
-// read_logs, get_settings, run_command and write_file always go through the
-// queue.
+// read_logs, get_settings, run_command and write_file always go through the queue.
+// stage_install_result uses the signed latest-result mirror when RN is not live
+// or a queued read fails.
 //   read_agent_audit / read_article_history — two fixed files under
 //     $HOME/.shelly/agents/logs, read by this process: the tail of
 //     <agentId>/plan-executor-audit.jsonl for an agent in the snapshot, and
@@ -718,6 +728,86 @@ function readVerifiedSnapshot(queueDir, token) {
   }
 }
 
+function verifyStageInstallEnvelope(outer, token) {
+  if (!isPlainObject(outer) || typeof outer.body !== 'string'
+      || typeof outer.mac !== 'string' || !/^[0-9a-f]{64}$/.test(outer.mac)) return null;
+  const expected = Buffer.from(snapshotMac(token, outer.body), 'hex');
+  if (!crypto.timingSafeEqual(Buffer.from(outer.mac, 'hex'), expected)) return null;
+  try {
+    const result = JSON.parse(outer.body);
+    return isPlainObject(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+// KEEP IN SYNC: StageInstall.kt signs the stored UTF-8 body using snapshotMac.
+function stageInstallFenceAbsent(queueDir) {
+  try {
+    fs.lstatSync(path.join(queueDir, 'stage-install-poison'));
+    return false;
+  } catch (e) {
+    return e.code === 'ENOENT';
+  }
+}
+
+function readStageInstallResult(queueDir, token) {
+  if (!stageInstallFenceAbsent(queueDir)) return null;
+  const file = path.join(queueDir, 'stage-install-last.json');
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (e) {
+    // Undefined means absent. Null means the mirror could not be verified.
+    return e.code === 'ENOENT' && stageInstallFenceAbsent(queueDir) ? undefined : null;
+  }
+  try {
+    let bytes;
+    try {
+      if (!fs.fstatSync(fd).isFile()) return null;
+      bytes = readAtMost(fd, 0, SNAPSHOT_MAX_BYTES + 1);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (bytes.length > SNAPSHOT_MAX_BYTES) return null;
+    const result = verifyStageInstallEnvelope(JSON.parse(bytes.toString('utf8')), token);
+    if (!result) return null;
+    const { sessionId, status, statusCode, message, at } = result;
+    if ((status !== 'success' && status !== 'failure') || !Number.isSafeInteger(at)
+        || (sessionId !== undefined && !Number.isInteger(sessionId))
+        || !Number.isInteger(statusCode) || typeof message !== 'string') return null;
+    const data = { status, at };
+    if (sessionId !== undefined) data.sessionId = sessionId;
+    const shaped = status === 'failure'
+      ? { ...data, statusCode, message: redactForMcp(message) }
+      : data;
+    if (!stageInstallFenceAbsent(queueDir)) return null;
+    return shaped;
+  } catch {
+    return null;
+  }
+}
+
+// KEEP IN SYNC: lib/mcp-server-bridge.ts and IngressAuditWriter.kt.
+function auditStageInstallResult(homeDir, principal, code, nowMs, log) {
+  const kind = 'mcp_stage_install_result';
+  try {
+    if (typeof principal !== 'string' || !/^[0-9a-f]{32}$/.test(principal)) throw new Error('invalid audit principal');
+    const agents = path.join(fs.realpathSync(homeDir), '.shelly', 'agents');
+    if (fs.realpathSync(agents) !== agents) throw new Error('linked audit directory');
+    const audits = path.join(agents, 'audits');
+    fs.mkdirSync(audits, { recursive: true, mode: 0o700 });
+    if (fs.realpathSync(audits) !== audits) throw new Error('linked audit directory');
+    const line = JSON.stringify({ ts: new Date(nowMs).toISOString(), kind, event: kind, principal, code });
+    fs.appendFileSync(path.join(audits, 'mcp-ingress-audit.jsonl'), line + '\n', {
+      flag: fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      mode: 0o600,
+    });
+  } catch {
+    log(`stage_install_result audit line not written (${code})`);
+  }
+}
+
 // git as a network peer's request: the repo's own config must not be able
 // to run a program. Plain `git status` can run fsmonitor, hooks, clean
 // filters (filter.<x>.clean on modified tracked files) and child gits for
@@ -781,6 +871,50 @@ async function defaultRunGit(repoPath) {
  */
 function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {}, now = () => Date.now(), homeDir = path.dirname(queueDir), logIo = DEFAULT_LOG_IO }) {
   return async function callTool(toolName, args, ingress) {
+    if (toolName === 'stage_install_result') {
+      let auditedReadFailure = false;
+      const fromMirror = (reportUnverifiable = false) => {
+        let outcome = readStageInstallResult(queueDir, token);
+        if (outcome) {
+          auditStageInstallResult(homeDir, ingress.principal, outcome.status, now(), log);
+          if (stageInstallFenceAbsent(queueDir)) return { ok: true, data: outcome };
+          outcome = null;
+        }
+        if (outcome === null && !auditedReadFailure) {
+          auditedReadFailure = true;
+          auditStageInstallResult(homeDir, ingress.principal, 'read_failed', now(), log);
+        }
+        if (reportUnverifiable && outcome === null) return unavailable();
+      };
+      const unavailable = () => {
+        const response = pausedBridgeReadError(toolName);
+        if (auditedReadFailure) response.code = 'read_failed';
+        return response;
+      };
+      const rnLive = rnLiveFromHeartbeat(queueDir, now());
+      if (rnLive !== true) {
+        const direct = fromMirror();
+        if (direct) return direct;
+        if (rnLive === null) return unavailable();
+      }
+      let queued;
+      try {
+        queued = verifyStageInstallEnvelope(await fallback(toolName, args, ingress), token);
+      } catch (error) {
+        const recovered = fromMirror(true);
+        if (recovered) return recovered;
+        throw error;
+      }
+      if (queued?.ok === true) {
+        if (stageInstallFenceAbsent(queueDir)) return queued;
+        if (!auditedReadFailure) {
+          auditedReadFailure = true;
+          auditStageInstallResult(homeDir, ingress.principal, 'read_failed', now(), log);
+        }
+        return unavailable();
+      }
+      return fromMirror() ?? (queued?.ok === false ? queued : unavailable());
+    }
     if (!DIRECT_READ_TOOLS.has(toolName)) return fallback(toolName, args, ingress);
     // Drafts need nothing from the app: what may be read comes from the
     // owner's article-pipelines.json, and the app (same uid) could read no
@@ -1848,7 +1982,7 @@ const RUN_RESULT_POLL_MS = 500;
 const RUN_PREVIEW_MAX_CHARS = 500;
 const RUN_UNKNOWN_HANDLE = { ok: false, code: 'unknown_handle', error: 'no run with that handle for this client' };
 
-// redactForMcp (lib/mcp-server-bridge.ts) = redactSecretsText
+// KEEP IN SYNC: redactForMcp (lib/mcp-server-bridge.ts) = redactSecretsText
 // (lib/redact-secrets.ts) + MCP_EXTRA_REDACTIONS. Same regex literals, same
 // order, same replacements (the test runs both over one corpus).
 const SECRET_PATTERNS = [
@@ -2202,6 +2336,7 @@ function settlesWithin(promise, ms) {
 function createMcpHandler(opts) {
   const token = opts.token;
   const callTool = opts.callTool;
+  const queueDir = opts.queueDir;
   const now = opts.now || (() => Date.now());
   const stateKey = opts.stateKey || crypto.randomBytes(32);
   const mrtrEnabled = opts.mrtr === true;
@@ -2219,6 +2354,19 @@ function createMcpHandler(opts) {
       return `tool disabled on the device: ${name} (turn it on in Shelly's settings)`;
     }
     return `unknown tool: ${name}`;
+  }
+
+  // stage_install_result is answered from state captured while the wrapped
+  // callTool ran, and every check inside it passed at capture time. A poison
+  // fence can still land between that return and serialization; re-check at
+  // the transport handoff so a fenced success is never serialized — it
+  // degrades to the read_failed shape the direct-read wrapper uses.
+  function handoffResult(toolName, result) {
+    if (toolName !== 'stage_install_result' || !queueDir || !result || result.ok !== true) return result;
+    if (stageInstallFenceAbsent(queueDir)) return result;
+    const degraded = pausedBridgeReadError(toolName);
+    degraded.code = 'read_failed';
+    return degraded;
   }
 
   const principal = sha256Hex(`shelly-mcp-principal:${token}`).slice(0, 32);
@@ -2348,7 +2496,7 @@ function createMcpHandler(opts) {
           return json(200, jsonRpcError(id, INVALID_PARAMS, refusal));
         }
         // Legacy peers have no MRTR — block on the bridge exactly as before.
-        const result = await callTool(toolName, capToolArgs(toolName, (params && params.arguments) || {}), ingressFor(legacySessions.get(sessionId)));
+        const result = handoffResult(toolName, await callTool(toolName, capToolArgs(toolName, (params && params.arguments) || {}), ingressFor(legacySessions.get(sessionId))));
         return json(200, jsonRpcResult(id, toolResultBody(result)));
       }
       default:
@@ -2449,7 +2597,7 @@ function createMcpHandler(opts) {
         // We never issue requestState for read-only tools.
         return json(400, jsonRpcError(id, INVALID_PARAMS, 'unexpected requestState'));
       }
-      const result = await callTool(toolName, args, ingress);
+      const result = handoffResult(toolName, await callTool(toolName, args, ingress));
       return json(200, modernResult(id, toolResultBody(result)));
     }
 
@@ -2655,6 +2803,7 @@ async function main() {
   const typedOps = process.env.SHELLY_MCP_TYPED_OPS === '1';
   const handler = createMcpHandler({
     token,
+    queueDir,
     // get_run_result reads runs/ directly; list_agents / list_repos /
     // git_status / device_status read the snapshot; the rest go through the
     // file queue (run_agent → typed-requests/, run_command / write_file →

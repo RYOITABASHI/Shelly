@@ -12,6 +12,7 @@ import { nodeRandomBytes } from './support/backup-noble-node';
 const HOME_URI = 'file:///data/user/0/dev.shelly.terminal/files/home/';
 const PASS = 'Tr0mb0ne-Kettle-Navy-91-backup';
 const API_SECRET = 'sk-API-SECRET-VALUE-9f8e7d6c5b4a';
+const MCP_TOKEN_KEY = 'shelly_social-connector.mcp-server.token';
 const DEK_SECRET = 'DEK-SECRET-BASE64-AAAAAAAAAAAAAAAAAAAAAA=';
 const AUTH_SECRET = '{"tokens":{"access_token":"CODEX-AUTH-SECRET-TOKEN-xyz"}}';
 const SSH_SECRET = '-----BEGIN OPENSSH PRIVATE KEY-----\nSSH-PRIVATE-SECRET\n-----END OPENSSH PRIVATE KEY-----\n';
@@ -74,6 +75,7 @@ function makeDeps(w: World, storage: Map<string, string>, secure: Map<string, st
     randomBytes: nodeRandomBytes,
     kdf: { N: 16, r: 1, p: 1 },
     minN: 16,
+    clearMcpAfterSettingsRestore: async () => undefined,
     fs: {
       async readAsStringAsync(uri, opts) {
         const rel = relOf(uri);
@@ -179,6 +181,9 @@ function seedOldInstall() {
   w.home.set('projects/app/src/main.ts', Buffer.from('console.log(1)'));
   w.home.set('models/q.gguf', Buffer.from('GGUF'));
   w.home.set('bin/bash', Buffer.from('#!wrapper'));
+  w.home.set('.shelly-mcp-queue/stage-install-last.json', Buffer.from('signed outcome'));
+  w.home.set('.shelly-mcp-queue/request-1.json', Buffer.from('private request arguments'));
+  w.home.set('.shelly-mcp-queue/result-1.json', Buffer.from('private run output'));
   const storage = new Map<string, string>([
     ['shelly_settings', '{"theme":"nord"}'],
     ['shelly_android_update_download', '{"id":42}'],
@@ -232,6 +237,19 @@ function freshFrom(w: World) {
 }
 
 describe('backup', () => {
+  it('excludes the device-local MCP token from the encrypted payload', async () => {
+    const { w, storage, secure } = seedOldInstall();
+    secure.set(MCP_TOKEN_KEY, 'device-local-token');
+    const deps = makeDeps(w, storage, secure);
+    const getItem = jest.spyOn(deps.secureStore, 'getItemAsync');
+    const { bundlePath } = await runBackup(deps, { passphrase: PASS, includeCodexAuth: false, includeLarge: false });
+    const { payload } = await openBackup(deps, { bundlePath, passphrase: PASS });
+
+    expect(getItem).not.toHaveBeenCalledWith(MCP_TOKEN_KEY);
+    expect(payload.secureStore[MCP_TOKEN_KEY]).toBeUndefined();
+    expect(payload.secureStore.shelly_geminiApiKey).toBe(API_SECRET);
+  });
+
   it('tar holds only non-secret files; credentials + ~/.shelly go to the bundle; nothing leaks', async () => {
     const seeded = seedOldInstall();
     const con = spyConsole();
@@ -250,6 +268,11 @@ describe('backup', () => {
 
     const tarNames = w.sdcard.get(result.tarPath!)!.toString('utf8').split('\n').map((l) => l.split('\0')[0]).sort();
     expect(tarNames).toEqual(['./projects/app/.git/HEAD', './projects/app/src/main.ts']);
+    const { payload } = await openBackup(makeDeps(w, seeded.storage, seeded.secure), {
+      bundlePath: result.bundlePath,
+      passphrase: PASS,
+    });
+    expect(Object.keys(payload.files).some((name) => name.startsWith('.shelly-mcp-queue/'))).toBe(false);
 
     assertNoSecrets('console', con.calls.map((c) => c.map(String).join(' ')));
     assertNoSecrets('exec', w.commands);
@@ -283,6 +306,93 @@ describe('backup', () => {
 });
 
 describe('restore', () => {
+  it('rejects an older tar carrying MCP queue data before extraction', async () => {
+    const { w, result } = await backup();
+    const fresh = freshFrom(w);
+    const mirrorPath = '.shelly-mcp-queue/stage-install-last.json';
+    fresh.home.set(mirrorPath, Buffer.from('current mirror'));
+    const deps = makeDeps(fresh, new Map(), new Map());
+    const opened = await openBackup(deps, { bundlePath: result.bundlePath, passphrase: PASS });
+    const oldTar = Buffer.concat([
+      fresh.sdcard.get(result.tarPath!)!,
+      Buffer.from(`\n./${mirrorPath}\0${Buffer.from('stale mirror').toString('base64')}`),
+    ]);
+    fresh.sdcard.set(result.tarPath!, oldTar);
+    opened.payload.tar = { name: result.tarPath!, sha256: sha(oldTar), bytes: oldTar.length };
+
+    await expect(applyRestore(deps, opened, { tarPath: result.tarPath })).rejects.toMatchObject({ code: 'tar_unsafe' });
+    expect(fresh.extracted).toEqual([]);
+    expect(fresh.home.get(mirrorPath)?.toString()).toBe('current mirror');
+  });
+
+  it('waits for MCP shutdown after writing restored settings and surfaces cleanup failure', async () => {
+    const { w, result } = await backup();
+    const storage = new Map<string, string>();
+    const clearMcpAfterSettingsRestore = jest.fn(async () => {
+      expect(storage.get('shelly_settings')).toBe('{"theme":"nord"}');
+      throw new Error('MCP shutdown unconfirmed');
+    });
+    const deps = makeDeps(freshFrom(w), storage, new Map(), { clearMcpAfterSettingsRestore });
+    const opened = await openBackup(deps, { bundlePath: result.bundlePath, passphrase: PASS });
+
+    await expect(applyRestore(deps, opened, { tarPath: null })).rejects.toThrow('MCP shutdown unconfirmed');
+    expect(clearMcpAfterSettingsRestore).toHaveBeenCalledTimes(1);
+
+    delete opened.payload.asyncStorage.shelly_settings;
+    await expect(applyRestore(deps, opened, { tarPath: null })).resolves.toBeDefined();
+    expect(clearMcpAfterSettingsRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops reserved connector metadata when restoring the connector settings blob', async () => {
+    const { w, result } = await backup();
+    const storage = new Map<string, string>();
+    const deps = makeDeps(freshFrom(w), storage, new Map());
+    const opened = await openBackup(deps, { bundlePath: result.bundlePath, passphrase: PASS });
+    const userConnector = { id: 'my-x', platform: 'x', label: 'X', fields: ['refreshToken'] };
+    opened.payload.asyncStorage.shelly_social_connectors = JSON.stringify([
+      { id: 'mcp-server', fields: ['token'] },
+      { id: 'mcp-server', fields: ['refreshToken'] },
+      null, 42, 'invalid', [],
+      userConnector,
+    ]);
+
+    await applyRestore(deps, opened, { tarPath: null });
+
+    expect(JSON.parse(storage.get('shelly_social_connectors')!)).toEqual([userConnector]);
+  });
+
+  it.each(['{"id":"mcp-server"}', 'malformed'])('skips a non-array connectors blob (%s)', async (blob) => {
+    const { w, result } = await backup();
+    const storage = new Map<string, string>();
+    const deps = makeDeps(freshFrom(w), storage, new Map());
+    const opened = await openBackup(deps, { bundlePath: result.bundlePath, passphrase: PASS });
+    opened.payload.asyncStorage.shelly_social_connectors = blob;
+
+    await applyRestore(deps, opened, { tarPath: null });
+
+    expect(storage.has('shelly_social_connectors')).toBe(false);
+  });
+
+  it('skips the MCP token from an older backup while restoring other SecureStore keys', async () => {
+    const { w, result } = await backup();
+    const secure = new Map([[MCP_TOKEN_KEY, 'current-device-token']]);
+    const deps = makeDeps(freshFrom(w), new Map(), secure);
+    const setItem = jest.spyOn(deps.secureStore, 'setItemAsync');
+    const opened = await openBackup(deps, { bundlePath: result.bundlePath, passphrase: PASS });
+    opened.payload.secureStore[MCP_TOKEN_KEY] = 'old-backup-token';
+
+    const summary = await applyRestore(deps, opened, { tarPath: null, restoreApprovals: true });
+
+    expect(setItem.mock.calls.map(([key]) => key)).not.toContain(MCP_TOKEN_KEY);
+    expect(secure.get(MCP_TOKEN_KEY)).toBe('current-device-token');
+    expect(setItem).toHaveBeenCalledWith('shelly_geminiApiKey', API_SECRET);
+    expect(setItem).toHaveBeenCalledWith('shelly_memory_v2_dek', DEK_SECRET);
+    expect(summary.skippedSecureKeys).toContainEqual({
+      name: 'connector mcp-server (token)',
+      reason: 'device_local_credential',
+    });
+  });
+
   it('default: no approvals laundered, allowlisted AsyncStorage only, rules-only policy re-sealed, private tar copy only', async () => {
     const { w, result } = await backup();
     const fresh = freshFrom(w);

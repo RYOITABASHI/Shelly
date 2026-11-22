@@ -45,6 +45,9 @@ import org.json.JSONObject
  * exposure for the token.
  */
 object McpAutostartStore {
+    // Global lock order: StageInstall.commitLock -> McpTokenFingerprintStore.monitor.
+    // The credential monitor is shared by both stores. McpAutostartStore has no lock of its own.
+    // While holding the credential monitor, never acquire commitLock or the supervisor lock.
     private const val TAG = "McpAutostartStore"
     private const val PREFS = "shelly_mcp_autostart"
     private const val KEY_BLOB = "blob"
@@ -65,6 +68,12 @@ object McpAutostartStore {
     class Config(val exec: Boolean, val readTerminal: Boolean, val diagnostics: Boolean, val typedOps: Boolean, val token: String) {
         override fun toString(): String =
             "McpAutostartStore.Config(exec=$exec, readTerminal=$readTerminal, diagnostics=$diagnostics, typedOps=$typedOps)"
+    }
+
+    internal sealed interface TokenRead {
+        data class Present(val token: String) : TokenRead
+        object Absent : TokenRead
+        object Failed : TokenRead
     }
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -89,17 +98,18 @@ object McpAutostartStore {
 
     /**
      * Server ON with these settings. Called only from RN
-     * (TerminalEmulatorModule.setMCPAutostartMirror). Returns false (and leaves
-     * the mirror cleared, i.e. OFF) when anything fails.
+     * (TerminalEmulatorModule.setMCPAutostartMirror). Returns false on failure.
+     * The old mirror is preserved if fingerprint backfill cannot be committed.
      */
-    @Synchronized
-    fun writeOn(context: Context, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, token: String): Boolean {
+    fun writeOn(context: Context, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, token: String): Boolean = synchronized(McpTokenFingerprintStore.monitor) {
         if (!isValidToken(token)) {
-            Log.w(TAG, "refusing to mirror a malformed token; mirror cleared")
+            Log.w(TAG, "refusing to mirror a malformed token")
             clearLocked(context)
-            return false
+            return@synchronized false
         }
-        return try {
+        // Rotating the key erases the old mirror even if the new write fails.
+        if (!preserveLegacyFingerprint(context)) return@synchronized false
+        try {
             val plain = JSONObject()
                 .put("v", VERSION)
                 .put("enabled", true)
@@ -122,16 +132,16 @@ object McpAutostartStore {
                 .putString(KEY_BLOB, blob)
                 .commit()
             if (!ok) {
-                clearLocked(context)
-                Log.w(TAG, "mirror commit failed; mirror cleared (auto-start OFF)")
+                val cleared = clearLocked(context)
+                Log.w(TAG, "mirror commit failed; clear confirmed=$cleared")
                 false
             } else {
                 Log.i(TAG, "mirror written: enabled exec=$exec readTerminal=$readTerminal diagnostics=$diagnostics typedOps=$typedOps")
                 true
             }
         } catch (e: Exception) {
-            clearLocked(context)
-            Log.w(TAG, "mirror write failed (${e.javaClass.simpleName}); mirror cleared (auto-start OFF)")
+            val cleared = clearLocked(context)
+            Log.w(TAG, "mirror write failed (${e.javaClass.simpleName}); clear confirmed=$cleared")
             false
         }
     }
@@ -141,12 +151,22 @@ object McpAutostartStore {
      * Returns whether the mirror is now verifiably unreadable: RN replaces a
      * token or saves narrower settings only after a confirmed clear.
      */
-    @Synchronized
-    fun clear(context: Context, reason: String): Boolean {
+    fun clear(context: Context, reason: String): Boolean = synchronized(McpTokenFingerprintStore.monitor) {
         val ok = clearLocked(context)
         if (ok) Log.i(TAG, "mirror cleared ($reason)") else Log.w(TAG, "mirror clear NOT confirmed ($reason)")
-        return ok
+        ok
     }
+
+    // Called with the credential monitor held. Publish only if the record is still absent.
+    private fun preserveLegacyFingerprint(context: Context): Boolean =
+        synchronized(McpTokenFingerprintStore.monitor) {
+            if (McpTokenFingerprintStore.get(context) != null) return@synchronized true
+            when (val tokenRead = readToken(context)) {
+                is TokenRead.Present -> McpTokenFingerprintStore.set(context, McpTokenFingerprintStore.hash(tokenRead.token))
+                TokenRead.Absent -> true
+                TokenRead.Failed -> false
+            }
+        }
 
     /**
      * Either half is enough for [read] to return OFF: no blob, or no key to
@@ -157,6 +177,7 @@ object McpAutostartStore {
      * (SharedPreferences updates memory before the disk write).
      */
     private fun clearLocked(context: Context): Boolean {
+        if (!preserveLegacyFingerprint(context)) return false
         val prefsGone = runCatching {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_BLOB).commit()
         }.getOrDefault(false)
@@ -169,32 +190,49 @@ object McpAutostartStore {
     }
 
     /** Verified ON config, or null for OFF / anything unreadable. Never throws. */
-    @Synchronized
-    fun read(context: Context): Config? = try {
-        val blob = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BLOB, null)
-        val key = if (blob != null) existingKey() else null
-        if (blob == null || key == null) {
-            null
-        } else {
-            val raw = Base64.decode(blob, Base64.NO_WRAP)
-            val ivLen = raw[0].toInt() and 0xff
-            if (ivLen < 12 || ivLen > 16 || raw.size <= 1 + ivLen) {
+    fun read(context: Context): Config? = synchronized(McpTokenFingerprintStore.monitor) {
+        try {
+            val blob = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BLOB, null)
+            val key = if (blob != null) existingKey() else null
+            if (blob == null || key == null) {
                 null
             } else {
-                val iv = raw.copyOfRange(1, 1 + ivLen)
-                val ct = raw.copyOfRange(1 + ivLen, raw.size)
-                val cipher = Cipher.getInstance(TRANSFORMATION)
-                cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-                cipher.updateAAD(AAD)
-                val plain = cipher.doFinal(ct)
-                val json = JSONObject(String(plain, Charsets.UTF_8))
-                plain.fill(0)
-                parse(json)
+                parse(JSONObject(decrypt(blob, key)))
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "mirror unreadable (${e.javaClass.simpleName}) - treating as OFF")
+            null
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "mirror unreadable (${e.javaClass.simpleName}) - treating as OFF")
-        null
+    }
+
+    internal fun readToken(context: Context): TokenRead = synchronized(McpTokenFingerprintStore.monitor) {
+        val decrypted = try {
+            val blob = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BLOB, null)
+                ?: return@synchronized TokenRead.Absent
+            val key = existingKey() ?: return@synchronized TokenRead.Absent
+            decrypt(blob, key)
+        } catch (_: Exception) {
+            return@synchronized TokenRead.Failed
+        }
+        val token = runCatching { JSONObject(decrypted).opt("token") as? String }.getOrNull()
+        if (token != null && isValidToken(token)) TokenRead.Present(token) else TokenRead.Failed
+    }
+
+    private fun decrypt(blob: String, key: SecretKey): String {
+        val raw = Base64.decode(blob, Base64.NO_WRAP)
+        val ivLen = raw[0].toInt() and 0xff
+        require(ivLen in 12..16 && raw.size > 1 + ivLen)
+        val iv = raw.copyOfRange(1, 1 + ivLen)
+        val ct = raw.copyOfRange(1 + ivLen, raw.size)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+        cipher.updateAAD(AAD)
+        val plain = cipher.doFinal(ct)
+        return try {
+            String(plain, Charsets.UTF_8)
+        } finally {
+            plain.fill(0)
+        }
     }
 
     /** Strict: exact version, enabled === true, booleans only, valid token. */

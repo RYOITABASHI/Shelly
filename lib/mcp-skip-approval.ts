@@ -22,6 +22,7 @@
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useSettingsStore } from '@/store/settings-store';
 import { logError, logInfo } from '@/lib/debug-logger';
+import { withMcpServerLock } from '@/lib/mcp-token';
 
 async function readNative(): Promise<boolean> {
   try {
@@ -43,11 +44,12 @@ function mirror(value: boolean): void {
 export async function setMcpSkipApprovalFromToggle(enabled: boolean): Promise<boolean> {
   let state = false;
   try {
-    if (typeof TerminalEmulator.setMcpSkipApproval !== 'function') {
-      state = false;
-    } else if (enabled) {
-      state = (await TerminalEmulator.setMcpSkipApproval(true, 'settings toggle')) === true;
-    } else {
+    if (enabled) {
+      state = await withMcpServerLock(async () => (
+        typeof TerminalEmulator.setMcpSkipApproval === 'function' &&
+        (await TerminalEmulator.setMcpSkipApproval(true, 'settings toggle')) === true
+      ));
+    } else if (typeof TerminalEmulator.setMcpSkipApproval === 'function') {
       await TerminalEmulator.setMcpSkipApproval(false, 'settings toggle');
       state = await readNative();
     }
@@ -62,10 +64,9 @@ export async function setMcpSkipApprovalFromToggle(enabled: boolean): Promise<bo
 
 /** Turns the native switch OFF (token regeneration, …). Throws when it could not be confirmed off. */
 export async function turnOffMcpSkipApproval(reason: string): Promise<void> {
-  if (typeof TerminalEmulator.setMcpSkipApproval === 'function') {
-    const still = await TerminalEmulator.setMcpSkipApproval(false, reason);
-    if (still === true) throw new Error('could not turn off MCP: Run without approval');
-  }
+  const reset = await TerminalEmulator.setMcpSkipApproval?.(false, reason);
+  const durable = await TerminalEmulator.getMcpSkipApproval?.();
+  if (reset !== false || durable !== false) throw new Error('could not turn off MCP: Run without approval');
   mirror(false);
 }
 

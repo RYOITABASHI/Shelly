@@ -70,7 +70,8 @@ object IngressAuditWriter {
         if (!MCP_KEYS.containsAll(keys)) throw IllegalArgumentException("unknown key")
         val kind = o.get("kind") as? String ?: throw IllegalArgumentException("kind")
         val event = o.get("event") as? String ?: throw IllegalArgumentException("event")
-        val stageInstall = kind == "mcp_stage_install" && event == "mcp_stage_install" && agentId == null
+        val stageInstall = agentId == null && kind == event &&
+            (kind == "mcp_stage_install" || kind == "mcp_stage_install_result")
         if (!stageInstall && (kind !in MCP_KINDS || event !in MCP_EVENTS)) throw IllegalArgumentException("kind/event")
         val lineAgent = if (o.has("agentId")) o.get("agentId") as? String ?: throw IllegalArgumentException("agentId") else null
         if (lineAgent != agentId) throw IllegalArgumentException("agentId mismatch")

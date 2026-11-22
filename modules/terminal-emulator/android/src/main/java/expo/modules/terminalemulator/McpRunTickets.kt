@@ -1,11 +1,13 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
@@ -506,10 +508,28 @@ object McpRunTickets {
         false
     }
 
+    private fun lstatIfPresent(file: File) = try {
+        Os.lstat(file.path)
+    } catch (e: ErrnoException) {
+        if (e.errno != OsConstants.ENOENT) throw e
+        null
+    }
+
     /** At most [maxBytes] of a regular (not symlinked) file; null when missing or not regular. */
-    private fun readCapped(file: File, maxBytes: Int): ByteArray? {
-        if (!isRegularFile(file)) return null
-        FileInputStream(file).use { input ->
+    private fun readCapped(file: File, maxBytes: Int, failOnStatError: Boolean = false): ByteArray? {
+        val regular = if (failOnStatError) {
+            lstatIfPresent(file)?.let { OsConstants.S_ISREG(it.st_mode) } == true
+        } else {
+            isRegularFile(file)
+        }
+        if (!regular) return null
+        val stream = try {
+            FileInputStream(file)
+        } catch (e: FileNotFoundException) {
+            if (failOnStatError && lstatIfPresent(file) == null) return null
+            throw e
+        }
+        stream.use { input ->
             val buf = ByteArray(maxBytes)
             var n = 0
             while (n < maxBytes) {
@@ -555,9 +575,9 @@ object McpRunTickets {
 
     private fun ticketFile(dir: File, handle: String): File = File(dir, "$handle.json")
 
-    private fun readTicketFile(dir: File, handle: String): Ticket? {
+    private fun readTicketFile(dir: File, handle: String, failOnStatError: Boolean = false): Ticket? {
         val f = ticketFile(dir, handle)
-        val bytes = readCapped(f, MAX_TICKET_CHARS + 1) ?: return null
+        val bytes = readCapped(f, MAX_TICKET_CHARS + 1, failOnStatError) ?: return null
         if (bytes.size > MAX_TICKET_CHARS) return null
         val t = decode(String(bytes, Charsets.UTF_8)) ?: return null
         return if (t.handle == handle) t else null
@@ -886,7 +906,7 @@ object McpRunTickets {
         try {
             if (principal != null && !isValidPrincipal(principal)) return -1
             val dir = runsDir(context)
-            if (!lexists(dir)) return 0
+            if (lstatIfPresent(dir) == null) return 0
             val files = dir.listFiles() ?: return -1
             val now = System.currentTimeMillis()
             var n = 0
@@ -896,7 +916,7 @@ object McpRunTickets {
                 if (!name.endsWith(".json")) continue
                 val handle = name.removeSuffix(".json")
                 if (!isValidHandle(handle)) continue
-                val t = readTicketFile(dir, handle) ?: continue
+                val t = readTicketFile(dir, handle, failOnStatError = true) ?: continue
                 val next = withCancelled(t, principal, now) ?: continue
                 try {
                     writeTicket(dir, next)

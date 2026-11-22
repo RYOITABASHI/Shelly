@@ -273,12 +273,10 @@ export async function removeMcpAlwaysAllowRules(ids: string[]): Promise<AlwaysAl
 
 /**
  * Token cascade: keeps only `principal`'s rules; null removes every rule.
- * True when confirmed. A build without the native store has no rules to
- * remove, so that counts as confirmed; a native error or a malformed
- * principal does not.
+ * True only when the native store confirms the purge.
  */
 export async function purgeMcpAlwaysAllowRulesExcept(principal: string | null): Promise<boolean> {
-  if (!TerminalEmulator.mcpAlwaysAllowPurgeExcept) return true;
+  if (!TerminalEmulator.mcpAlwaysAllowPurgeExcept) return false;
   if (principal !== null && !MCP_PRINCIPAL_RE.test(principal)) return false;
   try {
     return (await TerminalEmulator.mcpAlwaysAllowPurgeExcept(principal)) === true;

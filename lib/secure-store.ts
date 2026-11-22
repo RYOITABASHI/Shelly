@@ -6,6 +6,7 @@
  */
 
 import * as SecureStore from 'expo-secure-store';
+import { MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD } from '@/lib/mcp-token';
 import { isSafeConnectorField, isSafeConnectorId, SOCIAL_ALL_FIELDS } from '@/lib/social-connectors';
 
 const KEY_PREFIX = 'shelly_';
@@ -90,12 +91,36 @@ function connectorSecretKey(connectorId: string, field: string): string {
   return `${KEY_PREFIX}social-connector.${connectorId}.${field}`;
 }
 
+function assertUserConnectorSecret(connectorId: string, field: string): void {
+  if (connectorId === MCP_TOKEN_CONNECTOR_ID && field === MCP_TOKEN_FIELD) {
+    throw new Error(`refusing to modify system-reserved connector secret: ${connectorId}.${field}`);
+  }
+}
+
 /**
  * Re-throws on failure (after logging) — same rationale as saveApiKey above.
  * A swallowed failure here would leave a social connector registered with a
  * "successfully saved" secret that was never actually written.
  */
 export async function saveConnectorSecret(connectorId: string, field: string, value: string): Promise<void> {
+  const id = `${connectorId}`;
+  const name = `${field}`;
+  assertUserConnectorSecret(id, name);
+  await writeConnectorSecret(id, name, value);
+}
+
+/** Persist the bearer token from the MCP token lifecycle. */
+export async function saveMcpTokenSecret(value: string): Promise<void> {
+  await writeConnectorSecret(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD, value);
+}
+
+/** Remove a mismatched MCP token before discarding the reconciliation mirror. */
+export async function clearMcpTokenSecret(): Promise<void> {
+  const key = connectorSecretKey(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD);
+  await SecureStore.deleteItemAsync(key);
+}
+
+async function writeConnectorSecret(connectorId: string, field: string, value: string): Promise<void> {
   const key = connectorSecretKey(connectorId, field);
   try {
     await SecureStore.setItemAsync(key, value);
@@ -116,7 +141,10 @@ export async function getConnectorSecret(connectorId: string, field: string): Pr
 }
 
 export async function deleteConnectorSecret(connectorId: string, field: string): Promise<void> {
-  const key = connectorSecretKey(connectorId, field);
+  const id = `${connectorId}`;
+  const name = `${field}`;
+  assertUserConnectorSecret(id, name);
+  const key = connectorSecretKey(id, name);
   try {
     await SecureStore.deleteItemAsync(key);
   } catch (e) {
@@ -132,10 +160,12 @@ export async function deleteConnectorSecret(connectorId: string, field: string):
  * covers anything ever written for this id.
  */
 export async function deleteAllConnectorSecrets(connectorId: string, fields: string[] = []): Promise<void> {
-  const all = new Set<string>([...fields, ...SOCIAL_ALL_FIELDS]);
+  const id = `${connectorId}`;
+  const all = new Set<string>([...fields.map((field) => `${field}`), ...SOCIAL_ALL_FIELDS]);
+  for (const field of all) assertUserConnectorSecret(id, field);
   for (const field of all) {
     if (!isSafeConnectorField(field)) continue;
-    await deleteConnectorSecret(connectorId, field);
+    await deleteConnectorSecret(id, field);
   }
 }
 

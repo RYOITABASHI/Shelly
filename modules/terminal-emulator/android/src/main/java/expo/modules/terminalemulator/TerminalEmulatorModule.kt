@@ -843,19 +843,44 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("stopMCPServer") {
             val context = appContext.reactContext
             if (context != null) {
-                McpAutostartStore.clear(context, "app stop")
-                McpServerSupervisor.stop(context, "app stop")
+                val cleared = McpAutostartStore.clear(context, "app stop")
+                val stopped = McpServerSupervisor.stop(context, "app stop")
+                cleared && stopped
             } else {
-                MCPBridge.stop()
+                appContext.currentActivity?.applicationContext?.let { MCPBridge.stop(it) }
+                false
             }
+        }
+
+        // Used only to reconcile the two credential copies before RN adopts either.
+        AsyncFunction("getMCPAutostartToken") {
+            when (val tokenRead = McpAutostartStore.readToken(requireReactContext())) {
+                is McpAutostartStore.TokenRead.Present -> tokenRead.token
+                McpAutostartStore.TokenRead.Absent -> null
+                McpAutostartStore.TokenRead.Failed -> throw Exception("Could not read the MCP auto-start token mirror")
+            }
+        }
+
+        // Independent of the auto-start mirror, which OFF and settings restore clear.
+        AsyncFunction("getMCPTokenFingerprint") {
+            McpTokenFingerprintStore.get(requireReactContext())
+        }
+
+        AsyncFunction("revokeMCPTokenFingerprint") {
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            McpTokenFingerprintStore.revoke(context)
+        }
+
+        AsyncFunction("setMCPTokenFingerprint") { fingerprint: String ->
+            McpTokenFingerprintStore.set(requireReactContext(), fingerprint)
         }
 
         // Native-readable mirror of the MCP settings + token for boot /
         // app-update auto-start (McpAutostartStore.kt: Keystore AES-GCM,
         // re-keyed per write). enabled=false clears it AND stops the server
-        // and its service (OFF wins). Returns whether the mirror now matches
-        // the request (false = cleared, i.e. auto-start OFF). The token is
-        // never logged.
+        // and its service (OFF wins). Returns true when the requested write
+        // or clear is confirmed. A failed legacy fingerprint backfill leaves
+        // the old mirror intact. The token is never logged.
         AsyncFunction("setMCPAutostartMirror") { enabled: Boolean, exec: Boolean, readTerminal: Boolean, diagnostics: Boolean, typedOps: Boolean, token: String? ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
@@ -863,8 +888,8 @@ class TerminalEmulatorModule : Module() {
                 // Stop even when the clear is not confirmed (OFF wins); the
                 // result tells RN whether the mirror is verifiably gone.
                 val cleared = McpAutostartStore.clear(context, "settings off")
-                McpServerSupervisor.stop(context, "settings off")
-                cleared
+                val stopped = McpServerSupervisor.stop(context, "settings off")
+                cleared && stopped
             } else if (token == null) {
                 McpAutostartStore.clear(context, "no token")
                 false
@@ -1485,7 +1510,7 @@ class TerminalEmulatorModule : Module() {
         // boundary (owner rule: no extra approval prompts; see KeystoreSwitch).
         // What it stops is a same-uid file / prefs edit.
         AsyncFunction("setMcpSkipApproval") { enabled: Boolean, reason: String? ->
-            val context = appContext.reactContext ?: return@AsyncFunction false
+            val context = requireReactContext()
             // Through ApprovalSwitchCore's lock: never ON while STOP-ALL is
             // active (re-checked inside the lock), every write bumps the generation.
             if (enabled) {
@@ -1541,7 +1566,7 @@ class TerminalEmulatorModule : Module() {
         // purpose (RN JS is the trusted base; see KeystoreSwitch). Refused
         // (stays OFF) while STOP-ALL is active.
         AsyncFunction("setApproveAllWithoutAsking") { enabled: Boolean, reason: String? ->
-            val context = appContext.reactContext ?: return@AsyncFunction false
+            val context = requireReactContext()
             // Through ApprovalSwitchCore's lock (see setMcpSkipApproval).
             if (enabled) {
                 ApprovalSwitches.enableApproveAll(context)
@@ -1695,7 +1720,10 @@ class TerminalEmulatorModule : Module() {
         }
 
         Function("stageInstallGeneration") { StageInstall.currentGeneration() }
-        Function("invalidateStageInstalls") { StageInstall.invalidate() }
+        Function("invalidateStageInstalls") { clearLastResult: Boolean ->
+            // Return the commit result so token rotation can require a durable clear.
+            StageInstall.invalidate(requireReactContext(), clearLastResult)
+        }
 
         AsyncFunction("resolveStageInstallPath") Coroutine { apkPath: String, deadlineMs: Double ->
             withContext(Dispatchers.IO) {
@@ -1713,6 +1741,14 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("getStageInstallResult") Coroutine { sessionId: Int, waitMs: Int? ->
             delay((waitMs ?: 0).coerceIn(0, 500).toLong())
             withContext(Dispatchers.IO) { StageInstall.result(requireReactContext(), sessionId) }
+        }
+
+        AsyncFunction("getLastStageInstallResult") Coroutine { ->
+            withContext(Dispatchers.IO) { StageInstall.lastResult(requireReactContext()) }
+        }
+
+        AsyncFunction("refreshStageInstallResultMirror") Coroutine { ->
+            withContext(Dispatchers.IO) { StageInstall.refreshLastResultMirror(requireReactContext()) }
         }
 
         AsyncFunction("installApk") { apkPath: String ->

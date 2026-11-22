@@ -6,8 +6,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { execCommand } from '@/hooks/use-native-exec';
+import { noteSettingsLoaded } from '@/lib/mcp-autostart-mirror';
+import { withMcpServerLock } from '@/lib/mcp-token';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import type { BackupDeps, FsLike } from './service';
+import { BackupError, type BackupDeps, type FsLike } from './service';
 
 function appVersion(): string | undefined {
   try {
@@ -58,6 +60,14 @@ export function createDeviceBackupDeps(): BackupDeps {
     homeUri: `${FileSystem.documentDirectory}home/`,
     appVersion: appVersion(),
     setNativePolicySeal: setSeal ? (v: string) => setSeal(v) : undefined,
+    clearMcpAfterSettingsRestore: () => withMcpServerLock(async () => {
+      // The previous in-memory settings no longer bound the settings on disk.
+      // Native stop confirms both listener exit and the credential clear.
+      noteSettingsLoaded(null);
+      if ((await TerminalEmulator.stopMCPServer()) !== true) {
+        throw new BackupError('mcp_shutdown_unconfirmed', 'Could not confirm MCP shutdown and auto-start credential clear after restoring settings');
+      }
+    }),
   };
 }
 

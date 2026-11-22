@@ -33,6 +33,7 @@
  *    every agent's "run without approval" is OFF until the user turns it on.
  */
 import { API_KEY_NAMES } from '@/lib/secure-store';
+import { MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD } from '@/lib/mcp-token';
 import { SOCIAL_ALL_FIELDS, SOCIAL_PLATFORM_FIELDS, isSafeConnectorField, isSafeConnectorId } from '@/lib/social-connectors';
 
 export const SECURE_KEY_PREFIX = 'shelly_';
@@ -77,8 +78,12 @@ export const APPROVAL_SECURE_KEYS: readonly string[] = Object.freeze([
 
 /** Fixed connector ids that are not user-registered social connectors. */
 export const SYSTEM_CONNECTOR_SECRETS: ReadonlyArray<{ id: string; field: string; owner: string }> = Object.freeze([
-  { id: 'mcp-server', field: 'token', owner: 'hooks/use-mcp-server-bridge.ts' },
+  { id: MCP_TOKEN_CONNECTOR_ID, field: MCP_TOKEN_FIELD, owner: 'hooks/use-mcp-server-bridge.ts' },
 ]);
+
+export function isReservedConnectorId(id: unknown): boolean {
+  return SYSTEM_CONNECTOR_SECRETS.some((secret) => secret.id === id);
+}
 
 export function apiKeySecureKey(name: string): string {
   return `${SECURE_KEY_PREFIX}${name}`;
@@ -87,6 +92,11 @@ export function apiKeySecureKey(name: string): string {
 export function connectorSecureKey(id: string, field: string): string {
   return `${SECURE_KEY_PREFIX}social-connector.${id}.${field}`;
 }
+
+/** Device-local credentials excluded from backup capture and restore. */
+export const NON_RESTORABLE_SECURE_KEYS: ReadonlySet<string> = new Set([
+  connectorSecureKey(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD),
+]);
 
 export type ConnectorRef = { id: string; platform?: string; fields?: string[] };
 
@@ -108,8 +118,7 @@ export function connectorsFromAsyncStorage(raw: string | null | undefined): Conn
   }
 }
 
-/** Every SecureStore key to try when backing up, given the registered
- *  social connectors. Missing keys simply read as null and are skipped. */
+/** Every known SecureStore key, given the registered social connectors. */
 export function buildSecureStoreInventory(connectors: ConnectorRef[]): string[] {
   const keys = new Set<string>();
   for (const name of API_KEY_NAMES) keys.add(apiKeySecureKey(name));
@@ -132,6 +141,7 @@ export function buildSecureStoreInventory(connectors: ConnectorRef[]): string[] 
  *  Shelly itself uses (defence in depth against a crafted bundle). */
 export function isRestorableSecureKey(key: string): boolean {
   if (typeof key !== 'string' || !/^[A-Za-z0-9._-]{1,200}$/.test(key)) return false;
+  if (NON_RESTORABLE_SECURE_KEYS.has(key)) return false;
   if ((API_KEY_NAMES as readonly string[]).some((n) => apiKeySecureKey(n) === key)) return true;
   if (Object.prototype.hasOwnProperty.call(FIXED_SECURE_KEYS, key)) return true;
   const m = /^shelly_social-connector\.([^.]+)\.([^.]+)$/.exec(key);

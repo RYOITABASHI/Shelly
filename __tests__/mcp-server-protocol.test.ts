@@ -1,3 +1,4 @@
+import { createHash, createHmac } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -61,6 +62,270 @@ describe('shelly-mcp-server.js asset parity', () => {
     const root = path.resolve(__dirname, '..');
     expect(fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js'), 'utf8'))
       .toBe(fs.readFileSync(path.join(root, 'scripts/shelly-mcp-server.js'), 'utf8'));
+  });
+});
+
+describe('headless stage_install_result', () => {
+  let homeDir: string;
+  let queueDir: string;
+  let auditPath: string;
+  const at = 123456789;
+  const outcome = {
+    sessionId: 42, status: 'failure', statusCode: 7,
+    message: 'eyJabcdefghijk.abcdefghijkl.abcdefghwxyz and Bearer example-credential', at,
+  };
+
+  beforeEach(() => {
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stage-result-'));
+    queueDir = path.join(homeDir, '.shelly-mcp-queue');
+    fs.mkdirSync(queueDir);
+    fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), '1');
+    fs.mkdirSync(path.join(homeDir, '.shelly', 'agents'), { recursive: true });
+    auditPath = path.join(homeDir, '.shelly', 'agents', 'audits', 'mcp-ingress-audit.jsonl');
+  });
+
+  afterEach(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+
+  function writeMirror(token: string, record: unknown = outcome) {
+    const body = JSON.stringify(record);
+    const key = createHash('sha256').update(`shelly-mcp-snapshot:${token}`).digest();
+    const mac = createHmac('sha256', key).update(body).digest('hex');
+    fs.writeFileSync(path.join(queueDir, 'stage-install-last.json'), JSON.stringify({ body, mac }));
+  }
+
+  function callResult(now?: () => number) {
+    const queue = mcp.createFileQueueCallTool(queueDir, 'a1'.repeat(32));
+    const fallback = (toolName: string, args: unknown, ingress: unknown) =>
+      queue(toolName, args, ingress, { timeoutMs: 20 });
+    const handler = makeHandler(mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback, now }));
+    return modern(handler, 1, 'tools/call', { name: 'stage_install_result' });
+  }
+
+  const handoffData = { status: 'success', sessionId: 43, at };
+
+  async function callWithFence(): Promise<ToolResult> {
+    fs.writeFileSync(path.join(queueDir, 'stage-install-poison'), 'fenced');
+    return { ok: true, data: handoffData };
+  }
+
+  it('degrades a fenced stage_install_result at the modern transport handoff', async () => {
+    const handler = makeHandler(callWithFence, { queueDir });
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'stage_install_result' }));
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+  });
+
+  it('degrades a fenced stage_install_result at the legacy transport handoff', async () => {
+    const handler = makeHandler(callWithFence, { queueDir });
+    const { sessionId } = await legacySession(handler);
+    const { result } = parse(await post(handler, {
+      jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'stage_install_result' },
+    }, { 'mcp-session-id': sessionId }));
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+  });
+
+  it('serves a stage_install_result when the handoff check finds no fence', async () => {
+    const handler = makeHandler(async () => ({ ok: true, data: handoffData }), { queueDir });
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'stage_install_result' }));
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual(handoffData);
+  });
+
+  it('serves another tool even when a stage-install fence lands before handoff', async () => {
+    const handler = makeHandler(callWithFence, { queueDir });
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'device_status' }));
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual(handoffData);
+  });
+
+  it('returns a verified, redacted failure and appends an agentless audit line', async () => {
+    writeMirror(TOKEN);
+    const { result } = parse(await callResult());
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      status: 'failure', sessionId: 42, statusCode: 7, message: '<redacted:JWT:...wxyz> and Bearer <redacted>', at,
+    });
+    const audit = JSON.parse(fs.readFileSync(auditPath, 'utf8'));
+    expect(audit).toEqual({
+      ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
+      kind: 'mcp_stage_install_result', event: 'mcp_stage_install_result',
+      principal: createHash('sha256').update(`shelly-mcp-principal:${TOKEN}`).digest('hex').slice(0, 32),
+      code: 'failure',
+    });
+  });
+
+  it.each(['headless', 'queue error'])('suppresses a mirror if a fence lands during its success audit (%s)', async (mode) => {
+    writeMirror(TOKEN);
+    const now = Date.now();
+    const heartbeat = path.join(queueDir, 'bridge-heartbeat');
+    if (mode === 'headless') fs.unlinkSync(heartbeat);
+    else fs.writeFileSync(heartbeat, String(now));
+    const fallback = jest.fn(async () => { throw new Error('queue failed'); });
+    const callTool = mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback, now: () => now });
+    const append = fs.appendFileSync;
+    const audit = jest.spyOn(require('fs') as typeof fs, 'appendFileSync').mockImplementation((file, data, options) => {
+      append(file, data, options);
+      if (file === auditPath && JSON.parse(String(data)).code === 'failure') {
+        fs.writeFileSync(path.join(queueDir, 'stage-install-poison'), 'fenced');
+      }
+    });
+    try {
+      await expect(callTool('stage_install_result', {}, { principal: 'ab'.repeat(16) }))
+        .resolves.toMatchObject({ ok: false, code: 'read_failed' });
+      expect(fallback).toHaveBeenCalledTimes(mode === 'headless' ? 0 : 1);
+      const codes = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line).code);
+      expect(codes).toEqual(['failure', 'read_failed']);
+    } finally {
+      audit.mockRestore();
+    }
+  });
+
+  it.each(['bad MAC', 'invalid shape'])('audits one read_failed on an unverifiable mirror with %s', async (scenario) => {
+    if (scenario === 'bad MAC') writeMirror('other-token');
+    else writeMirror(TOKEN, { ...outcome, status: 'user_action_required' });
+    const { result } = parse(await callResult());
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+    const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+    expect(lines.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ code: 'read_failed' })]);
+  });
+
+  it.each(['headless', 'queued timeout'])('fences a valid mirror with a poison marker (%s)', async (mode) => {
+    writeMirror(TOKEN);
+    fs.writeFileSync(path.join(queueDir, 'stage-install-poison'), Buffer.from([0]));
+    const now = Date.now();
+    if (mode === 'queued timeout') {
+      fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), String(now));
+    } else {
+      fs.unlinkSync(path.join(queueDir, 'bridge-heartbeat'));
+    }
+    const { result } = parse(await callResult(() => now));
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+    const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+    expect(lines.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ code: 'read_failed' })]);
+  });
+
+  it('rejects an authenticated queued success when a fence lands before delivery', async () => {
+    const now = Date.now();
+    fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), String(now));
+    const body = JSON.stringify({ ok: true, data: { status: 'success', sessionId: 43, at } });
+    const key = createHash('sha256').update(`shelly-mcp-snapshot:${TOKEN}`).digest();
+    const mac = createHmac('sha256', key).update(body).digest('hex');
+    const fallback = jest.fn(async () => {
+      fs.writeFileSync(path.join(queueDir, 'stage-install-poison'), 'fenced');
+      return { body, mac };
+    });
+    const handler = makeHandler(mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback, now: () => now }));
+
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'stage_install_result' }));
+
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+    const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+    expect(lines.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ code: 'read_failed' })]);
+  });
+
+  it('reports read_failed if a fence lands during an ENOENT mirror open', async () => {
+    fs.unlinkSync(path.join(queueDir, 'bridge-heartbeat'));
+    const mirror = path.join(queueDir, 'stage-install-last.json');
+    const fence = path.join(queueDir, 'stage-install-poison');
+    const openSync = fs.openSync;
+    const spy = jest.spyOn(require('fs') as typeof fs, 'openSync').mockImplementation((file, flags, mode) => {
+      if (file === mirror) fs.writeFileSync(fence, 'fenced');
+      return openSync(file, flags, mode);
+    });
+
+    try {
+      const { result } = parse(await callResult());
+      expect(spy).toHaveBeenCalledWith(mirror, expect.any(Number));
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('[read_failed] stage_install_result cannot be answered right now');
+      const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+      expect(lines.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ code: 'read_failed' })]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['absent', 'unverifiable', 'verified'])('handles a thrown queue call with a final %s mirror', async (scenario) => {
+    const now = Date.now();
+    fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), String(now));
+    const queueError = new Error('queue failed');
+    const fallback = jest.fn(async () => {
+      if (scenario !== 'absent') writeMirror(scenario === 'verified' ? TOKEN : 'other-token');
+      throw queueError;
+    });
+    const callTool = mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback, now: () => now });
+    const call = callTool('stage_install_result', {}, { principal: 'ab'.repeat(16) });
+
+    if (scenario === 'absent') {
+      await expect(call).rejects.toBe(queueError);
+    } else if (scenario === 'unverifiable') {
+      await expect(call).resolves.toEqual({ ok: false, error: expect.any(String), code: 'read_failed' });
+      const lines = fs.readFileSync(auditPath, 'utf8').trim().split('\n');
+      expect(lines.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ code: 'read_failed' })]);
+    } else {
+      await expect(call).resolves.toMatchObject({ ok: true, data: { status: 'failure', sessionId: 42 } });
+    }
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the stale-heartbeat fail-fast response without auditing an absent mirror', async () => {
+    const { result } = parse(await callResult());
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('stage_install_result cannot be answered right now');
+    expect(fs.existsSync(auditPath)).toBe(false);
+  });
+
+  it('refuses the queue when the heartbeat and the mirror are absent', async () => {
+    fs.unlinkSync(path.join(queueDir, 'bridge-heartbeat'));
+    const fallback = jest.fn(async () => ({ ok: true, data: outcome }));
+    const handler = makeHandler(mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback }));
+
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'stage_install_result' }));
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('stage_install_result cannot be answered right now');
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it.each(['signed', 'unsigned', 'bad MAC'])('checks a live queue response with %s authentication', async (scenario) => {
+    const now = Date.now();
+    fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), String(now));
+    const data = { status: 'success', sessionId: 43, at };
+    const answer = { ok: true, data };
+    const body = JSON.stringify(answer);
+    const key = createHash('sha256').update(`shelly-mcp-snapshot:${TOKEN}`).digest();
+    const mac = scenario === 'bad MAC' ? '00'.repeat(32) : createHmac('sha256', key).update(body).digest('hex');
+    const fallback = jest.fn(async () => scenario === 'unsigned' ? answer : { body, mac });
+    const handler = makeHandler(mcp.createDirectReadCallTool({ queueDir, token: TOKEN, fallback, now: () => now }));
+
+    const { result } = parse(await modern(handler, 1, 'tools/call', { name: 'stage_install_result' }));
+    expect(fallback).toHaveBeenCalledTimes(1);
+    expect(result.isError).toBe(scenario !== 'signed');
+    if (scenario === 'signed') {
+      expect(JSON.parse(result.content[0].text)).toEqual(data);
+    } else {
+      expect(result.content[0].text).toContain('stage_install_result cannot be answered right now');
+      writeMirror(TOKEN, { ...outcome, status: 'success' });
+      const { result: retried } = parse(await modern(handler, 2, 'tools/call', { name: 'stage_install_result' }));
+      expect(retried.isError).toBe(false);
+      expect(JSON.parse(retried.content[0].text)).toEqual({ status: 'success', sessionId: 42, at });
+    }
+  });
+
+  it.each(['fail-fast', 'timeout'])('uses the mirror after a queued read ends in %s', async (scenario) => {
+    const liveAt = scenario === 'fail-fast' ? 1 : Date.now();
+    fs.writeFileSync(path.join(queueDir, 'bridge-heartbeat'), String(liveAt));
+    writeMirror(TOKEN, { ...outcome, status: 'success' });
+    // The direct path sees a live heartbeat before the queue checks wall time.
+    const { result } = parse(await callResult(() => liveAt));
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toEqual({ status: 'success', sessionId: 42, at });
+    expect(fs.readdirSync(path.join(queueDir, 'requests'))).toHaveLength(scenario === 'fail-fast' ? 0 : 1);
   });
 });
 
@@ -488,7 +753,7 @@ describe('review follow-ups: era detection, origin, session cap', () => {
 describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS)', () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name);
   // device_status has no switch: it is listed whenever the server runs.
-  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft'];
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'stage_install_result'];
 
   it('availableTools: read-only set by default, each switch adds its tools', () => {
     expect(names(mcp.availableTools({}))).toEqual(READ_ONLY);
@@ -510,6 +775,8 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(byName.stage_install.inputSchema.required).toEqual(['path']);
     expect(byName.stage_install.inputSchema.properties.expectedSha256.pattern).toBe('^[0-9a-f]{64}$');
     expect(mcp.APPROVAL_TOOLS.has('stage_install')).toBe(true);
+    expect(byName.stage_install_result.inputSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
+    expect(mcp.APPROVAL_TOOLS.has('stage_install_result')).toBe(false);
     // Nothing that writes a setting exists.
     expect(mcp.TOOLS.some((t: { name: string }) => /setting/.test(t.name) && t.name !== 'get_settings')).toBe(false);
   });
@@ -584,9 +851,8 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     // the flag to MCPBridge.start on every path (app start, headless, watchdog).
     expect(mod).toContain('McpServerSupervisor.startFromApp(context, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
     const supervisor = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpServerSupervisor.kt'), 'utf8');
-    expect(supervisor).toContain('MCPBridge.start(app, token, exec, readTerminal, diagnostics, typedOps, bridgeKey)');
-    expect(supervisor).toContain('MCPBridge.start(app, cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key)');
-    expect(supervisor).toContain('MCPBridge.start(app, use.token, use.exec, use.readTerminal, use.diagnostics, use.typedOps, use.bridgeKey)');
+    expect(supervisor.match(/MCPBridge\.start\(/g)).toHaveLength(1);
+    expect(supervisor).toMatch(/MCPBridge\.start\(app, request\.token, request\.exec, request\.readTerminal,\s*request\.diagnostics, request\.typedOps, request\.bridgeKey\)/);
     expect(bridge).toMatch(/processReadTerminal == readTerminal &&\s*processDiagnostics == diagnostics && processTypedOps == typedOps/);
     const hook = fs.readFileSync(path.join(root, 'hooks/use-mcp-server-bridge.ts'), 'utf8');
     expect(hook).toMatch(/settings\.mcpReadTerminalEnabled === true,\s*settings\.mcpDiagnosticsEnabled === true,\s*settings\.mcpTypedOpsEnabled === true,\s*bridgeKey/);
@@ -596,7 +862,7 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
 
 describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name);
-  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft'];
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'stage_install_result'];
   const HANDLE = `mr_${'a'.repeat(32)}`;
 
   it('listed only with typedOps (exec alone does not list them; typedOps alone does not list raw exec)', async () => {
@@ -735,9 +1001,13 @@ describe('main() token + bridge key on stdin (final gate, item B)', () => {
     expect(bridge).toMatch(
       /outputStream\.bufferedWriter\(Charsets\.US_ASCII\)\.use \{\s*it\.write\(token\)\s*it\.write\("\\n"\)\s*it\.write\(bridgeKey\)\s*it\.write\("\\n"\)/,
     );
-    // MCPBridge.kt validates the token with the same rule the script applies.
-    expect(bridge).toContain('TOKEN_RE = Regex("^[\\\\x21-\\\\x7e]{1,1024}$")');
-    expect(bridge).toMatch(/if \(!TOKEN_RE\.matches\(token\)\)/);
+    // Native start and spawn share the autostart token format. The script's framing stays the same.
+    const nativeDir = path.dirname(bridgePath);
+    const store = fs.readFileSync(path.join(nativeDir, 'McpAutostartStore.kt'), 'utf8');
+    const supervisor = fs.readFileSync(path.join(nativeDir, 'McpServerSupervisor.kt'), 'utf8');
+    expect(store).toContain('TOKEN_RE = Regex("^[A-Za-z0-9_-]{16,256}$")');
+    expect(bridge).toMatch(/if \(!McpAutostartStore\.isValidToken\(token\)\)/);
+    expect(supervisor).toMatch(/if \(!McpAutostartStore\.isValidToken\(request\.token\) \|\|\s*!McpTokenFingerprintStore\.matches\(app, request\.token\)/);
     expect(script).toContain('const TOKEN_RE = /^[\\x21-\\x7e]{1,1024}$/;');
   });
 

@@ -578,7 +578,7 @@ async function userPolicy(): Promise<LoadedUserPolicy | null> {
 }
 
 /** `code` (typed ops only) is shown by the server as `Error: [<code>] <message>`. */
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' };
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -641,50 +641,88 @@ function requestApprovalDetailed(
   });
 }
 
-// Bumped by revokePendingMCPRequests() (MCP token regeneration). Every
-// request captures the epoch it was read under; anything from an older
-// epoch was accepted under a token that is no longer valid, so it must not
-// run an approved exec/write or have its result written back.
+// Startup, shutdown and token revocation invalidate work from older queue epochs.
 let queueEpoch = 0;
-const REVOKED_ERROR = 'cancelled: the MCP token was regenerated';
+const REVOKED_ERROR = 'cancelled: pending MCP requests were revoked';
+
+function invalidateStageInstalls(clearLatest: boolean): boolean {
+  try {
+    const invalidated = TerminalEmulator.invalidateStageInstalls?.(clearLatest);
+    if (invalidated === false) logError('MCPBridge', 'stage install invalidation failed');
+    return invalidated === true;
+  } catch {
+    logInfo('MCPBridge', 'retrying stage install invalidation without arguments');
+    try {
+      if (TerminalEmulator.invalidateStageInstalls?.() === false) {
+        logError('MCPBridge', 'stage install invalidation failed');
+      }
+    } catch {
+      logError('MCPBridge', 'stage install invalidation failed');
+    }
+  }
+  return false;
+}
+
+/** Confirms the native durable clear. The legacy fallback is best-effort. */
+export async function clearLatestStageInstallResultConfirmed(): Promise<boolean> {
+  return invalidateStageInstalls(true);
+}
+
+/** Reset and verify both omission switches, even when one reset fails. */
+export async function resetMcpOmissionSwitches(): Promise<void> {
+  const reason = 'MCP token changed';
+  const resets = await Promise.allSettled([turnOffMcpSkipApproval(reason), turnOffApproveAll(reason)]);
+  const failures = resets.flatMap((result) => result.status === 'rejected' ? [String(result.reason)] : []);
+  if (failures.length) throw new Error(failures.join('; '));
+}
 
 /**
- * Called while the regeneration lock is held, after the old server process
- * has exited and before the new one starts: deny/close every pending
- * approval (the modal closes), invalidate in-flight requests, and delete
- * the queue's request/result files so nothing accepted under the old token
- * is picked up later. The new server recreates both dirs on startup.
- *
- * `tokenRevoked` (token regeneration only — the plain server start calls this
- * too, and must not wipe the rules): also removes every always-allow rule
- * (lib/mcp-always-allow.ts), before the new token exists. Throws when that
- * can't be confirmed, so regenerateToken leaves the server off
- * ('failed_server_off') instead of serving next to rules it could not clear.
+ * Deny pending approvals, invalidate in-flight work and clear the file queue.
+ * Principal changes also clear the last installation result, reset both
+ * omission switches, cancel live tickets and purge every always-allow rule.
  */
 export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } = {}): Promise<void> {
-  TerminalEmulator.invalidateStageInstalls?.();
-  queueEpoch += 1;
-  useMcpApprovalStore.getState().denyAll();
-  abortRunResultWaits();
-  await FileSystem.deleteAsync(REQUESTS_DIR, { idempotent: true });
-  await FileSystem.deleteAsync(RESULTS_DIR, { idempotent: true });
-  await FileSystem.deleteAsync(HANDOFFS_DIR, { idempotent: true });
-  logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
-  if (opts.tokenRevoked) {
-    // A new token turns "MCP: Run without approval" off (the owner turns it
-    // on again in Settings). Not confirmed off = the regeneration fails and
-    // the server stays off.
-    await turnOffMcpSkipApproval('token regenerated');
-    await turnOffApproveAll('token regenerated');
-    // run_agent tickets of the old token: live ones become `cancelled`
-    // (an accepted one then never starts). Best effort — tickets are
-    // principal-scoped, so the new token can't read them anyway.
-    await cancelLiveRunTickets();
-    if (!(await purgeMcpAlwaysAllowRulesExcept(null))) {
-      throw new Error('could not confirm that the MCP always-allow rules were removed');
+  await beginMCPRequestRevocation(opts)();
+}
+
+/** Invalidate approvals now, then finish queue cleanup under the server lock. */
+export function beginMCPRequestRevocation(opts: { tokenRevoked?: boolean } = {}): () => Promise<void> {
+  const tokenRevoked = opts.tokenRevoked === true;
+  const failures: string[] = [];
+  async function attempt(label: string, step: () => void | Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(`${label}: ${String(error)}`);
     }
-    logInfo('MCPBridge', 'always-allow rules removed (MCP token revoked)');
   }
+
+  const epoch = ++queueEpoch;
+  if (!invalidateStageInstalls(tokenRevoked)) {
+    failures.push(tokenRevoked
+      ? 'could not confirm that the latest stage install result was cleared'
+      : 'could not confirm that pending stage installs were invalidated');
+  }
+  // Both operations run immediately, before the caller waits for the lock.
+  const denied = attempt('denying MCP approvals', () => useMcpApprovalStore.getState().denyAll());
+  const waitsAborted = attempt('aborting MCP result waits', abortRunResultWaits);
+  return async () => {
+    await Promise.all([denied, waitsAborted]);
+    for (const dir of [REQUESTS_DIR, RESULTS_DIR, HANDOFFS_DIR]) {
+      await attempt(`deleting ${dir}`, () => FileSystem.deleteAsync(dir, { idempotent: true }));
+    }
+    if (tokenRevoked) {
+      await attempt('resetting omission switches', resetMcpOmissionSwitches);
+      await attempt('cancelling run_agent tickets', cancelLiveRunTickets);
+      await attempt('purging MCP rules', async () => {
+        if (!(await purgeMcpAlwaysAllowRulesExcept(null))) {
+          throw new Error('could not confirm that the MCP always-allow rules were removed');
+        }
+      });
+    }
+    if (failures.length) throw new Error(failures.join('; '));
+    logInfo('MCPBridge', `revoked pending MCP requests (epoch=${epoch})`);
+  };
 }
 
 const AGENT_REQUEST_FILE_RE = /^\.shelly-agent-(?:req|pending)-([0-9]{10,16}-[0-9a-f]{8})$/;
@@ -915,6 +953,8 @@ async function callTool(
     }
     case 'stage_install':
       return stageInstallTool(args, epoch, ingress, callId, deadlineMs);
+    case 'stage_install_result':
+      return stageInstallResultTool(epoch, ingress);
     case 'run_agent':
       return runAgentTool(args, epoch, ingress, deadlineMs);
     case 'get_run_result':
@@ -922,6 +962,45 @@ async function callTool(
     default:
       return { ok: false, error: `unknown tool: ${tool}` };
   }
+}
+
+async function stageInstallResultTool(epoch: number, ingress: McpIngress): Promise<ToolResult> {
+  const audit = async (code: string): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({
+        kind: 'mcp_stage_install_result', event: 'mcp_stage_install_result', principal: ingress.principal, code,
+      }));
+      if (ok) return;
+    } catch {
+      // The read can still be returned if the audit sink is unavailable.
+    }
+    logError('MCPBridge', `stage_install_result audit line not written (${code})`);
+  };
+  const refuseRevoked = async (): Promise<ToolResult> => {
+    await audit('revoked');
+    return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+  };
+
+  if (epoch !== queueEpoch) return refuseRevoked();
+  let outcome;
+  try {
+    const getLastResult = TerminalEmulator.getLastStageInstallResult;
+    if (typeof getLastResult === 'function') {
+      outcome = await getLastResult.call(TerminalEmulator);
+    }
+  } catch {
+    // Native bindings can throw synchronously or reject the read.
+  }
+  if (epoch !== queueEpoch) return refuseRevoked();
+  if (!outcome) {
+    await audit('read_failed');
+    return { ok: false, error: 'could not read the latest stage install result', code: 'read_failed' };
+  }
+  const data = outcome.status === 'failure'
+    ? { ...outcome, message: redactForMcp(outcome.message) }
+    : outcome;
+  await audit(data.status);
+  return { ok: true, data };
 }
 
 const STAGE_INSTALL_WAIT_MS = 150_000;
@@ -1225,14 +1304,11 @@ async function readRunTicket(handle: string): Promise<McpRunTicket | null> {
 }
 
 async function cancelLiveRunTickets(): Promise<void> {
-  if (typeof TerminalEmulator.cancelMcpRunTickets !== 'function') return;
-  try {
-    const n = await TerminalEmulator.cancelMcpRunTickets(null);
-    if (n < 0) logError('MCPBridge', 'could not confirm that live run_agent tickets were cancelled');
-    else logInfo('MCPBridge', `cancelled ${n} live run_agent ticket(s) (MCP token revoked)`);
-  } catch (e) {
-    logError('MCPBridge', 'cancelling live run_agent tickets failed', e);
+  const cancelled = await TerminalEmulator.cancelMcpRunTickets?.(null);
+  if (typeof cancelled !== 'number' || cancelled < 0) {
+    throw new Error('could not confirm that live run_agent tickets were cancelled');
   }
+  logInfo('MCPBridge', `cancelled ${cancelled} live run_agent ticket(s) (MCP token revoked)`);
 }
 
 function existingRunResult(t: McpRunTicket, agentId: string): ToolResult {
@@ -1633,13 +1709,22 @@ async function processRequestFile(name: string): Promise<void> {
       }
     }
     if (epoch !== queueEpoch) return;
+    const token = snapshotToken;
     const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId, deadlineMs);
     if (epoch !== queueEpoch) {
-      logInfo('MCPBridge', `dropped call ${request.callId} (token regenerated while it was pending)`);
+      logInfo('MCPBridge', `dropped call ${request.callId} (MCP requests were revoked while it was pending)`);
       return;
     }
     const resultUri = `${RESULTS_DIR}/${request.callId}.json`;
-    await FileSystem.writeAsStringAsync(resultUri, JSON.stringify(result));
+    const body = JSON.stringify(result);
+    let response = body;
+    if (request.tool === 'stage_install_result') {
+      if (!token || snapshotToken !== token) return;
+      const mac = await signSnapshot(token, body, snapshotSha256);
+      if (epoch !== queueEpoch || snapshotToken !== token) return;
+      response = JSON.stringify({ body, mac });
+    }
+    await FileSystem.writeAsStringAsync(resultUri, response);
     logInfo('MCPBridge', `answered call ${request.callId} (tool=${request.tool}, ok=${result.ok}, principal=${request.ingress.principal.slice(0, 8)})`);
   } catch (e) {
     logError('MCPBridge', `failed to process request file ${name}`, e);

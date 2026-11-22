@@ -170,7 +170,7 @@ object McpTypedOpDecision {
 
     const val TYPED_OPS_DISABLED_MESSAGE = "typed operations are disabled (Settings → Agents → MCP: Allow typed operations)"
     val DISABLED = Refusal("disabled", TYPED_OPS_DISABLED_MESSAGE)
-    val REVOKED = Refusal("revoked", "cancelled: the MCP token was regenerated")
+    val REVOKED = Refusal("revoked", "cancelled: the MCP token is no longer valid")
     val UNKNOWN_AGENT = Refusal("unknown_agent", "no enabled agent with that id (see list_agents)")
     val HALTED = Refusal("halted", "all agents are stopped (STOP-ALL is on)")
     val TAINTED = Refusal("tainted", "this agent was created or changed over MCP (or the ingress-mark store is unreadable); it is not started over MCP")
