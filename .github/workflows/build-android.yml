@@ -96,15 +96,39 @@ jobs:
 
       - name: Type check
         run: pnpm check
-
-      - name: Unit tests
-        run: pnpm test -- --runInBand
+      
 
       - name: Release-safety secret scan (source tree)
         run: node scripts/release-safety-scan.js .
-
-  build:
-    needs: [quality, signing_mode]
+  unit-tests
+      runs-on ubuntu-latest
+          strategy
+                fail-fast false
+                      matrix
+                              shard [1, 2, 3]
+                                  steps
+                                        - uses actions/checkoutv4
+                                                with
+                                                          fetch-depth 0
+                                                          
+                                                                - uses pnpm/action-setupv4
+                                                                        with
+                                                                                  version 9.12.0
+                                                                                  
+                                                                                        - uses actions/setup-nodev4
+                                                                                                with
+                                                                                                          node-version 22
+                                                                                                                    cache pnpm
+                                                                                                                              cache-dependency-path pnpm-lock.yaml
+                                                                                                                              
+                                                                                                                                    - name Install dependencies
+                                                                                                                                            run pnpm install --frozen-lockfile
+                                                                                                                                            
+                                                                                                                                                  - name Unit tests shard  matrix.shard /3
+                                                                                                                                                          run pnpm test -- --runInBand --shard= matrix.shard /3
+                                                                                                                                                          
+                                                                                                                                                          build:
+    needs: [quality, unit-tests, signing_mode]
     runs-on: ubuntu-latest
     # The release signing secrets live in the `release-signing` GitHub
     # Environment, whose deployment branches are restricted (main +
