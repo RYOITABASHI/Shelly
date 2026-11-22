@@ -183,7 +183,7 @@ describe('build-android.yml signing gates', () => {
     expect(workflow).toMatch(/\nenv:\n(?:\s*#.*\n)*\s*SHELLY_DEFAULT_SIGNING_MODE: (legacy-debug|rotation)\n/);
     expect(workflow).toContain('mode="${SIGNING_INPUT:-default}"');
     expect(workflow).toContain('mode="${SHELLY_DEFAULT_SIGNING_MODE}"');
-    expect(workflow).toContain('    needs: [quality, signing_mode]\n');
+    expect(workflow).toContain('    needs: [quality, unit-tests, signing_mode]\n');
     expect(workflow).toContain(
       "    environment: ${{ needs.signing_mode.outputs.mode != 'legacy-debug' && 'release-signing' || '' }}\n",
     );
