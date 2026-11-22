@@ -1,7 +1,7 @@
 import type { ExpoConfig } from "expo/config";
 import { execSync } from "node:child_process";
 
-const bundleId = "dev.shelly.terminal";
+const bundleId = "dev.shelly.terminal.dev";
 const schemeFromBundleId = "shelly";
 const lastManualAndroidVersionCode = 1502;
 const fallbackAndroidVersionCode = lastManualAndroidVersionCode + 1;
@@ -30,7 +30,7 @@ function androidVersionCode(): number {
 
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "Shelly",
+  appName: "Shelly Dev",
   appSlug: "shelly-terminal",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png

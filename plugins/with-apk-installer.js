@@ -42,7 +42,21 @@ function withApkInstaller(config) {
     if (!application.provider) application.provider = [];
 
     const providerName = "androidx.core.content.FileProvider";
-    const authority = "dev.shelly.terminal.shelly.fileprovider";
+    const authority = `${config.android?.package ?? "dev.shelly.terminal"}.shelly.fileprovider`;
+    // Prebuild runs without --clean, so the checked-in manifest may already
+    // carry this provider with another variant's authority: rewrite it in
+    // place (matched by its FILE_PROVIDER_PATHS meta-data) instead of
+    // appending a second provider and colliding with the other variant.
+    const shellyProvider = application.provider.find(
+      (p) =>
+        p.$?.["android:name"] === providerName &&
+        p["meta-data"]?.some(
+          (m) => m.$?.["android:resource"] === "@xml/shelly_file_provider_paths"
+        )
+    );
+    if (shellyProvider) {
+      shellyProvider.$["android:authorities"] = authority;
+    }
     const existing = application.provider.find(
       (p) => p.$?.["android:authorities"] === authority
     );
