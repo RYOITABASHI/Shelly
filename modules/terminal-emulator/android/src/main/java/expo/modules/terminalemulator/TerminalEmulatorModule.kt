@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator
 
+import android.app.Activity
 import android.app.AlarmManager
 import android.app.DownloadManager
 import android.app.NotificationManager
@@ -20,6 +21,8 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
+import com.facebook.react.bridge.ReactContext
+import com.facebook.react.common.LifecycleState
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
@@ -31,6 +34,7 @@ import expo.modules.terminalemulator.scouter.ScouterLifecycleService
 import expo.modules.terminalemulator.scouter.ScouterStateStore
 import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -101,6 +105,12 @@ class TerminalEmulatorModule : Module() {
         // this never keeps a dead Module instance alive after an RN reload.
         @Volatile
         private var activeInstanceRef: WeakReference<TerminalEmulatorModule>? = null
+
+        internal fun stageInstallActivity(): Activity? {
+            val context = activeInstanceRef?.get()?.appContext ?: return null
+            val reactContext = context.reactContext as? ReactContext ?: return null
+            return context.currentActivity.takeIf { reactContext.lifecycleState == LifecycleState.RESUMED }
+        }
 
         /**
          * Called from [RemoteTextInputReceiver.onReceive]. Returns false (and
@@ -1672,6 +1682,35 @@ class TerminalEmulatorModule : Module() {
             val result = LockPromptActivity.ensureUnlocked(context)
             Log.i("TerminalEmulator", "debugTestLockPrompt: result=$result")
             result
+        }
+
+        OnActivityEntersForeground {
+            appContext.currentActivity?.let { activity ->
+                activity.runOnUiThread {
+                    stageInstallActivity()?.let { StageInstall.showNextConfirmation(it) }
+                }
+            }
+        }
+
+        Function("stageInstallGeneration") { StageInstall.currentGeneration() }
+        Function("invalidateStageInstalls") { StageInstall.invalidate() }
+
+        AsyncFunction("resolveStageInstallPath") Coroutine { apkPath: String, deadlineMs: Double ->
+            withContext(Dispatchers.IO) {
+                StageInstall.resolvePath(requireReactContext(), apkPath, deadlineMs.toLong())
+            }
+        }
+
+        AsyncFunction("stageInstallApk") Coroutine {
+                apkPath: String, approvedSha256: String, expectedSha256: String?, deadlineMs: Double, generation: Double ->
+            withContext(Dispatchers.IO) {
+                StageInstall.install(requireReactContext(), apkPath, approvedSha256, expectedSha256, deadlineMs.toLong(), generation)
+            }
+        }
+
+        AsyncFunction("getStageInstallResult") Coroutine { sessionId: Int, waitMs: Int? ->
+            delay((waitMs ?: 0).coerceIn(0, 500).toLong())
+            withContext(Dispatchers.IO) { StageInstall.result(requireReactContext(), sessionId) }
         }
 
         AsyncFunction("installApk") { apkPath: String ->

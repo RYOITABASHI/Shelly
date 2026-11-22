@@ -59,11 +59,12 @@ import { useAgentStore } from '@/store/agent-store';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
-import { useMcpApprovalStore, type McpApprovalDecision } from '@/store/mcp-approval-store';
+import { useMcpApprovalStore, type McpApprovalDecision, type McpApprovalRequest } from '@/store/mcp-approval-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { execCommand } from '@/hooks/use-native-exec';
 import { evaluateMcpCommand, gateCommandWithCwd, gateWriteCommand, resolveWriteTarget, shellQuote, type McpShellRunner } from '@/lib/mcp-ingress-gate';
 import { getCachedUserPolicy, getCachedUserPolicyPin, loadUserPolicy, type LoadedUserPolicy } from '@/lib/agent-user-policy-store';
+import { t } from '@/lib/i18n';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { getDebugLogEntries } from '@/lib/debug-log-buffer';
 import { redactSecretsText } from '@/lib/redact-secrets';
@@ -577,7 +578,7 @@ async function userPolicy(): Promise<LoadedUserPolicy | null> {
 }
 
 /** `code` (typed ops only) is shown by the server as `Error: [<code>] <message>`. */
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode };
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -588,7 +589,7 @@ export function __setMCPApprovalTimeoutForTests(ms: number | null): void {
 }
 
 type ApprovalRequestInput = {
-  kind: 'run_command' | 'write_file' | 'run_agent';
+  kind: McpApprovalRequest['kind'];
   summary: string;
   detail: string;
   riskLevel?: string;
@@ -661,6 +662,7 @@ const REVOKED_ERROR = 'cancelled: the MCP token was regenerated';
  * ('failed_server_off') instead of serving next to rules it could not clear.
  */
 export async function revokePendingMCPRequests(opts: { tokenRevoked?: boolean } = {}): Promise<void> {
+  TerminalEmulator.invalidateStageInstalls?.();
   queueEpoch += 1;
   useMcpApprovalStore.getState().denyAll();
   abortRunResultWaits();
@@ -734,7 +736,7 @@ async function callTool(
   epoch: number,
   ingress: McpIngress,
   callId: string,
-  /** Typed ops: the signed request's deadline (receivedAt + TYPED_REQUEST_DEADLINE_MS). */
+  /** Signed request deadline where the tool has one. */
   deadlineMs: number = Number.POSITIVE_INFINITY,
 ): Promise<ToolResult> {
   switch (tool) {
@@ -911,12 +913,120 @@ async function callTool(
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     }
+    case 'stage_install':
+      return stageInstallTool(args, epoch, ingress, callId, deadlineMs);
     case 'run_agent':
       return runAgentTool(args, epoch, ingress, deadlineMs);
     case 'get_run_result':
       return getRunResultTool(args, epoch, ingress);
     default:
       return { ok: false, error: `unknown tool: ${tool}` };
+  }
+}
+
+const STAGE_INSTALL_WAIT_MS = 150_000;
+let stageInstallWaitMs = STAGE_INSTALL_WAIT_MS;
+
+export function __setStageInstallWaitForTests(ms: number | null): void {
+  stageInstallWaitMs = ms ?? STAGE_INSTALL_WAIT_MS;
+}
+
+async function stageInstallTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, callId: string, approvalDeadline: number,
+): Promise<ToolResult> {
+  const audit = async (code: string): Promise<void> => {
+    // Fixed fields only. APK paths, digests and installer messages stay out of the audit.
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({
+        kind: 'mcp_stage_install', event: 'mcp_stage_install', principal: ingress.principal, code,
+      }));
+      if (!ok) logError('MCPBridge', `stage_install audit line not written (${code})`);
+    } catch {
+      logError('MCPBridge', `stage_install audit line not written (${code})`);
+    }
+  };
+  const refuse = async (code: string, error: string): Promise<ToolResult> => {
+    await audit(code);
+    return code === 'digest_changed' || code === 'revoked'
+      ? { ok: false, error, code }
+      : { ok: false, error };
+  };
+  const timeout = async (): Promise<ToolResult> => {
+    await audit('timeout');
+    return { ok: true, data: { status: 'timeout' } };
+  };
+
+  if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+  const { path, expectedSha256 } = args;
+  if (typeof path !== 'string' || !path.startsWith('/') || !/\.apk$/i.test(path) || /[\x00-\x1f\x7f]/.test(path)) {
+    return refuse('invalid_path', 'path must be an absolute .apk file path without control characters');
+  }
+  if (path.split('/').includes('..')) return refuse('invalid_path', 'path must not contain ".."');
+  if (expectedSha256 !== undefined && (typeof expectedSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) {
+    return refuse('invalid_digest', 'expectedSha256 must be 64 lowercase hex digits');
+  }
+
+  try {
+    const resolved = await TerminalEmulator.resolveStageInstallPath(path, approvalDeadline);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (Date.now() >= approvalDeadline) return timeout();
+    if ('error' in resolved) {
+      if (resolved.code === 'timeout') return timeout();
+      return refuse('invalid_path', redactForMcp(resolved.error));
+    }
+    await audit('approval_requested');
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (Date.now() >= approvalDeadline) return timeout();
+    if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+    // The omission switches are implemented by the native raw/agent consumers.
+    // This signed RN queue operation always requests a tap through the raw approval path.
+    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
+    const decision = await approveRawTool({
+      kind: 'stage_install',
+      summary: t('mcp.approval_stage_install'),
+      detail: resolved.path,
+      origin: ingress,
+    }, callId);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (decision === 'deny' || Date.now() >= approvalExpiresAt) return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+
+    const deadline = Date.now() + stageInstallWaitMs;
+    // Native revalidates the canonical path and hashes the exact bytes it will
+    // install before creating a session.
+    const generation = TerminalEmulator.stageInstallGeneration();
+    const install = await TerminalEmulator.stageInstallApk(
+      resolved.path, resolved.sha256, expectedSha256 ?? null, deadline, generation,
+    );
+    if (epoch !== queueEpoch || ('error' in install && install.code === 'revoked')) {
+      return refuse('revoked', REVOKED_ERROR);
+    }
+    if ('error' in install) {
+      if (install.code === 'timeout') return timeout();
+      return refuse(install.code ?? 'staging_failed', redactForMcp(install.error));
+    }
+
+    let data: Record<string, unknown> = { ...install, status: 'timeout' };
+    let delay = 0;
+    while (true) {
+      if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+      // The installer dialog can stop RN's JS timers while Shelly is
+      // backgrounded. Use a short native delay between reads.
+      const outcome = await TerminalEmulator.getStageInstallResult(install.sessionId, delay);
+      if (outcome.status === 'success' || outcome.status === 'failure') {
+        data = outcome.status === 'success' ? { ...install, status: 'success' } : {
+          ...install, status: 'failure', statusCode: outcome.statusCode, message: redactForMcp(outcome.message),
+        };
+        break;
+      }
+      if (outcome.status === 'user_action_required') data = { ...install, status: outcome.status };
+      delay = Math.min(POLL_INTERVAL_MS, deadline - Date.now());
+      if (delay <= 0) break;
+    }
+    await audit(String(data.status));
+    return { ok: true, data };
+  } catch {
+    return refuse('native_error', 'could not stage the APK or read its install result');
   }
 }
 
@@ -1494,7 +1604,10 @@ async function processRequestFile(name: string): Promise<void> {
     }
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
-    if (RAW_REQUEST_TOOLS.has(request.tool)) {
+    if (request.tool === 'stage_install') {
+      // Leave the rest of the server's 260s queue wait for approval and install.
+      deadlineMs = request.receivedAtMs + 15_000;
+    } else if (RAW_REQUEST_TOOLS.has(request.tool)) {
       // A raw tool reaches requests/ only by the native raw consumer's handoff
       // (it routes ONCE per callId: run natively, or hand here). Its token is
       // consumed first, so a copied signed request (native owns or ran the

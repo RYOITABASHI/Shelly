@@ -2639,6 +2639,7 @@ const ja: Record<string, string> = {
   'file_tree.file_name_placeholder': 'file.ext',
 
   // ── MCP Section ────────────────────────────────────────────────
+  'mcp.approval_stage_install': 'MCP経由でAPKをインストールしますか？',
   'mcp.approval_title': 'Shelly MCPサーバー: 承認が必要です',
   'mcp.approval_risk_label': 'リスク',
   'mcp.approval_hint': 'この要求は、あなたがShelly上で何か操作したのではなく、同一ネットワーク上のMCPクライアント（例: Claude Code）から届いたものです。',
