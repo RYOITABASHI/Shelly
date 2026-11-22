@@ -1,4 +1,5 @@
 import * as nodeCrypto from 'crypto';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -143,13 +144,43 @@ describe('MCP direct reads', () => {
       expect(fallback).not.toHaveBeenCalled();
     });
 
-    it('marks an old reading stale instead of hiding its age', async () => {
+    const STALE_AGE = bridge.DEVICE_STALE_AFTER_MS + 1;
+    const STALE_NOW = Date.parse(CAPTURED) + STALE_AGE;
+
+    it('returns the successful live refresh for an old reading', async () => {
       await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
-      const { callTool } = makeAt(Date.parse(CAPTURED) + mcp.DEVICE_STALE_AFTER_MS + 1);
-      const res = await callTool('device_status', {});
-      expect(res.ok).toBe(true);
-      expect(res.data.stale).toBe(true);
+      fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), String(STALE_NOW));
+      const { callTool, fallback } = makeAt(STALE_NOW);
+      const ingress = { principal: 'test-client' };
+      expect(await callTool('device_status', {}, ingress)).toEqual({ ok: true, data: 'from-queue' });
+      expect(fallback).toHaveBeenCalledTimes(1);
+      expect(fallback).toHaveBeenCalledWith('device_status', {}, ingress, { timeoutMs: 8_000 });
       expect(mcp.DEVICE_STALE_AFTER_MS).toBe(bridge.DEVICE_STALE_AFTER_MS);
+    });
+
+    it.each([false, true])('returns the stale reading if refresh fails (throws: %s)', async (throws) => {
+      await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
+      const { callTool, fallback } = makeAt(STALE_NOW);
+      fallback.mockImplementationOnce(async () => {
+        if (throws) throw new Error('bridge unavailable');
+        return { ok: false, data: '', error: 'bridge unavailable' };
+      });
+      expect(await callTool('device_status', {})).toEqual({
+        ok: true,
+        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge unavailable' },
+      });
+      expect(fallback).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the stale reading without refreshing when the heartbeat is stale', async () => {
+      await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
+      fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), String(STALE_NOW - 2_000));
+      const { callTool, fallback } = makeAt(STALE_NOW);
+      expect(await callTool('device_status', {})).toEqual({
+        ok: true,
+        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge not live' },
+      });
+      expect(fallback).not.toHaveBeenCalled();
     });
 
     it('refuses a snapshot with a bad MAC (falls back to the queue, never serves the forged reading)', async () => {
@@ -486,6 +517,218 @@ describe('MCP direct reads', () => {
         ['read_agent_audit', { agentId: 'a1' }],
         ['read_article_history', { stream: 's' }],
       ]);
+    });
+  });
+});
+
+
+describe('MCP queue reads', () => {
+  const NOW = 1_800_000_000_000;
+  const makeQueue = () => mcp.createFileQueueCallTool(dir, 'ab'.repeat(32));
+  const heartbeat = (value: string) => fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), value);
+
+  afterEach(() => jest.useRealTimers());
+
+  it('matches the native heartbeat boundaries and distinguishes missing files', () => {
+    expect(mcp.rnLiveFromHeartbeat(dir, NOW)).toBeNull();
+    for (const stamp of [String(NOW - 2_000), String(NOW + 1_001), '0', '1e12', '+1800000000000', '0001800000000000', '']) {
+      heartbeat(stamp);
+      expect(mcp.rnLiveFromHeartbeat(dir, NOW)).toBe(false);
+    }
+    for (const stamp of [String(NOW - 1_999), String(NOW).padEnd(64, ' '), ` ${NOW}
+`, String(NOW + 1_000)]) {
+      heartbeat(stamp);
+      expect(mcp.rnLiveFromHeartbeat(dir, NOW)).toBe(true);
+    }
+  });
+
+  const invalidHeartbeatKinds = ['symlink', 'oversized file'];
+  if (process.platform !== 'win32') invalidHeartbeatKinds.push('FIFO');
+  it.each(invalidHeartbeatKinds)('fails fast for an invalid heartbeat (%s)', async (kind) => {
+    jest.useFakeTimers({ now: NOW });
+    if (kind === 'symlink') {
+      const target = path.join(dir, 'heartbeat-target');
+      fs.writeFileSync(target, String(NOW));
+      fs.symlinkSync(target, path.join(dir, 'bridge-heartbeat'));
+    } else if (kind === 'FIFO') {
+      expect(spawnSync('mkfifo', [path.join(dir, 'bridge-heartbeat')]).status).toBe(0);
+    } else {
+      heartbeat(String(NOW).padEnd(65, ' '));
+    }
+    expect(mcp.rnLiveFromHeartbeat(dir, NOW)).toBe(false);
+    const result = makeQueue()('get_settings', {}, undefined);
+    expect(fs.readdirSync(path.join(dir, 'requests'))).toEqual([]);
+    expect(await result).toEqual({ ok: false, error: expect.stringContaining('background') });
+  });
+
+  it('rejects a heartbeat that grows beyond the limit after fstat', () => {
+    heartbeat(String(NOW).padEnd(64, ' '));
+    const realFstat = fs.fstatSync;
+    const stat = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'fstatSync').mockImplementation((fd) => {
+      const result = realFstat(fd);
+      fs.appendFileSync(path.join(dir, 'bridge-heartbeat'), ' ');
+      return result;
+    });
+    try {
+      expect(mcp.rnLiveFromHeartbeat(dir, NOW)).toBe(false);
+      expect(stat).toHaveBeenCalledTimes(1);
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
+  it.each(['get_settings', 'read_logs', 'read_terminal_output', 'list_agents', 'device_status'])(
+    'fails fast for %s without writing a request when the heartbeat is stale',
+    async (tool) => {
+      jest.useFakeTimers({ now: NOW });
+      heartbeat(String(NOW - 2_000));
+      const result = makeQueue()(tool, {}, undefined);
+      expect(fs.readdirSync(path.join(dir, 'requests'))).toEqual([]);
+      expect(await result).toEqual({ ok: false, error: expect.stringContaining('background') });
+    },
+  );
+
+  it.each([undefined, 125])('enqueues without a heartbeat and times out (override: %s)', async (override) => {
+    jest.useFakeTimers({ now: NOW });
+    const timeout = override ?? 10_000;
+    const result = makeQueue()('get_settings', {}, undefined, { timeoutMs: override });
+    expect(fs.readdirSync(path.join(dir, 'requests'))).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(timeout);
+    expect(await result).toEqual({
+      ok: false,
+      error: expect.stringContaining(`timed out after ${timeout}ms waiting for the app to answer get_settings`),
+    });
+  });
+
+  it('settles a queued read at 10s despite a wall-clock rollback', async () => {
+    jest.useFakeTimers({ now: NOW });
+    heartbeat(String(NOW));
+    const settled = jest.fn();
+    void makeQueue()('get_settings', {}, undefined).then(settled);
+    expect(fs.readdirSync(path.join(dir, 'requests'))).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(5_000);
+    jest.setSystemTime(Date.now() - 30_000);
+    await jest.advanceTimersByTimeAsync(4_999);
+    expect(settled).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(settled).toHaveBeenCalledWith({
+      ok: false,
+      error: expect.stringContaining('timed out after 10000ms waiting for the app to answer get_settings'),
+    });
+  });
+
+  const fifoTest = process.platform === 'win32' ? it.skip : it;
+  fifoTest('settles promptly with an error when the result is a FIFO', () => {
+    const child = spawnSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const fs = require('fs');
+      const path = require('path');
+      const { execFileSync } = require('child_process');
+      const { createFileQueueCallTool } = require(process.argv[1]);
+      const dir = process.argv[2];
+      const callTool = createFileQueueCallTool(dir, 'ab'.repeat(32));
+      const result = callTool('get_settings', {}, undefined, { timeoutMs: 500 });
+      const [request] = fs.readdirSync(path.join(dir, 'requests'));
+      execFileSync('mkfifo', [path.join(dir, 'results', request)], { stdio: 'inherit' });
+      result.then(value => assert.deepEqual(value, { ok: false, error: 'unreadable result: not a regular file' }));
+    `, require.resolve('../scripts/shelly-mcp-server.js'), dir], { stdio: 'inherit', timeout: 2000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+  });
+
+  it('settles on the first poll when the result is a symlink', async () => {
+    jest.useFakeTimers({ now: NOW });
+    const settled = jest.fn();
+    void makeQueue()('get_settings', {}, undefined, { timeoutMs: 10_000 }).then(settled);
+    const [request] = fs.readdirSync(path.join(dir, 'requests'));
+    const target = path.join(dir, 'target.json');
+    fs.writeFileSync(target, JSON.stringify({ ok: true }));
+    fs.symlinkSync(target, path.join(dir, 'results', request));
+
+    await jest.advanceTimersByTimeAsync(250);
+    expect(settled).toHaveBeenCalledWith({
+      ok: false,
+      error: expect.stringMatching(/^unreadable result: .*ELOOP/),
+    });
+  });
+
+  it('settles on the first poll without reading an oversized result body', async () => {
+    jest.useFakeTimers({ now: NOW });
+    const settled = jest.fn();
+    void makeQueue()('get_settings', {}, undefined).then(settled);
+    const [request] = fs.readdirSync(path.join(dir, 'requests'));
+    const resultPath = path.join(dir, 'results', request);
+    fs.writeFileSync(resultPath, '');
+    fs.truncateSync(resultPath, mcp.RESULT_MAX_BYTES + 1);
+    const read = jest.spyOn(jest.requireActual<typeof fs>('fs'), 'readSync');
+    try {
+      // Advance the poll synchronously so unrelated async reads cannot hit the spy.
+      jest.advanceTimersByTime(250);
+      expect(read).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(settled).toHaveBeenCalledWith({
+        ok: false,
+        error: `unreadable result: larger than ${mcp.RESULT_MAX_BYTES} bytes`,
+      });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('reports a persistently malformed result at the deadline', async () => {
+    jest.useFakeTimers({ now: NOW });
+    const settled = jest.fn();
+    void makeQueue()('get_settings', {}, undefined, { timeoutMs: 500 }).then(settled);
+    const [request] = fs.readdirSync(path.join(dir, 'requests'));
+    fs.writeFileSync(path.join(dir, 'results', request), '{');
+
+    await jest.advanceTimersByTimeAsync(499);
+    expect(settled).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(settled).toHaveBeenCalledWith({
+      ok: false,
+      error: expect.stringMatching(/^unreadable result: .+/),
+    });
+  });
+
+  it.each<[number, object]>([
+    [100, { ok: true, data: 'from-queue' }],
+    [126, { ok: false, error: expect.stringContaining('timed out after 125ms') }],
+  ])('checks the deadline when a result is written at %dms', async (elapsed, expected) => {
+    jest.useFakeTimers({ now: NOW });
+    const now = jest.spyOn(performance, 'now').mockReturnValue(0);
+    try {
+      const content = { ok: true, data: 'from-queue' };
+      const result = makeQueue()('get_settings', {}, undefined, { timeoutMs: 125 });
+      const [request] = fs.readdirSync(path.join(dir, 'requests'));
+      const resultPath = path.join(dir, 'results', request);
+      now.mockReturnValue(elapsed);
+      fs.writeFileSync(resultPath, JSON.stringify(content));
+      // Model a poll dispatched at the file's arrival, even if the timer ran late.
+      await jest.advanceTimersByTimeAsync(125);
+      expect(await result).toEqual(expected);
+      expect(fs.existsSync(resultPath)).toBe(elapsed >= 125);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it.each([
+    ['run_command', 'raw-requests'],
+    ['write_file', 'raw-requests'],
+    ['run_agent', 'typed-requests'],
+  ])('enqueues %s despite a stale heartbeat and waits 100s', async (tool, requestDir) => {
+    jest.useFakeTimers({ now: NOW });
+    heartbeat(String(NOW - 2_000));
+    const settled = jest.fn();
+    void makeQueue()(tool, {}, undefined).then(settled);
+    expect(fs.readdirSync(path.join(dir, requestDir))).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(99_750);
+    expect(settled).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(250);
+    expect(settled).toHaveBeenCalledWith({
+      ok: false,
+      error: 'timed out waiting for the app to answer (is Shelly running?)',
     });
   });
 });

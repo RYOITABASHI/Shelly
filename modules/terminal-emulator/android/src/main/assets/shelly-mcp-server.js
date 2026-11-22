@@ -27,7 +27,9 @@
  * only gates OUTGOING agent requests — unrelated to this ingress path.
  *
  * Transport: Streamable HTTP, a single POST /mcp endpoint, JSON responses
- * only (no SSE — every read-only tool here is fast and synchronous). The
+ * only (no SSE). Queued reads wait up to 10s and fail fast when the
+ * bridge heartbeat indicates RN is paused. A stale device snapshot gets
+ * one live refresh attempt with an 8s timeout when the bridge may be live. The
  * server is DUAL-ERA (spec 2026-07-28, "Versioning and Compatibility"):
  *
  *   - Legacy (2025-03-26 / 2025-06-18 / 2025-11-25): the `initialize` +
@@ -124,10 +126,45 @@ const { Buffer } = require('buffer');
 const { execFile } = require('child_process');
 
 const RESULT_POLL_MS = 250;
-// run_command / write_file wait on an in-app approval tap (up to 90s,
-// lib/mcp-server-bridge.ts's APPROVAL_TIMEOUT_MS) before answering — this
-// has to comfortably outlast that, not just the read-only tools' instant replies.
+// Runaway guard: two 4 MiB output streams can expand 6x with JSON escapes
+// (48 MiB total), with headroom for the result envelope.
+const RESULT_MAX_BYTES = 64 * 1024 * 1024;
+// Approval tools can wait up to 90s for an in-app tap
+// (APPROVAL_TIMEOUT_MS in lib/mcp-server-bridge.ts).
 const RESULT_TIMEOUT_MS = 100_000;
+const QUEUE_READ_TIMEOUT_MS = 10_000;
+const DEVICE_LIVE_REFRESH_TIMEOUT_MS = 8_000;
+const QUEUE_READ_TOOLS = new Set(['get_settings', 'read_logs', 'read_terminal_output']);
+
+// KEEP IN SYNC: McpTypedOpDecision.kt isRnLive / HEARTBEAT_*_MS.
+const HEARTBEAT_LIVE_MS = 2_000;
+const HEARTBEAT_FUTURE_MS = 1_000;
+const HEARTBEAT_MAX_BYTES = 64;
+
+function rnLiveFromHeartbeat(queueDir, nowMs) {
+  const heartbeatPath = path.join(queueDir, 'bridge-heartbeat');
+  let fd;
+  try {
+    fd = fs.openSync(heartbeatPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (e) {
+    return e.code === 'ENOENT' ? null : false;
+  }
+  let bytes;
+  try {
+    if (!fs.fstatSync(fd).isFile()) return false;
+    bytes = readAtMost(fd, 0, HEARTBEAT_MAX_BYTES + 1);
+    if (bytes.length > HEARTBEAT_MAX_BYTES) return false;
+  } catch {
+    return false;
+  } finally {
+    try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+  const stamp = bytes.toString('utf8').trim();
+  if (!/^[0-9]{1,15}$/.test(stamp)) return false;
+  const timestamp = Number(stamp);
+  return timestamp > 0 && timestamp <= nowMs + HEARTBEAT_FUTURE_MS
+    && nowMs - timestamp < HEARTBEAT_LIVE_MS;
+}
 
 // ── Protocol versions ────────────────────────────────────────────────────
 const MODERN_VERSIONS = ['2026-07-28'];
@@ -458,45 +495,95 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
   fs.mkdirSync(rawRequestsDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(resultsDir, { recursive: true });
 
-  function waitForResult(callId) {
+  function waitForResult(callId, timeoutMs, timeoutError) {
     return new Promise((resolve) => {
       const resultPath = path.join(resultsDir, `${callId}.json`);
-      const deadline = Date.now() + RESULT_TIMEOUT_MS;
+      const deadline = performance.now() + timeoutMs;
+      let lastError;
+      const deadlineResult = () => ({
+        ok: false,
+        error: lastError === undefined ? timeoutError : `unreadable result: ${lastError}`,
+      });
       const tick = () => {
-        if (fs.existsSync(resultPath)) {
+        if (performance.now() >= deadline) {
+          resolve(deadlineResult());
+          return;
+        }
+        let fd;
+        let readError;
+        try {
+          fd = fs.openSync(resultPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        } catch (e) {
+          if (e.code === 'ELOOP') {
+            resolve({ ok: false, error: `unreadable result: ${e.message}` });
+            return;
+          }
+          if (e.code !== 'ENOENT') readError = e;
+        }
+        if (fd !== undefined) {
           let parsed;
           try {
-            parsed = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+            const stat = fs.fstatSync(fd);
+            if (!stat.isFile()) {
+              resolve({ ok: false, error: 'unreadable result: not a regular file' });
+              return;
+            }
+            if (stat.size > RESULT_MAX_BYTES) {
+              resolve({ ok: false, error: `unreadable result: larger than ${RESULT_MAX_BYTES} bytes` });
+              return;
+            }
+            const bytes = readAtMost(fd, 0, RESULT_MAX_BYTES + 1);
+            if (bytes.length > RESULT_MAX_BYTES) {
+              resolve({ ok: false, error: `unreadable result: larger than ${RESULT_MAX_BYTES} bytes` });
+              return;
+            }
+            parsed = JSON.parse(bytes.toString('utf8'));
           } catch (e) {
             // The native typed-op consumer creates the result in place
             // (O_EXCL, never replacing one), so a read can catch it half
             // written: try again next tick, until the deadline.
-            if (Date.now() <= deadline) {
-              setTimeout(tick, RESULT_POLL_MS);
-              return;
+            readError = e;
+          } finally {
+            try { fs.closeSync(fd); } catch { /* ignore */ }
+          }
+          if (!readError) {
+            const timedOut = performance.now() >= deadline;
+            try {
+              fs.unlinkSync(resultPath);
+            } catch {
+              /* already gone */
             }
-            resolve({ ok: false, error: `unreadable result: ${e.message}` });
+            resolve(timedOut ? deadlineResult() : parsed);
             return;
           }
-          try {
-            fs.unlinkSync(resultPath);
-          } catch {
-            /* already gone */
-          }
-          resolve(parsed);
+        }
+        if (readError) lastError = readError.message;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) {
+          resolve(deadlineResult());
           return;
         }
-        if (Date.now() > deadline) {
-          resolve({ ok: false, error: 'timed out waiting for the app to answer (is Shelly running?)' });
-          return;
-        }
-        setTimeout(tick, RESULT_POLL_MS);
+        setTimeout(tick, Math.min(RESULT_POLL_MS, remaining));
       };
       tick();
     });
   }
 
-  return function callTool(toolName, args, ingress) {
+  return function callTool(toolName, args, ingress, opts) {
+    const isRead = QUEUE_READ_TOOLS.has(toolName) || DIRECT_READ_TOOLS.has(toolName);
+    if (isRead && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
+      return Promise.resolve({
+        ok: false,
+        error: `${toolName} cannot be answered right now: Shelly is in the background and its bridge is paused (open Shelly and try again)`,
+      });
+    }
+    const override = opts?.timeoutMs;
+    const timeoutMs = Number.isFinite(override) && override > 0
+      ? override
+      : isRead ? QUEUE_READ_TIMEOUT_MS : RESULT_TIMEOUT_MS;
+    const timeoutError = isRead
+      ? `timed out after ${timeoutMs}ms waiting for the app to answer ${toolName} (Shelly may be in the background; open Shelly and try again)`
+      : 'timed out waiting for the app to answer (is Shelly running?)';
     const callId = crypto.randomUUID();
     const unsigned = {
       callId,
@@ -514,17 +601,16 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
     // consumers only take names ending in `.json`).
     fs.writeFileSync(`${file}.tmp`, JSON.stringify({ ...unsigned, mac: requestMac(bridgeKey, unsigned) }), { mode: 0o600 });
     fs.renameSync(`${file}.tmp`, file);
-    return waitForResult(callId);
+    return waitForResult(callId, timeoutMs, timeoutError);
   };
 }
 
 // ── Direct reads (no RN round-trip) ──────────────────────────────────────
 //
 // tools/call normally goes through the file queue above, which the RN side
-// drains with JS timers. RN pauses those timers while Shelly is in the
-// background, so every call hung there (2026-11-14 read prototype: the
-// handshake answered over Tailscale, tools/call did not). The read tools
-// that need no live UI state are answered here instead:
+// drains with JS timers that pause in the background. Queued reads check the
+// bridge heartbeat before enqueueing and use a shorter timeout than approval
+// tools. Reads that need no live UI state can be answered here:
 //   list_agents / list_repos — from snapshot.json, which the RN bridge
 //     rewrites whenever the agent list or the Sidebar repos change;
 //   git_status — git run by this process, only for a repo in that snapshot;
@@ -533,8 +619,11 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
 //     start, on every foreground / background transition and every few
 //     minutes while Shelly is open. Its `capturedAt` is returned together
 //     with `ageMs` and `stale` so a reading taken before Shelly went to the
-//     background is never mistaken for a live one. A verified snapshot whose
-//     device section is missing or malformed answers a plain error.
+//     background is never mistaken for a live one. A stale reading triggers
+//     one bounded queue refresh unless the heartbeat says RN is paused. If
+//     the refresh fails or is skipped, return the stale reading with
+//     live: false and refreshError. A verified snapshot whose device section
+//     is missing or malformed answers a plain error.
 // The snapshot carries an HMAC keyed by the bearer token, so a file planted
 // in the queue dir by anything that doesn't hold the token is ignored and
 // the call falls back to the queue (the old behaviour). read_terminal_output,
@@ -685,7 +774,24 @@ function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultR
     if (!snap) return fallback(toolName, args, ingress);
     if (toolName === 'list_agents') return { ok: true, data: snap.agents };
     if (toolName === 'list_repos') return { ok: true, data: snap.repoPaths };
-    if (toolName === 'device_status') return deviceStatusFromSnapshot(snap.device, now());
+    if (toolName === 'device_status') {
+      const nowMs = now();
+      const reading = deviceStatusFromSnapshot(snap.device, nowMs);
+      if (!reading.ok || !reading.data.stale) return reading;
+
+      let refreshError = 'bridge not live';
+      if (rnLiveFromHeartbeat(queueDir, nowMs) !== false) {
+        refreshError = 'live refresh failed';
+        try {
+          const live = await fallback(toolName, args, ingress, { timeoutMs: DEVICE_LIVE_REFRESH_TIMEOUT_MS });
+          if (live?.ok === true) return live;
+          refreshError = live?.error || refreshError;
+        } catch (e) {
+          refreshError = e?.message || refreshError;
+        }
+      }
+      return { ok: true, data: { ...reading.data, live: false, refreshError } };
+    }
     if (toolName === 'read_agent_audit') return readAgentAudit(homeDir, snap.agents, args || {}, logIo);
     if (toolName === 'read_article_history') return readArticleHistory(homeDir, args || {}, logIo);
     const target = args && typeof args.path === 'string' ? args.path : '';
@@ -2589,6 +2695,10 @@ if (require.main === module) {
     createMcpHandler,
     createDirectReadCallTool,
     createFileQueueCallTool,
+    rnLiveFromHeartbeat,
+    RESULT_MAX_BYTES,
+    QUEUE_READ_TIMEOUT_MS,
+    DEVICE_LIVE_REFRESH_TIMEOUT_MS,
     createRunResultCallTool,
     getRunResultDirect,
     redactForMcp,
