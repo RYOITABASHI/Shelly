@@ -166,6 +166,10 @@ function rnLiveFromHeartbeat(queueDir, nowMs) {
     && nowMs - timestamp < HEARTBEAT_LIVE_MS;
 }
 
+// stage_install waits out the 90s approval plus up to ~150s of staging and
+// result polling in the app, so its queue wait is longer than the others.
+const STAGE_INSTALL_RESULT_TIMEOUT_MS = 260_000;
+
 // ── Protocol versions ────────────────────────────────────────────────────
 const MODERN_VERSIONS = ['2026-07-28'];
 // Newest first. Our legacy surface (tools only, JSON responses) is the same
@@ -228,7 +232,7 @@ const MRTR_RETRY_HOLD_MS = 20_000;
 // window to collect an answer that landed right at the end.
 const MRTR_STATE_TTL_MS = RESULT_TIMEOUT_MS + 60_000;
 // Tools whose call blocks on an on-device approval tap.
-const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'run_agent']);
+const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'stage_install', 'run_agent']);
 // Typed operations (lib/mcp-typed-ops.ts): listed only with "MCP: Allow
 // typed operations" (SHELLY_MCP_TYPED_OPS=1), whatever the exec setting says.
 const TYPED_OP_TOOLS = new Set(['run_agent', 'get_run_result']);
@@ -383,6 +387,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'stage_install',
+    description: 'Installs a staged APK with Android PackageInstaller. Requires MCP exec/write and on-device approval. Android may also prompt to confirm installation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path of a staged APK in Downloads or Shelly home' },
+        expectedSha256: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Optional lowercase SHA-256 digest of the APK' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'run_agent',
     description: 'Starts one run of a registered Shelly agent (see list_agents). Returns a runHandle at once; poll get_run_result. Needs an approval tap on the phone unless the owner set \'always allow\' for this agent. Runs started this way are treated as external (see docs).',
     inputSchema: {
@@ -411,7 +427,7 @@ const TOOLS = [
   },
 ];
 
-// Tools hidden unless a setting turned them on: run_command / write_file need
+// Tools hidden unless a setting turned them on: run_command / write_file / stage_install need
 // "MCP: Allow exec/write", read_terminal_output needs "MCP: Allow reading
 // terminal output" (the screen can show tokens or pasted secrets), read_logs /
 // get_settings need "MCP: Allow diagnostics". device_status has no switch.
@@ -580,6 +596,7 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
     const override = opts?.timeoutMs;
     const timeoutMs = Number.isFinite(override) && override > 0
       ? override
+      : toolName === 'stage_install' ? STAGE_INSTALL_RESULT_TIMEOUT_MS
       : isRead ? QUEUE_READ_TIMEOUT_MS : RESULT_TIMEOUT_MS;
     const timeoutError = isRead
       ? `timed out after ${timeoutMs}ms waiting for the app to answer ${toolName} (Shelly may be in the background; open Shelly and try again)`
@@ -2489,7 +2506,7 @@ function createMcpHandler(opts) {
       digest,
       settled: false,
       result: undefined,
-      expiresAt: now() + MRTR_STATE_TTL_MS,
+      expiresAt: now() + (toolName === 'stage_install' ? STAGE_INSTALL_RESULT_TIMEOUT_MS + 60_000 : MRTR_STATE_TTL_MS),
       promise: null,
     };
     entry.promise = Promise.resolve(callTool(toolName, args, ingress))

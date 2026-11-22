@@ -19,6 +19,10 @@
     </intent>
   </queries>
   <application>
+    <receiver
+      android:name=".StageInstallReceiver"
+      android:exported="false" />
+
     <!-- 2026-07-29: android:noHistory REMOVED (was "true") for the voice-input
          mic button. A noHistory activity never receives onActivityResult —
          the OS finishes it the moment the RecognizerIntent activity stops it —

@@ -160,6 +160,20 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** Active network is unmetered Wi-Fi or Ethernet. Optional: older native builds lack it. */
   isNetworkUnmetered?(): Promise<boolean>;
   installApk(apkPath: string): Promise<void>;
+  stageInstallGeneration(): number;
+  invalidateStageInstalls?(): void;
+  resolveStageInstallPath(apkPath: string, deadlineMs: number): Promise<
+    { path: string; sha256: string } | { error: string; code?: 'timeout' }
+  >;
+  stageInstallApk(apkPath: string, approvedSha256: string, expectedSha256: string | null, deadlineMs: number, generation: number): Promise<
+    { sessionId: number; packageName?: string; versionCode?: number } |
+    { error: string; code?: 'digest_changed' | 'timeout' | 'revoked' }
+  >;
+  getStageInstallResult(sessionId: number, waitMs?: number): Promise<
+    | { status: 'pending' }
+    | { status: 'success' | 'user_action_required'; at: number }
+    | { status: 'failure'; statusCode: number; message: string; at: number }
+  >;
   /** Toggle FLAG_SECURE on the activity window (no screenshots / recents thumbnail). Optional: older native builds lack it. */
   setWindowSecure?(secure: boolean): Promise<boolean>;
   /**
