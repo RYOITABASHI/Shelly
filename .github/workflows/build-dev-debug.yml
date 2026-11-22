@@ -1,0 +1,779 @@
+name: Build Dev Debug APK
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dev-debug-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test -- --runInBand
+
+      - name: Release-safety secret scan (source tree)
+        run: node scripts/release-safety-scan.js .
+
+  build:
+    needs: [quality]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Expo
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Compute daily bundle cache key
+        id: bundle-cache-key
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve CLI versions for payload cache
+        run: |
+          set -euo pipefail
+          test -s .ci-versions/codex.txt || { echo "FATAL: .ci-versions/codex.txt is missing" >&2; exit 1; }
+          test -s .ci-versions/codex-termux-deb.json || { echo "FATAL: .ci-versions/codex-termux-deb.json is missing" >&2; exit 1; }
+          node scripts/codex-termux-apt.js check-pin \
+            --pin .ci-versions/codex-termux-deb.json --codex-txt .ci-versions/codex.txt
+          printf 'codex: %s\n' "$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+
+      - name: Restore generated Android payload cache
+        id: android-payload-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_https.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_remote_http.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libssh_keygen.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgh.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg_agent.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnano.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libunzip.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_credential_store.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgit_credential_cache.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libbz2_1.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgcrypt.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libgpg_error.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libassuan.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libksba.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_code_mode_host.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_cmd.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_glibc_exec.so
+            modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
+          key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux-deb.json', 'scripts/codex-termux-apt.js', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-
+
+      - name: Install aarch64 cross-binutils (for strip --strip-unneeded)
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        # bug #139 (2026-04-27): the next step strips Termux .deb extracts
+        # to remove debug+local symbols (~25-35 MB total APK savings).
+        # Ubuntu-latest's system `strip` is x86_64-only and rejects
+        # aarch64 ELFs. binutils-aarch64-linux-gnu provides
+        # `aarch64-linux-gnu-strip` which handles aarch64 ELFs cross-arch.
+        # We can't use NDK's llvm-strip here because Setup Android SDK
+        # runs much later in this workflow.
+        run: sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
+
+      - name: Bundle Termux extras (git-remote-https, ssh-keygen) — bug #128
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        # Shelly bundles `git` itself but not the git-remote-https helper that
+        # makes `git clone https://...` work, nor `ssh-keygen` for SSH key
+        # generation. Without these, Shelly-on-Shelly development is
+        # structurally blocked — every `git clone https://...` returns
+        # "fatal: remote helper 'https' aborted session". User report
+        # 2026-04-27.
+        #
+        # We pull the binaries from Termux's stable apt repo. Latest .deb
+        # is resolved dynamically from the Packages.xz index so we follow
+        # upstream automatically.
+        run: |
+          set -euo pipefail
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          TERMUX_REPO_BASES=(
+            "https://packages-cf.termux.dev/apt/termux-main"
+            "https://packages.termux.dev/apt/termux-main"
+          )
+
+          curl_retry() {
+            curl --fail --silent --show-error --location \
+              --retry 4 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 20 --max-time 120 "$@"
+          }
+
+          # Fetch the Termux apt index. The mirror at
+          # packages-cf.termux.dev historically served Packages.xz, but as of
+          # 2026-04-27 only the uncompressed Packages and Packages.gz are
+          # reliably present. Try in preference order: .xz → .gz →
+          # uncompressed, across multiple mirrors. The build CI runner has
+          # xz-utils + gzip pre-installed; only the uncompressed fallback would
+          # also work without decoders, so it's the safety net.
+          fetch_packages_index() {
+            local url="$1" decoder="$2"
+            if [ -n "$decoder" ]; then
+              curl_retry "$url" | $decoder > /tmp/Packages.tmp 2>/dev/null \
+                && [ -s /tmp/Packages.tmp ] \
+                && mv /tmp/Packages.tmp /tmp/Packages \
+                && return 0
+            else
+              curl_retry -o /tmp/Packages.tmp "$url" 2>/dev/null \
+                && [ -s /tmp/Packages.tmp ] \
+                && mv /tmp/Packages.tmp /tmp/Packages \
+                && return 0
+            fi
+            rm -f /tmp/Packages.tmp
+            return 1
+          }
+          REPO_BASE=""
+          INDEX_SOURCE=""
+          for candidate_repo in "${TERMUX_REPO_BASES[@]}"; do
+            IDX_BASE="${candidate_repo}/dists/stable/main/binary-aarch64"
+            if   fetch_packages_index "${IDX_BASE}/Packages.xz" "xz -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.xz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages.gz" "gzip -d"; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages.gz"
+              break
+            elif fetch_packages_index "${IDX_BASE}/Packages" ""; then
+              REPO_BASE="${candidate_repo}"
+              INDEX_SOURCE="Packages (uncompressed)"
+              break
+            else
+              echo "[termux-extras] WARN: could not fetch index from ${IDX_BASE}" >&2
+            fi
+          done
+          if [ -z "${REPO_BASE}" ]; then
+            echo "FATAL: could not fetch Termux Packages index from any configured mirror" >&2
+            exit 1
+          fi
+          test -s /tmp/Packages || { echo "FATAL: empty Packages index"; exit 1; }
+          echo "[termux-extras] repo mirror: ${REPO_BASE}"
+          echo "[termux-extras] index source: ${INDEX_SOURCE}"
+          echo "[termux-extras] index size: $(wc -c < /tmp/Packages) bytes"
+
+          # Filename helper (paragraph-mode awk lookup)
+          find_filename() {
+            awk -v pkg="$1" -v RS= '
+              /^Package:/ {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "Package:" && $(i+1) == pkg) {
+                    matched = 1
+                  }
+                }
+              }
+              matched && /Filename:/ {
+                for (i = 1; i <= NF; i++) {
+                  if ($i == "Filename:") {
+                    print $(i+1)
+                    exit
+                  }
+                }
+              }
+            ' /tmp/Packages
+          }
+
+          # Extract a Termux .deb's payload to a directory.
+          extract_deb() {
+            local deb="$1" outdir="$2"
+            mkdir -p "$outdir"
+            (cd "$outdir" && ar x "$deb")
+            if [ -f "$outdir/data.tar.xz" ]; then
+              tar -xf "$outdir/data.tar.xz" -C "$outdir"
+            elif [ -f "$outdir/data.tar.zst" ]; then
+              zstd -d "$outdir/data.tar.zst" -o "$outdir/data.tar"
+              tar -xf "$outdir/data.tar" -C "$outdir"
+            elif [ -f "$outdir/data.tar.gz" ]; then
+              tar -xzf "$outdir/data.tar.gz" -C "$outdir"
+            else
+              echo "FATAL: unknown payload format in $deb"; ls -la "$outdir"; exit 1
+            fi
+          }
+
+          # 1. git-remote-https (and -http for non-TLS) from `git` package
+          GIT_FILENAME=$(find_filename git)
+          [ -n "$GIT_FILENAME" ] || { echo "FATAL: git package not found in Packages index"; exit 1; }
+          echo "[termux-extras] git: ${GIT_FILENAME}"
+          curl_retry -o /tmp/git.deb "${REPO_BASE}/${GIT_FILENAME}"
+          extract_deb /tmp/git.deb /tmp/git-pkg
+          for helper in git-remote-https git-remote-http; do
+            src="/tmp/git-pkg/data/data/com.termux/files/usr/libexec/git-core/${helper}"
+            dst="${GITHUB_WORKSPACE}/${JNILIBS}/lib${helper//-/_}.so"
+            if [ ! -f "$src" ]; then
+              echo "FATAL: ${helper} not found in git package at $src"
+              find /tmp/git-pkg/data/data/com.termux/files/usr/libexec -name 'git-remote-*' || true
+              exit 1
+            fi
+            cp "$src" "$dst"
+            chmod 755 "$dst"
+            # bug #139 (2026-04-27): strip Termux .deb extracts. Termux's
+            # apt mirror sometimes ships unstripped binaries (esp. the
+            # gpg cascade — gh as a Go binary saves 15+ MB stripped).
+            # --strip-unneeded preserves DT_NEEDED + dynamic symbols
+            # required for runtime resolution; only debug + local symbols
+            # are removed. NDK clang's llvm-strip is ABI-aware for
+            # aarch64. Failure is non-fatal (already-stripped binaries
+            # warn but the file remains usable).
+            aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+            echo "[termux-extras] bundled ${helper} → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
+          done
+
+          # 2. ssh-keygen from `openssh` package
+          SSH_FILENAME=$(find_filename openssh)
+          [ -n "$SSH_FILENAME" ] || { echo "FATAL: openssh package not found in Packages index"; exit 1; }
+          echo "[termux-extras] openssh: ${SSH_FILENAME}"
+          curl_retry -o /tmp/openssh.deb "${REPO_BASE}/${SSH_FILENAME}"
+          extract_deb /tmp/openssh.deb /tmp/openssh-pkg
+          src="/tmp/openssh-pkg/data/data/com.termux/files/usr/bin/ssh-keygen"
+          dst="${GITHUB_WORKSPACE}/${JNILIBS}/libssh_keygen.so"
+          if [ ! -f "$src" ]; then
+            echo "FATAL: ssh-keygen not found in openssh package at $src"
+            find /tmp/openssh-pkg/data/data/com.termux/files/usr/bin -name 'ssh*' || true
+            exit 1
+          fi
+          cp "$src" "$dst"
+          chmod 755 "$dst"
+          aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+          echo "[termux-extras] bundled ssh-keygen → $(basename "$dst") ($(stat -c %s "$dst") bytes)"
+
+          # bug #130 (2026-04-27): Tier-1 dev essentials. Same Termux apt
+          # mirror, same extract pattern. These are the binaries Codex
+          # routinely complains about ("gh: command not found",
+          # "gpg: not found", "unzip: not found") during
+          # Shelly-on-Shelly dev. git-credential-* come from the git
+          # package we already extracted in step 1.
+          #
+          # Each entry: <pkg>:<bin-name>:<src-path-after-/usr>:<dst-name>
+          # When pkg is "_git_extracted" we reuse the already-extracted
+          # /tmp/git-pkg payload to avoid re-downloading. When pkg is
+          # "_openssh_extracted" we reuse /tmp/openssh-pkg.
+          while IFS=: read -r pkg src_subpath dst_name; do
+            [ -z "$pkg" ] && continue
+            case "$pkg" in
+              \#*) continue ;;
+            esac
+            case "$pkg" in
+              _git_extracted)
+                pkg_dir="/tmp/git-pkg"
+                ;;
+              _openssh_extracted)
+                pkg_dir="/tmp/openssh-pkg"
+                ;;
+              *)
+                pkg_filename=$(find_filename "$pkg")
+                if [ -z "$pkg_filename" ]; then
+                  echo "[termux-extras] WARN: ${pkg} package not in index, skipping"
+                  continue
+                fi
+                echo "[termux-extras] ${pkg}: ${pkg_filename}"
+                pkg_dir="/tmp/${pkg}-pkg"
+                rm -rf "$pkg_dir"
+                curl_retry -o "/tmp/${pkg}.deb" "${REPO_BASE}/${pkg_filename}"
+                extract_deb "/tmp/${pkg}.deb" "$pkg_dir"
+                ;;
+            esac
+            src="${pkg_dir}/data/data/com.termux/files/usr/${src_subpath}"
+            dst="${GITHUB_WORKSPACE}/${JNILIBS}/${dst_name}"
+            if [ ! -f "$src" ]; then
+              echo "[termux-extras] WARN: ${dst_name} source missing at ${src}, skipping"
+              continue
+            fi
+            cp "$src" "$dst"
+            chmod 755 "$dst"
+            aarch64-linux-gnu-strip --strip-unneeded "$dst" 2>/dev/null || true
+            echo "[termux-extras] bundled ${dst_name} (from ${pkg}/${src_subpath}, $(stat -c %s "$dst") bytes)"
+          done <<'EOF'
+          gh:bin/gh:libgh.so
+          gnupg:bin/gpg:libgpg.so
+          gnupg:bin/gpg-agent:libgpg_agent.so
+          nano:bin/nano:libnano.so
+          unzip:bin/unzip:libunzip.so
+          _git_extracted:libexec/git-core/git-credential-store:libgit_credential_store.so
+          _git_extracted:libexec/git-core/git-credential-cache:libgit_credential_cache.so
+          # bug #132 (2026-04-27): gpg + unzip both DT_NEEDED libbz2.so.1.0
+          # but Shelly never bundled it. On-device repro: "CANNOT LINK
+          # EXECUTABLE: library libbz2.so.1.0 not found". Pull from
+          # Termux's libbz2 package, name as libbz2_1.so in apk lib/
+          # (gradle apkPackager only accepts lib*.so without version
+          # suffix), LibExtractor renames to libbz2.so.1.0 on disk
+          # which is what gpg/unzip's DT_NEEDED references.
+          libbz2:lib/libbz2.so.1.0:libbz2_1.so
+          # bug #135 (2026-04-27, agent-reviewed): gpg's runtime dep
+          # cascade. UNLIKE libbz2 (#132) which ships versioned
+          # libbz2.so.1.0, Termux ships these libs UNVERSIONED — the
+          # .deb has a single `usr/lib/libNAME.so` file with no
+          # symlinks, and gpg's DT_NEEDED references match (e.g.
+          # `libgcrypt.so` not `libgcrypt.so.20`). Verified against
+          # current debs:
+          #   libgcrypt_1.11.2-1, libgpg-error_1.58, libassuan_3.0.2-1,
+          #   libksba_1.6.8, libnpth_1.6-3
+          # Verified gpg's DT_NEEDED:
+          #   libz.so.1, libbz2.so.1.0, libsqlite3.so, libgcrypt.so,
+          #   libreadline.so.8, libassuan.so, libnpth.so, libgpg-error.so
+          # Apk lib/ filenames use underscores instead of hyphens
+          # (gradle compatibility); LibExtractor renames to the
+          # hyphenated SONAMEs on disk where DT_NEEDED resolves.
+          libgcrypt:lib/libgcrypt.so:libgcrypt.so
+          libgpg-error:lib/libgpg-error.so:libgpg_error.so
+          libassuan:lib/libassuan.so:libassuan.so
+          libksba:lib/libksba.so:libksba.so
+          libnpth:lib/libnpth.so:libnpth.so
+          EOF
+
+          # Verify the critical landings (T1 graceful — WARN not FATAL).
+          # bug #135 review (2026-04-27): expanded to include libbz2 +
+          # gpg cascade so future Termux upstream renames trigger an
+          # immediate "MISSING:" line in CI logs instead of an apparently
+          # green build that ships a broken APK.
+          echo "[termux-extras] === landed files ==="
+          for f in libgit_remote_https.so libgit_remote_http.so libssh_keygen.so \
+                   libgh.so libgpg.so libgpg_agent.so libnano.so libunzip.so \
+                   libgit_credential_store.so libgit_credential_cache.so \
+                   libbz2_1.so \
+                   libgcrypt.so libgpg_error.so libassuan.so libksba.so libnpth.so; do
+            if [ -f "${GITHUB_WORKSPACE}/${JNILIBS}/$f" ]; then
+              ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/$f"
+            else
+              echo "  MISSING: $f"
+            fi
+          done
+
+      - name: Bundle Codex from the Termux package
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        # scripts/codex-termux-apt.js checks the signed Termux index, the pinned
+        # hash, and that both binaries can load on Android. apt lists only the
+        # newest version, so this pin may be gone from the pool by now; the Bump
+        # job keeps its .deb on codex-runtime-latest, and the hash decides either
+        # way. Only a reviewed change moves this pin: agent workers run this build. Issue #149: Codex looks for its Code Mode host next to its
+        # own executable, so LibExtractor puts it beside codex_tui.
+        run: |
+          set -euo pipefail
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          payload="${RUNNER_TEMP}/codex-payload"
+          node scripts/codex-termux-apt.js fetch \
+            --pin .ci-versions/codex-termux-deb.json \
+            --out-dir "${payload}" \
+            --archive-base "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/codex-runtime-latest"
+          install -m 755 "${payload}/codex_tui" "${JNILIBS}/libcodex_tui.so"
+          install -m 755 "${payload}/codex-code-mode-host" "${JNILIBS}/libcodex_code_mode_host.so"
+          rm -f "${JNILIBS}/libcodex_exec.so" "${JNILIBS}/libcodex_cxx_shared.so"
+          ls -lh "${JNILIBS}/libcodex_tui.so" "${JNILIBS}/libcodex_code_mode_host.so"
+
+      - name: Bundle Codex JS dispatcher
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
+          mkdir -p cli-bundle
+          npm install -g --prefix ./cli-bundle --cpu=arm64 --os=linux \
+            "@openai/codex@${CODEX_VERSION}"
+          cd cli-bundle/lib
+          tar czf ../../modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz node_modules
+          cd ../..
+          ls -lh modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
+
+      - name: Compute monotonic Android version code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git_version_code="$(git rev-list --count HEAD)"
+          desired_version_code="$((git_version_code + 1))"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+
+          for update_tag in android-latest android-dev; do
+            tag_dir="${tmp_dir}/${update_tag}"
+            mkdir -p "${tag_dir}"
+            release_view_error="${tag_dir}/release-view.err"
+            if ! manifest_asset="$(gh release view "${update_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq '.assets[] | select(.name == "latest.json") | .name' 2>"${release_view_error}")"; then
+              if grep -qiE 'not found|HTTP 404' "${release_view_error}"; then
+                echo "No ${update_tag} release found; ignoring for versionCode floor."
+                continue
+              fi
+              cat "${release_view_error}" >&2
+              exit 1
+            fi
+            if [ -z "${manifest_asset}" ]; then
+              echo "No ${update_tag}/latest.json asset found; ignoring for versionCode floor."
+              continue
+            fi
+            gh release download "${update_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern latest.json \
+              --dir "${tag_dir}" >/dev/null
+
+            published_version_code="$(node -e '
+              const fs = require("fs");
+              const manifestPath = process.argv[1];
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+              if (!Number.isInteger(manifest.versionCode)) {
+                console.error(`FATAL: ${manifestPath} is missing an integer versionCode`);
+                process.exit(1);
+              }
+              process.stdout.write(String(manifest.versionCode));
+            ' "${tag_dir}/latest.json")"
+
+            if [ -n "${published_version_code}" ] && [ "${published_version_code}" -ge "${desired_version_code}" ]; then
+              desired_version_code="$((published_version_code + 1))"
+            fi
+          done
+
+          echo "SHELLY_ANDROID_VERSION_CODE=${desired_version_code}" >> "${GITHUB_ENV}"
+          echo "Using SHELLY_ANDROID_VERSION_CODE=${desired_version_code}"
+
+      - name: Validate Android config version code
+        run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          MIN_GIT_VERSION_CODE="$((GIT_VERSION_CODE + 1))"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) {
+                process.exit(1);
+              }
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${MIN_GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count + 1 (${MIN_GIT_VERSION_CODE})" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" -lt "${MIN_GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} is lower than git commit count + 1 (${MIN_GIT_VERSION_CODE})" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 1502 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 1502" >&2
+            exit 1
+          fi
+
+      - name: Prebuild Android
+        run: npx expo prebuild --platform android
+
+      - name: Validate prebuilt Android version code
+        run: |
+          GIT_VERSION_CODE="$(git rev-list --count HEAD)"
+          MIN_GIT_VERSION_CODE="$((GIT_VERSION_CODE + 1))"
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "FATAL: checkout is shallow; versionCode would not be monotonic" >&2
+            exit 1
+          fi
+          EXPECTED_VERSION_CODE="$(npx expo config --json | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const config = JSON.parse(input);
+              const versionCode = config.android && config.android.versionCode;
+              if (!Number.isInteger(versionCode) || versionCode < 1) {
+                process.exit(1);
+              }
+              process.stdout.write(String(versionCode));
+            });
+          ')"
+          ACTUAL_VERSION_CODE="$(awk '/versionCode / { print $2; exit }' android/app/build.gradle)"
+          if [ -n "${SHELLY_ANDROID_VERSION_CODE:-}" ]; then
+            if [ "${EXPECTED_VERSION_CODE}" != "${SHELLY_ANDROID_VERSION_CODE}" ]; then
+              echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} does not match SHELLY_ANDROID_VERSION_CODE ${SHELLY_ANDROID_VERSION_CODE}" >&2
+              exit 1
+            fi
+            if [ "${EXPECTED_VERSION_CODE}" -lt "${MIN_GIT_VERSION_CODE}" ]; then
+              echo "FATAL: SHELLY_ANDROID_VERSION_CODE ${EXPECTED_VERSION_CODE} is lower than git commit count + 1 (${MIN_GIT_VERSION_CODE})" >&2
+              exit 1
+            fi
+          elif [ "${EXPECTED_VERSION_CODE}" -lt "${MIN_GIT_VERSION_CODE}" ]; then
+            echo "FATAL: app.config.ts versionCode ${EXPECTED_VERSION_CODE} is lower than git commit count + 1 (${MIN_GIT_VERSION_CODE})" >&2
+            exit 1
+          fi
+          if [ "${EXPECTED_VERSION_CODE}" -le 1502 ]; then
+            echo "FATAL: android versionCode ${EXPECTED_VERSION_CODE} must be greater than the last shipped manual code 1502" >&2
+            exit 1
+          fi
+          if [ "${ACTUAL_VERSION_CODE}" != "${EXPECTED_VERSION_CODE}" ]; then
+            echo "FATAL: android/app/build.gradle versionCode ${ACTUAL_VERSION_CODE} does not match app.config.ts ${EXPECTED_VERSION_CODE}" >&2
+            exit 1
+          fi
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Explicit packages to avoid the action's default `tools platform-tools`
+          # request: the legacy `tools` package was removed from Google's SDK
+          # repository, and Gradle's Android plugin resolves platform/build-tools
+          # itself via sdk.dir, so `tools` was never actually needed here.
+          packages: platform-tools
+
+      - name: Free runner disk space before APK build
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/local/lib/android/sdk/emulator \
+            /usr/local/lib/android/sdk/system-images \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          sudo docker image prune -af || true
+
+          echo "Disk after cleanup:"
+          df -h /
+
+      - name: Build Shelly shell launcher
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-shell-launcher.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_shell.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
+      - name: Build Shelly xdg-open native helper (bug #102/#115)
+        # Native xdg-open replacement. Direct execve target so Android's
+        # binfmt_script dispatch (and Samsung Knox's app_data_file
+        # `file{read}` denial) is bypassed entirely. Same `-fPIE -pie`
+        # toolchain as shelly-shell-launcher above.
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-xdg-open.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_xdg_open.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
+      - name: Build Shelly `shelly` command native shim (BASHRC v255)
+        # $HOME/bin/shelly -> $SHELLY_LIB_DIR/shelly_cmd. Replaces the v139-v254
+        # `#!/system/bin/sh` script, which Knox refuses to exec from any caller
+        # that is not the interactive shelly() bash function ("bad
+        # interpreter: Permission denied"). Same toolchain as above.
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-cmd.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_cmd.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror             "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
+      - name: Build Shelly glibc userland loader (Claude Code glibc, S1)
+        # ulexec-style loader that starts the official, UNMODIFIED Claude Code
+        # linux-arm64 glibc binary via its glibc ld.so, in-process, after
+        # being launched as `linker64 $libDir/shelly_glibc_exec <ld.so> ...`.
+        # bionic cannot start the glibc ld.so directly (SIGSEGV: ld.so expects
+        # a kernel-style auxv) and a raw execve of an app_data_file is denied
+        # by targetSdk 36 W^X; this loader mmaps ld.so (mmap+PROT_EXEC on
+        # app_data_file IS allowed) and builds a kernel-equivalent stack.
+        # Same -fPIE -pie toolchain as the other native helpers above.
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-glibc-exec.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_glibc_exec.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \
+            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew :terminal-emulator:externalNativeBuildDebug assembleDebug --build-cache
+        env:
+          GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
+
+      - name: Validate bionic exec wrapper in APK
+        run: |
+          set -euo pipefail
+          apk="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "${apk}" || { echo "No debug APK found"; exit 1; }
+
+          # Marker scan: `strings` only scans a build-config dependent subset
+          # of sections and gave a false negative on run 26197566814. A raw
+          # byte scan of the whole .so is section-agnostic and deterministic.
+          check_marker() {
+            so="$1"; marker="$2"
+            if grep -qaF "${marker}" "${so}"; then
+              echo "OK: marker '${marker}' present in $(basename "${so}")"
+            else
+              echo "FATAL: marker '${marker}' missing from $(basename "${so}")"
+              readelf -SW "${so}" || true
+              exit 1
+            fi
+          }
+
+          unzip -p "${apk}" lib/arm64-v8a/libexec_wrapper.so > /tmp/libexec_wrapper.so
+          readelf -n /tmp/libexec_wrapper.so | sed -n '/Build ID/p'
+          readelf -d /tmp/libexec_wrapper.so | grep NEEDED || true
+          execve_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="execve"{print $3; exit}')"
+          test -n "${execve_size}" || { echo "FATAL: execve symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so execve size=${execve_size}"
+          readlink_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="readlink"{print $3; exit}')"
+          test -n "${readlink_size}" || { echo "FATAL: readlink symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so readlink size=${readlink_size}"
+          readlinkat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="readlinkat"{print $3; exit}')"
+          test -n "${readlinkat_size}" || { echo "FATAL: readlinkat symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so readlinkat size=${readlinkat_size}"
+          open_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="open"{print $3; exit}')"
+          test -n "${open_size}" || { echo "FATAL: open symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so open size=${open_size}"
+          openat_size="$(readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="openat"{print $3; exit}')"
+          test -n "${openat_size}" || { echo "FATAL: openat symbol missing from libexec_wrapper.so"; exit 1; }
+          echo "libexec_wrapper.so openat size=${openat_size}"
+          if readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="__open_2" || $8=="__openat_2"{found=1} END{exit found ? 0 : 1}'; then
+            echo "FATAL: private FORTIFY open symbols must not be exported from libexec_wrapper.so"
+            exit 1
+          fi
+          readelf -d /tmp/libexec_wrapper.so | grep -q 'BIND_NOW' || { echo "FATAL: libexec_wrapper.so must be linked with BIND_NOW"; exit 1; }
+          readelf -d /tmp/libexec_wrapper.so | grep -q 'FLAGS_1.*NOW' || { echo "FATAL: libexec_wrapper.so must have FLAGS_1 NOW"; exit 1; }
+          readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT"{print "libexec_wrapper.so jump_slot " $5}'
+          # Keep the LD_PRELOAD hot path free of libc PLT calls. The remaining
+          # allowlisted slots are NDK CRT entries plus the constructor's dlsym.
+          unexpected_jump_slots="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT" && $5 !~ /^(__cxa_finalize|__cxa_atexit|__register_atfork|dlsym)(@|$)/ {print}')"
+          if [ -n "${unexpected_jump_slots}" ]; then
+            echo "FATAL: libexec_wrapper.so has unexpected PLT relocations"
+            echo "${unexpected_jump_slots}"
+            exit 1
+          fi
+          forbidden_jump_slots="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_JUMP_SLOT" && $5 ~ /^(getpid|__errno|execve|open|openat|readlink|readlinkat|memcpy|__stack_chk_fail|__memcpy_chk|__strcpy_chk|abort)(@|$)/ {print}')"
+          if [ -n "${forbidden_jump_slots}" ]; then
+            echo "FATAL: libexec_wrapper.so has crash-prone libc PLT relocations"
+            echo "${forbidden_jump_slots}"
+            exit 1
+          fi
+          environ_reloc_count="$(readelf -Wr /tmp/libexec_wrapper.so | awk '$3=="R_AARCH64_GLOB_DAT" && $5 ~ /^environ(@|$)/ {count++} END{print count+0}')"
+          test "${environ_reloc_count}" = "0" || { echo "FATAL: libexec_wrapper.so must not depend on libc environ, got ${environ_reloc_count} relocation(s)"; exit 1; }
+          readelf -d /tmp/libexec_wrapper.so | grep -q INIT_ARRAY || { echo "FATAL: libexec_wrapper.so constructor INIT_ARRAY missing"; exit 1; }
+          grep -qaF 'SHELLY_CODEX_PROC_EXE_OPEN_SHIM' /tmp/libexec_wrapper.so || { echo "FATAL: Codex proc-exe open shim gate missing from libexec_wrapper.so"; exit 1; }
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v223:fd-pinned-linker-exec'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v220:execvp-environ+system-target-direct'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v221:system-helpers-keep-wrapper'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v223:no-blanket-wrapper-reinjection'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v224:termux-socket-root-redirect'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v225:codex-remote-host-name'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v226:codex-self-launch-keeps-env'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v227:codex-daemon-socket-root-redirect'
+          readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="gethostname"{found=1} END{exit found ? 0 : 1}' || { echo "FATAL: gethostname interposer missing from libexec_wrapper.so"; exit 1; }
+
+          unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
+          check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
+
+          unzip -p "${apk}" lib/arm64-v8a/libshelly_cmd.so > /tmp/libshelly_cmd.so
+          check_marker /tmp/libshelly_cmd.so 'shelly-cmd:v1:native-path-shim'
+
+      - name: Release-safety secret scan (APK)
+        # Fail before anything is uploaded/published if a recognizable secret,
+        # private key, keystore, or signing password ended up in the artifacts.
+        # Node built-ins only; needs no secrets; findings are redacted in logs.
+        run: |
+          set -euo pipefail
+          node scripts/release-safety-scan.js android/app/build/outputs/apk/debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: shelly-dev-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
