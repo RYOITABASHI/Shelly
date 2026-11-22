@@ -21,8 +21,8 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
-import com.facebook.react.bridge.ReactContext
-import com.facebook.react.common.LifecycleState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
@@ -107,9 +107,11 @@ class TerminalEmulatorModule : Module() {
         private var activeInstanceRef: WeakReference<TerminalEmulatorModule>? = null
 
         internal fun stageInstallActivity(): Activity? {
-            val context = activeInstanceRef?.get()?.appContext ?: return null
-            val reactContext = context.reactContext as? ReactContext ?: return null
-            return context.currentActivity.takeIf { reactContext.lifecycleState == LifecycleState.RESUMED }
+            val activity = activeInstanceRef?.get()?.appContext?.currentActivity ?: return null
+            // Only surface the OS confirmation while the activity is resumed.
+            // Fail closed (hold the intent) when the lifecycle is not visible.
+            val state = (activity as? LifecycleOwner)?.lifecycle?.currentState ?: return null
+            return activity.takeIf { state.isAtLeast(Lifecycle.State.RESUMED) }
         }
 
         /**
