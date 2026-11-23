@@ -316,12 +316,11 @@ describe('native + .sh wiring (source pins)', () => {
   it('v60: the research history retry reuses the step path (same --tainted handling) and never starts a web search on a tainted run', () => {
     const js = read('scripts/shelly-plan-executor.js');
     const at = js.indexOf('async function guardResearchHistory(');
-    const body = js.slice(at, js.indexOf('    return retry;', at));
+    const body = js.slice(at, js.indexOf('\n  }', at));
     expect(at).toBeGreaterThan(-1);
-    expect(body).toContain('const tainted = !!opts.tainted || ingressTainted();');
-    expect(body).toContain("if (tainted && isResearchWebSearchCliStep(plan, i)) skipReason = 'tainted';");
+    expect(body).toContain("if ((opts.tainted || ingressTainted()) && isResearchWebSearchCliStep(plan, i)) return 'tainted';");
     // The retry is the ordinary step run: dispatchCliStep adds --tainted for an MCP-marked run.
-    expect(body).toContain('retry = await executeStepWithProgress(i, contextResults, carriedIndexes);');
+    expect(body).toContain('retry = await executeStepWithProgress(i, contextResults, carriedIndexes, true);');
     expect(body).not.toContain('dispatchCliStep(');
   });
 

@@ -450,6 +450,14 @@ it.each([
   write(planDir, planName, JSON.stringify(plan));
   write(agentsDir, '.env', `LOCAL_LLM_URL='http://127.0.0.1:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${path.join(home, 'vault')}'\n`);
   write(agentsDir, 'article-pipelines.json', JSON.stringify({ version: 1, pipelines: [entry] }));
+  write(path.join(agentsDir, 'logs'), `article-history-${entry.id}.json`, JSON.stringify({
+    version: 1,
+    entries: [
+      { title: 'Imaginary first history study', url: 'https://example.org/first', date: '1999-12-29' },
+      { title: 'Imaginary older study', url: 'https://example.org/duplicate', date: '1999-12-30' },
+      { title: 'Imaginary `latest` history study', url: 'https://example.org/latest', date: '1999-12-31' },
+    ],
+  }));
   draft(drafts, '2000-01-01-example.md', 'Imaginary older study');
   draft(drafts, '2000-01-01-unreadable.md', 'Imaginary unreadable study');
   fs.mkdirSync(path.join(home, '.shelly', 'tmp'), { recursive: true });
@@ -504,14 +512,22 @@ it.each([
   } else {
     expect(prompts[0]).toContain(writeInstruction);
   }
-  for (const marker of [HEADING, '- Imaginary older study', '- Imaginary archived study']) {
-    expect(prompts.flatMap((prompt, i) => prompt.includes(marker) ? [i] : [])).toEqual(usesHistory ? [0] : []);
+  const markers = ['- Imaginary archived study', '- Imaginary older study', '- Imaginary latest history study', '- Imaginary first history study'];
+  if (usesHistory) expect(prompts[0]).toContain(markers.join('\n'));
+  expect(prompts.flatMap((prompt, i) => prompt.includes(HEADING) ? [i] : [])).toEqual(usesHistory ? [0] : []);
+  for (const marker of markers) {
+    // The article-history block can also name these studies with a source suffix.
+    const matching = prompts.flatMap((prompt, i) => {
+      const containsTitle = usesHistory ? prompt.split('\n').includes(marker) : prompt.includes(marker);
+      return containsTitle ? [i] : [];
+    });
+    expect(matching).toEqual(usesHistory ? [0] : []);
   }
   expect(prompts.every((prompt) => !prompt.includes('- Imaginary unreadable study'))).toBe(true);
   const audit = fs.readFileSync(path.join(agentsDir, 'logs', agentId, 'plan-executor-audit.jsonl'), 'utf8')
     .trim().split('\n').map((line) => JSON.parse(line));
   expect(audit.filter((event) => event.event === 'previously_covered_used')).toEqual(usesHistory ? [
-    expect.objectContaining({ entries: 2, stepIndex: 0 }),
+    expect.objectContaining({ entries: 4, stepIndex: 0 }),
   ] : []);
   expect(audit.filter((event) => event.event === 'previously_covered_unavailable')).toEqual([]);
   expect(audit.filter((event) => event.event === 'previously_covered_partial')).toEqual(usesHistory ? [
