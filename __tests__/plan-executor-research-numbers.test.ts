@@ -23,7 +23,7 @@ const memo = (study: string, sufficient: boolean) => [
   '比較研究:', '事実: 100 participants', '事実: 3 sites',
 ].join('\n');
 
-type PlanOptions = { isolated?: boolean; materialRoot?: string; secondResearch?: boolean };
+type PlanOptions = { isolated?: boolean; materialRoot?: string; secondResearch?: boolean; preload?: string };
 
 function writePlan(home: string, history: string[], port = 9, { isolated, materialRoot, secondResearch }: PlanOptions = {}) {
   const agents = path.join(home, '.shelly/agents');
@@ -116,7 +116,13 @@ function run(
         body: { choices: [{ message: { content }, finish_reason: 'stop' }] },
       }) : content),
     }));
-    const result = spawnSync(process.execPath, executorArgs(planFile, home), {
+    const args = executorArgs(planFile, home);
+    if (options.preload !== undefined) {
+      const preloadFile = path.join(home, 'preload.js');
+      fs.writeFileSync(preloadFile, options.preload);
+      args.unshift('--require', preloadFile);
+    }
+    const result = spawnSync(process.execPath, args, {
       env: { ...process.env, HOME: home, SHELLY_TEST_FAKE_HTTP: http, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...env },
       encoding: 'utf8', timeout: 30_000,
     });
@@ -992,9 +998,26 @@ const namedHistoryHeader = 'Main study already used by this series — excluded 
 const numbersHeader = 'Main studies with insufficient numerical evidence';
 
 it('keeps the still-matches repeat reason when time blocks the named retry after slot 2', () => {
-  const result = run([memo('A', true), { exit: 23 }, memo('A', true)], false, ['A'], undefined, {
-    SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '2000',
-    SHELLY_TEST_RESEARCH_HISTORY_RETRY_RESERVE_MS: '1737500',
+  const result = run([memo('A', true), { exit: 23 }, memo('A', true)], false, ['A'], undefined, {}, {
+    preload: `
+      // Ignore reserve and ceiling overrides inherited from the parent environment.
+      delete process.env.SHELLY_TEST_RESEARCH_HISTORY_RETRY_RESERVE_MS;
+      delete process.env.SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS;
+      const fs = require('fs');
+      const append = fs.appendFileSync;
+      fs.appendFileSync = (file, data, ...args) => {
+        append(file, data, ...args);
+        if (!String(file).endsWith('plan-executor-audit.jsonl')) return;
+        try {
+          const { event, attempt } = JSON.parse(data);
+          if (event === 'research_history_retry' && attempt === 2) {
+            process.env.SHELLY_TEST_RESEARCH_HISTORY_RETRY_RESERVE_MS = '1000000000000000';
+          }
+        } catch (_) {
+          // Ignore malformed audit data after the append.
+        }
+      };
+    `,
   });
   expect(result.audit.filter(({ event }) => /^research_(?:history_|topic_exhausted$)/.test(event))).toEqual([
     expect.objectContaining({ event: 'research_history_match', attempt: 1 }),
