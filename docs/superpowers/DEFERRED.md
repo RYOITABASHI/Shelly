@@ -17,6 +17,7 @@
 ## History
 
 - 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
+- 2026-11-23: Codex（`feat/pipeline-config-op`）が `update_pipeline_config` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
 - 2026-11-23: Codex（`feat/delivery-script-op`）が `update_delivery_script` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
 - 2026-11-22: Codex が `stage_install_result` の round 8 監査で残った 7 件を P2/P3 に登録。
 - 2026-11-22: Codex（`feat/stage-install`）が MCP typed op `stage_install` を実装（劣化モードの APK インストール用）。承認のダイジェスト束縛・取り消しの commit 直前再確認・stream ハッシュ照合まで含む。v1 の割り切り 2 件（毎回承認タップ／成功結果にメタデータなし）を下記 P2 に登録。実機未検証。
@@ -5331,6 +5332,11 @@ Installed tools are available immediately — just type the command (existing ta
 ### MCP `update_delivery_script` の「常に許可」（2026-11-23、P2）
 
 `lib/mcp-always-allow.ts` の typed op ルールに `update_delivery_script` を統合する。
+Why not now: v1 は `stage_install` と同様、更新のたびに端末での承認を求める。
+
+### MCP `update_pipeline_config` の「常に許可」（2026-11-23、P2）
+
+`lib/mcp-always-allow.ts` の typed op ルールに `update_pipeline_config` を統合する。
 Why not now: v1 は `stage_install` と同様、更新のたびに端末での承認を求める。
 
 ### SecureStore の一時エラーと MCP の復旧 — 設計上の制約（2026-11-22、P2）

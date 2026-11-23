@@ -68,7 +68,7 @@ import { t } from '@/lib/i18n';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { getDebugLogEntries } from '@/lib/debug-log-buffer';
 import { redactSecretsText } from '@/lib/redact-secrets';
-import { recordMcpHandoffConsumed, verifyMcpHandoffToken, verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
+import { canonicalJson, recordMcpHandoffConsumed, verifyMcpHandoffToken, verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
 import {
   addMcpAlwaysAllowRule,
   findAlwaysAllowMatch,
@@ -98,6 +98,11 @@ import {
   type TypedOpErrorCode,
   type TypedOpRefusal,
 } from '@/lib/mcp-typed-ops';
+import { ARTICLE_PIPELINE_FILE_MAX_BYTES, articleOutputRoots } from '@/lib/agent-article-pipeline-file';
+import {
+  articleOutputFolderError, buildArticleDigestPipeline, buildArticlePipeline, parseArticlePipelineFile,
+  type ArticlePipelineFile, type PipelinePreset,
+} from '@/lib/agent-pipeline-presets';
 import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
@@ -578,7 +583,12 @@ async function userPolicy(): Promise<LoadedUserPolicy | null> {
 }
 
 /** `code` (typed ops only) is shown by the server as `Error: [<code>] <message>`. */
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode };
+type PipelineConfigErrorCode = 'invalid_path' | 'invalid_digest' | 'invalid_size' | 'invalid_rebuild'
+  | 'invalid_config' | 'invalid_current' | 'current_changed' | 'staged_missing' | 'size_mismatch' | 'digest_mismatch'
+  | 'node_unavailable' | 'verify_failed' | 'syntax_error' | 'backup_failed'
+  | 'denied' | 'native_error' | 'disabled' | 'revoked' | 'timeout';
+
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -644,6 +654,8 @@ function requestApprovalDetailed(
 // Startup, shutdown and token revocation invalidate work from older queue epochs.
 let queueEpoch = 0;
 const REVOKED_ERROR = 'cancelled: pending MCP requests were revoked';
+
+class McpRevokedError extends Error {}
 
 function invalidateStageInstalls(clearLatest: boolean): boolean {
   try {
@@ -776,6 +788,7 @@ async function callTool(
   callId: string,
   /** Signed request deadline where the tool has one. */
   deadlineMs: number = Number.POSITIVE_INFINITY,
+  requestFileMtimeMs: number | null = null,
 ): Promise<ToolResult> {
   switch (tool) {
     case 'list_agents': {
@@ -955,6 +968,9 @@ async function callTool(
       return stageInstallTool(args, epoch, ingress, callId, deadlineMs);
     case 'update_delivery_script':
       return updateDeliveryScriptTool(args, epoch, ingress, callId, deadlineMs);
+    case 'update_pipeline_config':
+      return updatePipelineConfigTool(args, epoch, ingress, callId, deadlineMs,
+        (requestFileMtimeMs ?? (deadlineMs - INSTALL_CLASS_PRE_APPROVAL_MS)) + PIPELINE_CONFIG_RESULT_TIMEOUT_MS);
     case 'stage_install_result':
       return stageInstallResultTool(epoch, ingress);
     case 'run_agent':
@@ -1267,6 +1283,460 @@ printf '{"status":"%s","sha256":"%s","bytes":%s,"backup":%s,"previousSha256":%s}
     return { ok: true, data: { status, sha256, bytes, backupCreated, previousSha256 } };
   } catch {
     return epoch !== queueEpoch ? revoked() : refuse('native_error', nativeError);
+  }
+}
+
+const PIPELINE_CONFIG_NAME = 'article-pipelines.json';
+const PIPELINE_CONFIG_AUDIT = 'mcp_update_pipeline_config';
+const INSTALL_CLASS_PRE_APPROVAL_MS = 15_000;
+// Matches STAGE_INSTALL_RESULT_TIMEOUT_MS in shelly-mcp-server.js.
+const PIPELINE_CONFIG_RESULT_TIMEOUT_MS = 260_000;
+
+type PipelineConfigFailureCode = 'timeout' | 'revoked' | 'agent_not_found' | 'other';
+
+type PipelineConfigAuditSwap = {
+  changedPipelineIds: string[];
+  swapStatus: 'created' | 'updated';
+  sha256: string;
+  bytes: number;
+  backupCreated: boolean;
+  previousSha256?: string;
+};
+
+type PipelineConfigAuditCounts = PipelineConfigAuditSwap & {
+  rebuiltCount: number;
+  rebuildFailedCount: number;
+  rebuiltAgentIds: string[];
+  failedAgentIds: string[];
+  failedReasonCodes: PipelineConfigFailureCode[];
+};
+
+function pipelineConfigsById(file?: ArticlePipelineFile): Map<string, unknown> {
+  const configs = new Map<string, unknown>(file?.pipelines.map((pipeline) => [pipeline.id, pipeline]));
+  if (file?.digest) configs.set('digest', file.digest);
+  return configs;
+}
+
+// Bind the bytes sent to the parser to the measured digest, even if the
+// Downloads file changes during this read. ASCII output survives the JNI
+// string conversion, including configs containing supplementary characters.
+const PIPELINE_CONFIG_READ = String.raw`
+const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const [file, cap, expectedBytes, expectedHash] = process.argv.slice(1);
+const staged = expectedHash !== undefined;
+let result;
+try {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error('not a regular file');
+    const buffer = Buffer.alloc(Number(cap) + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      const read = fs.readSync(fd, buffer, size, buffer.length - size, null);
+      if (read === 0) break;
+      size += read;
+    }
+    const bytes = buffer.subarray(0, size);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (staged && size !== Number(expectedBytes)) result = { error: 'size_mismatch' };
+    else if (staged && sha256 !== expectedHash) result = { error: 'digest_mismatch' };
+    else if (size > Number(cap)) result = { error: 'invalid_current' };
+    else {
+      try {
+        result = { sha256, text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) };
+      } catch {
+        result = staged ? { error: 'invalid_config' } : { error: 'invalid_current', sha256 };
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+} catch (error) {
+  result = staged ? { error: 'staged_missing' }
+    : error.code === 'ENOENT' ? { sha256: null, text: null } : { error: 'invalid_current' };
+}
+console.log(JSON.stringify(result).replace(/[^\x00-\x7f]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')));
+`;
+
+type PipelineConfigRead = { error: string; sha256?: string } | { sha256: string; text: string } | { sha256: null; text: null };
+
+function pipelineShellOutcome(stdout: string): unknown {
+  // Native shells can print startup text before the response.
+  return JSON.parse(stdout.trimEnd().split('\n').at(-1) ?? '');
+}
+
+async function readPipelineConfig(
+  path: string, parentCheck: string, staged?: { bytes: number; sha256: string },
+): Promise<PipelineConfigRead> {
+  const result = await execCommand(`
+if ${parentCheck}; then printf '{"error":"verify_failed"}\\n'; exit 0; fi
+command -v node >/dev/null 2>&1 || { printf '{"error":"node_unavailable"}\\n'; exit 0; }
+NODE_OPTIONS= node -e ${shellQuote(PIPELINE_CONFIG_READ)} -- ${shellQuote(path)} ${ARTICLE_PIPELINE_FILE_MAX_BYTES}${staged ? ` ${staged.bytes} ${staged.sha256}` : ''}
+`, 15_000);
+  if (result.exitCode !== 0) return { error: 'verify_failed' };
+  return pipelineShellOutcome(result.stdout) as PipelineConfigRead;
+}
+
+// Reconciliation may encounter a replacement larger than the config reader's cap.
+async function measurePipelineConfigSha256(path: string, targetCheck: string): Promise<string | undefined> {
+  const result = await execCommand(`
+target=${shellQuote(path)}
+if ${targetCheck}; then exit 1; fi
+[ -f "$target" ] || exit 1
+digest=$(sha256sum "$target" 2>/dev/null || toybox sha256sum "$target" 2>/dev/null) || exit 1
+printf '%s\\n' "\${digest%% *}"
+`, 15_000);
+  const digest = result.stdout.trimEnd().split('\n').at(-1) ?? '';
+  if (result.exitCode === 0 && /^[0-9a-f]{64}$/.test(digest)) return digest;
+}
+
+const PIPELINE_CONFIG_ERRORS: Record<string, string> = {
+  staged_missing: 'staged config is missing or is not a regular, non-symlink file',
+  size_mismatch: 'staged config size does not match expectedBytes',
+  digest_mismatch: 'staged config digest does not match expectedSha256',
+  invalid_config: 'staged config is invalid',
+  invalid_current: 'current config could not be read or parsed',
+  current_changed: 'current config changed while waiting for approval',
+  node_unavailable: 'Node.js is unavailable',
+  verify_failed: 'could not verify the config paths or temporary copy',
+  syntax_error: 'temporary config failed the JSON syntax check',
+  backup_failed: 'could not back up the previous config',
+  timeout: 'timed out: the result window expired before the update could be applied',
+};
+
+// These script outcomes affirm that the target rename did not happen.
+const PIPELINE_CONFIG_SWAP_ERRORS = new Set([
+  'timeout', 'verify_failed', 'staged_missing', 'size_mismatch', 'digest_mismatch',
+  'node_unavailable', 'syntax_error', 'current_changed', 'backup_failed', 'native_error',
+]);
+
+function swapPipelineConfig(
+  stagedPath: string, expectedSha256: string, expectedBytes: number, target: string, previousSha256: string | null,
+  resultDeadlineMs: number,
+) {
+  return execCommand(String.raw`
+f=${shellQuote(stagedPath)}
+expected=${expectedSha256}
+bytes=${expectedBytes}
+target=${shellQuote(target)}
+agents=${shellQuote(`${homeDir()}/.shelly/agents`)}
+shelly=${shellQuote(`${homeDir()}/.shelly`)}
+tmp="$target.new"
+backup="$target.bak"
+deadline_ms=${shellQuote(String(resultDeadlineMs))}
+previous=${previousSha256 ?? 'null'}
+error() {
+  printf '{"error":"%s"}\n' "$1"
+  exit 1
+}
+fail() {
+  rm -f "$tmp" 2>/dev/null
+  error "$1"
+}
+sha256() {
+  { sha256sum "$1" 2>/dev/null || toybox sha256sum "$1" 2>/dev/null; } | cut -c1-64
+}
+if [ "$(date +%s)" -ge "$(( deadline_ms / 1000 ))" ]; then error timeout; fi
+if [ -L /sdcard/Download ] || [ -L "$shelly" ] || [ -L "$agents" ] ||
+   [ -L "$target" ] || [ -L "$tmp" ] || [ -L "$backup" ]; then error verify_failed; fi
+[ -f "$f" ] && [ ! -L "$f" ] || error staged_missing
+[ "$(stat -c %s "$f" 2>/dev/null)" = "$bytes" ] || error size_mismatch
+[ "$(sha256 "$f")" = "$expected" ] || error digest_mismatch
+command -v node >/dev/null 2>&1 || error node_unavailable
+mkdir -p "$agents" 2>/dev/null || error verify_failed
+rm -f "$tmp" 2>/dev/null && cp "$f" "$tmp" 2>/dev/null || fail verify_failed
+measured_bytes=$(stat -c %s "$tmp" 2>/dev/null)
+[ "$measured_bytes" = "$bytes" ] || fail size_mismatch
+measured_sha=$(sha256 "$tmp")
+[ "$measured_sha" = "$expected" ] || fail verify_failed
+NODE_OPTIONS= node -e 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))' < "$tmp" 2>/dev/null || fail syntax_error
+status=created
+backed_up=false
+if [ -e "$target" ] || [ -L "$target" ]; then
+  [ -f "$target" ] && [ ! -L "$target" ] && [ "$(sha256 "$target")" = "$previous" ] || fail current_changed
+  rm -f "$backup" 2>/dev/null && cp "$target" "$backup" 2>/dev/null || fail backup_failed
+  status=updated
+  backed_up=true
+elif [ "$previous" != null ]; then
+  fail current_changed
+fi
+mv -f "$tmp" "$target" 2>/dev/null || fail native_error
+printf '{"status":"%s","sha256":"%s","bytes":%s,"backupCreated":%s}\n' \
+  "$status" "$measured_sha" "$measured_bytes" "$backed_up"
+`, 60_000);
+}
+
+// Requests can validate and wait for approval concurrently. Keep each swap
+// and its rebuilds together so an older snapshot cannot finish after a newer one.
+let pipelineConfigWriteQueue: Promise<void> = Promise.resolve();
+
+async function updatePipelineConfigTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, callId: string, deadlineMs: number,
+  resultDeadlineMs: number,
+): Promise<ToolResult> {
+  let committedSwap: PipelineConfigAuditSwap | undefined;
+  const rebuilt: string[] = [];
+  const rebuildFailed: { agentId: string; reason: string }[] = [];
+  const failedReasonCodes: PipelineConfigFailureCode[] = [];
+  const recordFailure = (agentId: string, reason: string, code: PipelineConfigFailureCode): void => {
+    rebuildFailed.push({ agentId, reason });
+    failedReasonCodes.push(code);
+  };
+  const audit = async (code: string, counts?: PipelineConfigAuditCounts, observedSha256?: string): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({
+        kind: PIPELINE_CONFIG_AUDIT, event: PIPELINE_CONFIG_AUDIT, principal: ingress.principal, code, ...counts, observedSha256,
+      }));
+      if (ok) return;
+    } catch {
+      // Audit errors use fixed fields only.
+    }
+    logError('MCPBridge', `update_pipeline_config audit line not written (${code})`);
+  };
+  const committedCounts = (): PipelineConfigAuditCounts | undefined => committedSwap && ({
+    ...committedSwap,
+    rebuiltCount: rebuilt.length,
+    rebuildFailedCount: rebuildFailed.length,
+    rebuiltAgentIds: rebuilt.slice(),
+    failedAgentIds: rebuildFailed.map(({ agentId }) => agentId),
+    failedReasonCodes: failedReasonCodes.slice(),
+  });
+  const revokedResult: ToolResult = { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+  const revoked = async (): Promise<ToolResult> => {
+    await audit('revoked', committedCounts());
+    return revokedResult;
+  };
+  const refuseConfig = async (code: PipelineConfigErrorCode, error: string): Promise<ToolResult> => {
+    await audit(code);
+    return epoch !== queueEpoch ? revokedResult : { ok: false, error, code };
+  };
+  const timeout = async (counts?: PipelineConfigAuditCounts): Promise<ToolResult> => {
+    if (epoch !== queueEpoch) return revoked();
+    await audit('timeout', counts);
+    const error = counts
+      ? 'timed out: the config swap committed. See the audit record for rebuild outcomes'
+      : PIPELINE_CONFIG_ERRORS.timeout;
+    return epoch !== queueEpoch ? revokedResult : { ok: false, error, code: 'timeout' };
+  };
+  const nativeError = 'could not update the article pipeline config';
+  const shellRefusal = (code: string) => {
+    if (!Object.prototype.hasOwnProperty.call(PIPELINE_CONFIG_ERRORS, code)) return refuseConfig('native_error', nativeError);
+    return refuseConfig(code as PipelineConfigErrorCode, PIPELINE_CONFIG_ERRORS[code]);
+  };
+
+  if (epoch !== queueEpoch) return revoked();
+  if (!execEnabled()) return refuseConfig('disabled', EXEC_DISABLED_ERROR);
+  const { stagedPath, expectedSha256, expectedBytes, rebuild } = args;
+  if (typeof stagedPath !== 'string' || !/^\/sdcard\/Download\/[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(stagedPath)
+    || stagedPath.includes('..') || /[\x00-\x1f\x7f]/.test(stagedPath)) {
+    return refuseConfig('invalid_path', 'stagedPath must name a .json file directly under /sdcard/Download');
+  }
+  if (typeof expectedSha256 !== 'string' || expectedSha256.length !== 64 || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    return refuseConfig('invalid_digest', 'expectedSha256 must be 64 lowercase hex digits');
+  }
+  if (typeof expectedBytes !== 'number' || !Number.isInteger(expectedBytes) || expectedBytes < 1
+    || expectedBytes > ARTICLE_PIPELINE_FILE_MAX_BYTES) {
+    return refuseConfig('invalid_size', `expectedBytes must be an integer from 1 to ${ARTICLE_PIPELINE_FILE_MAX_BYTES}`);
+  }
+  if (!Array.isArray(rebuild)) return refuseConfig('invalid_rebuild', 'rebuild must be an array of agentId and pipelineId pairs');
+  // Native audit caps each outcome ID array at 33. Rebuilt and failed agents
+  // are disjoint subsets of the pairs, so this keeps every terminal audit valid.
+  if (rebuild.length > 33) return refuseConfig('invalid_rebuild', 'rebuild must contain at most 33 pairs');
+
+  try {
+    if (Date.now() >= deadlineMs) return timeout();
+    const staged = await readPipelineConfig(stagedPath, '[ -L /sdcard/Download ]', { bytes: expectedBytes, sha256: expectedSha256 });
+    if (epoch !== queueEpoch) return revoked();
+    if (Date.now() >= deadlineMs) return timeout();
+    if ('error' in staged) return shellRefusal(staged.error);
+    if (staged.sha256 !== expectedSha256) return refuseConfig('native_error', nativeError);
+
+    const parsed = parseArticlePipelineFile(staged.text);
+    if ('error' in parsed) return refuseConfig('invalid_config', PIPELINE_CONFIG_ERRORS.invalid_config);
+    const nextConfigs = pipelineConfigsById(parsed.file);
+    const roots = articleOutputRoots(useSettingsStore.getState().settings, homeDir());
+    const rebuilds: { agentId: string; preset: PipelinePreset }[] = [];
+    for (const pair of rebuild) {
+      if (typeof pair?.agentId !== 'string' || !AUDIT_AGENT_ID_RE.test(pair.agentId) || /\s/.test(pair.agentId)
+        || typeof pair.pipelineId !== 'string' || !nextConfigs.has(pair.pipelineId)) {
+        return refuseConfig('invalid_rebuild', 'each rebuild must pair a valid agent id with a pipeline or digest in the new config');
+      }
+      const pipeline = parsed.file.pipelines.find((p) => p.id === pair.pipelineId);
+      const config = pipeline ?? parsed.file.digest!;
+      if (articleOutputFolderError(config.outputFolder, roots, pipeline ? pipeline.queue === true : true)) {
+        return refuseConfig('invalid_rebuild', 'the requested pipeline output folder is outside the configured roots');
+      }
+      const preset = pipeline ? buildArticlePipeline(pipeline) : buildArticleDigestPipeline(parsed.file.digest!);
+      rebuilds.push({ agentId: pair.agentId, preset });
+    }
+
+    const shellyDir = `${homeDir()}/.shelly`;
+    const agentsDir = `${shellyDir}/agents`;
+    const target = `${agentsDir}/${PIPELINE_CONFIG_NAME}`;
+    const targetCheck = [shellyDir, agentsDir, target, target + '.new', target + '.bak']
+      .map((path) => `[ -L ${shellQuote(path)} ]`).join(' || ');
+    const old = await readPipelineConfig(target, targetCheck);
+    if (epoch !== queueEpoch) return revoked();
+    if (Date.now() >= deadlineMs) return timeout();
+    if ('error' in old) return shellRefusal(old.error);
+    const previousSha256 = old.sha256;
+    let previousFile: ArticlePipelineFile | undefined;
+    if (old.text !== null) {
+      const previous = parseArticlePipelineFile(old.text);
+      if ('error' in previous) return refuseConfig('invalid_current', PIPELINE_CONFIG_ERRORS.invalid_current);
+      previousFile = previous.file;
+    }
+    const oldConfigs = pipelineConfigsById(previousFile);
+    const changedPipelineIds = [...new Set([...nextConfigs.keys(), ...oldConfigs.keys()])]
+      .filter((id) => canonicalJson(nextConfigs.get(id)) !== canonicalJson(oldConfigs.get(id)));
+
+    await audit('approval_requested');
+    if (epoch !== queueEpoch) return revoked();
+    if (Date.now() >= deadlineMs) return timeout();
+    if (!execEnabled()) return refuseConfig('disabled', EXEC_DISABLED_ERROR);
+    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
+    const decision = await approveRawTool({
+      kind: 'update_pipeline_config',
+      summary: t('mcp.approval_update_pipeline_config'),
+      detail: t('mcp.approval_update_pipeline_config_detail', {
+        basename: stagedPath.split('/').at(-1)!,
+        bytes: expectedBytes,
+        pipelines: changedPipelineIds.join(', ') || '—',
+        agents: rebuilds.map(({ agentId }) => agentId).join(', ') || '—',
+      }),
+      origin: ingress,
+    }, callId);
+    if (epoch !== queueEpoch) return revoked();
+    if (decision === 'deny' || Date.now() >= approvalExpiresAt) {
+      return refuseConfig('denied', 'denied by user (or timed out waiting for a response)');
+    }
+
+    const precedingWrite = pipelineConfigWriteQueue;
+    let releaseWrite!: () => void;
+    pipelineConfigWriteQueue = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    try {
+      await precedingWrite;
+      if (epoch !== queueEpoch) return revoked();
+      if (!execEnabled()) return refuseConfig('disabled', EXEC_DISABLED_ERROR);
+      if (Date.now() >= resultDeadlineMs) return timeout();
+      const status = previousSha256 === null ? 'created' : 'updated';
+      const backupCreated = previousSha256 !== null;
+      let outcome: Record<string, unknown> | null = null;
+      let exitCode: number | null = null;
+      try {
+        const result = await swapPipelineConfig(
+          stagedPath, expectedSha256, expectedBytes, target, previousSha256, resultDeadlineMs,
+        );
+        exitCode = result.exitCode;
+        outcome = pipelineShellOutcome(result.stdout) as Record<string, unknown> | null;
+      } catch {
+        // The rename can land before native execution delivers its record.
+      }
+      if (typeof outcome?.error === 'string' && PIPELINE_CONFIG_SWAP_ERRORS.has(outcome.error)) {
+        return epoch !== queueEpoch ? revoked() : shellRefusal(outcome.error);
+      }
+      if (outcome?.error !== undefined || exitCode !== 0 || outcome?.sha256 !== expectedSha256 || outcome?.bytes !== expectedBytes
+        || outcome?.status !== status || outcome?.backupCreated !== backupCreated) {
+        let observedSha256: string | null | undefined;
+        try {
+          const current = await readPipelineConfig(target, targetCheck);
+          observedSha256 = current.sha256;
+        } catch {
+          // Try an independent measurement if the config reader fails.
+        }
+        if (observedSha256 === undefined) {
+          try {
+            observedSha256 = await measurePipelineConfigSha256(target, targetCheck);
+          } catch {
+            // Native execution could not measure the target.
+          }
+        }
+        if (observedSha256 !== expectedSha256) {
+          if (observedSha256 === previousSha256) {
+            return epoch !== queueEpoch ? revoked() : refuseConfig('native_error', nativeError);
+          }
+          await audit('native_error', undefined, observedSha256 ?? undefined);
+          return epoch !== queueEpoch ? revokedResult : { ok: false, error: nativeError, code: 'native_error' };
+        }
+      }
+      committedSwap = {
+        changedPipelineIds, swapStatus: status, sha256: expectedSha256, bytes: expectedBytes, backupCreated,
+        ...(previousSha256 === null ? {} : { previousSha256 }),
+      };
+      const failUnattempted = (fromIndex: number, reason: 'revoked' | 'timeout'): void => {
+        for (const { agentId } of rebuilds.slice(fromIndex)) {
+          recordFailure(agentId, reason, reason);
+        }
+      };
+      if (epoch !== queueEpoch) {
+        failUnattempted(0, 'revoked');
+        return revoked();
+      }
+
+      for (const [index, { agentId, preset }] of rebuilds.entries()) {
+        let writeLanded = false;
+        try {
+          const { updateAgent } = await import('@/lib/agent-manager');
+          if (epoch !== queueEpoch) {
+            failUnattempted(index, 'revoked');
+            return revoked();
+          }
+          if (Date.now() >= resultDeadlineMs) {
+            failUnattempted(index, 'timeout');
+            return timeout(committedCounts());
+          }
+          // The edit path under persistAgentDraft calls this same writer,
+          // which materializes metadata, the run script and the PlanSpec.
+          const agent = await updateAgent(agentId, {
+            name: preset.name,
+            description: preset.prompt.slice(0, 120),
+            prompt: preset.prompt,
+            orchestration: preset.orchestration,
+            action: preset.action,
+            actions: undefined,
+            tool: preset.tool,
+            ...preset.output,
+            memory: undefined,
+          }, async (command) => {
+            if (epoch !== queueEpoch) throw new McpRevokedError(REVOKED_ERROR);
+            const executed = await execCommand(command, 120_000);
+            if (executed.exitCode !== 0) throw new Error(executed.stderr || `agent persistence exited with code ${executed.exitCode}`);
+            if (command.includes(`run-agent-${agentId}.sh`) && command.includes(`plan-agent-${agentId}.json`)) {
+              writeLanded = true;
+            }
+            return executed.stdout;
+          });
+          if (agent) rebuilt.push(agentId);
+          else recordFailure(agentId, 'agent not found', 'agent_not_found');
+        } catch (error) {
+          if (writeLanded) {
+            rebuilt.push(agentId);
+          } else if (error instanceof McpRevokedError) {
+            recordFailure(agentId, 'revoked', 'revoked');
+          } else {
+            const message = error instanceof Error ? error.message : String(error);
+            const reason = redactForMcp(message).trim().slice(0, 300) || 'agent persistence failed';
+            recordFailure(agentId, reason, 'other');
+          }
+        }
+        if (epoch !== queueEpoch) {
+          failUnattempted(index + 1, 'revoked');
+          return revoked();
+        }
+      }
+
+      await audit(status, committedCounts());
+      if (epoch !== queueEpoch) return revokedResult;
+      return { ok: true, data: {
+        status, sha256: expectedSha256, bytes: expectedBytes, backupCreated, previousSha256,
+        changedPipelineIds, rebuilt, rebuildFailed,
+      } };
+    } finally {
+      releaseWrite();
+    }
+  } catch {
+    return epoch !== queueEpoch ? revoked() : refuseConfig('native_error', nativeError);
   }
 }
 
@@ -1841,9 +2311,9 @@ async function processRequestFile(name: string): Promise<void> {
     }
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
-    if (request.tool === 'stage_install' || request.tool === 'update_delivery_script') {
+    if (request.tool === 'stage_install' || request.tool === 'update_delivery_script' || request.tool === 'update_pipeline_config') {
       // Leave the rest of the server's 260s queue wait for approval and execution.
-      deadlineMs = request.receivedAtMs + 15_000;
+      deadlineMs = request.receivedAtMs + INSTALL_CLASS_PRE_APPROVAL_MS;
     } else if (RAW_REQUEST_TOOLS.has(request.tool)) {
       // A raw tool reaches requests/ only by the native raw consumer's handoff
       // (it routes ONCE per callId: run natively, or hand here). Its token is
@@ -1869,9 +2339,21 @@ async function processRequestFile(name: string): Promise<void> {
         return;
       }
     }
+    let requestFileMtimeMs: number | null = null;
+    if (request.tool === 'update_pipeline_config') {
+      try {
+        const info = await FileSystem.getInfoAsync(requestUri);
+        if (info.exists && typeof info.modificationTime === 'number'
+          && Number.isFinite(info.modificationTime) && info.modificationTime > 0) {
+          requestFileMtimeMs = Math.round(info.modificationTime * 1000);
+        }
+      } catch {
+        // Fall back to the signed receipt when file metadata is unavailable.
+      }
+    }
     if (epoch !== queueEpoch) return;
     const token = snapshotToken;
-    const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId, deadlineMs);
+    const result = await callTool(request.tool, request.args, epoch, request.ingress, request.callId, deadlineMs, requestFileMtimeMs);
     if (epoch !== queueEpoch) {
       logInfo('MCPBridge', `dropped call ${request.callId} (MCP requests were revoked while it was pending)`);
       return;

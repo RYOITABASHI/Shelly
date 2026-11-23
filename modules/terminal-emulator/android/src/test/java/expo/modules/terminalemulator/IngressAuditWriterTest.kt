@@ -14,6 +14,8 @@ import org.junit.Test
  */
 class IngressAuditWriterTest {
     private val p = "0123456789abcdef0123456789abcdef"
+    private val committedSha256 = "a".repeat(64)
+    private val previousSha256 = "b".repeat(64)
     private val ts = 1_731_650_000_000L
 
     private fun json(vararg kv: Pair<String, Any>): String {
@@ -61,6 +63,184 @@ class IngressAuditWriterTest {
         assertEquals("2024-11-15T05:53:20.000Z", o.getString("ts"))
         assertFalse(o.has("agentId"))
         assertFalse(line.contains("\n"))
+    }
+
+    @Test
+    fun buildsTheAgentlessPipelineConfigLine() {
+        val line = IngressAuditWriter.buildMcpLine(
+            ts, null,
+            json("kind" to "mcp_update_pipeline_config", "event" to "mcp_update_pipeline_config", "principal" to p, "code" to "updated"),
+        )
+        assertNotNull(line)
+        val o = JSONObject(line!!)
+        assertEquals("mcp_update_pipeline_config", o.getString("kind"))
+        assertEquals("mcp_update_pipeline_config", o.getString("event"))
+        assertEquals(p, o.getString("principal"))
+        assertEquals("updated", o.getString("code"))
+        assertEquals("2024-11-15T05:53:20.000Z", o.getString("ts"))
+        assertFalse(o.has("agentId"))
+        assertFalse(line.contains("\n"))
+    }
+
+    @Test
+    fun pipelineConfigAuditAcceptsOnlyFixedCountsAndPipelineIds() {
+        val kind = "mcp_update_pipeline_config"
+        val valid = json(
+            "kind" to kind, "event" to kind, "principal" to p, "code" to "updated", "swapStatus" to "updated",
+            "changedPipelineIds" to org.json.JSONArray(listOf("example-a", "digest")),
+            "rebuiltCount" to 1, "rebuildFailedCount" to 0,
+            "sha256" to committedSha256, "bytes" to 1,
+            "backupCreated" to true, "previousSha256" to previousSha256,
+        )
+        val line = IngressAuditWriter.buildMcpLine(ts, null, valid)
+        assertNotNull(line)
+        val output = JSONObject(line!!)
+        assertEquals("example-a", output.getJSONArray("changedPipelineIds").getString(0))
+        assertEquals(1, output.getInt("rebuiltCount"))
+        assertEquals(0, output.getInt("rebuildFailedCount"))
+        assertEquals(committedSha256, output.getString("sha256"))
+        assertEquals(1, output.getInt("bytes"))
+        assertEquals(true, output.getBoolean("backupCreated"))
+        assertEquals(previousSha256, output.getString("previousSha256"))
+        for ((key, invalid) in listOf(
+            "sha256" to "A".repeat(64),
+            "bytes" to 0, "bytes" to 262145, "bytes" to 1.5,
+            "backupCreated" to "true",
+            "previousSha256" to "b".repeat(63), "previousSha256" to JSONObject.NULL,
+        )) {
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(valid).put(key, invalid).toString()))
+        }
+        for (key in listOf("sha256", "bytes", "backupCreated", "previousSha256")) {
+            val missing = JSONObject(valid).apply { remove(key) }
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, missing.toString()))
+        }
+        val created = JSONObject(valid).put("code", "created").put("swapStatus", "created")
+            .put("backupCreated", false)
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, created.toString()))
+        created.remove("previousSha256")
+        val createdLine = IngressAuditWriter.buildMcpLine(ts, null, created.toString())
+        assertNotNull(createdLine)
+        val createdOutput = JSONObject(createdLine!!)
+        assertEquals(committedSha256, createdOutput.getString("sha256"))
+        assertEquals(1, createdOutput.getInt("bytes"))
+        assertFalse(createdOutput.getBoolean("backupCreated"))
+        assertFalse(createdOutput.has("previousSha256"))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, valid.replace("example-a", "/sdcard/path")))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(valid).put("content", "secret").toString()))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(valid).put("rebuiltCount", -1).toString()))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, "agent-a", valid))
+    }
+
+    @Test
+    fun pipelineConfigRevocationCanRecordCommittedWork() {
+        val kind = "mcp_update_pipeline_config"
+        val revoked = JSONObject(json("kind" to kind, "event" to kind, "principal" to p, "code" to "revoked"))
+        assertNotNull(IngressAuditWriter.buildMcpLine(ts, null, revoked.toString()))
+        revoked.put("changedPipelineIds", org.json.JSONArray(listOf("example-a")))
+            .put("rebuiltCount", 1).put("rebuildFailedCount", 2)
+            .put("sha256", committedSha256).put("bytes", 1)
+            .put("backupCreated", true).put("previousSha256", previousSha256).put("swapStatus", "updated")
+        val line = IngressAuditWriter.buildMcpLine(ts, null, revoked.toString())
+        assertNotNull(line)
+        val output = JSONObject(line!!)
+        assertEquals("revoked", output.getString("code"))
+        assertEquals(committedSha256, output.getString("sha256"))
+        assertEquals(1, output.getInt("bytes"))
+        assertEquals(true, output.getBoolean("backupCreated"))
+        assertEquals(previousSha256, output.getString("previousSha256"))
+        assertEquals("example-a", output.getJSONArray("changedPipelineIds").getString(0))
+        assertEquals(1, output.getInt("rebuiltCount"))
+        assertEquals(2, output.getInt("rebuildFailedCount"))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, revoked.toString().replace("example-a", "/sdcard/path")))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(revoked.toString()).put("rebuildFailedCount", -1).toString()))
+        revoked.remove("rebuiltCount")
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, revoked.toString()))
+    }
+
+    @Test
+    fun pipelineConfigTimeoutCanRecordCommittedWork() {
+        val kind = "mcp_update_pipeline_config"
+        val input = json(
+            "kind" to kind, "event" to kind, "code" to "timeout",
+            "changedPipelineIds" to org.json.JSONArray(listOf("example-a")),
+            "rebuiltCount" to 1, "rebuildFailedCount" to 2,
+            "sha256" to committedSha256, "bytes" to 262144,
+            "backupCreated" to true, "previousSha256" to previousSha256,
+            "rebuiltAgentIds" to org.json.JSONArray(listOf("agent-1")),
+            "failedAgentIds" to org.json.JSONArray(listOf("agent-2", "agent_3")),
+            "swapStatus" to "updated",
+            "failedReasonCodes" to org.json.JSONArray(listOf("timeout", "revoked")),
+        )
+        val line = IngressAuditWriter.buildMcpLine(ts, null, input)
+        assertNotNull(line)
+        val output = JSONObject(line!!)
+        assertEquals("timeout", output.getString("code"))
+        assertEquals(committedSha256, output.getString("sha256"))
+        assertEquals(262144, output.getInt("bytes"))
+        assertEquals(true, output.getBoolean("backupCreated"))
+        assertEquals(previousSha256, output.getString("previousSha256"))
+        assertEquals("example-a", output.getJSONArray("changedPipelineIds").getString(0))
+        assertEquals(1, output.getInt("rebuiltCount"))
+        assertEquals(2, output.getInt("rebuildFailedCount"))
+        assertEquals(org.json.JSONArray(listOf("agent-1")).toString(), output.getJSONArray("rebuiltAgentIds").toString())
+        assertEquals(org.json.JSONArray(listOf("agent-2", "agent_3")).toString(), output.getJSONArray("failedAgentIds").toString())
+
+        assertEquals("updated", output.getString("swapStatus"))
+        assertEquals(org.json.JSONArray(listOf("timeout", "revoked")).toString(), output.getJSONArray("failedReasonCodes").toString())
+
+        for (invalid in listOf("timeout", 1)) {
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(input).put("swapStatus", invalid).toString()))
+        }
+        for (invalid in listOf("timeout", org.json.JSONArray(listOf("timeout")),
+            org.json.JSONArray(listOf("timeout", "unexpected")), org.json.JSONArray(listOf("timeout", 1)))) {
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(input).put("failedReasonCodes", invalid).toString()))
+        }
+        val missingFailedIds = JSONObject(input).apply { remove("failedAgentIds") }
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, missingFailedIds.toString()))
+
+        for (key in listOf("rebuiltAgentIds", "failedAgentIds")) {
+            for (invalid in listOf("agent-1", org.json.JSONArray(listOf("../agent")), org.json.JSONArray(listOf(1)),
+                org.json.JSONArray(List(34) { "agent-$it" }))) {
+                assertNull(IngressAuditWriter.buildMcpLine(ts, null, JSONObject(input).put(key, invalid).toString()))
+            }
+        }
+    }
+
+    @Test
+    fun pipelineConfigAuditFitsMaximumBridgeCounts() {
+        val kind = "mcp_update_pipeline_config"
+        val input = json(
+            "kind" to kind, "event" to kind, "principal" to p, "code" to "revoked",
+            "changedPipelineIds" to org.json.JSONArray(List(32) { "p".repeat(30) + it.toString().padStart(2, '0') } + "digest"),
+            "rebuiltCount" to 0, "rebuildFailedCount" to 33,
+            "rebuiltAgentIds" to org.json.JSONArray(),
+            "failedAgentIds" to org.json.JSONArray(List(33) { "a".repeat(126) + it.toString().padStart(2, '0') }),
+            "failedReasonCodes" to org.json.JSONArray(List(33) { "agent_not_found" }),
+            "swapStatus" to "updated", "sha256" to committedSha256, "bytes" to 262144,
+            "backupCreated" to true, "previousSha256" to previousSha256,
+        )
+        assertNotNull(IngressAuditWriter.buildMcpLine(ts, null, input))
+    }
+
+    @Test
+    fun onlyPipelineConfigNativeErrorsCanRecordAValidObservedHash() {
+        val kind = "mcp_update_pipeline_config"
+        val hash = "abcdef0123456789".repeat(4)
+        val input = JSONObject(json("kind" to kind, "event" to kind, "code" to "native_error", "observedSha256" to hash))
+        val line = IngressAuditWriter.buildMcpLine(ts, null, input.toString())
+        assertNotNull(line)
+        assertEquals(hash, JSONObject(line!!).getString("observedSha256"))
+
+        for (code in listOf("created", "updated", "revoked", "timeout", "verify_failed")) {
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, input.put("code", code).toString()))
+        }
+        input.put("code", "native_error")
+        for (invalid in listOf(hash.uppercase(), hash.dropLast(1), "g".repeat(64))) {
+            assertNull(IngressAuditWriter.buildMcpLine(ts, null, input.put("observedSha256", invalid).toString()))
+        }
+        input.put("observedSha256", hash)
+            .put("kind", "mcp_update_delivery_script").put("event", "mcp_update_delivery_script")
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, input.toString()))
     }
 
     @Test

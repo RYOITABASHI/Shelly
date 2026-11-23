@@ -239,7 +239,7 @@ const MRTR_RETRY_HOLD_MS = 20_000;
 // window to collect an answer that landed right at the end.
 const MRTR_STATE_TTL_MS = RESULT_TIMEOUT_MS + 60_000;
 // Tools whose call blocks on an on-device approval tap.
-const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'stage_install', 'update_delivery_script', 'run_agent']);
+const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'stage_install', 'update_delivery_script', 'update_pipeline_config', 'run_agent']);
 // Typed operations (lib/mcp-typed-ops.ts): listed only with "MCP: Allow
 // typed operations" (SHELLY_MCP_TYPED_OPS=1), whatever the exec setting says.
 const TYPED_OP_TOOLS = new Set(['run_agent', 'get_run_result']);
@@ -421,6 +421,31 @@ const TOOLS = [
         expectedBytes: { type: 'integer', minimum: 1, maximum: 1048576 },
       },
       required: ['stagedPath', 'expectedSha256', 'expectedBytes'],
+    },
+  },
+  {
+    name: 'update_pipeline_config',
+    description: 'Replaces article-pipelines.json from a validated staged Downloads file and rebuilds only the listed agents. Requires MCP exec/write and on-device approval for each call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stagedPath: { type: 'string', description: 'Absolute path to a staged .json file directly under /sdcard/Download' },
+        expectedSha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        expectedBytes: { type: 'integer', minimum: 1, maximum: 262144 },
+        rebuild: {
+          type: 'array',
+          maxItems: 33,
+          items: {
+            type: 'object',
+            properties: {
+              agentId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,128}$', description: 'Agent id from list_agents' },
+              pipelineId: { type: 'string', description: 'Pipeline id in the new config, or digest when present' },
+            },
+            required: ['agentId', 'pipelineId'],
+          },
+        },
+      },
+      required: ['stagedPath', 'expectedSha256', 'expectedBytes', 'rebuild'],
     },
   },
   {
@@ -618,7 +643,7 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
     const override = opts?.timeoutMs;
     const timeoutMs = Number.isFinite(override) && override > 0
       ? override
-      : (toolName === 'stage_install' || toolName === 'update_delivery_script') ? STAGE_INSTALL_RESULT_TIMEOUT_MS
+      : (toolName === 'stage_install' || toolName === 'update_delivery_script' || toolName === 'update_pipeline_config') ? STAGE_INSTALL_RESULT_TIMEOUT_MS
       : isRead ? QUEUE_READ_TIMEOUT_MS : RESULT_TIMEOUT_MS;
     const timeoutError = isRead
       ? `timed out after ${timeoutMs}ms waiting for the app to answer ${toolName} (Shelly may be in the background; open Shelly and try again)`
@@ -2667,7 +2692,7 @@ function createMcpHandler(opts) {
       digest,
       settled: false,
       result: undefined,
-      expiresAt: now() + ((toolName === 'stage_install' || toolName === 'update_delivery_script') ? STAGE_INSTALL_RESULT_TIMEOUT_MS + 60_000 : MRTR_STATE_TTL_MS),
+      expiresAt: now() + ((toolName === 'stage_install' || toolName === 'update_delivery_script' || toolName === 'update_pipeline_config') ? STAGE_INSTALL_RESULT_TIMEOUT_MS + 60_000 : MRTR_STATE_TTL_MS),
       promise: null,
     };
     entry.promise = Promise.resolve(callTool(toolName, args, ingress))
