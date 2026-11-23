@@ -236,7 +236,7 @@ describe('executor parity — role prompts', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-plan-executor.js'), 'utf8');
     // Inc B (v26): both go through carriedRolesFor → carriedStepRoleContext,
     // which is stepRoleContext for a contiguous, non-judge carry.
-    expect(src).toContain('carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform)');
+    expect(src).toContain("carriedRolesFor(i, carriedIndexes, isolation.carry === true ? contextResults.length : 0), undefined, longform, [researchNumbersExclusionBlock ? researchExclusionBlock : '', researchNumbersExclusionBlock].filter(Boolean).join('\\n\\n'))");
     // v27: the shared call site also passes the judge's candidate files
     // ('' for every non-judge step); the isolated one never does.
     expect(src).toContain('carriedRolesFor(i, carriedIndexes, contextResults.length), judgeCandidateFiles(i), longform, ');
