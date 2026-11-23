@@ -933,52 +933,90 @@ describe('a run with the editor in the review loop', () => {
     expect(JSON.stringify(events(s.home, 'research_history_match'))).not.toContain('paper-a');
   }, 60000);
 
-  it('v60: a retry that lands on it again goes on, and the draft is held back by review_note', async () => {
+  it('v66: a second repeat triggers a named exclusion retry and a fresh draft', async () => {
     const s = setupCited([
       { text: RESEARCH, cite: SOURCE_URL },
       { text: RESEARCH, cite: SOURCE_URL },
-      { text: FIRST, cite: SOURCE_URL },
-      { text: 'VERDICT: PASS', cite: SOURCE_URL },
+      { text: RESEARCH_B, cite: PAPER_B },
+      { text: FIRST, cite: PAPER_B },
+      { text: 'VERDICT: PASS', cite: PAPER_B },
     ], [answer()], USED);
     expect(await run(s)).toBe(0);
     expect(readRunLog(s.home).status).toBe('success');
-    expect(prompts(s, LOCAL_URL)).toHaveLength(4);
+    const local = prompts(s, LOCAL_URL);
+    expect(local).toHaveLength(5);
+    expect(local[2]).toContain('Main study already used by this series — excluded for this search');
+    expect(local[2]).toContain(`- ${USED[0].title} — ${USED[0].url} (2026-11-09)`);
     expect(events(s.home, 'research_history_match').map((e) => e.attempt)).toEqual([1, 2]);
+    expect(events(s.home, 'research_history_retry')).toMatchObject([
+      { attempt: 2, excluded: 1 }, { attempt: 3, excluded: 1 },
+    ]);
     expect(events(s.home, 'research_history_repeat')).toMatchObject([{ reason: 'still-matches' }]);
-    const fm = frontmatter(readResult(s.home));
-    expect(fm).toContain('review: unresolved');
-    expect(fm).toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
+    expect(events(s.home, 'research_topic_exhausted')).toHaveLength(0);
+    const { outputDir } = JSON.parse(fs.readFileSync(s.planFile, 'utf8')).output;
+    const [draft] = fs.readdirSync(outputDir);
+    const saved = fs.readFileSync(path.join(outputDir, draft), 'utf8');
+    expect(frontmatter(saved)).toContain('review: pass');
+    expect(saved).not.toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
   }, 60000);
 
-  it('v60: a retry with nothing citable keeps the first answer instead of stopping on no sources', async () => {
+  function expectNoDraft(s: Setup) {
+    const { outputDir } = JSON.parse(fs.readFileSync(s.planFile, 'utf8')).output;
+    expect(fs.readdirSync(outputDir)).toEqual([]);
+    expect(fs.existsSync(path.join(s.home, '.shelly/agents/held'))).toBe(false);
+    expect(JSON.stringify([readRunLog(s.home), readAudit(s.home)])).not.toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
+  }
+
+  it('v66: four repeated studies exhaust research before writing', async () => {
+    const s = setupCited(Array.from({ length: 4 }, () => ({ text: RESEARCH, cite: SOURCE_URL })), [], USED);
+    expect(await run(s)).toBe(0);
+    expect(prompts(s, LOCAL_URL)).toHaveLength(4);
+    expect(events(s.home, 'research_history_match')).toMatchObject([1, 2, 3, 4].map((attempt) => ({ attempt, hosts: ['example.org'] })));
+    expect(events(s.home, 'research_history_repeat')).toMatchObject([{ reason: 'still-matches' }]);
+    expect(events(s.home, 'research_topic_exhausted')).toMatchObject([{ stepIndex: 0, attempts: 4, hosts: ['example.org'] }]);
+    expect(events(s.home, 'queue_empty')).toHaveLength(0);
+    const message = expect.stringMatching(/research topic exhausted.*repeated an earlier article/i);
+    expect(readRunLog(s.home)).toMatchObject({
+      status: 'error', outputPreview: message, errorMessage: message,
+      steps: [{ index: 0, status: 'error', outputPreview: message }],
+    });
+    const progress = fs.readFileSync(path.join(logDir(s.home), 'progress.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(progress.filter((e) => e.kind === 'branch_state' && e.stepIndex === 0).map((e) => e.state))
+      .toEqual(['STANDBY', 'RUNNING', 'FAILED']);
+    expect(progress).toContainEqual(expect.objectContaining({ stepIndex: 0, kind: 'tail', tail: message }));
+    expect(events(s.home, 'research_history_retry')).toMatchObject([2, 3, 4].map((attempt) => ({ attempt, excluded: 1 })));
+    expectNoDraft(s);
+  }, 60000);
+
+  it('v66: a retry with nothing citable can recover with a fresh study', async () => {
     const s = setupCited([
       { text: RESEARCH, cite: SOURCE_URL },
       { text: '1. Nothing citable was found.', cite: '' },
-      { text: FIRST, cite: SOURCE_URL },
-      { text: 'VERDICT: PASS', cite: SOURCE_URL },
+      { text: RESEARCH_B, cite: PAPER_B },
+      { text: FIRST, cite: PAPER_B },
+      { text: 'VERDICT: PASS', cite: PAPER_B },
     ], [answer()], USED);
     expect(await run(s)).toBe(0);
     expect(readRunLog(s.home).status).toBe('success');
-    expect(prompts(s, LOCAL_URL)).toHaveLength(4);
+    expect(prompts(s, LOCAL_URL)).toHaveLength(5);
     expect(events(s.home, 'sourcing_no_sources')).toHaveLength(0);
     expect(events(s.home, 'research_history_repeat')).toMatchObject([{ reason: 'retry-no-sources' }]);
     const result = readResult(s.home);
-    expect(result).toContain(SOURCE_URL);
-    expect(frontmatter(result)).toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
+    expect(result).toContain(PAPER_B);
+    expect(result).not.toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
   }, 60000);
 
-  it('v60: with too little of the run left there is no retry, and the draft is marked', async () => {
-    const s = setupCited([
-      { text: RESEARCH, cite: SOURCE_URL },
-      { text: FIRST, cite: SOURCE_URL },
-      { text: 'VERDICT: PASS', cite: SOURCE_URL },
-    ], [answer()], USED);
+  it('v66: with too little time for a retry, the run aborts before writing', async () => {
+    const s = setupCited([{ text: RESEARCH, cite: SOURCE_URL }], [], USED);
     expect(await run(s, { SHELLY_TEST_RESEARCH_HISTORY_RETRY_RESERVE_MS: String(10 * 60 * 60_000) })).toBe(0);
-    expect(prompts(s, LOCAL_URL)).toHaveLength(3);
+    expect(readRunLog(s.home).status).toBe('error');
+    expect(prompts(s, LOCAL_URL)).toHaveLength(1);
     expect(events(s.home, 'research_history_retry')).toHaveLength(0);
     expect(events(s.home, 'research_history_retry_skipped')).toMatchObject([{ reason: 'time' }]);
     expect(events(s.home, 'research_history_repeat')).toMatchObject([{ reason: 'time' }]);
-    expect(frontmatter(readResult(s.home))).toContain(executor.ARTICLE_HISTORY_REPEAT_NOTE);
+    expect(events(s.home, 'research_topic_exhausted')).toMatchObject([{ stepIndex: 0, attempts: 1, hosts: ['example.org'] }]);
+    expectNoDraft(s);
   }, 60000);
 
   it('v60: a study the history does not hold runs as before', async () => {
@@ -1054,6 +1092,24 @@ describe('v60: study keys and the full review log (pure)', () => {
     expect(block).toContain('- https://arxiv.org/abs/2401.01234v1 (arxiv:2401.01234)');
     expect(block).toContain('- https://example.org/x/');
     expect(executor.researchHistoryExclusionBlock([], 'n')).toBe('');
+  });
+
+  it('selects matched entries in history order across arXiv formats', () => {
+    const arxiv = { title: 'ArXiv study', url: 'https://arxiv.org/abs/2401.01234v1' };
+    const other = { title: 'Other study', url: 'https://example.org/x' };
+    const history = [arxiv, { title: 'Unmatched', url: 'https://example.org/y' }, other];
+    expect(executor.researchHistoryMatchedEntries([other.url, 'https://arxiv.org/pdf/2401.01234v4'], history)).toEqual([arxiv, other]);
+    expect(executor.researchHistoryMatchedEntries([], history)).toEqual([]);
+  });
+
+  it('fences named exclusions and omits empty URLs and dates', () => {
+    const block = executor.researchHistoryNamedExclusionBlock([
+      { title: 'First study', url: 'https://example.org/x', date: '2026-11-09' },
+      { title: 'Only a title', url: '', date: '' },
+    ], 'n0nce');
+    expect(block).toContain('<<<n0nce\n- First study — https://example.org/x (2026-11-09)\n- Only a title\nn0nce>>>\n');
+    expect(block).toContain('source [1]');
+    expect(executor.researchHistoryNamedExclusionBlock([], 'n')).toBe('');
   });
 
   it('appendReviewFull caps each entry, keeps the last lines and never throws', () => {
