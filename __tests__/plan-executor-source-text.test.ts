@@ -350,7 +350,16 @@ ${PAGE_A}`);
   it('v56: a notes URL missing from the citations becomes [11], the writer sees it, and the labelled main study is fetched first', async () => {
     const MAIN = 'https://main.example/articles/10.0000/study-1/full';
     const citations = Array.from({ length: 10 }, (_, i) => `https://c${i + 1}.example/p`);
-    const research = `主研究: Example washing study ${MAIN}?utm_source=feed.\n1. Fading after 50 washes [1].\n2. Mill list [2].`;
+    const research = [
+      `主研究: Example washing study ${MAIN}?utm_source=feed.`,
+      '事実: Fading after 50 washes [1].',
+      '事実: 30 participants.',
+      '事実: 3 fabric types.',
+      '事実: 2 detergents.',
+      '事実: 5 trial sites.',
+      '事実: 10 wash cycles per week.',
+      '比較研究: Mill list [2].',
+    ].join('\n');
     const s = setup({ citations, research, pages: { [MAIN]: PAGE_A } });
     expect(await run(s, { SHELLY_TEST_FAKE_PAGES: s.pages })).toBe(0);
     // The main study first, then the first other source (max 2).
