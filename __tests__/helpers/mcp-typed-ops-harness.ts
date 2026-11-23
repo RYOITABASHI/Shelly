@@ -25,6 +25,7 @@ type Ticket = Record<string, unknown> & { handle: string; principal: string; sta
 
 export const h = {
   files: new Map<string, string>(),
+  fileMtimes: new Map<string, number>(),
   settings: { mcpTypedOpsEnabled: true } as Record<string, unknown>,
   agents: [] as Record<string, unknown>[],
   halted: false,
@@ -58,6 +59,7 @@ export const h = {
 
 export function resetHarness(): void {
   h.files.clear();
+  h.fileMtimes.clear();
   h.settings = { mcpTypedOpsEnabled: true };
   h.agents = [];
   h.halted = false;
@@ -96,12 +98,22 @@ export const fsMock = {
   },
   writeAsStringAsync: async (uri: string, content: string) => {
     h.files.set(uri, content);
+    h.fileMtimes.set(uri, Date.now());
   },
   makeDirectoryAsync: async () => {},
   moveAsync: async () => {},
-  getInfoAsync: async (uri: string) => ({ exists: h.files.has(uri) }),
+  getInfoAsync: async (uri: string) => {
+    const exists = h.files.has(uri);
+    const mtimeMs = h.fileMtimes.get(uri);
+    return exists && mtimeMs !== undefined ? { exists, modificationTime: mtimeMs / 1000 } : { exists };
+  },
   deleteAsync: async (uri: string) => {
-    for (const k of [...h.files.keys()]) if (k === uri || k.startsWith(`${uri}/`)) h.files.delete(k);
+    for (const k of [...h.files.keys()]) {
+      if (k === uri || k.startsWith(`${uri}/`)) {
+        h.files.delete(k);
+        h.fileMtimes.delete(k);
+      }
+    }
   },
 };
 
@@ -241,10 +253,10 @@ export function addAgent(id: string, overrides: Record<string, unknown> = {}): R
   return agent;
 }
 
-async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
-  const end = Date.now() + ms;
+async function waitFor(cond: () => boolean, ms = 5000, now = () => Date.now()): Promise<void> {
+  const end = now() + ms;
   while (!cond()) {
-    if (Date.now() > end) throw new Error('timed out');
+    if (now() > end) throw new Error('timed out');
     await new Promise((r) => setTimeout(r, 10));
   }
 }
@@ -257,7 +269,7 @@ export { waitFor };
 export async function callTool(
   tool: string,
   args: Record<string, unknown>,
-  opts: { principal?: string; handoff?: 'valid' | 'none' | 'forged'; receivedAt?: string } = {},
+  opts: { principal?: string; handoff?: 'valid' | 'none' | 'forged'; receivedAt?: string; waitClock?: () => number } = {},
 ): Promise<{ ok: boolean; data?: any; error?: string; code?: string } | null> {
   const callId = nodeCrypto.randomUUID();
   // run_agent reaches requests/ only by the native consumer's handoff (PR 6),
@@ -267,11 +279,13 @@ export async function callTool(
     const token = handoff === 'valid' ? await mcpHandoffToken(TEST_BRIDGE_KEY, callId, nodeSha256) : 'b'.repeat(64);
     h.files.set(`${HANDOFFS}/${callId}`, token);
   }
+  const requestUri = `${REQUESTS}/${callId}.json`;
   h.files.set(
-    `${REQUESTS}/${callId}.json`,
+    requestUri,
     await signedRequest(callId, tool, args, { principal: opts.principal ?? TEST_PRINCIPAL, receivedAt: opts.receivedAt }),
   );
-  await waitFor(() => !h.files.has(`${REQUESTS}/${callId}.json`), 30_000);
+  h.fileMtimes.set(requestUri, Date.now());
+  await waitFor(() => !h.files.has(requestUri), 30_000, opts.waitClock);
   const raw = h.files.get(`${RESULTS}/${callId}.json`);
   return raw === undefined ? null : JSON.parse(raw);
 }

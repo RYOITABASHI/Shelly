@@ -22,7 +22,7 @@ import {
 } from './agent-pipeline-presets';
 
 export const ARTICLE_PIPELINE_FILE_PATH = '~/.shelly/agents/article-pipelines.json';
-const ARTICLE_PIPELINE_FILE_MAX_BYTES = 256 * 1024;
+export const ARTICLE_PIPELINE_FILE_MAX_BYTES = 256 * 1024;
 const FILE_MISSING_EXIT = 44;
 const DEFAULT_VAULT_PATH = '/sdcard/Documents/ObsidianVault';
 

@@ -10,6 +10,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -43,6 +44,18 @@ object IngressAuditWriter {
     /** Events (the typed op that was refused). */
     val MCP_EVENTS: Set<String> = setOf("mcp_run_agent")
     private val MCP_KEYS: Set<String> = setOf("kind", "event", "agentId", "principal", "code")
+    private const val PIPELINE_CONFIG_KIND = "mcp_update_pipeline_config"
+    private val PIPELINE_CONFIG_AGENT_ID_KEYS = setOf("rebuiltAgentIds", "failedAgentIds")
+    private const val MAX_PIPELINE_CONFIG_AGENT_IDS = 33
+    // The bridge can send 33 rebuild outcomes and 33 changed pipeline IDs.
+    private const val MAX_PIPELINE_CONFIG_JSON_LENGTH = 7 * 1024
+    private val PIPELINE_CONFIG_KEYS = setOf(
+        "changedPipelineIds", "rebuiltCount", "rebuildFailedCount", "swapStatus", "failedReasonCodes",
+        "sha256", "bytes", "backupCreated", "previousSha256",
+    ) + PIPELINE_CONFIG_AGENT_ID_KEYS
+    private val PIPELINE_CONFIG_FAILED_REASON_CODES = setOf("timeout", "revoked", "agent_not_found", "other")
+    private val SHA256_RE = Regex("^[0-9a-f]{64}$")
+    private val PIPELINE_ID_RE = Regex("^[a-z0-9-]{1,32}$")
     private val PRINCIPAL_RE = Regex("^[0-9a-f]{32}$")
     private val CODE_RE = Regex("^[a-z_]{1,32}$")
 
@@ -62,16 +75,20 @@ object IngressAuditWriter {
      * this side's clock, never the caller's.
      */
     fun buildMcpLine(ts: Long, agentId: String?, json: String): String? = try {
-        if (json.length > 1024) throw IllegalArgumentException("too long")
+        if (json.length > MAX_PIPELINE_CONFIG_JSON_LENGTH) throw IllegalArgumentException("too long")
         val o = JSONObject(json)
         val keys = HashSet<String>()
         val it = o.keys()
         while (it.hasNext()) keys.add(it.next())
-        if (!MCP_KEYS.containsAll(keys)) throw IllegalArgumentException("unknown key")
         val kind = o.get("kind") as? String ?: throw IllegalArgumentException("kind")
         val event = o.get("event") as? String ?: throw IllegalArgumentException("event")
+        val pipelineConfig = agentId == null && kind == PIPELINE_CONFIG_KIND && event == kind
+        val allowedKeys = if (pipelineConfig) MCP_KEYS + PIPELINE_CONFIG_KEYS + "observedSha256" else MCP_KEYS
+        if ((!pipelineConfig && json.length > 1024) || !allowedKeys.containsAll(keys)) {
+            throw IllegalArgumentException("invalid fields")
+        }
         val agentlessOp = agentId == null && kind == event &&
-            (kind == "mcp_stage_install" || kind == "mcp_stage_install_result" || kind == "mcp_update_delivery_script")
+            (kind == "mcp_stage_install" || kind == "mcp_stage_install_result" || kind == "mcp_update_delivery_script" || pipelineConfig)
         if (!agentlessOp && (kind !in MCP_KINDS || event !in MCP_EVENTS)) throw IllegalArgumentException("kind/event")
         val lineAgent = if (o.has("agentId")) o.get("agentId") as? String ?: throw IllegalArgumentException("agentId") else null
         if (lineAgent != agentId) throw IllegalArgumentException("agentId mismatch")
@@ -84,6 +101,67 @@ object IngressAuditWriter {
         if (agentId != null) out.put("agentId", agentId)
         if (principal != null) out.put("principal", principal)
         if (code != null) out.put("code", code)
+        if (pipelineConfig && o.has("observedSha256")) {
+            val hash = o.get("observedSha256") as? String ?: throw IllegalArgumentException("observedSha256")
+            if (code != "native_error" || !SHA256_RE.matches(hash)) throw IllegalArgumentException("observedSha256")
+            out.put("observedSha256", hash)
+        }
+        if (pipelineConfig && keys.any { it in PIPELINE_CONFIG_KEYS }) {
+            if (code != "created" && code != "updated" && code != "revoked" && code != "timeout") throw IllegalArgumentException("code")
+            val sha256 = o.get("sha256") as? String ?: throw IllegalArgumentException("sha256")
+            if (!SHA256_RE.matches(sha256)) throw IllegalArgumentException("sha256")
+            out.put("sha256", sha256)
+            val bytes = o.get("bytes") as? Int ?: throw IllegalArgumentException("bytes")
+            if (bytes !in 1..262144) throw IllegalArgumentException("bytes")
+            out.put("bytes", bytes)
+            val backupCreated = o.get("backupCreated") as? Boolean ?: throw IllegalArgumentException("backupCreated")
+            out.put("backupCreated", backupCreated)
+            if (o.has("previousSha256")) {
+                val hash = o.get("previousSha256") as? String ?: throw IllegalArgumentException("previousSha256")
+                if (!SHA256_RE.matches(hash)) throw IllegalArgumentException("previousSha256")
+                out.put("previousSha256", hash)
+            }
+            val ids = o.getJSONArray("changedPipelineIds")
+            // Up to sixteen old and sixteen new pipeline IDs, plus digest.
+            if (ids.length() > 33) throw IllegalArgumentException("pipeline ids")
+            for (index in 0 until ids.length()) {
+                val id = ids.get(index) as? String ?: throw IllegalArgumentException("pipeline id")
+                if (!PIPELINE_ID_RE.matches(id)) throw IllegalArgumentException("pipeline id")
+            }
+            out.put("changedPipelineIds", ids)
+            for (key in listOf("rebuiltCount", "rebuildFailedCount")) {
+                val count = o.get(key) as? Int ?: throw IllegalArgumentException("count")
+                if (count < 0) throw IllegalArgumentException("count")
+                out.put(key, count)
+            }
+            for (key in PIPELINE_CONFIG_AGENT_ID_KEYS) {
+                if (!o.has(key)) continue
+                val agentIds = o.getJSONArray(key)
+                if (agentIds.length() > MAX_PIPELINE_CONFIG_AGENT_IDS) throw IllegalArgumentException(key)
+                for (index in 0 until agentIds.length()) {
+                    val id = agentIds.get(index) as? String ?: throw IllegalArgumentException(key)
+                    if (!AGENT_ID_RE.matches(id)) throw IllegalArgumentException(key)
+                }
+                out.put(key, agentIds)
+            }
+            if (o.has("swapStatus")) {
+                val status = o.get("swapStatus") as? String ?: throw IllegalArgumentException("swapStatus")
+                if (status != "created" && status != "updated") throw IllegalArgumentException("swapStatus")
+                if ((status == "updated") != o.has("previousSha256")) throw IllegalArgumentException("previousSha256")
+                out.put("swapStatus", status)
+            }
+            if (o.has("failedReasonCodes")) {
+                val reasons = o.get("failedReasonCodes") as? JSONArray ?: throw IllegalArgumentException("failedReasonCodes")
+                if (!o.has("failedAgentIds") || reasons.length() != o.getJSONArray("failedAgentIds").length()) {
+                    throw IllegalArgumentException("failedReasonCodes")
+                }
+                for (index in 0 until reasons.length()) {
+                    val reason = reasons.get(index) as? String ?: throw IllegalArgumentException("failedReasonCodes")
+                    if (reason !in PIPELINE_CONFIG_FAILED_REASON_CODES) throw IllegalArgumentException("failedReasonCodes")
+                }
+                out.put("failedReasonCodes", reasons)
+            }
+        }
         out.toString()
     } catch (e: Exception) {
         null

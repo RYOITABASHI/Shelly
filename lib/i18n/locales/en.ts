@@ -2679,6 +2679,8 @@ const en: Record<string, string> = {
   // ── MCP Section ────────────────────────────────────────────────
   'mcp.approval_stage_install': 'Install an APK via MCP?',
   'mcp.approval_update_delivery_script': 'Update the delivery script via MCP?',
+  'mcp.approval_update_pipeline_config': 'Update the article pipeline config via MCP?',
+  'mcp.approval_update_pipeline_config_detail': '{{basename}} ({{bytes}} bytes)\nChanged pipelines: {{pipelines}}\nAgents to rebuild: {{agents}}',
   'mcp.approval_title': 'Shelly MCP server: approval needed',
   'mcp.approval_risk_label': 'Risk',
   'mcp.approval_hint': 'This came from an MCP client on your network (e.g. Claude Code), not from you tapping something in Shelly.',
