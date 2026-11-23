@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
 - 2026-11-23: Codex（`feat/delivery-script-op`）が `update_delivery_script` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
 - 2026-11-22: Codex が `stage_install_result` の round 8 監査で残った 7 件を P2/P3 に登録。
 - 2026-11-22: Codex（`feat/stage-install`）が MCP typed op `stage_install` を実装（劣化モードの APK インストール用）。承認のダイジェスト束縛・取り消しの commit 直前再確認・stream ハッシュ照合まで含む。v1 の割り切り 2 件（毎回承認タップ／成功結果にメタデータなし）を下記 P2 に登録。実機未検証。
@@ -5309,6 +5310,19 @@ Installed tools are available immediately — just type the command (existing ta
 **副次的に実機で確認した既知のP3観察の再現**: `gh --version`と`make --version`の出力中のURL(`https://github.com/cli/cli/releases/tag/v2.98.0`、GNU GPLライセンスURL)が、タップ操作なしで自動的に別アプリ(GitHubアプリ)/Chrome Custom Tab(gnu.org)へ遷移した。これは`d5515f8c2`で記録済みの「URL open triggers on output detection (no tap needed) which may be aggressive UX」というP3観察と一致する挙動で、`--version`のような日常的なCLI操作でも頻繁に発火することを確認した(2回連続で発生)。積み重なるとターミナル操作のたびにアプリ切り替えが起きるため、P3のままで良いか次回検討の価値がある。
 
 **優先度**: P1のまま(コード修正は着地したが、この種のSELinux/linker64まわりは過去何度も「ローカルでは正しく見えたが実機で違った」実績があるため、実機QAで(e)(f)を確認するまではP1を維持する)
+
+---
+
+### 配達ループの typed な起動経路と生存確保（2026-11-23、P1）
+
+自動投稿の配達ループ（`~/.shelly/agents/.env.article-delivery.js` を loop モードで常駐させる node プロセス）について、2026-11-23 の batch5 差し替え作業で構造的な問題が2点確定した。差し替え自体は `update_delivery_script`（PR #196、本番 3051）で typed op 化され実機検証も完了したが、ループの起動と生存は手つかずである。
+
+1. **アプリ更新でループが落ちたまま復帰しない。** Shelly のアップデートでターミナルタブごとプロセスが消え、誰も気づけない（同日、status log が 12:32 JST で停止したまま死亡していたことを事後確認。今朝の Zenn 掲載シーケンスが途中で止まった一因の可能性）。
+2. **エージェント側からループを起動できない。** run_command でスクリプトを起動する経路は agents ディレクトリ配下の実行として policy-write のハード deny に触れる（設計どおり）。結果、再起動のたびにオーナーがターミナルタブで1行実行する手作業が残る（ゼロタッチ仕様に反する）。
+
+対応の形は未定。候補：(a) `update_delivery_script` と同系列の typed op（ループ起動／状態確認。対象は配達スクリプト固定、承認モデルも同型）、(b) 配達スクリプト自体を Shelly の定期実行基盤へ移行し、常駐プロセスという形をやめる。いずれの場合も「落ちたら検知できる」こと（生存の可視化）を要件に含める。ブリッジ側の希望は「次のスクリプト差し替えまで」。
+
+→ sync: README Status 表の変更なし（内部の運用基盤の記録）。
 
 ---
 
