@@ -47,10 +47,28 @@ class IngressAuditWriterTest {
     }
 
     @Test
+    fun buildsTheAgentlessDeliveryScriptLine() {
+        val line = IngressAuditWriter.buildMcpLine(
+            ts, null,
+            json("kind" to "mcp_update_delivery_script", "event" to "mcp_update_delivery_script", "principal" to p, "code" to "updated"),
+        )
+        assertNotNull(line)
+        val o = JSONObject(line!!)
+        assertEquals("mcp_update_delivery_script", o.getString("kind"))
+        assertEquals("mcp_update_delivery_script", o.getString("event"))
+        assertEquals(p, o.getString("principal"))
+        assertEquals("updated", o.getString("code"))
+        assertEquals("2024-11-15T05:53:20.000Z", o.getString("ts"))
+        assertFalse(o.has("agentId"))
+        assertFalse(line.contains("\n"))
+    }
+
+    @Test
     fun refusesAnythingOutsideTheClosedSet() {
         val base = arrayOf("kind" to "mcp_typed_op_refused", "event" to "mcp_run_agent")
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json(*base, "message" to "free text")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json("kind" to "other", "event" to "mcp_run_agent")))
+        assertNull(IngressAuditWriter.buildMcpLine(ts, null, json("kind" to "other", "event" to "other")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json("kind" to "mcp_typed_op_refused", "event" to "run_command")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json(*base, "principal" to "not-hex")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json(*base, "code" to "Bad Code")))

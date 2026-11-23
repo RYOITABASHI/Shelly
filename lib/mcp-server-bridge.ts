@@ -578,7 +578,7 @@ async function userPolicy(): Promise<LoadedUserPolicy | null> {
 }
 
 /** `code` (typed ops only) is shown by the server as `Error: [<code>] <message>`. */
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' };
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -953,6 +953,8 @@ async function callTool(
     }
     case 'stage_install':
       return stageInstallTool(args, epoch, ingress, callId, deadlineMs);
+    case 'update_delivery_script':
+      return updateDeliveryScriptTool(args, epoch, ingress, callId, deadlineMs);
     case 'stage_install_result':
       return stageInstallResultTool(epoch, ingress);
     case 'run_agent':
@@ -1106,6 +1108,165 @@ async function stageInstallTool(
     return { ok: true, data };
   } catch {
     return refuse('native_error', 'could not stage the APK or read its install result');
+  }
+}
+
+const DELIVERY_SCRIPT_ERRORS = {
+  STAGED_MISSING: ['staged_missing', 'staged script is missing or is not a regular file'],
+  SIZE_MISMATCH: ['size_mismatch', 'staged script size does not match expectedBytes'],
+  DIGEST_MISMATCH: ['digest_mismatch', 'staged script digest does not match expectedSha256'],
+  NODE_UNAVAILABLE: ['node_unavailable', 'Node.js is unavailable'],
+  VERIFY_FAILED: ['verify_failed', 'could not copy and verify the temporary delivery script'],
+  SYNTAX_ERROR: ['syntax_error', 'delivery script failed the Node.js syntax check'],
+  BACKUP_FAILED: ['backup_failed', 'could not back up the previous delivery script'],
+} as const;
+
+type DeliveryScriptErrorCode = (typeof DELIVERY_SCRIPT_ERRORS)[keyof typeof DELIVERY_SCRIPT_ERRORS][0]
+  | 'invalid_path' | 'invalid_digest' | 'invalid_size' | 'denied' | 'native_error' | 'disabled' | 'revoked';
+
+async function updateDeliveryScriptTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, callId: string, deadlineMs: number,
+): Promise<ToolResult> {
+  const audit = async (code: string): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({
+        kind: 'mcp_update_delivery_script', event: 'mcp_update_delivery_script', principal: ingress.principal, code,
+      }));
+      if (!ok) logError('MCPBridge', `update_delivery_script audit line not written (${code})`);
+    } catch {
+      logError('MCPBridge', `update_delivery_script audit line not written (${code})`);
+    }
+  };
+  const revoked = async (): Promise<ToolResult> => {
+    await audit('revoked');
+    return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+  };
+  const refuse = async (code: DeliveryScriptErrorCode, error: string): Promise<ToolResult> => {
+    await audit(code);
+    return epoch !== queueEpoch ? revoked() : { ok: false, error, code };
+  };
+  const timeout = async (): Promise<ToolResult> => {
+    await audit('timeout');
+    return epoch !== queueEpoch ? revoked() : { ok: true, data: { status: 'timeout' } };
+  };
+  const nativeError = 'could not update the delivery script';
+
+  if (epoch !== queueEpoch) return revoked();
+  if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+  const { stagedPath, expectedSha256, expectedBytes } = args;
+  if (typeof stagedPath !== 'string' || !/^\/sdcard\/Download\/[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(stagedPath)
+    || stagedPath.includes('..') || /[\x00-\x1f\x7f]/.test(stagedPath)) {
+    return refuse('invalid_path', 'stagedPath must name a .js file directly under /sdcard/Download');
+  }
+  if (typeof expectedSha256 !== 'string' || expectedSha256.length !== 64 || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    return refuse('invalid_digest', 'expectedSha256 must be 64 lowercase hex digits');
+  }
+  if (typeof expectedBytes !== 'number' || !Number.isInteger(expectedBytes) || expectedBytes < 1 || expectedBytes > 1_048_576) {
+    return refuse('invalid_size', 'expectedBytes must be an integer from 1 to 1048576');
+  }
+
+  try {
+    if (Date.now() >= deadlineMs) return timeout();
+    await audit('approval_requested');
+    if (epoch !== queueEpoch) return revoked();
+    if (Date.now() >= deadlineMs) return timeout();
+    if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+    const targetName = '.env.article-delivery.js';
+    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
+    const decision = await approveRawTool({
+      kind: 'update_delivery_script',
+      summary: t('mcp.approval_update_delivery_script'),
+      detail: `${stagedPath} → ${targetName}`,
+      origin: ingress,
+    }, callId);
+    if (epoch !== queueEpoch) return revoked();
+    if (decision === 'deny' || Date.now() >= approvalExpiresAt) return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+
+    const shellyDir = `${homeDir()}/.shelly`;
+    const agentsDir = `${shellyDir}/agents`;
+    const target = `${agentsDir}/${targetName}`;
+    // The default native exec lane is serial, including across bridge restarts.
+    // Read the temp file on stdin because Node rejects the .new extension.
+    const result = await execCommand(String.raw`
+f=${shellQuote(stagedPath)}
+expected=${shellQuote(expectedSha256)}
+bytes=${shellQuote(String(expectedBytes))}
+shelly=${shellQuote(shellyDir)}
+agents=${shellQuote(agentsDir)}
+target=${shellQuote(target)}
+tmp=${shellQuote(target + '.new')}
+backup=${shellQuote(target + '.bak')}
+error() {
+  printf '{"error":"%s"}\n' "$1"
+  exit 1
+}
+fail() {
+  rm -f "$tmp" 2>/dev/null
+  error "$1"
+}
+sha256() {
+  { sha256sum "$1" 2>/dev/null || toybox sha256sum "$1" 2>/dev/null; } | cut -c1-64
+}
+if [ -L "$shelly" ] || [ -L "$agents" ]; then error VERIFY_FAILED; fi
+[ -f "$f" ] && [ ! -L "$f" ] || fail STAGED_MISSING
+[ "$(stat -c %s "$f" 2>/dev/null)" = "$bytes" ] || fail SIZE_MISMATCH
+[ "$(sha256 "$f")" = "$expected" ] || fail DIGEST_MISMATCH
+command -v node >/dev/null 2>&1 || fail NODE_UNAVAILABLE
+rm -f "$tmp" 2>/dev/null && cp "$f" "$tmp" 2>/dev/null || fail VERIFY_FAILED
+measured_bytes=$(stat -c %s "$tmp" 2>/dev/null)
+[ "$measured_bytes" = "$bytes" ] || fail SIZE_MISMATCH
+[ "$(sha256 "$tmp")" = "$expected" ] || fail VERIFY_FAILED
+if ! diagnostic=$(set -o pipefail; NODE_OPTIONS= node --check < "$tmp" 2>&1 | head -c 2048); then
+  printf '%s\n' "$diagnostic" >&2
+  fail SYNTAX_ERROR
+fi
+status=created
+backed_up=false
+previous=null
+if [ -e "$target" ] || [ -L "$target" ]; then
+  [ -f "$target" ] && [ ! -L "$target" ] || fail BACKUP_FAILED
+  old=$(sha256 "$target")
+  [[ "$old" =~ ^[0-9a-f]{64}$ ]] || fail BACKUP_FAILED
+  rm -f "$backup" 2>/dev/null && cp "$target" "$backup" 2>/dev/null || fail BACKUP_FAILED
+  status=updated
+  backed_up=true
+  previous='"'"$old"'"'
+fi
+mv -f "$tmp" "$target" 2>/dev/null || fail NATIVE_ERROR
+printf '{"status":"%s","sha256":"%s","bytes":%s,"backup":%s,"previousSha256":%s}\n' \
+  "$status" "$expected" "$measured_bytes" "$backed_up" "$previous"
+`, 60_000);
+    if (epoch !== queueEpoch) return revoked();
+
+    let outcome;
+    for (const line of result.stdout.trim().split('\n').reverse()) {
+      try {
+        outcome = JSON.parse(line);
+        break;
+      } catch {
+        // The native shell can emit startup text around the result.
+      }
+    }
+    if (typeof outcome?.error === 'string' && Object.prototype.hasOwnProperty.call(DELIVERY_SCRIPT_ERRORS, outcome.error)) {
+      const [code, message] = DELIVERY_SCRIPT_ERRORS[outcome.error as keyof typeof DELIVERY_SCRIPT_ERRORS];
+      const diagnostic = code === 'syntax_error' ? redactForMcp(result.stderr).trim().slice(0, 300) : '';
+      return refuse(code, diagnostic ? `${message}: ${diagnostic}` : message);
+    }
+    if (result.exitCode !== 0 || !outcome || outcome.sha256 !== expectedSha256 || outcome.bytes !== expectedBytes) {
+      return refuse('native_error', nativeError);
+    }
+    const { status, sha256, bytes, backup: backupCreated, previousSha256 } = outcome;
+    const updated = status === 'updated' && backupCreated === true
+      && typeof previousSha256 === 'string' && previousSha256.length === 64 && /^[0-9a-f]{64}$/.test(previousSha256);
+    const created = status === 'created' && backupCreated === false && previousSha256 === null;
+    if (!updated && !created) return refuse('native_error', nativeError);
+
+    await audit(status);
+    if (epoch !== queueEpoch) return revoked();
+    return { ok: true, data: { status, sha256, bytes, backupCreated, previousSha256 } };
+  } catch {
+    return epoch !== queueEpoch ? revoked() : refuse('native_error', nativeError);
   }
 }
 
@@ -1680,8 +1841,8 @@ async function processRequestFile(name: string): Promise<void> {
     }
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
-    if (request.tool === 'stage_install') {
-      // Leave the rest of the server's 260s queue wait for approval and install.
+    if (request.tool === 'stage_install' || request.tool === 'update_delivery_script') {
+      // Leave the rest of the server's 260s queue wait for approval and execution.
       deadlineMs = request.receivedAtMs + 15_000;
     } else if (RAW_REQUEST_TOOLS.has(request.tool)) {
       // A raw tool reaches requests/ only by the native raw consumer's handoff

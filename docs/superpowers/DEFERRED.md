@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-23: Codex（`feat/delivery-script-op`）が `update_delivery_script` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
 - 2026-11-22: Codex が `stage_install_result` の round 8 監査で残った 7 件を P2/P3 に登録。
 - 2026-11-22: Codex（`feat/stage-install`）が MCP typed op `stage_install` を実装（劣化モードの APK インストール用）。承認のダイジェスト束縛・取り消しの commit 直前再確認・stream ハッシュ照合まで含む。v1 の割り切り 2 件（毎回承認タップ／成功結果にメタデータなし）を下記 P2 に登録。実機未検証。
 - 2026-11-20: Codex（`chore/remove-dead-shizuku-wiring`）が Phase 2（PR #187）後に残った未使用の Shizuku クライアント依存関係・プロバイダー宣言・固定テストを削除。
@@ -5312,6 +5313,11 @@ Installed tools are available immediately — just type the command (existing ta
 ---
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
+
+### MCP `update_delivery_script` の「常に許可」（2026-11-23、P2）
+
+`lib/mcp-always-allow.ts` の typed op ルールに `update_delivery_script` を統合する。
+Why not now: v1 は `stage_install` と同様、更新のたびに端末での承認を求める。
 
 ### SecureStore の一時エラーと MCP の復旧 — 設計上の制約（2026-11-22、P2）
 

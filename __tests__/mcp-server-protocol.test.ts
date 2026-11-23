@@ -757,11 +757,11 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
 
   it('availableTools: read-only set by default, each switch adds its tools', () => {
     expect(names(mcp.availableTools({}))).toEqual(READ_ONLY);
-    expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file', 'stage_install']);
+    expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file', 'stage_install', 'update_delivery_script']);
     expect(names(mcp.availableTools({ readTerminal: true }))).toEqual(['read_terminal_output', ...READ_ONLY]);
     expect(names(mcp.availableTools({ diagnostics: true }))).toEqual([...READ_ONLY, 'read_logs', 'get_settings']);
     expect(names(mcp.availableTools({ exec: true, readTerminal: true, diagnostics: true })))
-      .toEqual(['read_terminal_output', ...READ_ONLY, 'read_logs', 'get_settings', 'run_command', 'write_file', 'stage_install']);
+      .toEqual(['read_terminal_output', ...READ_ONLY, 'read_logs', 'get_settings', 'run_command', 'write_file', 'stage_install', 'update_delivery_script']);
     // Only a real `true` turns a tool on.
     expect(names(mcp.availableTools({ exec: 'yes', readTerminal: 1, diagnostics: '1', typedOps: 'yes' }))).toEqual(READ_ONLY);
   });
@@ -775,6 +775,16 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(byName.stage_install.inputSchema.required).toEqual(['path']);
     expect(byName.stage_install.inputSchema.properties.expectedSha256.pattern).toBe('^[0-9a-f]{64}$');
     expect(mcp.APPROVAL_TOOLS.has('stage_install')).toBe(true);
+    expect(byName.update_delivery_script.inputSchema).toMatchObject({
+      type: 'object',
+      required: ['stagedPath', 'expectedSha256', 'expectedBytes'],
+      properties: {
+        stagedPath: { type: 'string' },
+        expectedSha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+        expectedBytes: { type: 'integer', minimum: 1, maximum: 1048576 },
+      },
+    });
+    expect(mcp.APPROVAL_TOOLS.has('update_delivery_script')).toBe(true);
     expect(byName.stage_install_result.inputSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
     expect(mcp.APPROVAL_TOOLS.has('stage_install_result')).toBe(false);
     // Nothing that writes a setting exists.
@@ -790,7 +800,7 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(names(legacyList.result.tools)).toEqual(READ_ONLY);
   });
 
-  it.each(['run_command', 'write_file', 'stage_install', 'read_terminal_output', 'read_logs', 'get_settings'])('refuses tools/call %s while its setting is off, without calling the bridge', async (tool) => {
+  it.each(['run_command', 'write_file', 'stage_install', 'update_delivery_script', 'read_terminal_output', 'read_logs', 'get_settings'])('refuses tools/call %s while its setting is off, without calling the bridge', async (tool) => {
     const callTool = jest.fn(async () => ({ ok: true, data: 'should not run' }) as ToolResult);
     const handler = makeHandler(callTool, { exec: false, readTerminal: false, diagnostics: false, mrtr: true });
     const args = tool === 'write_file' ? { path: '/x', content: 'y' } : tool === 'run_command' ? { command: 'id' } : {};
@@ -866,7 +876,7 @@ describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', (
   const HANDLE = `mr_${'a'.repeat(32)}`;
 
   it('listed only with typedOps (exec alone does not list them; typedOps alone does not list raw exec)', async () => {
-    expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file', 'stage_install']);
+    expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file', 'stage_install', 'update_delivery_script']);
     expect(names(mcp.availableTools({ typedOps: true }))).toEqual([...READ_ONLY, 'run_agent', 'get_run_result']);
     expect(names(mcp.availableTools({ typedOps: 'yes' }))).toEqual(READ_ONLY);
     const off = makeHandler(async () => ({ ok: true, data: [] }), { typedOps: false });
