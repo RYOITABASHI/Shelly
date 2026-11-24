@@ -100,6 +100,9 @@ import {
 } from '@/lib/mcp-typed-ops';
 import { ARTICLE_PIPELINE_FILE_MAX_BYTES, articleOutputRoots } from '@/lib/agent-article-pipeline-file';
 import {
+  parseServiceControlResult, SERVICE_FAILURE_CODES, validateServiceControlArgs, type ServiceControlErrorCode,
+} from '@/lib/mcp-service-control';
+import {
   articleOutputFolderError, buildArticleDigestPipeline, buildArticlePipeline, parseArticlePipelineFile,
   type ArticlePipelineFile, type PipelinePreset,
 } from '@/lib/agent-pipeline-presets';
@@ -588,7 +591,7 @@ type PipelineConfigErrorCode = 'invalid_path' | 'invalid_digest' | 'invalid_size
   | 'node_unavailable' | 'verify_failed' | 'syntax_error' | 'backup_failed'
   | 'denied' | 'native_error' | 'disabled' | 'revoked' | 'timeout';
 
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode };
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode | ServiceControlErrorCode };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -968,6 +971,8 @@ async function callTool(
       return stageInstallTool(args, epoch, ingress, callId, deadlineMs);
     case 'update_delivery_script':
       return updateDeliveryScriptTool(args, epoch, ingress, callId, deadlineMs);
+    case 'service_control':
+      return serviceControlTool(args, epoch, ingress, callId, deadlineMs);
     case 'update_pipeline_config':
       return updatePipelineConfigTool(args, epoch, ingress, callId, deadlineMs,
         (requestFileMtimeMs ?? (deadlineMs - INSTALL_CLASS_PRE_APPROVAL_MS)) + PIPELINE_CONFIG_RESULT_TIMEOUT_MS);
@@ -1283,6 +1288,85 @@ printf '{"status":"%s","sha256":"%s","bytes":%s,"backup":%s,"previousSha256":%s}
     return { ok: true, data: { status, sha256, bytes, backupCreated, previousSha256 } };
   } catch {
     return epoch !== queueEpoch ? revoked() : refuse('native_error', nativeError);
+  }
+}
+
+/**
+ * service_control (lib/mcp-service-control.ts): start / stop / status of a
+ * registered long-running service. The caller names an action and an id only;
+ * what runs is fixed natively (ManagedServices.kt) and runs under the native
+ * supervisor, never from the MCP server's process. v1: an approval tap on
+ * every call (always-allow is prepared in mcp-service-control.ts, not on).
+ * Audit: RN writes the approval stages and its own refusals; the native side
+ * writes every start / stop outcome itself.
+ */
+async function serviceControlTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, callId: string, deadlineMs: number,
+): Promise<ToolResult> {
+  const lineBase = { kind: 'mcp_service_control', event: 'mcp_service_control', principal: ingress.principal };
+  const audit = async (code: string, fields: { action?: string; serviceId?: string } = {}): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({ ...lineBase, ...fields, code }));
+      if (!ok) logError('MCPBridge', `service_control audit line not written (${code})`);
+    } catch {
+      logError('MCPBridge', `service_control audit line not written (${code})`);
+    }
+  };
+  // Before validation the action / id are unchecked: the line carries neither.
+  const valid = validateServiceControlArgs(args);
+  if ('message' in valid) {
+    if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+    await audit('invalid_params');
+    return { ok: false, error: valid.message, code: 'invalid_params' };
+  }
+  const { action, serviceId } = valid.args;
+  const fields = { action, serviceId };
+  const refuse = async (code: ServiceControlErrorCode, error: string): Promise<ToolResult> => {
+    if (epoch !== queueEpoch) {
+      await audit('revoked', fields);
+      return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+    }
+    await audit(code, fields);
+    return { ok: false, error, code };
+  };
+
+  if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+  if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+  if (typeof TerminalEmulator.serviceControl !== 'function') return refuse('native_error', 'service_control is not available in this build');
+  if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before it could be shown for approval');
+  // STOP-ALL refuses a start before asking (native checks again at the spawn).
+  if (action === 'start' && await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
+
+  try {
+    await audit('approval_requested', fields);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const approvalExpiresAt = Math.min(Date.now() + approvalTimeoutMs, deadlineMs);
+    const decision = await approveRawTool({
+      kind: 'service_control',
+      summary: t('mcp.approval_service_control'),
+      detail: t('mcp.approval_service_control_detail', { action, service: serviceId }),
+      origin: ingress,
+    }, callId);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (decision === 'deny') return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (Date.now() >= approvalExpiresAt) return refuse('timeout', 'the approval came after the request expired');
+    if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
+    if (action === 'start' && await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
+
+    const raw = await TerminalEmulator.serviceControl(action, serviceId, ingress.principal);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const parsed = parseServiceControlResult(raw, serviceId);
+    if (!parsed) return refuse('native_error', 'could not read the service state');
+    // Native wrote the start / stop outcome line; status gets one here.
+    if (action === 'status') await audit('status', fields);
+    const data = { action, code: parsed.code, ...parsed.status };
+    if (SERVICE_FAILURE_CODES.has(parsed.code)) {
+      // The status rides in the message: an MCP error result carries text only.
+      return { ok: false, error: `${action} ${serviceId}: ${parsed.code} ${JSON.stringify(parsed.status)}`, code: parsed.code as ServiceControlErrorCode };
+    }
+    return { ok: true, data };
+  } catch {
+    return refuse('native_error', 'could not control the service');
   }
 }
 
@@ -2314,6 +2398,10 @@ async function processRequestFile(name: string): Promise<void> {
     if (request.tool === 'stage_install' || request.tool === 'update_delivery_script' || request.tool === 'update_pipeline_config') {
       // Leave the rest of the server's 260s queue wait for approval and execution.
       deadlineMs = request.receivedAtMs + INSTALL_CLASS_PRE_APPROVAL_MS;
+    } else if (request.tool === 'service_control') {
+      // The server answers within RESULT_TIMEOUT_MS (= TYPED_REQUEST_DEADLINE_MS)
+      // of signing: never show the tap or act on the service after that.
+      deadlineMs = request.receivedAtMs + TYPED_REQUEST_DEADLINE_MS;
     } else if (RAW_REQUEST_TOOLS.has(request.tool)) {
       // A raw tool reaches requests/ only by the native raw consumer's handoff
       // (it routes ONCE per callId: run natively, or hand here). Its token is

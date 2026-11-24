@@ -242,6 +242,67 @@ object IngressAuditWriter {
         return append(context, agentId, MCP_AGENTLESS_FILE, line)
     }
 
+    // ---- service_control lines (ManagedServiceSupervisor + RN bridge; pure) ---------
+
+    const val SERVICE_CONTROL_KIND = "mcp_service_control"
+    private val SERVICE_CONTROL_ACTIONS = setOf("start", "status", "stop")
+
+    /**
+     * One `mcp_service_control` line: kind == event, no agent, principal 32 hex
+     * (or absent: a STOP-ALL stop), action from the closed set, serviceId a
+     * registered id, code short. Action and serviceId are absent only on a
+     * refusal of unchecked arguments (`invalid_params`). Null when any field is
+     * off. No path, command or output is ever written.
+     */
+    fun buildServiceControlLine(ts: Long, principal: String?, action: String?, serviceId: String?, code: String): String? {
+        if (principal != null && !PRINCIPAL_RE.matches(principal)) return null
+        if (action != null && action !in SERVICE_CONTROL_ACTIONS) return null
+        if (serviceId != null && ManagedServices.spec(serviceId) == null) return null
+        if ((action == null || serviceId == null) && code != "invalid_params") return null
+        if (!CODE_RE.matches(code)) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", SERVICE_CONTROL_KIND).put("event", SERVICE_CONTROL_KIND)
+            if (principal != null) out.put("principal", principal)
+            if (action != null) out.put("action", action)
+            if (serviceId != null) out.put("serviceId", serviceId)
+            out.put("code", code)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildServiceControlLine] line to `audits/mcp-ingress-audit.jsonl`. */
+    fun appendServiceControlLine(context: Context, principal: String?, action: String, serviceId: String, code: String): Boolean {
+        val line = buildServiceControlLine(System.currentTimeMillis(), principal, action, serviceId, code) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
+    /**
+     * RN's lines for this op (approval stages, refusals before the native call)
+     * arrive as JSON through appendMcpIngressAudit: rebuilt here from the same
+     * closed fields, or refused (null).
+     */
+    fun buildServiceControlLineFromJson(ts: Long, json: String): String? = try {
+        if (json.length > 1024) null else {
+            val o = JSONObject(json)
+            val keys = HashSet<String>()
+            val it = o.keys()
+            while (it.hasNext()) keys.add(it.next())
+            if (!setOf("kind", "event", "principal", "action", "serviceId", "code").containsAll(keys)) null
+            else if (o.optString("kind") != SERVICE_CONTROL_KIND || o.optString("event") != SERVICE_CONTROL_KIND) null
+            else {
+                val principal = if (o.has("principal")) o.get("principal") as? String ?: throw IllegalArgumentException() else null
+                val action = if (o.has("action")) o.get("action") as? String ?: throw IllegalArgumentException() else null
+                val serviceId = if (o.has("serviceId")) o.get("serviceId") as? String ?: throw IllegalArgumentException() else null
+                val code = o.get("code") as? String ?: throw IllegalArgumentException()
+                buildServiceControlLine(ts, principal, action, serviceId, code)
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     // ---- Writer --------------------------------------------------------------------
 
     /**
@@ -284,7 +345,9 @@ object IngressAuditWriter {
 
     /** RN's appendMcpIngressAudit: validates and rebuilds the line, then appends it. */
     fun appendMcpLine(context: Context, agentId: String?, json: String): Boolean {
-        val line = buildMcpLine(System.currentTimeMillis(), agentId, json) ?: return false
+        val now = System.currentTimeMillis()
+        val line = (if (agentId == null && json.contains("\"$SERVICE_CONTROL_KIND\"")) buildServiceControlLineFromJson(now, json) else null)
+            ?: buildMcpLine(now, agentId, json) ?: return false
         return append(context, agentId, MCP_AGENTLESS_FILE, line)
     }
 }

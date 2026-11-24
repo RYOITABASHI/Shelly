@@ -2680,6 +2680,8 @@ const en: Record<string, string> = {
   'mcp.approval_stage_install': 'Install an APK via MCP?',
   'mcp.approval_update_delivery_script': 'Update the delivery script via MCP?',
   'mcp.approval_update_pipeline_config': 'Update the article pipeline config via MCP?',
+  'mcp.approval_service_control': 'Control a background service via MCP?',
+  'mcp.approval_service_control_detail': '{{action}} {{service}}',
   'mcp.approval_update_pipeline_config_detail': '{{basename}} ({{bytes}} bytes)\nChanged pipelines: {{pipelines}}\nAgents to rebuild: {{agents}}',
   'mcp.approval_title': 'Shelly MCP server: approval needed',
   'mcp.approval_risk_label': 'Risk',

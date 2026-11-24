@@ -50,6 +50,8 @@ class TerminalSessionService : Service() {
         // "Keep ChatGPT connected" (CodexRemoteHost.kt).
         const val ACTION_CODEX_REMOTE_START = "expo.modules.terminalemulator.CODEX_REMOTE_START"
         const val ACTION_CODEX_REMOTE_DISCONNECT = "expo.modules.terminalemulator.CODEX_REMOTE_DISCONNECT"
+        // MCP service_control (ManagedServiceSupervisor.kt): a supervised service started; stay foreground while it runs.
+        const val ACTION_MANAGED_SERVICE_KEEPALIVE = "expo.modules.terminalemulator.MANAGED_SERVICE_KEEPALIVE"
         /** The live service, so CodexRemoteHost can refresh the notification / stop an idle service. */
         @Volatile var instance: TerminalSessionService? = null
         const val EXTRA_AGENT_ID = "agent_id"
@@ -201,6 +203,15 @@ class TerminalSessionService : Service() {
                 startForegroundWithNotification(null)
                 CodexRemoteHost.ensureWatching(applicationContext)
                 CodexRemoteHost.wake()
+                if (!hasProtectedWork()) {
+                    stopForegroundAndMark()
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
+            ACTION_MANAGED_SERVICE_KEEPALIVE -> {
+                startForegroundWithNotification(null)
                 if (!hasProtectedWork()) {
                     stopForegroundAndMark()
                     stopSelf(startId)
@@ -843,7 +854,8 @@ class TerminalSessionService : Service() {
             // notification's lifecycle.
             val remainingAgents = activeAgentRuns.decrementAndGet()
             if (sessionRegistry.isEmpty() && remainingAgents <= 0 &&
-                !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+                !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false) &&
+                !ManagedServiceSupervisor.keepsServiceAlive()
             ) {
                 stopForegroundAndMark()
                 stopSelf()
@@ -864,7 +876,9 @@ class TerminalSessionService : Service() {
         sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0 ||
             // Queued drafts wait for an unlock only this service can observe.
             runCatching { ClosePawDrafts.hasWork(applicationContext) }.getOrDefault(false) ||
-            runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+            runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false) ||
+            // MCP service_control: a supervised service is running.
+            ManagedServiceSupervisor.keepsServiceAlive()
 
     /** ClosePawDrafts: the queue emptied, so re-check whether to stay. */
     fun onDraftQueueDrained() = onCodexRemoteChanged()

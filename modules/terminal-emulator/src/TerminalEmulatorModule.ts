@@ -581,6 +581,10 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** MCP typed-op refusal audit line; `json` holds only kind / event / agentId / principal / code.
    *  Rebuilt and timestamped natively (IngressAuditWriter.kt). Resolves true when written. */
   appendMcpIngressAudit?(agentId: string | null, json: string): Promise<boolean>;
+  /** MCP service_control (ManagedServiceSupervisor.kt): start / stop / status of a registered
+   *  service. Untrusted shape: parse with lib/mcp-service-control.ts parseServiceControlResult.
+   *  Optional: absent on builds without the native method. */
+  serviceControl?(action: string, serviceId: string, principal: string | null): Promise<unknown>;
   /** Per-agent MCP ingress taint (AgentIngressTaint.kt). Use lib/agent-ingress-taint.ts.
    *  Write methods return status JSON {status: 'empty'|'ok'|'unreadable'|'overflow', overflow, entries}. */
   markAgentIngress?(agentId: string, source: 'mcp', principal: string): Promise<string>;
