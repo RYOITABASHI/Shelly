@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -308,7 +308,12 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
     int timeout_sec = (timeoutMs > 0) ? (timeoutMs / 1000) : 120;
     if (timeout_sec < 1) timeout_sec = 1;
 
-    /* Use select() with timeout to read both pipes */
+    /* Use poll() with timeout to read both pipes. Not select(): FD_SET on an
+     * fd >= FD_SETSIZE (1024) is a FORTIFY abort that kills the whole app
+     * process, and a long-lived Shelly process does reach fd numbers above
+     * 1024 (2026-11-24 on-device SIGABRT, "FD_SET: file descriptor 1035 >=
+     * FD_SETSIZE 1024", via AgentRuntime.runPlanAgent). poll() has no fd
+     * number limit. */
     char *stdout_buf = NULL, *stderr_buf = NULL;
     size_t stdout_len = 0, stderr_len = 0;
     size_t stdout_cap = 4096, stderr_cap = 4096;
@@ -321,18 +326,20 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
      * logcat can confirm the fix is live on real hardware. If we ever
      * see a stdout buffer come back empty again, the eagain counter
      * tells us whether the read loop was actually exercised or whether
-     * select fired zero times. */
+     * poll fired zero times. */
     int stdout_eagain = 0, stderr_eagain = 0;
 
     while (!stdout_eof || !stderr_eof) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        int maxfd = -1;
-        if (!stdout_eof) { FD_SET(stdout_pipe[0], &rfds); if (stdout_pipe[0] > maxfd) maxfd = stdout_pipe[0]; }
-        if (!stderr_eof) { FD_SET(stderr_pipe[0], &rfds); if (stderr_pipe[0] > maxfd) maxfd = stderr_pipe[0]; }
-        if (maxfd < 0) break;
+        /* A negative fd makes poll() skip the entry (revents = 0), so a
+         * stream that has hit EOF is simply left out. */
+        struct pollfd pfds[2];
+        pfds[0].fd = stdout_eof ? -1 : stdout_pipe[0];
+        pfds[0].events = POLLIN;
+        pfds[0].revents = 0;
+        pfds[1].fd = stderr_eof ? -1 : stderr_pipe[0];
+        pfds[1].events = POLLIN;
+        pfds[1].revents = 0;
 
-        struct timeval tv;
         time_t remaining = deadline - time(NULL);
         if (remaining <= 0) {
             LOGE("execSubprocess: timeout after %ds, killing process group %d", timeout_sec, (int)pid);
@@ -341,15 +348,31 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
             }
             break;
         }
-        tv.tv_sec = (remaining > 2) ? 2 : remaining;
-        tv.tv_usec = 0;
+        int poll_ms = (int)((remaining > 2) ? 2 : remaining) * 1000;
 
-        int ret = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+        int ret = poll(pfds, 2, poll_ms);
         if (ret < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (ret == 0) continue; /* timeout on select, loop will check deadline */
+        if (ret == 0) continue; /* timeout on poll, loop will check deadline */
+
+        /* select() reported an fd readable on data, hangup and error alike,
+         * and the read below then sorted out which (data / EOF / error).
+         * poll() reports a closed write end as POLLHUP, possibly without
+         * POLLIN, so all three must lead to the read or EOF would never be
+         * seen. POLLNVAL (fd not open) made select() fail with EBADF and end
+         * the loop; here it ends that stream, so poll() cannot spin on it. */
+        if (pfds[0].revents & POLLNVAL) {
+            LOGE("execSubprocess: stdout fd invalid (POLLNVAL)");
+            stdout_eof = 1;
+        }
+        if (pfds[1].revents & POLLNVAL) {
+            LOGE("execSubprocess: stderr fd invalid (POLLNVAL)");
+            stderr_eof = 1;
+        }
+        int stdout_ready = (pfds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+        int stderr_ready = (pfds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0;
 
         /* Read stdout.
          *
@@ -361,9 +384,9 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
          * see nothing, flag EOF, and return exitCode=0 + stdout="" while
          * the child was still mid-flight. The fix is to only flag EOF on
          * a genuine read=0 return; treat n<0 with EAGAIN/EWOULDBLOCK/EINTR
-         * as "try again next select tick".
+         * as "try again next poll tick".
          */
-        if (!stdout_eof && FD_ISSET(stdout_pipe[0], &rfds)) {
+        if (!stdout_eof && stdout_ready) {
             if (stdout_len >= stdout_cap) {
                 stdout_cap *= 2;
                 if (stdout_cap > MAX_OUTPUT) stdout_cap = MAX_OUTPUT;
@@ -381,14 +404,14 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
                 } else {
                     stdout_eagain++;
                 }
-                /* else: spurious wake, retry on next select tick */
+                /* else: spurious wake, retry on next poll tick */
             } else {
                 stdout_len += n;
             }
         }
 
         /* Read stderr */
-        if (!stderr_eof && FD_ISSET(stderr_pipe[0], &rfds)) {
+        if (!stderr_eof && stderr_ready) {
             if (stderr_len >= stderr_cap) {
                 stderr_cap *= 2;
                 if (stderr_cap > MAX_OUTPUT) stderr_cap = MAX_OUTPUT;
