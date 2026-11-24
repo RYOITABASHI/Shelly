@@ -1477,6 +1477,16 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // MCP service_control (ManagedServiceSupervisor.kt): start / stop /
+        // status of a service in the closed ManagedServices registry. Only the
+        // action and the id cross this boundary; what runs is fixed natively.
+        // The MCP bridge calls this only after the owner's approval tap.
+        AsyncFunction("serviceControl") Coroutine { action: String, serviceId: String, principal: String? ->
+            withContext(Dispatchers.IO) {
+                ManagedServiceSupervisor.control(requireReactContext(), action, serviceId, principal)
+            }
+        }
+
         // "Keep ChatGPT connected" (CodexRemoteHost.kt). The source of truth
         // is the Keystore-HMAC'd native switch (CodexRemoteAutostart.kt);
         // settings-store only mirrors it. The shell can only turn it off.

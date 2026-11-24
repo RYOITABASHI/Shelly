@@ -239,7 +239,7 @@ const MRTR_RETRY_HOLD_MS = 20_000;
 // window to collect an answer that landed right at the end.
 const MRTR_STATE_TTL_MS = RESULT_TIMEOUT_MS + 60_000;
 // Tools whose call blocks on an on-device approval tap.
-const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'stage_install', 'update_delivery_script', 'update_pipeline_config', 'run_agent']);
+const APPROVAL_TOOLS = new Set(['run_command', 'write_file', 'stage_install', 'update_delivery_script', 'update_pipeline_config', 'service_control', 'run_agent']);
 // Typed operations (lib/mcp-typed-ops.ts): listed only with "MCP: Allow
 // typed operations" (SHELLY_MCP_TYPED_OPS=1), whatever the exec setting says.
 const TYPED_OP_TOOLS = new Set(['run_agent', 'get_run_result']);
@@ -446,6 +446,19 @@ const TOOLS = [
         },
       },
       required: ['stagedPath', 'expectedSha256', 'expectedBytes', 'rebuild'],
+    },
+  },
+  {
+    name: 'service_control',
+    description: 'Starts, stops or reports a registered long-running Shelly service (closed list; no command or path is accepted). status returns {state, pid, startedAt, lastHeartbeatAt}; state "dead" means it stopped by itself. Requires MCP exec/write and on-device approval for each call.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['start', 'status', 'stop'] },
+        serviceId: { type: 'string', enum: ['article-delivery', 'council-facade'] },
+      },
+      required: ['action', 'serviceId'],
     },
   },
   {

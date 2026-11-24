@@ -50,6 +50,8 @@ class TerminalSessionService : Service() {
         // "Keep ChatGPT connected" (CodexRemoteHost.kt).
         const val ACTION_CODEX_REMOTE_START = "expo.modules.terminalemulator.CODEX_REMOTE_START"
         const val ACTION_CODEX_REMOTE_DISCONNECT = "expo.modules.terminalemulator.CODEX_REMOTE_DISCONNECT"
+        // MCP service_control (ManagedServiceSupervisor.kt): a supervised service started; stay foreground while it runs.
+        const val ACTION_MANAGED_SERVICE_KEEPALIVE = "expo.modules.terminalemulator.MANAGED_SERVICE_KEEPALIVE"
         /** The live service, so CodexRemoteHost can refresh the notification / stop an idle service. */
         @Volatile var instance: TerminalSessionService? = null
         const val EXTRA_AGENT_ID = "agent_id"
@@ -193,14 +195,34 @@ class TerminalSessionService : Service() {
                 // Exit also stops a ChatGPT remote-control host (until the next
                 // app start, like `shelly codex stop`).
                 Thread { runCatching { CodexRemoteHost.stopUntilNextStart(applicationContext) } }.start()
-                stopForegroundAndMark()
-                stopSelf()
+                // Exit also stops the services MCP service_control started. Stay
+                // in the foreground until they are down (a graceful stop takes
+                // up to ~5 s); dropping it first could let Android kill the app
+                // and leave a child running unprotected. Always swept (not only
+                // when one is running): a start still in progress is waited for
+                // and caught. With no service the sweep returns at once.
+                Thread {
+                    runCatching { ManagedServiceSupervisor.stopAllSupervised(applicationContext, "notification exit") }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        stopForegroundAndMark()
+                        stopSelf()
+                    }
+                }.start()
                 return START_NOT_STICKY
             }
             ACTION_CODEX_REMOTE_START -> {
                 startForegroundWithNotification(null)
                 CodexRemoteHost.ensureWatching(applicationContext)
                 CodexRemoteHost.wake()
+                if (!hasProtectedWork()) {
+                    stopForegroundAndMark()
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
+            ACTION_MANAGED_SERVICE_KEEPALIVE -> {
+                startForegroundWithNotification(null)
                 if (!hasProtectedWork()) {
                     stopForegroundAndMark()
                     stopSelf(startId)
@@ -843,7 +865,8 @@ class TerminalSessionService : Service() {
             // notification's lifecycle.
             val remainingAgents = activeAgentRuns.decrementAndGet()
             if (sessionRegistry.isEmpty() && remainingAgents <= 0 &&
-                !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+                !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false) &&
+                !ManagedServiceSupervisor.keepsServiceAlive()
             ) {
                 stopForegroundAndMark()
                 stopSelf()
@@ -864,7 +887,9 @@ class TerminalSessionService : Service() {
         sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0 ||
             // Queued drafts wait for an unlock only this service can observe.
             runCatching { ClosePawDrafts.hasWork(applicationContext) }.getOrDefault(false) ||
-            runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+            runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false) ||
+            // MCP service_control: a supervised service is running.
+            ManagedServiceSupervisor.keepsServiceAlive()
 
     /** ClosePawDrafts: the queue emptied, so re-check whether to stay. */
     fun onDraftQueueDrained() = onCodexRemoteChanged()

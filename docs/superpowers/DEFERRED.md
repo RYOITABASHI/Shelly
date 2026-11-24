@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-24: CC（`feat/service-control-p1`、P1 バッチ S1）が MCP typed op `service_control` を実装し、「配達ループの typed な起動経路と生存確保」に進捗と残り 4 件を追記。ハヤトの依頼で「executor が終端記録を残さずに死ぬ経路」を P1（バッチの次点）に登録。Gradle・実機未検証。
 - 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
 - 2026-11-23: Codex（`feat/pipeline-config-op`）が `update_pipeline_config` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
 - 2026-11-23: Codex（`feat/delivery-script-op`）が `update_delivery_script` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
@@ -5328,7 +5329,27 @@ Installed tools are available immediately — just type the command (existing ta
 
 対応の形は未定。候補：(a) `update_delivery_script` と同系列の typed op（ループ起動／状態確認。対象は配達スクリプト固定、承認モデルも同型）、(b) 配達スクリプト自体を Shelly の定期実行基盤へ移行し、常駐プロセスという形をやめる。いずれの場合も「落ちたら検知できる」こと（生存の可視化）を要件に含める。ブリッジ側の希望は「次のスクリプト差し替えまで」。
 
+**2026-11-24 進捗（P1 バッチ S1、ブランチ `feat/service-control-p1`、Gradle・実機未検証）**: 候補 (a) の一般形として MCP typed op `service_control`（`{action: start|status|stop, serviceId}` のみ）を実装。対象は閉じたレジストリ（`ManagedServices.kt`: `article-delivery` は具体化、`council-facade` は形のみで `not_configured`）。起動は MCP サーバーのプロセスからではなく、CodexRemoteHost と同型のネイティブ監督（`ManagedServiceSupervisor.kt`、TerminalSessionService の前景で動く）。start は起動済み（ターミナルのタブで動いているループも含む）なら二重起動しない、stop は未起動ならその旨を返す、status は `{state, pid, startedAt, lastHeartbeatAt}`。勝手に終了したものは `dead`。承認は毎回のタップ、STOP-ALL 中は start を拒否し、稼働中のものは止める。start / stop の結果はネイティブ監査（`audits/mcp-ingress-audit.jsonl`、kind `mcp_service_control`）に残る。起動時の環境（LD_LIBRARY_PATH）は `ManagedServices.LaunchEnv` の 1 か所で切り替えられる（S0 の libz 実測待ち）。
+残り:
+1. **自動復旧（S2）**: アプリのプロセス死・更新・再起動のあとに起動し直すこと、勝手に終了したものを再起動すること。S1 は `dead` を見せるだけ。
+2. **`status` も毎回タップが要る**: 指示どおり v1 は呼び出しごとの承認。朝チェックのように status を自動で読む用途には、status だけ承認なしにするか「常に許可」を入れるかの判断が要る（ハヤト判断）。
+3. **`council-facade` の具体化**: 起動仕様は端末上の `~/.shelly/services/council-facade/` に置く予定。そこを実行する時点で、`~/.shelly/services/` をゲートの `policy-write` 保護に加える必要がある（今は何も実行しないので未追加）。
+4. **「常に許可」**: `lib/mcp-service-control.ts` にルールの対象の形（`service:<id>:<action>`）だけ用意済み。有効化はしていない。
+
 → sync: README Status 表の変更なし（内部の運用基盤の記録）。
+
+---
+
+### executor が終端記録を残さずに死ぬ経路の検出と記録（2026-11-24、P1・P1 バッチの次点）
+
+executor が終端イベント（`plan_finish` 等）を残さずに死ぬ経路を検出し、記録する。2026-11-24 の定時ランで、write ステップの開始を最後に、終端の記録がないまま死亡した実測がある。SIGTERM の経路と、CLI 子プロセス単独の死は切り分けで除外済み。残る分類は executor プロセス自体の即死（SIGKILL / プロセスツリーの teardown / ホストプロセスの死）。
+対策の方向は executor の外側で記録すること:
+1. driver 側に終端記録を追記する。
+2. 起動時の reconciliation sweep で、終端のない run を `plan_orphaned` として閉じる。
+3. 当面の検出はブリッジ側の朝チェックが担う。
+
+Why not now: P1 バッチ（service_control と自動復旧）の後ろ。即死そのものは executor の中からは記録できないので、外側の仕組みを先に作る。
+→ sync: README Status 表の変更なし。
 
 ---
 

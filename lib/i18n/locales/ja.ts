@@ -2641,6 +2641,8 @@ const ja: Record<string, string> = {
   'mcp.approval_stage_install': 'MCP経由でAPKをインストールしますか？',
   'mcp.approval_update_delivery_script': 'MCP経由で配達スクリプトを更新しますか？',
   'mcp.approval_update_pipeline_config': 'MCP経由で記事パイプライン設定を更新しますか？',
+  'mcp.approval_service_control': 'MCP経由で常駐サービスを操作しますか？',
+  'mcp.approval_service_control_detail': '{{action}} {{service}}',
   'mcp.approval_update_pipeline_config_detail': '{{basename}}（{{bytes}} バイト）\n変更するパイプライン: {{pipelines}}\n再構築するエージェント: {{agents}}',
   'mcp.approval_title': 'Shelly MCPサーバー: 承認が必要です',
   'mcp.approval_risk_label': 'リスク',
