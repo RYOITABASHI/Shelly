@@ -196,8 +196,10 @@ object ManagedServiceSupervisor {
         val home = home(context)
         val dir = serviceDir(context, spec.id) ?: return "launch_failed"
         val log = File(dir, ManagedServices.OUTPUT_LOG)
-        runCatching {
-            if (log.length() > ManagedServices.OUTPUT_LOG_MAX_BYTES) log.renameTo(File(dir, ManagedServices.OUTPUT_LOG + ".1"))
+        // output.log / output.log.1 must not be symlinks (the shell appends through the leaf).
+        if (!ManagedServices.prepareOutputLog(dir)) {
+            Log.w(TAG, "start ${spec.id}: output log refused (symlink or I/O error)")
+            return "launch_failed"
         }
         val lib = libDir.absolutePath
         val pb = ProcessBuilder(
@@ -232,8 +234,16 @@ object ManagedServiceSupervisor {
         }
         val r = Running(spec.id, proc, pid, start, startedAt)
         synchronized(lock) { running[spec.id] = r }
-        writeRecord(context, spec.id, ManagedServices.Record(pid, start, startedAt))
+        val recorded = writeRecord(context, spec.id, ManagedServices.Record(pid, start, startedAt))
         Thread({ waitForExit(context, spec, r) }, "ShellySvc-${spec.id}").apply { isDaemon = true; start() }
+        // Without its record a service could not be reported dead later: never
+        // answer `started` for it. The waiter removes it from [running].
+        if (!recorded) {
+            Log.w(TAG, "start ${spec.id}: state.json not written; stopping the process")
+            r.stopping = true
+            signalVerified(mapOf(pid to start), Process.SIGNAL_KILL)
+            return "launch_failed"
+        }
         // STOP-ALL raised while it was being spawned: the script also checks
         // right before `exec node`; this closes the gap on this side.
         if (StopAllSwitches.halted(context)) {
@@ -382,16 +392,13 @@ object ManagedServiceSupervisor {
         }
     }
 
-    private fun writeRecord(context: Context, id: String, r: ManagedServices.Record) {
+    /** False when not written (the leaf or its temp is a symlink, or I/O failed); logged. */
+    private fun writeRecord(context: Context, id: String, r: ManagedServices.Record): Boolean {
         synchronized(recordLock) {
-            try {
-                val dir = serviceDir(context, id) ?: return
-                val tmp = File(dir, ManagedServices.RECORD_FILE + ".tmp-" + Thread.currentThread().id)
-                tmp.writeText(ManagedServices.encodeRecord(r))
-                if (!tmp.renameTo(File(dir, ManagedServices.RECORD_FILE))) tmp.delete()
-            } catch (e: Exception) {
-                Log.w(TAG, "state.json not written for $id: ${e.javaClass.simpleName}")
-            }
+            val dir = serviceDir(context, id)
+            val ok = dir != null && ManagedServices.writeRecordFile(dir, r, Thread.currentThread().id.toString())
+            if (!ok) Log.w(TAG, "state.json not written for $id (symlink leaf or I/O error)")
+            return ok
         }
     }
 

@@ -150,6 +150,70 @@ class ManagedServicesTest {
         assertEquals(ManagedServices.State.STOPPED, ManagedServices.decide(delivery, null, null, null, now).state)
     }
 
+    private fun tempDir(): java.io.File = java.nio.file.Files.createTempDirectory("svc-test").toFile()
+
+    /** Symlink creation needs a privilege on some Windows setups: skip those cases there. */
+    private fun linkOrSkip(link: java.io.File, target: java.io.File) {
+        try {
+            java.nio.file.Files.createSymbolicLink(link.toPath(), target.toPath())
+        } catch (e: Exception) {
+            org.junit.Assume.assumeNoException("symlinks not available here", e)
+        }
+    }
+
+    @Test
+    fun recordFileIsWrittenAtomically() {
+        val dir = tempDir()
+        val r = ManagedServices.Record(6293, "123", now)
+        assertTrue(ManagedServices.writeRecordFile(dir, r, "1"))
+        assertEquals(r, ManagedServices.parseRecord(java.io.File(dir, ManagedServices.RECORD_FILE).readText()))
+        val r2 = r.copy(stoppedAt = now + 1)
+        assertTrue(ManagedServices.writeRecordFile(dir, r2, "1"))
+        assertEquals(r2, ManagedServices.parseRecord(java.io.File(dir, ManagedServices.RECORD_FILE).readText()))
+        assertEquals(listOf(ManagedServices.RECORD_FILE), dir.list()!!.toList())
+    }
+
+    @Test
+    fun recordFileRefusesASymlinkedLeaf() {
+        val dir = tempDir()
+        val outside = java.io.File(tempDir(), "agents-file").apply { writeText("keep") }
+        linkOrSkip(java.io.File(dir, ManagedServices.RECORD_FILE), outside)
+        assertFalse(ManagedServices.writeRecordFile(dir, ManagedServices.Record(6293, "1", now), "1"))
+        assertEquals("keep", outside.readText())
+        assertTrue(ManagedServices.isSymlinkLeaf(java.io.File(dir, ManagedServices.RECORD_FILE)))
+    }
+
+    @Test
+    fun recordFileRefusesASymlinkedTemp() {
+        val dir = tempDir()
+        val outside = java.io.File(tempDir(), "agents-file").apply { writeText("keep") }
+        linkOrSkip(java.io.File(dir, "${ManagedServices.RECORD_FILE}.tmp-7"), outside)
+        assertFalse(ManagedServices.writeRecordFile(dir, ManagedServices.Record(6293, "1", now), "7"))
+        assertEquals("keep", outside.readText())
+        assertFalse(java.io.File(dir, ManagedServices.RECORD_FILE).exists())
+    }
+
+    @Test
+    fun outputLogRotatesAndRefusesSymlinks() {
+        val dir = tempDir()
+        assertTrue(ManagedServices.prepareOutputLog(dir)) // nothing there yet
+        val log = java.io.File(dir, ManagedServices.OUTPUT_LOG)
+        log.writeBytes(ByteArray((ManagedServices.OUTPUT_LOG_MAX_BYTES + 1).toInt()))
+        assertTrue(ManagedServices.prepareOutputLog(dir))
+        assertFalse(log.exists())
+        assertEquals(ManagedServices.OUTPUT_LOG_MAX_BYTES + 1, java.io.File(dir, "${ManagedServices.OUTPUT_LOG}.1").length())
+
+        val dir2 = tempDir()
+        val outside = java.io.File(tempDir(), "agents-file").apply { writeText("keep") }
+        linkOrSkip(java.io.File(dir2, ManagedServices.OUTPUT_LOG), outside)
+        assertFalse(ManagedServices.prepareOutputLog(dir2))
+        assertEquals("keep", outside.readText())
+
+        val dir3 = tempDir()
+        linkOrSkip(java.io.File(dir3, "${ManagedServices.OUTPUT_LOG}.1"), outside)
+        assertFalse(ManagedServices.prepareOutputLog(dir3))
+    }
+
     @Test
     fun serviceControlAuditLineIsClosed() {
         val p = "0123456789abcdef0123456789abcdef"

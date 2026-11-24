@@ -1,5 +1,10 @@
 package expo.modules.terminalemulator
 
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import org.json.JSONObject
 
 /**
@@ -184,6 +189,62 @@ object ManagedServices {
         }
     } catch (e: Exception) {
         null
+    }
+
+    // ── Writing under services/<id>/ (leaf symlinks refused) ──────────────
+    //
+    // The directory itself is checked by the supervisor (canonical path equals
+    // the absolute one). Each file the supervisor writes is refused when its
+    // leaf is a symlink, so a link planted in services/<id>/ cannot redirect a
+    // write (into agents/ or anywhere else). Pure java.nio: JVM-testable.
+
+    /** True when the leaf [f] is itself a symlink (not followed). */
+    fun isSymlinkLeaf(f: File): Boolean = Files.isSymbolicLink(f.toPath())
+
+    /**
+     * Writes state.json through a per-writer temp file and an atomic rename.
+     * False (nothing replaced) when the temp or the target leaf is a symlink,
+     * or on any I/O error. The temp file is opened with NOFOLLOW_LINKS too.
+     */
+    fun writeRecordFile(dir: File, r: Record, tmpSuffix: String): Boolean {
+        val target = File(dir, RECORD_FILE)
+        val tmp = File(dir, "$RECORD_FILE.tmp-$tmpSuffix")
+        if (isSymlinkLeaf(target) || isSymlinkLeaf(tmp)) return false
+        return try {
+            Files.newOutputStream(
+                tmp.toPath(),
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS,
+            ).use { it.write(encodeRecord(r).toByteArray(Charsets.UTF_8)) }
+            if (isSymlinkLeaf(target)) {
+                Files.deleteIfExists(tmp.toPath())
+                return false
+            }
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            true
+        } catch (e: Exception) {
+            runCatching { if (!isSymlinkLeaf(tmp)) Files.deleteIfExists(tmp.toPath()) }
+            false
+        }
+    }
+
+    /**
+     * Before a start: refuses (false) when output.log or output.log.1 is a
+     * symlink (the shell would append through it); otherwise rotates
+     * output.log to output.log.1 once it is over [OUTPUT_LOG_MAX_BYTES].
+     */
+    fun prepareOutputLog(dir: File): Boolean {
+        val log = File(dir, OUTPUT_LOG)
+        val old = File(dir, "$OUTPUT_LOG.1")
+        if (isSymlinkLeaf(log) || isSymlinkLeaf(old)) return false
+        return try {
+            if (Files.exists(log.toPath(), LinkOption.NOFOLLOW_LINKS) && log.length() > OUTPUT_LOG_MAX_BYTES) {
+                Files.move(log.toPath(), old.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ── Heartbeat ──────────────────────────────────────────────────────────
