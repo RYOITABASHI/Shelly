@@ -100,9 +100,10 @@ object ManagedServices {
         }
         sb.append("cd ").append(shQuote(dir)).append(" || exit 126\n")
         sb.append("command -v node >/dev/null 2>&1 || exit 127\n")
-        // STOP-ALL, checked again as the last step before the service starts.
-        sb.append("[ -e ").append(shQuote("$homePath/$HALT_SENTINEL")).append(" ] && exit 125\n")
         sb.append("printf '%s service start\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n")
+        // STOP-ALL, checked again as the very last statement before exec: `[`
+        // is a builtin, so no external command runs between the check and exec.
+        sb.append("[ -e ").append(shQuote("$homePath/$HALT_SENTINEL")).append(" ] && exit 125\n")
         sb.append("exec node ").append(shQuote(script))
         for (a in launch.args) sb.append(' ').append(shQuote(a))
         sb.append('\n')

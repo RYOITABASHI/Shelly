@@ -37,9 +37,12 @@ class ManagedServicesTest {
         assertTrue(cmd.contains("unset LD_PRELOAD\n"))
         assertTrue(cmd.contains("export LD_LIBRARY_PATH='/data/lib'\n"))
         assertTrue(cmd.contains("cd '/data/user/0/x/files/home/.shelly/agents' || exit 126\n"))
-        // STOP-ALL is the last check before exec.
-        val halt = cmd.indexOf("[ -e '/data/user/0/x/files/home/.shelly/agents/.halted' ] && exit 125\n")
-        assertTrue(halt > 0 && halt < cmd.indexOf("exec node "))
+        // STOP-ALL is the very last statement before exec (nothing in between),
+        // and the start line (which runs `date`) comes before it.
+        val lines = cmd.trimEnd('\n').split('\n')
+        assertEquals("[ -e '/data/user/0/x/files/home/.shelly/agents/.halted' ] && exit 125", lines[lines.size - 2])
+        assertTrue(lines.last().startsWith("exec node "))
+        assertTrue(lines.indexOfFirst { it.startsWith("printf ") } in 0 until lines.size - 2)
         assertTrue(cmd.endsWith("exec node '/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js' 'loop'\n"))
 
         val unset = launch.copy(env = ManagedServices.LaunchEnv(sourceBashrc = false, libraryPath = ManagedServices.LibraryPath.UNSET))
