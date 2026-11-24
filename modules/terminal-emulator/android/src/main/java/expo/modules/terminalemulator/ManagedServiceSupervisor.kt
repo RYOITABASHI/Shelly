@@ -122,11 +122,7 @@ object ManagedServiceSupervisor {
         synchronized(lock) { running[spec.id] }?.let { r ->
             if (startOf(r.pid) == r.startTime) return ManagedServices.Live(r.pid, r.startedAt, supervised = true)
         }
-        val myUid = Process.myUid()
-        fun verified(pid: Int): Boolean =
-            pid > 1 && pid != Process.myPid() &&
-                CodexRemotePolicy.procUid(readProc(pid, "status")) == myUid &&
-                ManagedServices.cmdlineMatches(launch, readProc(pid, "cmdline"))
+        fun verified(pid: Int): Boolean = isServiceProcess(context, launch, pid)
         if (record != null && record.stoppedAt == null && record.exitedAt == null &&
             startOf(record.pid) == record.startTime && verified(record.pid)
         ) {
@@ -136,6 +132,24 @@ object ManagedServiceSupervisor {
         if (bp > 1 && verified(bp)) return ManagedServices.Live(bp, null, supervised = false)
         return null
     }
+
+    /** Every spelling of the app home a process may carry in its argv. */
+    private fun homeSpellings(context: Context): List<String> {
+        val home = home(context)
+        val pkg = context.packageName
+        return listOfNotNull(
+            home.absolutePath,
+            runCatching { home.canonicalPath }.getOrNull(),
+            "/data/data/$pkg/files/home",
+            "/data/user/0/$pkg/files/home",
+        ).distinct()
+    }
+
+    /** Same uid, not this process, and its cmdline is exactly this service (ManagedServices.cmdlineMatches). */
+    private fun isServiceProcess(context: Context, launch: ManagedServices.Launch, pid: Int): Boolean =
+        pid > 1 && pid != Process.myPid() &&
+            CodexRemotePolicy.procUid(readProc(pid, "status")) == Process.myUid() &&
+            ManagedServices.cmdlineMatches(launch, ManagedServices.scriptPaths(launch, homeSpellings(context)), readProc(pid, "cmdline"))
 
     // ── Start ──────────────────────────────────────────────────────────────
 
@@ -219,8 +233,16 @@ object ManagedServiceSupervisor {
         val r = Running(spec.id, proc, pid, start, startedAt)
         synchronized(lock) { running[spec.id] = r }
         writeRecord(context, spec.id, ManagedServices.Record(pid, start, startedAt))
-        Log.i(TAG, "started ${spec.id} pid=$pid")
         Thread({ waitForExit(context, spec, r) }, "ShellySvc-${spec.id}").apply { isDaemon = true; start() }
+        // STOP-ALL raised while it was being spawned: the script also checks
+        // right before `exec node`; this closes the gap on this side.
+        if (StopAllSwitches.halted(context)) {
+            r.stopping = true
+            updateRecord(context, spec.id, pid, start) { it.copy(stoppedAt = System.currentTimeMillis()) }
+            signalVerified(mapOf(pid to start), Process.SIGNAL_KILL)
+            return "halted"
+        }
+        Log.i(TAG, "started ${spec.id} pid=$pid")
         ensureHaltWatcher(context)
         // A service that cannot start (missing node, a syntax error) exits at once.
         val deadline = System.currentTimeMillis() + LAUNCH_SETTLE_MS
@@ -236,11 +258,9 @@ object ManagedServiceSupervisor {
         val now = System.currentTimeMillis()
         synchronized(lock) { if (running[spec.id] === r) running.remove(spec.id) }
         Log.i(TAG, "${spec.id} pid=${r.pid} exited code=$code after ${now - r.startedAt}ms stopping=${r.stopping}")
-        val rec = readRecord(context, spec.id)
-        if (rec != null && rec.pid == r.pid && rec.startTime == r.startTime) {
-            // A stop writes stoppedAt itself; an exit by itself leaves it unset (= dead).
-            writeRecord(context, spec.id, rec.copy(exitedAt = now, exitCode = code))
-        }
+        // A stop writes stoppedAt itself; an exit by itself leaves it unset (= dead).
+        // Only this run's record: a newer start's record is never overwritten.
+        updateRecord(context, spec.id, r.pid, r.startTime) { it.copy(exitedAt = now, exitCode = code) }
         TerminalSessionService.instance?.onCodexRemoteChanged() // re-checks whether the service may stop
     }
 
@@ -274,14 +294,23 @@ object ManagedServiceSupervisor {
             return result("not_running", spec, status(context, spec))
         }
         val now = System.currentTimeMillis()
-        synchronized(lock) { running[spec.id] }?.takeIf { it.pid == pid }?.stopping = true
+        val ours = synchronized(lock) { running[spec.id] }?.takeIf { it.pid == pid && it.startTime == start }
+        // Not spawned here: right before signalling, check again that the pid is
+        // still exactly this service (it may have exec'd something else).
+        if (ours == null && !isServiceProcess(context, spec.launch, pid)) {
+            audit(context, principal, "stop", spec, "not_running")
+            return result("not_running", spec, status(context, spec))
+        }
+        ours?.stopping = true
         // Mark the stop first, so the exit is never read as a crash.
-        val rec = readRecord(context, spec.id)
-        writeRecord(
-            context, spec.id,
-            if (rec != null && rec.pid == pid && rec.startTime == start) rec.copy(stoppedAt = now)
-            else ManagedServices.Record(pid, start, before.startedAt ?: now, stoppedAt = now),
-        )
+        synchronized(recordLock) {
+            val rec = readRecord(context, spec.id)
+            writeRecord(
+                context, spec.id,
+                if (rec != null && rec.pid == pid && rec.startTime == start) rec.copy(stoppedAt = now)
+                else ManagedServices.Record(pid, start, before.startedAt ?: now, stoppedAt = now),
+            )
+        }
         Log.i(TAG, "stopping ${spec.id} pid=$pid ($reason)")
         val targets = HashMap<Int, String>()
         targets[pid] = start
@@ -296,6 +325,15 @@ object ManagedServiceSupervisor {
         audit(context, principal, "stop", spec, code)
         TerminalSessionService.instance?.onCodexRemoteChanged()
         return result(code, spec, status(context, spec))
+    }
+
+    /** The service notification's Exit: stop every supervised service (no MCP principal). */
+    fun stopAllSupervised(context: Context, reason: String) {
+        val ids = synchronized(lock) { running.keys.toList() }
+        for (id in ids) {
+            val spec = ManagedServices.spec(id) ?: continue
+            runCatching { synchronized(controlLock) { stop(context.applicationContext, spec, null, reason) } }
+        }
     }
 
     // ── STOP-ALL ───────────────────────────────────────────────────────────
@@ -333,13 +371,28 @@ object ManagedServiceSupervisor {
     private fun readRecord(context: Context, id: String): ManagedServices.Record? =
         ManagedServices.parseRecord(readSmall(File(home(context), "${ManagedServices.serviceDir(id)}/${ManagedServices.RECORD_FILE}")))
 
+    /** Guards every read-modify-write of state.json (waiters, starts, stops). */
+    private val recordLock = Object()
+
+    /** Applies [change] only if state.json still describes this run (pid + starttime). */
+    private fun updateRecord(context: Context, id: String, pid: Int, startTime: String, change: (ManagedServices.Record) -> ManagedServices.Record) {
+        synchronized(recordLock) {
+            val rec = readRecord(context, id) ?: return
+            if (rec.pid == pid && rec.startTime == startTime) writeRecord(context, id, change(rec))
+        }
+    }
+
     private fun writeRecord(context: Context, id: String, r: ManagedServices.Record) {
-        runCatching {
-            val dir = serviceDir(context, id) ?: return
-            val tmp = File(dir, ManagedServices.RECORD_FILE + ".tmp")
-            tmp.writeText(ManagedServices.encodeRecord(r))
-            if (!tmp.renameTo(File(dir, ManagedServices.RECORD_FILE))) tmp.delete()
-        }.onFailure { Log.w(TAG, "state.json not written for $id: ${it.javaClass.simpleName}") }
+        synchronized(recordLock) {
+            try {
+                val dir = serviceDir(context, id) ?: return
+                val tmp = File(dir, ManagedServices.RECORD_FILE + ".tmp-" + Thread.currentThread().id)
+                tmp.writeText(ManagedServices.encodeRecord(r))
+                if (!tmp.renameTo(File(dir, ManagedServices.RECORD_FILE))) tmp.delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "state.json not written for $id: ${e.javaClass.simpleName}")
+            }
+        }
     }
 
     /** At most 4 KiB, never following a symlink at the leaf. */

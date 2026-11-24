@@ -37,6 +37,9 @@ class ManagedServicesTest {
         assertTrue(cmd.contains("unset LD_PRELOAD\n"))
         assertTrue(cmd.contains("export LD_LIBRARY_PATH='/data/lib'\n"))
         assertTrue(cmd.contains("cd '/data/user/0/x/files/home/.shelly/agents' || exit 126\n"))
+        // STOP-ALL is the last check before exec.
+        val halt = cmd.indexOf("[ -e '/data/user/0/x/files/home/.shelly/agents/.halted' ] && exit 125\n")
+        assertTrue(halt > 0 && halt < cmd.indexOf("exec node "))
         assertTrue(cmd.endsWith("exec node '/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js' 'loop'\n"))
 
         val unset = launch.copy(env = ManagedServices.LaunchEnv(sourceBashrc = false, libraryPath = ManagedServices.LibraryPath.UNSET))
@@ -53,15 +56,29 @@ class ManagedServicesTest {
     @Test
     fun cmdlineMatchesOnlyThisServiceInLoopMode() {
         val nul = "\u0000"
-        assertTrue(ManagedServices.cmdlineMatches(launch, listOf("linker64", "/lib/node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop").joinToString(nul) + nul))
-        assertTrue(ManagedServices.cmdlineMatches(launch, listOf("node", "/data/data/x/files/home/.shelly/agents/.env.article-delivery.js", "loop").joinToString(nul)))
-        assertTrue(ManagedServices.cmdlineMatches(launch, listOf("node", ".env.article-delivery.js", "loop").joinToString(nul)))
-        assertFalse(ManagedServices.cmdlineMatches(launch, listOf("node", "/h/.shelly/agents/.env.article-delivery.js", "tick").joinToString(nul)))
-        assertFalse(ManagedServices.cmdlineMatches(launch, listOf("node", "/h/.shelly/agents/.env.article-delivery.js").joinToString(nul)))
-        assertFalse(ManagedServices.cmdlineMatches(launch, listOf("node", "/h/other.js", "loop").joinToString(nul)))
-        assertFalse(ManagedServices.cmdlineMatches(launch, listOf("bash", "-c", "node /h/.shelly/agents/.env.article-delivery.js loop").joinToString(nul)))
-        assertFalse(ManagedServices.cmdlineMatches(launch, ""))
-        assertFalse(ManagedServices.cmdlineMatches(launch, null))
+        val paths = ManagedServices.scriptPaths(launch, listOf("/data/user/0/x/files/home", "/data/data/x/files/home", "relative", "/trailing/"))
+        assertEquals(setOf(
+            "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js",
+            "/data/data/x/files/home/.shelly/agents/.env.article-delivery.js",
+        ), paths)
+        fun m(vararg argv: String, trailingNul: Boolean = false) =
+            ManagedServices.cmdlineMatches(launch, paths, argv.joinToString(nul) + if (trailingNul) nul else "")
+        // As seen on the device (2026-11-24, pid 6293), and the other home alias.
+        assertTrue(m("linker64", "/data/user/0/x/termux-libs/node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop", trailingNul = true))
+        assertTrue(m("node", "/data/data/x/files/home/.shelly/agents/.env.article-delivery.js", "loop"))
+        // A file of the same name elsewhere, a relative path, another mode, extra args, another program.
+        assertFalse(m("node", "/tmp/.env.article-delivery.js", "loop"))
+        assertFalse(m("node", "/data/user/0/x/files/home/tmp/.shelly/agents/.env.article-delivery.js", "loop"))
+        assertFalse(m("node", ".env.article-delivery.js", "loop"))
+        assertFalse(m("node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "tick"))
+        assertFalse(m("node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js"))
+        assertFalse(m("node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop", "extra"))
+        assertFalse(m("python3", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop"))
+        assertFalse(m("linker64", "/lib/python3", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop"))
+        assertFalse(m("bash", "-c", "node /data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js loop"))
+        assertFalse(ManagedServices.cmdlineMatches(launch, paths, ""))
+        assertFalse(ManagedServices.cmdlineMatches(launch, paths, null))
+        assertFalse(ManagedServices.cmdlineMatches(launch, emptySet(), "node${nul}/x${nul}loop"))
     }
 
     @Test

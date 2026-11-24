@@ -195,6 +195,9 @@ class TerminalSessionService : Service() {
                 // Exit also stops a ChatGPT remote-control host (until the next
                 // app start, like `shelly codex stop`).
                 Thread { runCatching { CodexRemoteHost.stopUntilNextStart(applicationContext) } }.start()
+                // Exit also stops the services MCP service_control started: they
+                // would otherwise keep running without the foreground service.
+                Thread { runCatching { ManagedServiceSupervisor.stopAllSupervised(applicationContext, "notification exit") } }.start()
                 stopForegroundAndMark()
                 stopSelf()
                 return START_NOT_STICKY

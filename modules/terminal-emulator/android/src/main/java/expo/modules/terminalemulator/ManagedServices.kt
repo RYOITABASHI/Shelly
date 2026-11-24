@@ -21,6 +21,8 @@ object ManagedServices {
     const val RECORD_FILE = "state.json"
     const val OUTPUT_LOG = "output.log"
     const val OUTPUT_LOG_MAX_BYTES = 1L shl 20
+    /** STOP-ALL sentinel (same path as StopAllSwitches.haltedSentinel). */
+    const val HALT_SENTINEL = ".shelly/agents/.halted"
 
     val ACTIONS: Set<String> = setOf("start", "status", "stop")
     private val ID_RE = Regex("^[a-z0-9-]{1,40}$")
@@ -98,6 +100,8 @@ object ManagedServices {
         }
         sb.append("cd ").append(shQuote(dir)).append(" || exit 126\n")
         sb.append("command -v node >/dev/null 2>&1 || exit 127\n")
+        // STOP-ALL, checked again as the last step before the service starts.
+        sb.append("[ -e ").append(shQuote("$homePath/$HALT_SENTINEL")).append(" ] && exit 125\n")
         sb.append("printf '%s service start\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n")
         sb.append("exec node ").append(shQuote(script))
         for (a in launch.args) sb.append(' ').append(shQuote(a))
@@ -106,19 +110,35 @@ object ManagedServices {
     }
 
     /**
-     * True when a `/proc/<pid>/cmdline` (NUL-separated) is this service: one
-     * argument is the script (by its home-relative suffix or bare name, so
-     * `node ~/…` and `node <alias of home>/…` both match) and the launch
-     * arguments follow it in order.
+     * The absolute script paths a process of this service may show in its
+     * cmdline: `<home>/<script>` for each spelling of the app home ([homes]:
+     * the path HomeInitializer returns, its canonical form, and the
+     * `/data/data/<pkg>` alias a shell may expand `~` to).
      */
-    fun cmdlineMatches(launch: Launch, cmdline: String?): Boolean {
-        if (cmdline.isNullOrEmpty()) return false
-        val argv = cmdline.split('\u0000').filter { it.isNotEmpty() }
-        val name = launch.script.substringAfterLast('/')
-        val idx = argv.indexOfFirst { it == name || it.endsWith("/${launch.script}") || it.endsWith("/$name") }
-        if (idx < 0) return false
-        val rest = argv.drop(idx + 1)
-        return rest.size >= launch.args.size && rest.subList(0, launch.args.size) == launch.args
+    fun scriptPaths(launch: Launch, homes: Collection<String>): Set<String> =
+        homes.filter { it.startsWith("/") && !it.endsWith("/") }.map { "$it/${launch.script}" }.toSet()
+
+    /**
+     * True when a `/proc/<pid>/cmdline` (NUL-separated) is exactly this
+     * service: the program is node (directly, or as `linker64 <…>/node`), the
+     * next argument is one of [scriptPaths] verbatim, and the remaining
+     * arguments are the launch arguments. A file of the same name elsewhere
+     * (`/tmp/.env.article-delivery.js`), a relative path, or any other argv
+     * shape does not match, so a forged state.json / heartbeat cannot point a
+     * stop at another process.
+     */
+    fun cmdlineMatches(launch: Launch, scriptPaths: Set<String>, cmdline: String?): Boolean {
+        if (cmdline.isNullOrEmpty() || scriptPaths.isEmpty()) return false
+        val argv = cmdline.split('\u0000').let { if (it.lastOrNull() == "") it.dropLast(1) else it }
+        fun isNode(a: String) = a == "node" || (a.startsWith("/") && a.endsWith("/node"))
+        val at = when {
+            argv.isNotEmpty() && isNode(argv[0]) -> 1
+            argv.size > 1 && (argv[0] == "linker64" || argv[0] == "/system/bin/linker64") && isNode(argv[1]) -> 2
+            else -> return false
+        }
+        return argv.size == at + 1 + launch.args.size &&
+            argv[at] in scriptPaths &&
+            argv.subList(at + 1, argv.size) == launch.args
     }
 
     // ── Record (`state.json`, written only by the supervisor) ──────────────
