@@ -5335,6 +5335,7 @@ Installed tools are available immediately — just type the command (existing ta
 2. **`status` も毎回タップが要る**: 指示どおり v1 は呼び出しごとの承認。朝チェックのように status を自動で読む用途には、status だけ承認なしにするか「常に許可」を入れるかの判断が要る（ハヤト判断）。
 3. **`council-facade` の具体化**: 起動仕様は端末上の `~/.shelly/services/council-facade/` に置く予定。そこを実行する時点で、`~/.shelly/services/` をゲートの `policy-write` 保護に加える必要がある（今は何も実行しないので未追加）。
 4. **「常に許可」**: `lib/mcp-service-control.ts` にルールの対象の形（`service:<id>:<action>`）だけ用意済み。有効化はしていない。
+5. **Exit ラッチ（2026-11-24、PR #202 の再ゲート残件としてハヤトが登録）**: 通知 Exit の一掃（最大5ラウンド）完了から前景解除までの間に新規 start が完了すると、そのサービスは前景保護なしで残り得る（影響は現行の手動起動ループと同じ状態まで）。塞ぐには Exit 開始時点で新規 start を拒否するラッチが要る。S2 の監督ライフサイクル整備と一緒に扱う。あわせて、監督の書き込み（output.log 追記）をパス経由でなく fd 継承に変える硬化も同じ残件としておく（現行の lstat 拒否で「リンク越しに書く」ことは起きないため優先度は低い）。
 
 → sync: README Status 表の変更なし（内部の運用基盤の記録）。
 
