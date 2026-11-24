@@ -338,12 +338,25 @@ object ManagedServiceSupervisor {
     }
 
     /** The service notification's Exit: stop every supervised service (no MCP principal). */
-    fun stopAllSupervised(context: Context, reason: String) {
-        val ids = synchronized(lock) { running.keys.toList() }
-        for (id in ids) {
-            val spec = ManagedServices.spec(id) ?: continue
-            runCatching { synchronized(controlLock) { stop(context.applicationContext, spec, null, reason) } }
+    fun stopAllSupervised(context: Context, reason: String): Boolean {
+        val app = context.applicationContext
+        // Each round takes the snapshot under controlLock, so a start that is
+        // in progress finishes first and is in the snapshot (or in the next
+        // round's). Only live entries count: an exited one whose waiter has
+        // not removed it yet does not cause another round. Every wait is
+        // bounded (a start, then one stop per service: about STOP_GRACE_MS).
+        val emptied = ManagedServices.sweepUntilEmpty(ManagedServices.EXIT_SWEEP_MAX_ROUNDS) {
+            synchronized(controlLock) {
+                val live = synchronized(lock) { running.values.filter { startOf(it.pid) == it.startTime }.map { it.id } }
+                for (id in live) {
+                    val spec = ManagedServices.spec(id) ?: continue
+                    runCatching { stop(app, spec, null, reason) }
+                }
+                live.size
+            }
         }
+        if (!emptied) Log.w(TAG, "stopAllSupervised($reason): services still running after ${ManagedServices.EXIT_SWEEP_MAX_ROUNDS} rounds")
+        return emptied
     }
 
     // ── STOP-ALL ───────────────────────────────────────────────────────────

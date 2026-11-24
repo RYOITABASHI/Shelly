@@ -247,6 +247,21 @@ object ManagedServices {
         }
     }
 
+    // ── Exit sweep ─────────────────────────────────────────────────────────
+
+    const val EXIT_SWEEP_MAX_ROUNDS = 5
+
+    /**
+     * Runs [round] (snapshot the live services and stop them all; returns how
+     * many it found) until a round finds none, at most [maxRounds] times. A
+     * start that was in progress when the sweep began is caught by a later
+     * round. True when the last round found nothing.
+     */
+    fun sweepUntilEmpty(maxRounds: Int, round: () -> Int): Boolean {
+        repeat(maxRounds) { if (round() == 0) return true }
+        return false
+    }
+
     // ── Heartbeat ──────────────────────────────────────────────────────────
 
     /** pid 0 = "starting" marker some services write before their first round. */

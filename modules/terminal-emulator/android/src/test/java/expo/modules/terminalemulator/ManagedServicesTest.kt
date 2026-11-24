@@ -215,6 +215,22 @@ class ManagedServicesTest {
     }
 
     @Test
+    fun exitSweepRepeatsUntilARoundFindsNothing() {
+        // A start that lands while round 1 runs is caught by round 2.
+        val found = ArrayDeque(listOf(1, 1, 0))
+        var rounds = 0
+        assertTrue(ManagedServices.sweepUntilEmpty(5) { rounds++; found.removeFirst() })
+        assertEquals(3, rounds)
+        // Bounded: never more than maxRounds, and reports that it did not empty.
+        rounds = 0
+        assertFalse(ManagedServices.sweepUntilEmpty(5) { rounds++; 1 })
+        assertEquals(5, rounds)
+        rounds = 0
+        assertTrue(ManagedServices.sweepUntilEmpty(5) { rounds++; 0 })
+        assertEquals(1, rounds)
+    }
+
+    @Test
     fun serviceControlAuditLineIsClosed() {
         val p = "0123456789abcdef0123456789abcdef"
         val line = IngressAuditWriter.buildServiceControlLine(now, p, "start", "article-delivery", "started")
