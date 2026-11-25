@@ -598,6 +598,23 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(readAudit(home).find((e) => e.event === 'web_search_budget')).toMatchObject({ used: null, runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES });
   }, 60000);
 
+  // Fix round 1 (item 3): the no-web-sources hold is for a plan with a Web
+  // search step only. A generic (HTTP) research with no source keeps the old
+  // rule (sourcing_no_sources), with its ownSources exemption.
+  it('item 3: a plan whose research is a generic step is not held for no-web-sources', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([ARTICLE, 'VERDICT: PASS']);
+    const local = { type: 'local', label: 'Local LLM', model: 'fixture' };
+    const planFile = writePlan(home, port, basePlan(home, chain(local, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir);
+    const audit = readAudit(home);
+    expect(audit.some((e) => e.event === 'sourcing_no_web_sources')).toBe(false);
+    expect(audit.some((e) => e.event === 'article_held')).toBe(false);
+    expect(audit.some((e) => e.event === 'sourcing_no_sources')).toBe(true);
+    expect(readFeedback(home)).toEqual([]);
+    expect(readRunLog(home).outputPreview).not.toMatch(/^Held/);
+  }, 60000);
+
   it('any other research failure still fails the run as before (not held)', async () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver([null, ARTICLE, 'VERDICT: PASS']);

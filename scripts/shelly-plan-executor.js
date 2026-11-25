@@ -13196,6 +13196,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // v68: an article run that cannot publish lands held (landArticleHeld):
   // {reason, note, stepIndex, stepStartedAt, text?, landed?}.
   const articleHeldRun = longform && !isDigestPlan(plan);
+  // Fix round 1: the no-web-sources hold is for a plan with a Web search step only.
+  const planHasWebSearchStep = articleHeldRun && plan.steps.list.some((_s, k) => isResearchWebSearchCliStep(plan, k));
   let heldLanding = null;
   // v68: when each step first started (the held line's lastStep.startedAt).
   const stepStartedAtMs = new Map();
@@ -15111,11 +15113,14 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // Sourced briefings: the research ran but found nothing citable — stop
     // HERE (before any summarize/write step can invent content) with an
     // explicit failure instead of saving an unsourced briefing.
-    // v68: an article plan with a web research step never writes from the
-    // owner's materials alone: no web source after its research lands held
-    // here, before the write step (materials-only is right only for a plan with
-    // no web research step, where sourcingActive is false).
-    if (articleHeldRun && sourcingActive && researchStepsDone > 0 && evidence.sources.length === 0 && !stepIsResearch(i)) {
+    // v68: an article plan with a Web search research step (the Codex hosted
+    // search, isResearchWebSearchCliStep) never writes from the owner's
+    // materials alone: no web source after its research lands held here,
+    // before the write step. Fix round 1: only that plan. A plan whose research
+    // is a generic step (HTTP, no hosted search) keeps the rule below: its
+    // owner's materials count as sources (ownSources), and with none it stops
+    // as before.
+    if (articleHeldRun && planHasWebSearchStep && sourcingActive && researchStepsDone > 0 && evidence.sources.length === 0 && !stepIsResearch(i)) {
       appendJsonl(paths.planAuditFile, {
         ts: new Date().toISOString(),
         kind: 'plan.executor',
