@@ -140,7 +140,7 @@ describe('MCP direct reads', () => {
       await writeSnapshot(TOKEN, bridge.buildSnapshotBody(AGENTS, [REPO], DEVICE));
       const { callTool, fallback } = makeAt(Date.parse(CAPTURED) + 30_000);
       const res = await callTool('device_status', {});
-      expect(res).toEqual({ ok: true, data: { ...DEVICE, ageMs: 30_000, stale: false } });
+      expect(res).toEqual({ ok: true, data: { ...DEVICE, ageMs: 30_000, stale: false, bundle: null, payloads: expect.any(Object) } });
       expect(fallback).not.toHaveBeenCalled();
     });
 
@@ -167,7 +167,7 @@ describe('MCP direct reads', () => {
       });
       expect(await callTool('device_status', {})).toEqual({
         ok: true,
-        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge unavailable' },
+        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge unavailable', bundle: null, payloads: expect.any(Object) },
       });
       expect(fallback).toHaveBeenCalledTimes(1);
     });
@@ -178,7 +178,7 @@ describe('MCP direct reads', () => {
       const { callTool, fallback } = makeAt(STALE_NOW);
       expect(await callTool('device_status', {})).toEqual({
         ok: true,
-        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge not live' },
+        data: { ...DEVICE, ageMs: STALE_AGE, stale: true, live: false, refreshError: 'bridge not live', bundle: null, payloads: expect.any(Object) },
       });
       expect(fallback).not.toHaveBeenCalled();
     });
@@ -207,6 +207,151 @@ describe('MCP direct reads', () => {
         expect(await callTool('list_repos', {})).toEqual({ ok: true, data: [REPO] });
       }
       expect(fallback).not.toHaveBeenCalled();
+    });
+
+    describe('payload provenance', () => {
+      let home: string;
+      let libDir: string;
+      let queue: string;
+      const sha = (b: string) => nodeCrypto.createHash('sha256').update(b).digest('hex');
+      const makeP = (nowMs: number) => {
+        const fallback = jest.fn(async () => ({ ok: true, data: { live: true } }));
+        const callTool = mcp.createDirectReadCallTool({ queueDir: queue, token: TOKEN, fallback, now: () => nowMs, homeDir: home, libDir });
+        return { callTool, fallback };
+      };
+      const snap = async (device: unknown) => {
+        const body = bridge.buildSnapshotBody(AGENTS, [REPO], device);
+        fs.writeFileSync(path.join(queue, 'snapshot.json'), JSON.stringify({ body, mac: await sign(TOKEN, body) }));
+      };
+      beforeEach(() => {
+        home = path.join(dir, 'phome');
+        libDir = path.join(home, 'termux-libs');
+        queue = path.join(home, '.shelly-mcp-queue');
+        fs.mkdirSync(path.join(home, '.shelly'), { recursive: true });
+        fs.mkdirSync(libDir, { recursive: true });
+        fs.mkdirSync(queue, { recursive: true });
+      });
+
+      it('attaches hashes, marker vc, app info, libs and the bundle fingerprint to a snapshot answer', async () => {
+        fs.writeFileSync(path.join(home, '.shelly-mcp-server.js'), 'old script');
+        fs.writeFileSync(path.join(libDir, '.extract_version'), 'vc=3061|cli=abc|x=y');
+        fs.writeFileSync(path.join(libDir, 'codex_tui'), '12345');
+        fs.writeFileSync(path.join(home, '.shelly', 'app-info.json'), JSON.stringify({ versionCode: 3061, versionName: '5.9', writtenAtMs: 0, secret: 'no' }));
+        const bundle = { schema: 1, source: 'ci', gitSha: 'abc', runId: 1, runNumber: 2 };
+        await snap({ ...DEVICE, bundle });
+        const res = await makeP(Date.parse(CAPTURED) + 1000).callTool('device_status', {});
+        expect(res.ok).toBe(true);
+        expect(res.data.bundle).toEqual(bundle);
+        const p = res.data.payloads;
+        expect(p.mcpServerScript.onDiskSha256).toBe(sha('old script'));
+        expect(p.mcpServerScript.runningSha256).toBe(nodeCrypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js'))).digest('hex'));
+        expect(p.mcpServerScript.match).toBe(false);
+        expect(p.extractMarker).toEqual({ vc: 3061, present: true });
+        expect(p.appInfo).toEqual({ versionCode: 3061, versionName: '5.9', writtenAt: '1970-01-01T00:00:00.000Z' });
+        expect(p.libs.codex_tui).toEqual({ present: true, symlink: false, size: 5, mtime: expect.any(String) });
+        expect(p.libs.codex_exec).toEqual({ present: false, size: null, mtime: null });
+        expect(JSON.stringify(p)).not.toContain(home);
+      });
+
+      it('matches when the installed script is the running one, accepts a bare-number marker, reports symlinks', () => {
+        const running = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js'));
+        fs.writeFileSync(path.join(home, '.shelly-mcp-server.js'), running);
+        fs.writeFileSync(path.join(libDir, '.extract_version'), '42');
+        fs.symlinkSync('/nonexistent', path.join(libDir, 'codex_exec'));
+        const p = mcp.payloadProvenance({ homeDir: home, libDir });
+        expect(p.mcpServerScript.match).toBe(true);
+        expect(p.extractMarker).toEqual({ vc: 42, present: true });
+        // A dangling link: present, a symlink, its target, the link's own mtime.
+        expect(p.libs.codex_exec).toEqual({ present: true, symlink: true, target: '/nonexistent', size: null, mtime: expect.any(String) });
+      });
+
+      it('reports a lib symlink that resolves: target and the link\'s own mtime, never the target\'s size (P2-4 i)', () => {
+        const real = path.join(dir, 'real-codex');
+        fs.writeFileSync(real, 'x'.repeat(100));
+        fs.symlinkSync(real, path.join(libDir, 'codex_tui'));
+        const linkMtimeMs = fs.lstatSync(path.join(libDir, 'codex_tui')).mtimeMs;
+        const p = mcp.payloadProvenance({ homeDir: home, libDir });
+        expect(p.libs.codex_tui).toEqual({ present: true, symlink: true, target: real, size: null, mtime: new Date(linkMtimeMs).toISOString() });
+        // A control character in the target is not echoed.
+        fs.symlinkSync('/tmp/a\nb', path.join(libDir, 'codex_exec'));
+        expect(mcp.payloadProvenance({ homeDir: home, libDir }).libs.codex_exec).toEqual({ present: true, symlink: true, target: null, size: null, mtime: expect.any(String) });
+      });
+
+      it('the running hash is captured once at startup, not re-read when the file is replaced (P2-4 ii)', () => {
+        const runHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-running-'));
+        const script = path.join(runHome, '.shelly-mcp-server.js');
+        const original = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js'));
+        fs.writeFileSync(script, original);
+        // Plain node (no jest transform): load the server from its installed
+        // path, then replace that file the way HomeInitializer does (rename).
+        const code = [
+          'const fs = require("fs");',
+          `const script = ${JSON.stringify(script)};`,
+          'const m = require(script);',
+          'fs.writeFileSync(script + ".tmp", "// replaced after start\\n");',
+          'fs.renameSync(script + ".tmp", script);',
+          `const p = m.payloadProvenance({ homeDir: ${JSON.stringify(runHome)}, libDir: ${JSON.stringify(path.join(runHome, 'nope'))} });`,
+          'process.stdout.write(JSON.stringify(p.mcpServerScript));',
+        ].join('\n');
+        const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8' });
+        try {
+          expect(r.status).toBe(0);
+          const s = JSON.parse(r.stdout);
+          expect(s.runningSha256).toBe(nodeCrypto.createHash('sha256').update(original).digest('hex'));
+          expect(s.onDiskSha256).toBe(sha('// replaced after start\n'));
+          expect(s.match).toBe(false);
+        } finally {
+          fs.rmSync(runHome, { recursive: true, force: true });
+        }
+      });
+
+      it('captures the running hash at the top of the script and never reads __filename again (P2-4 ii)', () => {
+        const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'shelly-mcp-server.js'), 'utf8');
+        expect(src.match(/readFileSync\(__filename\)/g)).toHaveLength(1);
+        const capture = src.indexOf('const RUNNING_SCRIPT_SHA256 = (() => {');
+        expect(capture).toBeGreaterThan(0);
+        expect(capture).toBeLessThan(src.indexOf("const RESULT_POLL_MS"));
+        expect(src).not.toMatch(/RUNNING_SCRIPT_SHA256 = (?!\(\(\) => \{)/);
+      });
+
+      it('garbage and missing files give nulls without throwing', () => {
+        fs.writeFileSync(path.join(libDir, '.extract_version'), 'garbage|vc=1');
+        fs.writeFileSync(path.join(home, '.shelly', 'app-info.json'), '{not json');
+        fs.mkdirSync(path.join(home, '.shelly-mcp-server.js'));
+        const p = mcp.payloadProvenance({ homeDir: home, libDir });
+        expect(p.mcpServerScript.onDiskSha256).toBeNull();
+        expect(p.mcpServerScript.match).toBeNull();
+        expect(p.extractMarker).toEqual({ vc: null, present: true });
+        expect(p.appInfo).toBeNull();
+        fs.writeFileSync(path.join(home, '.shelly', 'app-info.json'), JSON.stringify({ versionCode: '1', versionName: 5, writtenAtMs: 'x' }));
+        expect(mcp.payloadProvenance({ homeDir: home, libDir }).appInfo).toEqual({ versionCode: null, versionName: null, writtenAt: null });
+        expect(mcp.payloadProvenance({ homeDir: path.join(dir, 'nope'), libDir: path.join(dir, 'nope') }).extractMarker).toEqual({ vc: null, present: false });
+        expect(() => mcp.payloadProvenance({})).not.toThrow();
+      });
+
+      it('bundle is null when the snapshot has none; stale and live answers carry payloads; errors do not', async () => {
+        await snap(DEVICE);
+        const { callTool } = makeP(Date.parse(CAPTURED) + 1000);
+        const res = await callTool('device_status', {});
+        expect(res.data.bundle).toBeNull();
+        expect(res.data.payloads).toBeDefined();
+
+        fs.writeFileSync(path.join(queue, 'bridge-heartbeat'), String(STALE_NOW - 2_000));
+        const stale = await makeP(STALE_NOW).callTool('device_status', {});
+        expect(stale.data.live).toBe(false);
+        expect(stale.data.payloads).toBeDefined();
+
+        fs.writeFileSync(path.join(queue, 'bridge-heartbeat'), String(STALE_NOW));
+        const live = await makeP(STALE_NOW).callTool('device_status', {});
+        expect(live.data.live).toBe(true);
+        expect(live.data.payloads).toBeDefined();
+
+        await snap({ capturedAt: 'bad' });
+        const err = await makeP(STALE_NOW).callTool('device_status', {});
+        expect(err.ok).toBe(false);
+        expect(err.payloads).toBeUndefined();
+        expect(err.data).toBeUndefined();
+      });
     });
 
     it('a null section (the device could not report it) is passed through as null', async () => {

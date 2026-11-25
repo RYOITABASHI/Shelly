@@ -222,6 +222,18 @@ object LibExtractor {
     fun getBashPath(context: Context): String =
         File(getLibDir(context), "libbash.so").absolutePath
 
+    /** Routes a PayloadHygiene log line ("I ", "W " or "E " + message) to logcat. */
+    internal fun logHygiene(tag: String, line: String) {
+        val msg = if (line.length > 2 && line[1] == ' ') line.substring(2) else line
+        when (line.firstOrNull()) {
+            'E' -> Log.e(tag, msg)
+            'W' -> Log.w(tag, msg)
+            else -> Log.i(tag, msg)
+        }
+    }
+
+    // KEEP IN SYNC: PayloadHygiene.TEMP_NAME parses this name to find stale
+    // leftovers (A4).
     private fun newTempFile(libDir: File, fileName: String): File =
         File(libDir, "$fileName.${android.os.Process.myPid()}.${Thread.currentThread().id}.${System.nanoTime()}.new")
 
@@ -308,6 +320,30 @@ object LibExtractor {
         val forceRefresh = !markerFile.exists() || markerFile.readText().trim() != currentVersion
         if (forceRefresh) {
             Log.i(TAG, "extract refresh required: marker=${markerFile.takeIf { it.exists() }?.readText()?.trim()} current=$currentVersion")
+        }
+
+        // A1 (payload freshness): delete retired payloads -- files an older
+        // Shelly extracted here that are no longer in LIBS, so no APK update
+        // would ever refresh them and a stale reference would silently run a
+        // months-old binary (termux-libs/codex_exec, retired by HomeInitializer
+        // setup v231). See PayloadHygiene.RETIRED_LIB_FILES. One stat per name
+        // when absent, so it runs on every call.
+        PayloadHygiene.removeRetired(libDir, PayloadHygiene.RETIRED_LIB_FILES, LIBS.values.toSet()) { logHygiene(TAG, it) }
+
+        // A4 (payload freshness): on a refresh pass (version change, or the
+        // first ALWAYS_REFRESH pass of this process) delete our own `*.new`
+        // temp files left behind by an extraction that was killed between
+        // write and rename (newTempFile below). Only names of LIBS targets, and
+        // only stale ones (writer process gone, or untouched for 10 min), so a
+        // concurrent extractAll() in another thread/process keeps its file.
+        if (forceRefresh || !alwaysRefreshDoneInProcess) {
+            PayloadHygiene.removeStaleTempFiles(
+                libDir,
+                LIBS.values.toSet(),
+                android.os.Process.myPid(),
+                System.currentTimeMillis(),
+                { pid -> File("/proc/$pid").exists() },
+            ) { logHygiene(TAG, it) }
         }
 
         // Extract native binaries from APK

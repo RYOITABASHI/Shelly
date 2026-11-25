@@ -47,9 +47,10 @@ import java.security.SecureRandom
  * up when it is OFF/unreadable, so it can never resurrect a server the owner
  * turned off, nor run one with switches broader than the mirror says.
  *
- * Runtime: a headless start runs HomeInitializer.initialize (once per app
- * process; re-extracts ~/.shelly-mcp-server.js from the APK assets, so it is
- * fresh after an update) and LibExtractor.ensureExtracted (re-extracts node
+ * Runtime: a headless start runs HomeInitializer.initialize (on every start
+ * while HomeInitializer.mcpServerScriptInSync is false, including after a
+ * later failed sync by another caller; re-extracts ~/.shelly-mcp-server.js
+ * from the APK assets, so it is fresh after an update) and LibExtractor.ensureExtracted (re-extracts node
  * when the APK identity changed) before MCPBridge.start, without RN — the
  * same native path CodexRemoteHost.spawnHost uses.
  *
@@ -511,9 +512,19 @@ object McpServerSupervisor {
 
     /** The extracted runtime is current for this APK (see the class doc). */
     private fun ensureRuntime(app: Context) {
-        if (!homeInitialized) {
+        // A2 (P3-2): the mark is not latched. HomeInitializer.initialize() has
+        // other callers, and a later failed sync there sets
+        // mcpServerScriptInSync back to false; checking it here every time
+        // makes the next start run initialize() again instead of trusting a
+        // stale "done".
+        if (!homeInitialized || !HomeInitializer.mcpServerScriptInSync) {
             HomeInitializer.initialize(app)
-            homeInitialized = true
+            // A2 (P2-2): only a verified ~/.shelly-mcp-server.js counts as done;
+            // after a failed sync the next start calls initialize() again.
+            homeInitialized = HomeInitializer.mcpServerScriptInSync
+            if (!homeInitialized) {
+                Log.e(TAG, "home initialization incomplete (MCP server script not in sync with the APK); will retry on the next start")
+            }
         }
         LibExtractor.ensureExtracted(app)
     }
