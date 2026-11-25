@@ -1,6 +1,7 @@
 package expo.modules.terminalemulator
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -115,6 +116,11 @@ class ExternalSpecTest {
         assertEquals("bad_script", withScript("/abs/server.js"))
         assertEquals("bad_script", withScript("dist/http/server.sh"))
         assertEquals("bad_script", withScript("dist//server.js"))
+        // Only the facade's own entry point: any other .js under root is refused.
+        assertEquals("bad_script", withScript("dist/other.js"))
+        assertEquals("bad_script", withScript("dist/http/server2.js"))
+        assertEquals("bad_script", withScript("server.js"))
+        assertEquals("ok", withScript("dist/http/server.js"))
 
         fun withCouncilHome(ch: String) = ExternalSpec.parse(
             """{"v":1,"root":"council-spike","script":"dist/http/server.js","env":{"COUNCIL_HTTP_TOKEN":{"fromFile":true},"COUNCIL_HOME":"$ch","COUNCIL_PAIRING_ARM":"1"}}""",
@@ -198,8 +204,16 @@ class ExternalSpecTest {
         assertTrue(cmd.contains("cd '$home/council-spike' || exit 126\n"))
         assertTrue(cmd.contains("export COUNCIL_CODEX_COMMAND='codex_exec'\n"))
         assertTrue(cmd.contains("export COUNCIL_PAIRING_ARM='1'\n"))
-        assertTrue(cmd.contains("[ -f '$home/council-spike-home/.http-token' ] || exit 127\n"))
-        assertTrue(cmd.contains("export COUNCIL_HTTP_TOKEN=\"\$(cat -- '$home/council-spike-home/.http-token')\"\n"))
+        val tokenPath = "'$home/council-spike-home/.http-token'"
+        assertTrue(cmd.contains("[ -f $tokenPath ] || exit 127\n"))
+        // Tracing a sourced .bashrc may have turned on is off before the read,
+        // and the value is read (no command substitution a trace would expand).
+        val traceOff = cmd.indexOf("builtin set +o xtrace +o verbose; builtin trap - DEBUG\n")
+        val read = cmd.indexOf("IFS= builtin read -r COUNCIL_HTTP_TOKEN < $tokenPath || [ -n \"\$COUNCIL_HTTP_TOKEN\" ] || exit 127\n")
+        assertTrue(traceOff >= 0 && read > traceOff)
+        assertTrue(cmd.indexOf(". \"\$HOME/.bashrc\"") in 0 until traceOff)
+        assertTrue(cmd.contains("builtin export COUNCIL_HTTP_TOKEN\n"))
+        assertFalse(cmd.contains("\$(cat"))
         assertTrue(cmd.contains("exec /system/bin/linker64 '/data/lib/node' '$home/council-spike/dist/http/server.js'\n"))
         assertTrue(cmd.trimEnd('\n').endsWith("'$home/council-spike/dist/http/server.js'"))
     }

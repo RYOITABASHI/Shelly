@@ -8,7 +8,6 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
-import org.json.JSONObject
 
 /**
  * Native supervisor for the long-running services in ManagedServices.REGISTRY
@@ -47,7 +46,16 @@ object ManagedServiceSupervisor {
     private const val LAUNCH_SETTLE_MS = 1_500L
     private const val STOP_GRACE_MS = 5_000L
 
-    private class Running(val id: String, val proc: java.lang.Process, val pid: Int, val startTime: String, val startedAt: Long) {
+    /**
+     * [spec]: the exact Spec this process was launched from. While it is alive,
+     * resolvedSpec answers with it instead of re-reading the on-device launch
+     * spec, so a stop / STOP-ALL can never lose the process to a launch-spec
+     * file that was deleted, broken or edited after the start.
+     */
+    private class Running(
+        val id: String, val proc: java.lang.Process, val pid: Int, val startTime: String, val startedAt: Long,
+        val spec: ManagedServices.Spec,
+    ) {
         @Volatile var stopping = false
     }
 
@@ -88,24 +96,51 @@ object ManagedServiceSupervisor {
     // REGISTRY's own "council-facade" entry never changes (launch = null,
     // shape only); every caller here that needs its launch asks resolvedSpec
     // for a copy with launch/health filled in from the on-device file
-    // (ManagedServices.ExternalSpec), or the same launch=null Spec back when
-    // the file is absent or invalid. Re-validated on every call: nothing is
-    // cached beyond the dedup key for the audit line below.
+    // (ExternalSpec), or the same launch=null Spec back when the file is
+    // absent or invalid. Re-validated on every call, except while a process
+    // this supervisor spawned is alive: then the Spec it was started from is
+    // returned (Running.spec), so stop / STOP-ALL / status keep describing that
+    // process even if the file is deleted, broken or edited meanwhile; a file
+    // change takes effect at the next start.
 
     private const val FACADE_ID = "council-facade"
     @Volatile private var lastFacadeAudit: Triple<Boolean, String, String?>? = null
 
     private fun resolvedSpec(context: Context, base: ManagedServices.Spec): ManagedServices.Spec {
         if (base.launch != null || base.id != FACADE_ID) return base
-        return resolveFacadeSpec(context, base)
+        val live = synchronized(lock) { running[base.id] }
+        if (live != null && startOf(live.pid) == live.startTime) return live.spec
+        val resolved = resolveFacadeSpec(context, base)
+        if (resolved.launch != null) return resolved
+        return recoveredFacadeSpec(context, base) ?: resolved
+    }
+
+    /**
+     * The launch-spec file is unusable, but state.json may still name a live
+     * facade (started by this supervisor before an app restart): its persisted
+     * script, re-verified against /proc (same uid, pid + starttime, cmdline is
+     * exactly `node <home>/<script>`), yields a stop-only Spec, so stop and
+     * STOP-ALL never depend on the mutable launch-spec file. A start under it
+     * is refused (Spec.stopOnly).
+     */
+    private fun recoveredFacadeSpec(context: Context, base: ManagedServices.Spec): ManagedServices.Spec? {
+        val rec = readRecord(context, base.id) ?: return null
+        val script = rec.script ?: return null
+        if (rec.stoppedAt != null || rec.exitedAt != null || startOf(rec.pid) != rec.startTime) return null
+        val launch = ManagedServices.Launch(script, emptyList(), ManagedServices.DEFAULT_ENV, workDir = script.substringBefore('/'))
+        if (!isServiceProcess(context, launch, rec.pid)) return null
+        Log.w(TAG, "council-facade launch spec unusable; recovered a stop-only spec from state.json (pid=${rec.pid})")
+        return base.copy(launch = launch, stopOnly = true)
     }
 
     private fun resolveFacadeSpec(context: Context, base: ManagedServices.Spec): ManagedServices.Spec {
         val home = home(context)
-        val file = File(home, "${ManagedServices.serviceDir(base.id)}/${ManagedServices.ExternalSpec.FILE}")
-        val text = readSmall(file, ManagedServices.ExternalSpec.MAX_BYTES)
-        val parsed = ManagedServices.ExternalSpec.parse(text, home.absolutePath)
-        val digest = text?.let { sha256Hex(it) }
+        val file = File(home, "${ManagedServices.serviceDir(base.id)}/${ExternalSpec.FILE}")
+        val text = readSmall(file, ExternalSpec.MAX_BYTES)
+        val parsed = ExternalSpec.parse(text, home.absolutePath)
+        // The digest is recorded only for a usable spec: a refused file may hold
+        // a literal secret, and even its hash stays out of the audit.
+        val digest = if (parsed.launch != null) text?.let { sha256Hex(it) } else null
         val outcome = Triple(parsed.launch != null, parsed.reason, digest)
         if (lastFacadeAudit != outcome) {
             lastFacadeAudit = outcome
@@ -123,25 +158,43 @@ object ManagedServiceSupervisor {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
-    /** A GET to `http://127.0.0.1:<port>/health`, loopback only, never following a redirect. True only on HTTP 200 + `{"ok":true,…}`. */
-    private fun pollHealth(port: Int, timeoutMs: Long): Boolean = try {
-        val conn = java.net.URL("http://127.0.0.1:$port/health").openConnection() as java.net.HttpURLConnection
-        conn.connectTimeout = timeoutMs.toInt()
-        conn.readTimeout = timeoutMs.toInt()
-        conn.requestMethod = "GET"
-        conn.instanceFollowRedirects = false
-        conn.useCaches = false
-        try {
-            if (conn.responseCode != 200) false
-            else {
-                val body = conn.inputStream.use { it.readBytes() }
-                body.size <= 4096 && JSONObject(String(body, Charsets.UTF_8)).optBoolean("ok", false)
+    /**
+     * One GET /health to 127.0.0.1:<port> over a plain socket (never a proxy,
+     * never a redirect), bounded as a whole by [timeoutMs]: connect and every
+     * read get only the time left, and at most ManagedServices.HEALTH_MAX_RESPONSE
+     * bytes are read before giving up. The answer is
+     * ManagedServices.healthResponseOk (200 + JSON `ok` the boolean true).
+     */
+    private fun pollHealth(port: Int, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        fun left(): Int = (deadline - System.currentTimeMillis()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return try {
+            java.net.Socket(java.net.Proxy.NO_PROXY).use { sock ->
+                val addr = java.net.InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+                if (left() <= 0) return false
+                sock.connect(java.net.InetSocketAddress(addr, port), left())
+                sock.getOutputStream().apply {
+                    write("GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                    flush()
+                }
+                val input = sock.getInputStream()
+                val cap = ManagedServices.HEALTH_MAX_RESPONSE
+                val buf = ByteArray(cap + 1)
+                var n = 0
+                while (n <= cap) {
+                    val t = left()
+                    if (t <= 0) return false
+                    sock.soTimeout = t
+                    val r = input.read(buf, n, buf.size - n)
+                    if (r < 0) break
+                    n += r
+                }
+                if (n > cap) return false
+                ManagedServices.healthResponseOk(buf.copyOf(n))
             }
-        } finally {
-            conn.disconnect()
+        } catch (e: Exception) {
+            false
         }
-    } catch (e: Exception) {
-        false
     }
 
     private fun result(code: String, spec: ManagedServices.Spec, s: ManagedServices.Status): Map<String, Any?> = mapOf(
@@ -240,6 +293,17 @@ object ManagedServiceSupervisor {
             audit(context, principal, "start", spec, "not_configured")
             return result("not_configured", spec, status(context, spec))
         }
+        if (spec.stopOnly) {
+            // Recovered from state.json only to stop a running facade: never a
+            // launch (its env would be incomplete). already_running when live.
+            val s = status(context, spec)
+            if (s.pid != null) {
+                audit(context, principal, "start", spec, "already_running")
+                return result("already_running", spec, s)
+            }
+            audit(context, principal, "start", spec, "not_configured")
+            return result("not_configured", spec, status(context, spec))
+        }
         if (StopAllSwitches.halted(context)) {
             audit(context, principal, "start", spec, "halted")
             return result("halted", spec, status(context, spec))
@@ -316,9 +380,12 @@ object ManagedServiceSupervisor {
             runCatching { proc.destroyForcibly() }
             return "launch_failed"
         }
-        val r = Running(spec.id, proc, pid, start, startedAt)
+        val r = Running(spec.id, proc, pid, start, startedAt, spec)
         synchronized(lock) { running[spec.id] = r }
-        val recorded = writeRecord(context, spec.id, ManagedServices.Record(pid, start, startedAt))
+        val recorded = writeRecord(
+            context, spec.id,
+            ManagedServices.Record(pid, start, startedAt, script = launch.script.takeIf { ManagedServices.RECORD_SCRIPT_RE.matches(it) }),
+        )
         Thread({ waitForExit(context, spec, r) }, "ShellySvc-${spec.id}").apply { isDaemon = true; start() }
         // Without its record a service could not be reported dead later: never
         // answer `started` for it. The waiter removes it from [running].

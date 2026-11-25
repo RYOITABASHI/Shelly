@@ -99,8 +99,18 @@ object ManagedServices {
      * [health] is set only for a resolved council-facade Spec (never on the
      * static REGISTRY entry): ManagedServiceSupervisor builds that copy from
      * the on-device file, REGISTRY itself never changes.
+     * [stopOnly]: a Spec recovered from state.json while the launch-spec file
+     * is unusable (ManagedServiceSupervisor.recoveredFacadeSpec). It carries
+     * only enough identity to verify and stop the running process; a start
+     * under it is refused (its env would be incomplete).
      */
-    data class Spec(val id: String, val launch: Launch?, val heartbeat: Heartbeat?, val health: HealthCheck? = null)
+    data class Spec(
+        val id: String,
+        val launch: Launch?,
+        val heartbeat: Heartbeat?,
+        val health: HealthCheck? = null,
+        val stopOnly: Boolean = false,
+    )
 
     // article-delivery: the article delivery loop (5-minute rounds). Its
     // heartbeat is written each round; the script's own staleness rule is
@@ -158,13 +168,24 @@ object ManagedServices {
         sb.append("[ -f ").append(shQuote(node)).append(" ] || exit 127\n")
         // Extra env (council-facade): a literal is exported as a quoted value;
         // a FromFile var is read by the shell itself, so its value is never a
-        // literal in this (or any) string the app builds.
+        // literal in this (or any) string the app builds. Output already goes
+        // to the log and the sourced .bashrc may have turned tracing on: so
+        // before a secret is read, xtrace / verbose and a DEBUG trap are
+        // switched off, and the value is read with `read` into the variable
+        // (no command substitution whose expansion a trace would print);
+        // `export` then names it only.
+        if (launch.extraEnv.any { it is EnvVar.FromFile }) {
+            sb.append("builtin set +o xtrace +o verbose; builtin trap - DEBUG\n")
+        }
         for (v in launch.extraEnv) {
             when (v) {
                 is EnvVar.Literal -> sb.append("export ").append(v.name).append('=').append(shQuote(v.value)).append('\n')
                 is EnvVar.FromFile -> {
                     sb.append("[ -f ").append(shQuote(v.path)).append(" ] || exit 127\n")
-                    sb.append("export ").append(v.name).append("=\"\$(cat -- ").append(shQuote(v.path)).append(")\"\n")
+                    sb.append(v.name).append("=\n")
+                    sb.append("IFS= builtin read -r ").append(v.name).append(" < ").append(shQuote(v.path))
+                        .append(" || [ -n \"\$").append(v.name).append("\" ] || exit 127\n")
+                    sb.append("builtin export ").append(v.name).append('\n')
                 }
             }
         }
@@ -210,6 +231,58 @@ object ManagedServices {
             argv.subList(at + 1, argv.size) == launch.args
     }
 
+    // ── HTTP health (council-facade /health) ───────────────────────────────
+
+    /** Bytes read from one /health exchange at most (status line + headers + body). */
+    const val HEALTH_MAX_RESPONSE = 8192
+    /** The body itself at most. */
+    const val HEALTH_MAX_BODY = 4096
+    private val HEALTH_STATUS_RE = Regex("^HTTP/1\\.[01] 200( .*)?$")
+    private val CONTENT_LENGTH_RE = Regex("^[0-9]{1,5}$")
+
+    /**
+     * True only for an HTTP/1.x 200 response without Transfer-Encoding (the
+     * request is HTTP/1.0, so a chunked body is never expected) whose body
+     * (its Content-Length when given, else the rest) is at most
+     * [HEALTH_MAX_BODY] bytes of a JSON object with `ok` the JSON boolean
+     * `true` (the string "true" does not count). [raw] is the whole response
+     * as read; more than [HEALTH_MAX_RESPONSE] bytes is refused.
+     */
+    fun healthResponseOk(raw: ByteArray): Boolean {
+        if (raw.size > HEALTH_MAX_RESPONSE) return false
+        var sep = -1
+        for (i in 0..raw.size - 4) {
+            if (raw[i] == 13.toByte() && raw[i + 1] == 10.toByte() && raw[i + 2] == 13.toByte() && raw[i + 3] == 10.toByte()) {
+                sep = i
+                break
+            }
+        }
+        if (sep < 0) return false
+        val head = String(raw, 0, sep, Charsets.ISO_8859_1).split("\r\n")
+        if (!HEALTH_STATUS_RE.matches(head[0])) return false
+        var contentLength: Int? = null
+        for (h in head.drop(1)) {
+            val c = h.indexOf(':')
+            if (c <= 0) return false
+            val name = h.substring(0, c).trim().lowercase()
+            val value = h.substring(c + 1).trim()
+            if (name == "transfer-encoding") return false
+            if (name == "content-length") {
+                if (contentLength != null || !CONTENT_LENGTH_RE.matches(value)) return false
+                contentLength = value.toInt()
+            }
+        }
+        val bodyStart = sep + 4
+        val available = raw.size - bodyStart
+        val len = contentLength ?: available
+        if (len > HEALTH_MAX_BODY || len > available) return false
+        return try {
+            JSONObject(String(raw, bodyStart, len, Charsets.UTF_8)).opt("ok") == true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     // ── Record (`state.json`, written only by the supervisor) ──────────────
 
     /**
@@ -224,13 +297,24 @@ object ManagedServices {
         val stoppedAt: Long? = null,
         val exitedAt: Long? = null,
         val exitCode: Int? = null,
+        /**
+         * council-facade only: the home-relative script it was launched with
+         * (ExternalSpec's `<root>/dist/http/server.js`), so a running facade
+         * stays verifiable and stoppable from this record alone when the
+         * launch-spec file is later deleted or broken. Null for article-delivery.
+         */
+        val script: String? = null,
     )
+
+    /** The only script value a Record may carry (ExternalSpec's fixed entry under a single-segment root). */
+    val RECORD_SCRIPT_RE = Regex("^[A-Za-z0-9_-]{1,64}/dist/http/server\\.js$")
 
     fun encodeRecord(r: Record): String {
         val o = JSONObject().put("v", 1).put("pid", r.pid).put("startTime", r.startTime).put("startedAt", r.startedAt)
         r.stoppedAt?.let { o.put("stoppedAt", it) }
         r.exitedAt?.let { o.put("exitedAt", it) }
         r.exitCode?.let { o.put("exitCode", it) }
+        r.script?.takeIf { RECORD_SCRIPT_RE.matches(it) }?.let { o.put("script", it) }
         return o.toString()
     }
 
@@ -248,6 +332,9 @@ object ManagedServices {
                 stoppedAt = if (o.has("stoppedAt")) o.getLong("stoppedAt") else null,
                 exitedAt = if (o.has("exitedAt")) o.getLong("exitedAt") else null,
                 exitCode = if (o.has("exitCode")) o.getInt("exitCode") else null,
+                // An unexpected value is dropped, never the record: the record
+                // still answers dead/stopped; only the recovery path loses it.
+                script = (o.opt("script") as? String)?.takeIf { RECORD_SCRIPT_RE.matches(it) },
             )
         }
     } catch (e: Exception) {
@@ -427,7 +514,8 @@ object ExternalSpec {
 
     /** One safe relative path segment: `root`, `script`'s directories, `COUNCIL_HOME`. */
     private val SEGMENT_RE = Regex("^[A-Za-z0-9_-]{1,64}$")
-    private val SCRIPT_RE = Regex("^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*\\.js$")
+    /** The facade's one entry point under `root`; any other script is refused. */
+    const val SCRIPT = "dist/http/server.js"
     private val PORT_RE = Regex("^[1-9][0-9]{0,4}$")
     /** Printable ASCII only, bounded: COUNCIL_PRINCIPAL / COUNCIL_HUMAN_PRINCIPALS. */
     private val SAFE_VALUE_RE = Regex("^[\\x20-\\x7e]{1,200}$")
@@ -478,7 +566,7 @@ object ExternalSpec {
         val root = o.opt("root") as? String ?: return refuse("bad_root")
         if (!SEGMENT_RE.matches(root)) return refuse("bad_root")
         val script = o.opt("script") as? String ?: return refuse("bad_script")
-        if (!SCRIPT_RE.matches(script)) return refuse("bad_script")
+        if (script != SCRIPT) return refuse("bad_script")
         val envObj = o.opt("env") as? JSONObject ?: return refuse("bad_env")
         val envKeys = HashSet<String>()
         run { val it = envObj.keys(); while (it.hasNext()) envKeys.add(it.next()) }
