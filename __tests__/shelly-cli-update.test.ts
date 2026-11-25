@@ -1456,7 +1456,8 @@ describe('helper scripts', () => {
     // 18 + the MCP server script, which is replaced whole and verified by
     // PayloadHygiene.syncExact (payload freshness A2).
     expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(18);
-    expect(homeKt).toContain('PayloadHygiene.syncExact(expected, target)');
+    expect(homeKt).toContain('PayloadHygiene.syncExact(');
+    expect(homeKt).toContain('log = { msg -> LibExtractor.logHygiene("HomeInitializer", msg) }');
     expect(homeKt).toContain('input.copyToAtomically(saveDraftScript)');
     expect(homeKt).toContain('input.copyToAtomically(agentDriverScript)');
     expect(homeKt).toContain('input.copyToAtomically(gateDecideScript)');
