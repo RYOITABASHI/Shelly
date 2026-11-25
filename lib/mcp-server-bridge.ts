@@ -110,6 +110,9 @@ import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
 import { isApproveAllWithoutAskingOn, turnOffApproveAll } from '@/lib/approve-all-without-asking';
+// Compiled into the JS bundle; CI rewrites it before the Gradle build (same
+// pattern as optional-packs-pins.json).
+import bundleFingerprintJson from '@/lib/bundle-fingerprint.json';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -2609,10 +2612,27 @@ const DEVICE_SECTION_MAX_CHARS = 4096;
 
 export type McpDeviceSection = {
   capturedAt: string;
+  /** Build-embedded fingerprint of this JS bundle (absent in bundles that predate it). */
+  bundle?: Record<string, string | number | null> | null;
 } & Partial<Record<(typeof DEVICE_SECTIONS)[number], Record<string, unknown> | null>>;
 
 function isPlainRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+const BUNDLE_FINGERPRINT_KEYS = ['schema', 'source', 'gitSha', 'runId', 'runNumber'] as const;
+
+/** Validated copy of lib/bundle-fingerprint.json: known keys only, strings / numbers / null. Exported for tests. */
+export function bundleFingerprint(raw: unknown = bundleFingerprintJson): Record<string, string | number | null> | null {
+  if (!isPlainRecord(raw)) return null;
+  const out: Record<string, string | number | null> = {};
+  for (const key of BUNDLE_FINGERPRINT_KEYS) {
+    const v = raw[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+    else if (typeof v === 'string' && v.length <= 64) out[key] = v;
+    else out[key] = null;
+  }
+  return out;
 }
 
 /**
@@ -2630,6 +2650,7 @@ export function deviceSectionFromNative(raw: unknown): McpDeviceSection | null {
     if (isPlainRecord(v) && JSON.stringify(v).length <= DEVICE_SECTION_MAX_CHARS) out[key] = v;
     else out[key] = null;
   }
+  out.bundle = bundleFingerprint();
   return out;
 }
 

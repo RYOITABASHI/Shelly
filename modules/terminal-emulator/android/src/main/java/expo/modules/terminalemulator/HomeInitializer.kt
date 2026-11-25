@@ -1578,6 +1578,9 @@ patchCodex(libDir);
 
     fun initialize(context: Context): File {
         val home = getHomeDir(context)
+        // A2 (payload freshness): first, before anything else in this function
+        // can throw. See syncMcpServerScript.
+        syncMcpServerScript(context, home)
         val libDir = LibExtractor.getLibDir(context).absolutePath
         // Claude Code glibc S2: observe OSC 8 hyperlinks (full URL, unaffected by
         // line wrapping) and turn an armed Claude Code sign-in URL into a
@@ -1767,17 +1770,8 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-a2a-server.js extract failed: ${e.message}")
         }
 
-        // MCP (Model Context Protocol) server — see MCPBridge.kt / the
-        // script's own header. Only needs to be readable, matching the
-        // other node-invoked helpers above.
-        val mcpServerScript = File(home, ".shelly-mcp-server.js")
-        try {
-            context.assets.open("shelly-mcp-server.js").use { input ->
-                input.copyToAtomically(mcpServerScript)
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("HomeInitializer", "shelly-mcp-server.js extract failed: ${e.message}")
-        }
+        // MCP (Model Context Protocol) server script: synced (and verified)
+        // at the top of initialize(), see syncMcpServerScript.
 
         // Phase 0 PlanSpec executor canary. Invoked via node from AgentRuntime
         // when SHELLY_PLAN_EXECUTOR=1 for a targeted agent.
@@ -6130,6 +6124,63 @@ patchCodex(libDir);
         sb.appendLine("  return \$__rc")
         sb.appendLine("}")
     }
+
+    /**
+     * A2 (payload freshness): after initialize(), ~/.shelly-mcp-server.js is
+     * byte-identical to the APK asset (or a loud error is logged).
+     *
+     * The old extraction block had no gate of its own -- it rewrote the file
+     * with copyToAtomically on every initialize() -- but it sat ~200 lines
+     * into this function, behind statements that are not wrapped in try
+     * (bridge install, env migration, runtime cleanup/linking, helper writes),
+     * so any throw there skipped it and left an older script in place, and a
+     * failed copy only logged. On the owner's device the file was found at a
+     * pre-S1 version under a current APK (payload-freshness fact sheet F4).
+     * So: run first, compare bytes instead of trusting the copy, read back
+     * after writing (PayloadHygiene.syncExact, PayloadHygieneTest). The
+     * MCPBridge starts the server from this file, so a stale copy means a
+     * stale server whatever the APK ships. Never throws.
+     *
+     * A failed sync (asset unreadable, or the file still differs after
+     * syncExact's two attempts; the old file is kept as it was) leaves this
+     * part of initialize() unfinished: it is logged as an error, recorded in
+     * [mcpServerScriptInSync] = false, and retried by the next initialize()
+     * (this runs unconditionally on every call, it is not behind a version
+     * marker). The rest of initialize() still runs and returns home -- the
+     * terminal must open even when the sync cannot be completed -- so a
+     * caller that caches "initialize() is done" must also require
+     * [mcpServerScriptInSync] (McpServerSupervisor.ensureRuntime does).
+     */
+    private fun syncMcpServerScript(context: Context, home: File) {
+        val target = File(home, ".shelly-mcp-server.js")
+        val inSync = try {
+            val expected = context.assets.open("shelly-mcp-server.js").use { it.readBytes() }
+            // log is named, never a trailing lambda: a trailing lambda binds to
+            // the last parameter (writeTemp), not to log (P3-1).
+            val outcome = PayloadHygiene.syncExact(
+                expected,
+                target,
+                log = { msg -> LibExtractor.logHygiene("HomeInitializer", msg) },
+            )
+            if (outcome == PayloadHygiene.SyncOutcome.FAILED) {
+                android.util.Log.e("HomeInitializer", "initialize() incomplete: shelly-mcp-server.js does not match the APK asset after sync; will retry on the next initialize()")
+            }
+            outcome != PayloadHygiene.SyncOutcome.FAILED
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "initialize() incomplete: shelly-mcp-server.js extract failed: ${e.message}; will retry on the next initialize()")
+            false
+        }
+        mcpServerScriptInSync = inSync
+    }
+
+    /**
+     * A2 (P2-2): whether the latest initialize() verified that
+     * ~/.shelly-mcp-server.js equals the APK asset. false before the first
+     * initialize() and after a failed sync; see syncMcpServerScript.
+     */
+    @Volatile
+    var mcpServerScriptInSync: Boolean = false
+        private set
 
     /**
      * Replaces a helper in one step. These are rewritten on every start while

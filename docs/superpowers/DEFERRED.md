@@ -100,6 +100,12 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### ペイロード鮮度（A1〜A4）— 実装済み、実機・Gradle・JVM テスト未検証（2026-11-24、ブランチ `feat/payload-freshness`、P1）
+
+端末で `termux-libs/codex_exec`（0.142.0、setup v231 で廃止済み）が残り、`~/.shelly-mcp-server.js` と RN バンドルが APK より古かった件。**実装**: (A1) `PayloadHygiene.RETIRED_LIB_FILES`（`codex_exec`）を `LibExtractor.extractAll()` が毎回削除してログに残す。(A2) `HomeInitializer.initialize()` の先頭で `~/.shelly-mcp-server.js` を asset とバイト比較し、違えば置き換えて読み戻しで確認（`PayloadHygiene.syncExact`）。(A3) `device_status` の ok 応答に `payloads`（インストール済み／実行中の MCP スクリプトの sha256、`.extract_version` の vc、`app-info.json` の版、`codex_tui` / `codex_exec` の有無・サイズ・mtime）と、RN スナップショットの `bundle`（CI がビルド前に書く `lib/bundle-fingerprint.json`）。(A4) refresh 時に自分の `*.new` 残骸（書き手のプロセスが死んでいる／10 分更新なし）を削除。
+**修正ラウンド 2（ゲート指摘 4 件）**: `syncExact` は既存ファイルを先に消さない（一時ファイル→読み戻し→rename、宛先がディレクトリなら触らず FAILED）。同期失敗は `HomeInitializer.mcpServerScriptInSync = false` と error ログで「未完」になり、次の `initialize()` で再試行（`McpServerSupervisor.homeInitialized` はこれが true のときだけ立つ）。廃止ペイロードの存在確認はリンクを辿らない（親の readdir、宙ぶらりんの symlink も削除）。`payloads.libs` の symlink はリンク先とリンク自体の mtime を報告し、実行中スクリプトの hash は起動時に 1 回だけ捕捉。
+**未検証**: `PayloadHygieneTest.kt` は CI で走らない（`testDebugUnitTest` 未配線、既存の ExtractionMemoTest と同じ）。Kotlin のコンパイルは CI の assembleRelease 頼み。**実機で確認すること（A5）**: スクリプトの hash 一致、`codex_exec` 不在と logcat `LibExtractor` の削除行、`codex_tui` 現行、`service_control` が queue 経由で応答、`device_status` の `payloads` / `bundle` が実物と一致。F5（端末の RN バンドルが古い）の機構は未特定のまま — `bundle` が null / 古い sha なら原因調査を再開する。
+
 ### 定時エージェントが Doze 等で抜ける — 先行 re-arm・ネイティブの遅延実行・起動時修復の修正を実装、実機・Gradle 未検証（2026-11-17、P1）
 
 2026-11-17 07:00 の定時エージェントが動かず「予定を逃した」通知が出た。診断（VM 側メモ、端末証拠なし）: (A) exact alarm の権限が無いと黙って inexact に落ち、Doze では前景サービスの起動が拒否される、(B) 次回のアラームは実行が**終わってから**しか張られず、1 回落ちると端末の再起動かアプリを開くまで以後すべて抜ける（エージェント JSON の一時的な読み取り失敗でもスケジュールを消していた）、(C) 起動時修復が同じ request code で張り直し、遅れて保留中のアラームを翌日に置き換える、(D) 実行中（ログは終了時に書く）に開くと「逃した」と誤検知。

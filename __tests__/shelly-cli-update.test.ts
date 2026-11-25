@@ -1453,7 +1453,10 @@ describe('native command pipes', () => {
 describe('helper scripts', () => {
   it('are replaced whole, never rewritten in place', () => {
     expect(homeKt).not.toMatch(/\.outputStream\(\)\.use \{ output -> input\.copyTo\(output\) \}/);
-    expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(19);
+    // 18 + the MCP server script, which is replaced whole and verified by
+    // PayloadHygiene.syncExact (payload freshness A2).
+    expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(18);
+    expect(homeKt).toContain('PayloadHygiene.syncExact(expected, target)');
     expect(homeKt).toContain('input.copyToAtomically(saveDraftScript)');
     expect(homeKt).toContain('input.copyToAtomically(agentDriverScript)');
     expect(homeKt).toContain('input.copyToAtomically(gateDecideScript)');
