@@ -6167,6 +6167,11 @@ function appendHomeJsonlLine(home, relPath, entry) {
 const WEB_SEARCH_OPT_IN_ENV = 'SHELLY_WEB_SEARCH_OPT_IN_SHA256';
 const WEB_SEARCH_OPT_IN_MAX_QUERIES = 20;
 const WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS = 200;
+// Fix round 2 (gate 2, finding 2): queries one hosted search may use. Its
+// queries are known only when it completes, so a launch starts only while what
+// is left covers one batch, and the driver (--web-search-batch-reserve) stops
+// the turn at the completion that leaves less, before another can start.
+const WEB_SEARCH_OPT_IN_BATCH_RESERVE = 4;
 const WEB_SEARCH_OPT_IN_SHA_RE = /^[0-9a-f]{64}$/;
 
 /** JSON with every object's keys sorted (arrays keep their order). Pure. */
@@ -12796,8 +12801,9 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   // across every launch of the research step, retries included): each launch
   // gets what is left, and the driver's count file says what it used.
   const webSearchRemaining = WEB_SEARCH_OPT_IN_MAX_QUERIES - webSearchRunQueriesUsed;
-  if (webSearchOptedIn && webSearchRemaining <= 0) {
-    cliStepAudit(paths, plan, 'web_search_budget_spent', { stepIndex, engine, used: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES });
+  // Fix round 2: less than one batch left is spent (see WEB_SEARCH_OPT_IN_BATCH_RESERVE).
+  if (webSearchOptedIn && webSearchRemaining < WEB_SEARCH_OPT_IN_BATCH_RESERVE) {
+    cliStepAudit(paths, plan, 'web_search_budget_spent', { stepIndex, engine, used: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES, reserve: WEB_SEARCH_OPT_IN_BATCH_RESERVE });
     throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step: the run's web search budget (${WEB_SEARCH_OPT_IN_MAX_QUERIES} queries) is spent`, { exitCode: EXIT.TOOL_DENY, heldReason: 'web-search-stopped' });
   }
   if (webSearchOptedIn) {
@@ -12833,7 +12839,8 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   const promptFile = path.join(paths.tmpDir, `${fileBase}.prompt`);
   const answerFile = path.join(paths.tmpDir, `${fileBase}.answer`);
   const usageFile = path.join(paths.tmpDir, `${fileBase}.usage.json`);
-  const webSearchCountFile = path.join(paths.tmpDir, `${fileBase}.web-search-count.json`);
+  // Fix round 2: named for this launch only, so no other launch's count can be read as its own.
+  const webSearchCountFile = path.join(paths.tmpDir, `${fileBase}-${branchRunId}.web-search-count.json`);
   const auditLog = path.join(paths.logDir, `agent-driver-audit-s${stepIndex}.jsonl`);
   const policy = Object.assign({}, worker.policy, { unattended: !attended });
   const driverArgs = [
@@ -12855,7 +12862,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
     ...(textOnly ? ['--text-only', ...(webSearch ? ['--web-search'] : []), ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
-    ...(webSearchOptedIn ? ['--web-search-max-queries', String(webSearchRemaining), '--web-search-max-query-chars', String(WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS), '--web-search-count-file', webSearchCountFile] : []),
+    ...(webSearchOptedIn ? ['--web-search-max-queries', String(webSearchRemaining), '--web-search-batch-reserve', String(WEB_SEARCH_OPT_IN_BATCH_RESERVE), '--web-search-max-query-chars', String(WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS), '--web-search-count-file', webSearchCountFile] : []),
     // v59 (MCP ingress taint Inc 5): a run of an agent marked by MCP ingress
     // (native exports SHELLY_INGRESS_TAINTED=1) declines every write / exec /
     // network send in the driver's gate, attended too, with no escalation or
@@ -13063,11 +13070,18 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   }
 }
 
-/** The driver's {"count": n} (--web-search-count-file), or null. Throws nothing. */
+/**
+ * The driver's {"count": n, "final": true} (--web-search-count-file), or null.
+ * Fix round 2: only the record the driver writes once at the end counts; any
+ * other (not final, other keys, a partial or older file) is null, which spends
+ * the rest of the run's budget. Throws nothing.
+ */
 function readWebSearchCount(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const n = parsed && parsed.count;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (Object.keys(parsed).sort().join(',') !== 'count,final' || parsed.final !== true) return null;
+    const n = parsed.count;
     return Number.isSafeInteger(n) && n >= 0 ? n : null;
   } catch (_) {
     return null;
@@ -14978,7 +14992,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // Fix round 1: an opted-in run's query budget is per run; a retry with
       // none left would only be refused.
       if (isResearchWebSearchCliStep(plan, i) && opts.tainted && activeWebSearchOptIn === 'on'
-        && webSearchRunQueriesUsed >= WEB_SEARCH_OPT_IN_MAX_QUERIES) return 'budget';
+        && WEB_SEARCH_OPT_IN_MAX_QUERIES - webSearchRunQueriesUsed < WEB_SEARCH_OPT_IN_BATCH_RESERVE) return 'budget';
       if (halted()) return 'halted';
       if (longformDeadlineMs - Date.now() - (Number(outcome.record && outcome.record.durationMs) || 0) < researchHistoryRetryReserveMs()) return 'time';
       return '';
@@ -16739,6 +16753,8 @@ module.exports = {
   WEB_SEARCH_OPT_IN_ENV,
   WEB_SEARCH_OPT_IN_MAX_QUERIES,
   WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS,
+  WEB_SEARCH_OPT_IN_BATCH_RESERVE,
+  readWebSearchCount,
   canonicalJson,
   planDefinitionSha256,
   webSearchOptInState,

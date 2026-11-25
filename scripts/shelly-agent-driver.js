@@ -115,13 +115,20 @@ Options:
   --web-search-max-queries <n>   (with --web-search) The turn may use n (1-50) queries: each string a
                              webSearch item carries (every action.queries entry, query, url, pattern)
                              is one. Over n the turn stops (audit codex_web_search_limit, limit
-                             "count"); a webSearch item that starts with none left stops it too.
+                             "count"). A search's queries are known only when it completes, so
+                             every search that starts holds back a whole batch: one that starts
+                             beyond what is left stops the turn, and so does a completion that
+                             leaves less than a batch (limit "reserve"), before another can start.
+  --web-search-batch-reserve <n>  (with --web-search-max-queries) Queries one search may use for
+                             the rule above (1-50, at most the max; 1 by default).
   --web-search-max-query-chars <n>  (with --web-search) Stop the turn when any of those strings is
                              longer than n (16-400) characters (limit "length"); the codex_web_search
                              audit then keeps each (redacted) up to max(120, n) characters.
-  --web-search-count-file <path>  (with --web-search) Keep {"count": <queries used>} there, written
-                             (0) before the turn and after each completed search, so the caller can
-                             hold a budget across several turns (executor v68: per run).
+  --web-search-count-file <path>  (with --web-search) Write {"count": <queries used>, "final": true}
+                             there once, when the turn ends (a search still open counts as a whole
+                             batch), so the caller can hold a budget across several turns (executor
+                             v68: per run). A file already there is removed first (the turn is
+                             refused if it cannot be); a write that fails leaves no file.
   --text-only-model <name>   Model for a --text-only or --image-only turn. Required for Codex unless the
                              real config.toml names one.
   --image-only               (codex) A text-only turn whose one tool is image generation: no shell, no
@@ -274,6 +281,8 @@ function parseArgs(argv) {
       args.webSearchMaxQueryChars = next();
     } else if (arg === '--web-search-count-file') {
       args.webSearchCountFile = next();
+    } else if (arg === '--web-search-batch-reserve') {
+      args.webSearchBatchReserve = next();
     } else if (arg === '--image-only') {
       args.imageOnly = true;
     } else if (arg === '--image-style') {
@@ -859,6 +868,18 @@ function ensureConfig(args) {
   };
   const webSearchMaxQueries = webSearchCap(args.webSearchMaxQueries, '--web-search-max-queries', 1, 50);
   const webSearchMaxQueryChars = webSearchCap(args.webSearchMaxQueryChars, '--web-search-max-query-chars', 16, 400);
+  // Fix round 2: queries one hosted batch may use, held back for every search
+  // that starts (its query is known only on completion). 1 by default.
+  let webSearchBatchReserve = null;
+  if (webSearchMaxQueries !== null) {
+    webSearchBatchReserve = 1;
+    if (args.webSearchBatchReserve !== undefined) {
+      webSearchBatchReserve = webSearchCap(args.webSearchBatchReserve, '--web-search-batch-reserve', 1, 50);
+      if (webSearchBatchReserve > webSearchMaxQueries) throw new Error('invalid --web-search-batch-reserve (over --web-search-max-queries)');
+    }
+  } else if (args.webSearchBatchReserve !== undefined) {
+    throw new Error('--web-search-batch-reserve needs --web-search-max-queries');
+  }
   let webSearchCountFile = null;
   if (args.webSearchCountFile !== undefined) {
     if (!args.webSearch) throw new Error('--web-search-count-file needs --web-search');
@@ -909,6 +930,7 @@ function ensureConfig(args) {
     webSearch: args.webSearch === true,
     webSearchMaxQueries,
     webSearchMaxQueryChars,
+    webSearchBatchReserve,
     webSearchCountFile,
     tainted: args.tainted === true,
     imageOut,
@@ -1462,10 +1484,16 @@ function codexWebSearchLeakCheck(item, secrets) {
  * what the length cap checks and the audit records, and their number is what
  * the count cap counts (codexWebSearchUnits).
  */
+// Fix round 2 (gate 2, finding 2): every action.queries entry is a search of
+// its own, so equal entries each count and are each audited. action.query and
+// item.query restate a search (codex: the first query, or "<first> ..."), so
+// they are added only when no entry already holds the same string.
 function codexWebSearchQueryTexts(item) {
-  const out = [];
-  for (const value of [...codexWebSearchActionTexts(item), item && item.query]) {
-    if (typeof value === 'string' && value !== '' && !out.includes(value)) out.push(value);
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const isText = (value) => typeof value === 'string' && value !== '';
+  const out = (Array.isArray(action.queries) ? action.queries : []).filter(isText);
+  for (const value of [action.query, action.url, action.pattern, item && item.query]) {
+    if (isText(value) && !out.includes(value)) out.push(value);
   }
   return out;
 }
@@ -1503,16 +1531,39 @@ function codexWebSearchAudit(item, secrets, maxChars = null) {
   return withheld ? { ...entry, withheld } : entry;
 }
 
-/** {"count": n} at `file`, replaced whole. False on any error. */
+/**
+ * {"count": n, "final": true} at `file`, written once when the turn ends (fix
+ * round 2): nothing is there before, so a write that fails leaves no count a
+ * caller could take as valid. A new file in its place, never a partial one;
+ * on any error the temp file and `file` are removed. False on any error.
+ */
 function writeWebSearchCountFile(file, count) {
   if (!file) return false;
+  const tmpPath = `${file}.${process.pid}.tmp`;
+  unlinkQuietSync(tmpPath);
   try {
-    const tmpPath = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify({ count }), { mode: 0o600 });
+    fs.writeFileSync(tmpPath, JSON.stringify({ count, final: true }), { mode: 0o600, flag: 'wx' });
     fs.renameSync(tmpPath, file);
     return true;
   } catch (_) {
+    unlinkQuietSync(tmpPath);
+    unlinkQuietSync(file);
     return false;
+  }
+}
+
+/**
+ * Before the turn: no count file may be at `file` (a caller reads one as this
+ * turn's). Removes one that is; false when one is still there.
+ */
+function clearWebSearchCountFile(file) {
+  if (!file) return true;
+  unlinkQuietSync(file);
+  try {
+    fs.lstatSync(file);
+    return false;
+  } catch (error) {
+    return !!error && error.code === 'ENOENT';
   }
 }
 
@@ -3638,6 +3689,15 @@ async function runDriver(config) {
     setTimeout(() => process.exit(1), 50);
     return;
   }
+  // Fix round 2: whatever is at the count file now is not this turn's count.
+  if (config.webSearch && config.webSearchCountFile && !clearWebSearchCountFile(config.webSearchCountFile)) {
+    audit('driver_start', driverStartRecord());
+    audit('web_search_count_file_refused', { reason: 'an older count file could not be removed' });
+    process.stdout.write('CODEX_ERROR Web search count file could not be cleared (--web-search-count-file); not started.\n');
+    audit('driver_finish', { reason: 'web_search_count_file_refused', exitCode: 1, threadId: null });
+    setTimeout(() => process.exit(1), 50);
+    return;
+  }
   const child = spawn(codexSpawn.command, codexSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     cwd: config.cwd,
@@ -3675,6 +3735,16 @@ async function runDriver(config) {
   let canaryGenerated = 0;
   let canaryInsideRead = false;
   let completedOk = false;
+  // Queries used by this turn's completed web searches (codexWebSearchUnits).
+  let completedWebSearches = 0;
+  // Fix round 2: searches started and not completed yet. Each holds back a
+  // whole batch (webSearchBatchReserve; 1 when there is no cap), since its
+  // queries are known only on completion and may already be running.
+  const openWebSearches = new Set();
+  let unnamedWebSearches = 0;
+  const webSearchItemKey = (item) => (item && typeof item.id === 'string' && item.id ? `id:${item.id}` : `unnamed:${unnamedWebSearches++}`);
+  const webSearchReserve = () => (Number.isInteger(config.webSearchBatchReserve) ? config.webSearchBatchReserve : 1);
+  const webSearchCommitted = () => completedWebSearches + webSearchReserve() * openWebSearches.size;
   if (config.imageOnly) {
     // A run that does not end with a complete image leaves no file behind.
     process.once('exit', () => {
@@ -3707,6 +3777,10 @@ async function runDriver(config) {
     completed = true;
     completedOk = exitCode === 0;
     clearTimeout(timeout);
+    if (config.webSearch && config.webSearchCountFile) {
+      const count = webSearchCommitted();
+      if (!writeWebSearchCountFile(config.webSearchCountFile, count)) audit('web_search_count_unwritten', { count });
+    }
     audit('driver_finish', { reason, exitCode, threadId });
     if (child.exitCode === null && child.signalCode === null) {
       try {
@@ -3756,9 +3830,6 @@ async function runDriver(config) {
 
   // Stop the turn and fail the run for activity no gate can see. Only names are
   // recorded, never arguments.
-  // Queries used by this turn's completed web searches (codexWebSearchUnits).
-  let completedWebSearches = 0;
-  if (config.webSearch && config.webSearchCountFile) writeWebSearchCountFile(config.webSearchCountFile, 0);
   const stopUngatedActivity = (kind, details, reason) => {
     if (completed) return;
     sawFailure = true;
@@ -4412,19 +4483,23 @@ async function runDriver(config) {
 
     if (message.method === 'item/started') {
       if (blockUngatedItem('started', message.params)) return;
-      // A search that starts with no query left in the budget stops the turn
-      // before it completes (its query is not known yet on item/started).
+      // A search's queries are not known on item/started, and it may already be
+      // running: it holds back a whole batch until it completes. One that
+      // starts beyond what is left stops the turn before it completes.
       const startedItem = message.params && message.params.item;
-      if (startedItem && startedItem.type === 'webSearch' && Number.isInteger(config.webSearchMaxQueries)
-        && completedWebSearches >= config.webSearchMaxQueries) {
-        process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} queries); stopped.\n`);
-        stopUngatedActivity('codex_web_search_limit', {
-          threadId: message.params.threadId,
-          turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
-          itemId: typeof startedItem.id === 'string' ? startedItem.id.slice(0, 120) : null,
-          limit: 'count', phase: 'started', count: completedWebSearches, max: config.webSearchMaxQueries,
-        }, 'web search started with the query budget spent');
-        return;
+      if (startedItem && startedItem.type === 'webSearch') {
+        openWebSearches.add(webSearchItemKey(startedItem));
+        if (Number.isInteger(config.webSearchMaxQueries) && webSearchCommitted() > config.webSearchMaxQueries) {
+          process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} queries); stopped.\n`);
+          stopUngatedActivity('codex_web_search_limit', {
+            threadId: message.params.threadId,
+            turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
+            itemId: typeof startedItem.id === 'string' ? startedItem.id.slice(0, 120) : null,
+            limit: 'count', phase: 'started', count: completedWebSearches, open: openWebSearches.size,
+            reserve: webSearchReserve(), max: config.webSearchMaxQueries,
+          }, 'web search started beyond the query budget');
+          return;
+        }
       }
       auditItemStarted(message.params);
       return;
@@ -4479,6 +4554,20 @@ async function runDriver(config) {
     if (message.method === 'item/completed') {
       if (blockUngatedItem('completed', message.params)) return;
       if (message.params.item.type === 'webSearch') {
+        // Counted first: a search stopped below (a secret, a cap) was still sent.
+        const doneKey = typeof message.params.item.id === 'string' && message.params.item.id ? `id:${message.params.item.id}` : null;
+        if (doneKey) openWebSearches.delete(doneKey);
+        else {
+          const unnamed = [...openWebSearches].find((key) => key.startsWith('unnamed:'));
+          if (unnamed) openWebSearches.delete(unnamed);
+        }
+        completedWebSearches += codexWebSearchUnits(message.params.item);
+        // Audited first too (a string carrying a secret is withheld there).
+        audit('codex_web_search', {
+          threadId: message.params.threadId,
+          turnId: message.params.turnId,
+          ...codexWebSearchAudit(message.params.item, leakSecrets, config.webSearchMaxQueryChars),
+        });
         const leak = codexWebSearchLeakCheck(message.params.item, leakSecrets);
         if (leak) {
           process.stdout.write(`CODEX_ERROR A web search carried a secret (${leak.detector}); stopped.\n`);
@@ -4490,13 +4579,6 @@ async function runDriver(config) {
           }, 'web search carried a known secret value or secret format');
           return;
         }
-        audit('codex_web_search', {
-          threadId: message.params.threadId,
-          turnId: message.params.turnId,
-          ...codexWebSearchAudit(message.params.item, leakSecrets, config.webSearchMaxQueryChars),
-        });
-        completedWebSearches += codexWebSearchUnits(message.params.item);
-        if (config.webSearchCountFile) writeWebSearchCountFile(config.webSearchCountFile, completedWebSearches);
         const limitIds = {
           threadId: message.params.threadId,
           turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
@@ -4518,6 +4600,18 @@ async function runDriver(config) {
             }, 'web search query over the per-turn length limit');
             return;
           }
+        }
+        // Fix round 2 (gate 2, finding 2): no search may start that what is
+        // left cannot cover whole, and one cannot be stopped once it has
+        // started. So the turn stops here, at the completion that leaves less
+        // than a batch, before another can start.
+        if (Number.isInteger(config.webSearchMaxQueries) && config.webSearchMaxQueries - webSearchCommitted() < webSearchReserve()) {
+          process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} queries); stopped.\n`);
+          stopUngatedActivity('codex_web_search_limit', {
+            ...limitIds, limit: 'reserve', count: completedWebSearches, open: openWebSearches.size,
+            reserve: webSearchReserve(), max: config.webSearchMaxQueries,
+          }, 'web search budget left is less than one batch');
+          return;
         }
       }
       if (config.imageOnly && message.params.item.type === 'imageGeneration') {

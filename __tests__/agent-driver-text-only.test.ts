@@ -247,6 +247,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     out({ id: m.id, result: { turn: { id: 't1', status: 'inProgress' } } });
     for (const s of script) out(s);
     out({ method: 'item/completed', params: { threadId: 'th1', turnId: 't1', item: { type: 'agentMessage', id: 'msg', text: 'THE ANSWER' } } });
+    if (process.env.FAKE_CODEX_RM_BEFORE_TURN_END) fs.rmSync(process.env.FAKE_CODEX_RM_BEFORE_TURN_END, { recursive: true, force: true });
     out({ method: 'turn/completed', params: { threadId: 'th1', turn: { id: 't1', status: process.env.FAKE_TURN_STATUS || 'completed' } } });
   }
 });
@@ -595,19 +596,48 @@ describe('Codex text-only turn', () => {
         expect(`${r.stdout}${r.stderr}`).toMatch(re);
       }, 60_000);
 
-      it('the count cap stops the turn on search N+1 and every query is audited', () => {
-        const r = run([searchN(1, 'first query'), searchN(2, 'second query'), searchN(3, 'third query')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
+      it('a batch larger than its reserve that goes past the count cap stops the turn, and every query is audited', () => {
+        const r = run([searchN(1, 'first query'), searchN(2, 'second query'), itemN(3, { type: 'search', queries: ['third query', 'fourth query'] })], {}, { extra: ['--web-search', '--web-search-max-queries', '3'] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(r.out).toContain('Web search limit reached (3 queries); stopped.');
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 4, max: 3 });
+        expect(auditAll(r.audit, 'codex_web_search').map((e: any) => e.queries)).toEqual([['first query'], ['second query'], ['third query', 'fourth query']]);
+      }, 60_000);
+
+      it('searches that leave a batch\'s worth of the cap pass', () => {
+        const r = run([searchN(1, 'a'), searchN(2, 'b')], {}, { extra: ['--web-search', '--web-search-max-queries', '3'] });
+        expect(r.status).toBe(0);
+        expect(auditKinds(r.audit)).not.toContain('codex_web_search_limit');
+      }, 60_000);
+
+      // Fix round 2 (gate 2, finding 2): the query of a hosted search is known
+      // only when it completes, so no search may start unless what is left
+      // covers a whole batch (--web-search-batch-reserve). The turn stops at
+      // the completion that leaves less, before another batch can start.
+      it('the turn stops as soon as what is left cannot cover a batch', () => {
+        const r = run([searchN(1, 'a'), searchN(2, 'b'), searchN(3, 'never reached')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
         expect(r.status).toBe(1);
         expect(r.answer).toBeNull();
         expect(r.out).toContain('Web search limit reached (2 queries); stopped.');
-        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 3, max: 2 });
-        expect(auditAll(r.audit, 'codex_web_search').map((e: any) => e.query)).toEqual(['first query', 'second query', 'third query']);
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'reserve', count: 2, max: 2, reserve: 1, itemId: 'ws2' });
+        expect(auditAll(r.audit, 'codex_web_search').map((e: any) => e.query)).toEqual(['a', 'b']);
       }, 60_000);
 
-      it('searches within the count cap pass', () => {
-        const r = run([searchN(1, 'a'), searchN(2, 'b')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
-        expect(r.status).toBe(0);
-        expect(auditKinds(r.audit)).not.toContain('codex_web_search_limit');
+      it('a batch reserve larger than one stops the turn earlier, and passes while a batch fits', () => {
+        const stop = run([itemN(1, { type: 'search', queries: ['q1', 'q2', 'q3'] })], {}, { extra: ['--web-search', '--web-search-max-queries', '4', '--web-search-batch-reserve', '2'] });
+        expect(stop.status).toBe(1);
+        expect(auditOf(stop.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'reserve', count: 3, max: 4, reserve: 2 });
+        const ok = run([itemN(1, { type: 'search', queries: ['q1', 'q2'] })], {}, { extra: ['--web-search', '--web-search-max-queries', '4', '--web-search-batch-reserve', '2'] });
+        expect(ok.status).toBe(0);
+        expect(auditKinds(ok.audit)).not.toContain('codex_web_search_limit');
+      }, 120_000);
+
+      it('equal query strings each count and are each audited', () => {
+        const r = run([itemN(1, { type: 'search', query: 'same', queries: ['same', 'same', 'same'] }, 'same')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
+        expect(r.status).toBe(1);
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 3, max: 2 });
+        expect(auditOf(r.audit, 'codex_web_search')).toMatchObject({ queries: ['same', 'same', 'same'], queryCount: 3 });
       }, 60_000);
 
       it('the length cap stops a longer query, and a query under the cap is audited in full past 120 chars', () => {
@@ -667,25 +697,85 @@ describe('Codex text-only turn', () => {
         expect(r.audit).not.toContain(secret);
       }, 60_000);
 
-      it('a search that starts with the budget spent stops the turn before it completes', () => {
-        const started = { method: 'item/started', params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: 'ws2', query: '', action: { type: 'other' } } } };
-        const r = run([searchN(1, 'only one'), started], {}, { extra: ['--web-search', '--web-search-max-queries', '1'] });
+      const startedN = (i: number) => ({ method: 'item/started', params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: `ws${i}`, query: '', action: { type: 'other' } } } });
+
+      it('a search that starts beyond what is left (one reserve per open search) stops the turn before it completes', () => {
+        // 1 used + 2 open searches x 2 = 5 > 4: the second start stops the turn.
+        const r = run([searchN(1, 'only one'), startedN(2), startedN(3)], {}, { extra: ['--web-search', '--web-search-max-queries', '4', '--web-search-batch-reserve', '2'] });
         expect(r.status).toBe(1);
         expect(r.answer).toBeNull();
-        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', phase: 'started', count: 1, max: 1, itemId: 'ws2' });
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', phase: 'started', count: 1, open: 2, reserve: 2, max: 4, itemId: 'ws3' });
       }, 60_000);
 
-      it('the count file holds the queries used, for a budget across turns', () => {
+      it('--web-search-batch-reserve needs the count cap and fits under it', () => {
+        for (const [extra, re] of [
+          [['--web-search', '--web-search-batch-reserve', '2'], /--web-search-batch-reserve needs --web-search-max-queries/],
+          [['--web-search', '--web-search-max-queries', '2', '--web-search-batch-reserve', '3'], /invalid --web-search-batch-reserve/],
+          [['--web-search', '--web-search-max-queries', '2', '--web-search-batch-reserve', '0'], /invalid --web-search-batch-reserve/],
+        ] as const) {
+          const r = run([], {}, { extra: [...extra] });
+          expect(r.status).not.toBe(0);
+          expect(r.out).toMatch(re);
+        }
+      }, 120_000);
+
+      // Fix round 2 (gate 2, finding 2): the count file is written once, at the
+      // end, marked final; nothing readable is left there before that, so a
+      // failed write can never leave an older count that looks valid.
+      it('the count file holds the queries used, marked final, for a budget across turns', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-'));
         const countFile = path.join(dir, 'count.json');
         const r = run([itemN(1, { type: 'search', queries: ['a1', 'a2'] }), searchN(2, 'b')], {}, { extra: ['--web-search', '--web-search-max-queries', '5', '--web-search-count-file', countFile] });
         expect(r.status).toBe(0);
-        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 3 });
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 3, final: true });
         const none = run([], {}, { extra: ['--web-search', '--web-search-count-file', countFile] });
         expect(none.status).toBe(0);
-        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 0 });
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 0, final: true });
         fs.rmSync(dir, { recursive: true, force: true });
       }, 120_000);
+
+      it('a search still open at the end counts as a whole batch, and a stopped search counts too', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-'));
+        const countFile = path.join(dir, 'count.json');
+        const open = run([searchN(1, 'a'), startedN(2)], {}, { extra: ['--web-search', '--web-search-max-queries', '10', '--web-search-batch-reserve', '3', '--web-search-count-file', countFile] });
+        expect(open.status).toBe(0);
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 4, final: true });
+        const secret = 'sk-AbCdEfGhIjKlMnOpQrSt1234';
+        const leak = run([itemN(1, { type: 'search', queries: ['fine', `about ${secret}`] })], {}, { extra: ['--web-search', '--web-search-max-queries', '10', '--web-search-count-file', countFile] });
+        expect(leak.status).toBe(1);
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 2, final: true });
+        fs.rmSync(dir, { recursive: true, force: true });
+      }, 120_000);
+
+      it('an older count file is removed before the turn; one that cannot be removed refuses the turn', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-'));
+        const countFile = path.join(dir, 'count.json');
+        fs.writeFileSync(countFile, JSON.stringify({ count: 0, final: true }));
+        // The final write cannot land (its directory is gone by then): nothing
+        // readable is left, and the caller spends the rest of its budget.
+        const gone = path.join(dir, 'gone');
+        fs.mkdirSync(gone);
+        const unwritable = path.join(gone, 'count.json');
+        const r = run([searchN(1, 'a')], { FAKE_CODEX_RM_BEFORE_TURN_END: gone }, { extra: ['--web-search', '--web-search-count-file', unwritable] });
+        expect(r.status).toBe(0);
+        expect(fs.existsSync(unwritable)).toBe(false);
+        expect(auditKinds(r.audit)).toContain('web_search_count_unwritten');
+        const removed = run([], {}, { extra: ['--web-search', '--web-search-count-file', countFile] });
+        expect(removed.status).toBe(0);
+        if (typeof process.getuid === 'function' && process.getuid() !== 0) {
+          fs.writeFileSync(countFile, JSON.stringify({ count: 0, final: true }));
+          fs.chmodSync(dir, 0o500);
+          try {
+            const refused = run([searchN(1, 'a')], {}, { extra: ['--web-search', '--web-search-count-file', countFile] });
+            expect(refused.status).not.toBe(0);
+            expect(refused.out).toMatch(/--web-search-count-file/);
+            expect(auditAll(refused.audit || '', 'codex_web_search')).toEqual([]);
+          } finally {
+            fs.chmodSync(dir, 0o700);
+          }
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+      }, 180_000);
     });
 
     it('the helpers say the same', () => {

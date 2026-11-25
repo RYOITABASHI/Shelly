@@ -49,8 +49,9 @@ const ARTICLE = '# A title\n\nThe body says 42% [1] and 120 people [2].\n\nA sec
 const NOTIFICATION_CANARY = 'NOTIFICATION-CANARY-7f3a do not leak me';
 
 // answers[n]: a string is the answer; null fails; {fail: line} prints the line and exits 1;
-// {answer, count} answers and, like the real driver, writes {"count": count}
-// to --web-search-count-file when it was given one.
+// {answer, count} answers and, like the real driver, writes
+// {"count": count, "final": true} to --web-search-count-file when it was given
+// one; {answer, countRecord} writes that object as it is instead.
 const FAKE_DRIVER = `'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -65,7 +66,7 @@ const a = answers[n];
 if (a === undefined || a === null) { process.stdout.write('CODEX_ERROR refused by the fake\\n'); process.exit(1); }
 if (typeof a === 'object' && a.fail !== undefined) { process.stdout.write(a.fail + '\\n'); process.exit(1); }
 if (typeof a === 'object') {
-  if (get('--web-search-count-file')) fs.writeFileSync(get('--web-search-count-file'), JSON.stringify({ count: a.count }));
+  if (get('--web-search-count-file')) fs.writeFileSync(get('--web-search-count-file'), JSON.stringify(a.countRecord !== undefined ? a.countRecord : { count: a.count, final: true }));
   fs.writeFileSync(get('--answer-file'), a.answer);
   process.exit(0);
 }
@@ -80,7 +81,7 @@ function makeHome(): string {
   return home;
 }
 
-function makeDriver(answers: (string | null | { fail: string } | { answer: string; count: number })[]): { driver: string; recordDir: string } {
+function makeDriver(answers: (string | null | { fail: string } | { answer: string; count: number } | { answer: string; countRecord: unknown })[]): { driver: string; recordDir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-fake-search-parity-'));
   const driver = path.join(dir, 'fake-agent-driver.js');
   fs.writeFileSync(driver, FAKE_DRIVER);
@@ -793,6 +794,60 @@ describe('a run with the Codex web-search research step (v68)', () => {
     await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
     expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
     expect(readAudit(home).find((e) => e.event === 'web_search_budget')).toMatchObject({ used: null, runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES });
+  }, 60000);
+
+  // Fix round 2 (gate 2, finding 2): a count the driver did not mark final (an
+  // older record, the old format, a write that never finished) is not a count.
+  it('fix 2: a count not marked final spends the rest of the budget (fail closed)', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, countRecord: { count: 0 } }, RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
+    expect(readAudit(home).find((e) => e.event === 'web_search_budget')).toMatchObject({ used: null, runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES });
+  }, 60000);
+
+  it('fix 2: readWebSearchCount takes the final record only', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-read-'));
+    const file = path.join(dir, 'c.json');
+    const read = (v: unknown) => {
+      fs.writeFileSync(file, typeof v === 'string' ? v : JSON.stringify(v));
+      return executor.readWebSearchCount(file);
+    };
+    expect(read({ count: 3, final: true })).toBe(3);
+    expect(read({ count: 0, final: true })).toBe(0);
+    expect(read({ count: 3 })).toBeNull();
+    expect(read({ count: 3, final: false })).toBeNull();
+    expect(read({ count: 3, final: 'true' })).toBeNull();
+    expect(read({ count: 3, final: true, extra: 1 })).toBeNull();
+    expect(read({ count: -1, final: true })).toBeNull();
+    expect(read('{"count": 3, "fin')).toBeNull();
+    fs.rmSync(file);
+    expect(executor.readWebSearchCount(file)).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('fix 2: each launch gets a count file of its own, and the batch reserve', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, count: 5 }, { answer: RESEARCH_ANSWER, count: 3 }, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    const research = readCalls(recordDir).filter((c) => c.argv.includes('--web-search'));
+    expect(research).toHaveLength(2);
+    const files = research.map((c) => flagValue(c, '--web-search-count-file'));
+    expect(new Set(files).size).toBe(2);
+    expect(research.map((c) => flagValue(c, '--web-search-batch-reserve'))).toEqual([String(executor.WEB_SEARCH_OPT_IN_BATCH_RESERVE), String(executor.WEB_SEARCH_OPT_IN_BATCH_RESERVE)]);
+  }, 60000);
+
+  it('fix 2: with less than one batch of the run\'s budget left the research is not retried', async () => {
+    const home = makeHome();
+    const max = executor.WEB_SEARCH_OPT_IN_MAX_QUERIES;
+    const reserve = executor.WEB_SEARCH_OPT_IN_BATCH_RESERVE;
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, count: max - reserve + 1 }, { answer: RESEARCH_ANSWER, count: 1 }, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
+    expect(readAudit(home).filter((e) => e.event === 'web_search_budget').map((e) => e.runUsed)).toEqual([max - reserve + 1]);
   }, 60000);
 
   // Fix round 1 (item 3): the no-web-sources hold is for a plan with a Web
