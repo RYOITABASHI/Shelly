@@ -5149,6 +5149,39 @@ function notesWithoutFingerprint(text) {
   return String(text || '').split(/\r?\n/).filter((line) => !FINGERPRINT_LINE_RE.test(line.trim())).join('\n');
 }
 
+/**
+ * Sources read from the notes' own text (a CLI answer, a result without
+ * structured citations), without the addresses that only fingerprint lines
+ * name: those lines are dropped before the notes are absorbed, so an address
+ * no other line gives is no source (fix round 3). The rest are renumbered and
+ * the markers follow them, as withoutUnusableSources does. Pure.
+ */
+function withoutFingerprintOnlySources(text, parsed) {
+  const urlRe = /https?:\/\/[^\s<>()"'\]]+/g;
+  const keysIn = (lines) => {
+    const keys = new Set();
+    for (const u of nfkc(lines.join('\n')).match(urlRe) || []) {
+      const url = cleanUrl(u);
+      if (url) keys.add(urlKey(url));
+    }
+    return keys;
+  };
+  const lines = String(text || '').split(/\r?\n/);
+  const isFp = (line) => FINGERPRINT_LINE_RE.test(line.trim());
+  const kept = keysIn(lines.filter((line) => !isFp(line)));
+  const drop = new Set([...keysIn(lines.filter(isFp))].filter((key) => !kept.has(key)));
+  if (!drop.size) return parsed;
+  const keep = [];
+  const renumber = new Map();
+  for (const s of parsed.sources) {
+    if (drop.has(urlKey(s.url))) continue;
+    const copy = Object.assign({}, s, { id: keep.length + 1 });
+    renumber.set(s.id, copy.id);
+    keep.push(copy);
+  }
+  return { sources: keep, indexMap: parsed.indexMap.map((pos) => (pos ? renumber.get(pos) || 0 : 0)) };
+}
+
 /** The five accepted lines, in the form the parser reads, values as accepted. Pure. */
 function fingerprintLinesBlock(values) {
   return FINGERPRINT_FIELDS.map((field) => `${field}: ${values[field]}`).join('\n');
@@ -12861,10 +12894,20 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   }
   function absorbOutcome(outcome) {
     if (outcome.research && !outcome.failed) {
-      outcome.result = absorbResearchStep(evidence, fullResultText(outcome.research.text), outcome.research.parsed);
+      // v68: with an accepted fingerprint, the notes' own fingerprint lines
+      // (the rejected ones after a re-output) go before any evidence is read
+      // from them, so an address only they name is never a source (fix round
+      // 3). The accepted block goes back in after the absorption, below.
+      const fingerprint = longform ? outcome.research.fingerprint : undefined;
+      const rawNotes = fullResultText(outcome.research.text);
+      const researchText = fingerprint ? notesWithoutFingerprint(rawNotes) : rawNotes;
+      const researchParsed = fingerprint && outcome.research.parsedFromText
+        ? withoutFingerprintOnlySources(rawNotes, outcome.research.parsed)
+        : outcome.research.parsed;
+      outcome.result = absorbResearchStep(evidence, researchText, researchParsed);
       if (longform) {
         // v56: the notes' own addresses join Sources; a labelled main study is read first.
-        const notes = absorbResearchNoteUrls(evidence, fullResultText(outcome.research.text), outcome.result, outcome.research.parsed.sources.map((s) => s.url));
+        const notes = absorbResearchNoteUrls(evidence, researchText, outcome.result, researchParsed.sources.map((s) => s.url));
         outcome.result = notes.text;
         if (notes.mainId && !evidence.mainSourceId) evidence.mainSourceId = notes.mainId;
         if (notes.count) {
@@ -12878,7 +12921,6 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
             hosts: notes.hosts,
           });
         }
-        const fingerprint = outcome.research.fingerprint;
         if (fingerprint) {
           // v68: the accepted fingerprint, verbatim, survives the cap too.
           const room = LONGFORM_RESEARCH_MAX_CHARS - fingerprintLinesBlock(fingerprint).length - 1;
@@ -14454,6 +14496,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         researchCapture = { text: resultText, parsed: cliStep ? extractSourcesFromText(resultText) : parseResearchSources(attempt.response) };
         // v42: Google's own attribution and real links, without index pages.
         if (longform) researchCapture = await longformResearchCapture(paths, stepOpts, plan, attempt, resultText, researchCapture);
+        // v68 fix round 3: these sources came from the text itself.
+        if (cliStep) researchCapture.parsedFromText = true;
       }
       // 3rd-pass Codex review finding (see run()'s own comment above its
       // `let usedTool;` declaration for the full trust-check rationale):
@@ -14719,7 +14763,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   function captureResearchFromResult(outcome) {
     if (!outcome.research && typeof outcome.result === 'string') {
       const text = fullResultText(outcome.result);
-      outcome.research = { text, parsed: extractSourcesFromText(text) };
+      outcome.research = { text, parsed: extractSourcesFromText(text), parsedFromText: true };
     }
   }
 
@@ -16381,6 +16425,7 @@ module.exports = {
   fingerprintInstructionBlock,
   parseFingerprint,
   notesWithFingerprint,
+  withoutFingerprintOnlySources,
   fingerprintReoutputPrompt,
   poolCandidate,
   parsePool,

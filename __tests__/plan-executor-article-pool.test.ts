@@ -367,6 +367,22 @@ describe('v68 main-study fingerprint (brief 3)', () => {
     expect(executorModule.parseFingerprint(write, lists).ok).toBe(true);
   });
 
+  it('never cites an address that only a rejected fingerprint line names (fix round 3)', () => {
+    const rejected = 'https://rejected.example/only-in-fingerprint';
+    const notes = memo('fresh', [`population: ${rejected}`, ...FP_LINES.slice(1)]);
+    const r = run([notes, FP_LINES.join('\n'), draft], { entry: { pool: false } });
+    expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true }));
+    // The re-output still saw the notes as they were.
+    expect(r.prompts[1]).toContain(rejected);
+    const write = r.prompts[2];
+    expect(write).toContain(writeInstruction);
+    expect(write).not.toContain('rejected.example');
+    expect(write).toContain(url('fresh'));
+    for (const line of FP_LINES) expect(write).toContain(line);
+    expect(r.drafts.join('\n')).not.toContain('rejected.example');
+    expect(r.events('research_note_urls_added').flatMap((e) => e.hosts || [])).not.toContain('rejected.example');
+  });
+
   it('still asks once more with less than 12 minutes left (fix round 1, B4)', () => {
     const r = run([memo('fresh', FP_LINES.slice(0, 4)), FP_LINES.join('\n'), draft], { entry: { pool: false } }, { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(10 * 60_000) });
     expect(r.events('research_fingerprint_retry')).toHaveLength(1);
@@ -501,6 +517,29 @@ describe('v68 pure helpers', () => {
     expect(executorModule.notesWithFingerprint('Notes\npopulation: aliens\n\n## Sources\n[1] x\nquestion: effect', values))
       .toBe(`Notes\n${block}\n\n## Sources\n[1] x`);
     expect(executorModule.notesWithFingerprint('Notes\n\n', values)).toBe(`Notes\n${block}`);
+  });
+
+  it('drops from text-read sources an address only fingerprint lines name, and renumbers the rest (fix round 3)', () => {
+    const text = [
+      'Notes citing [1] and [2].',
+      'population: https://rejected.example/a',
+      '',
+      '## Sources',
+      '[1] Kept — https://kept.example/one',
+      'intervention: https://rejected.example/b',
+      '[2] Also kept — https://kept.example/two',
+    ].join('\n');
+    const parsed = executorModule.extractSourcesFromText(text);
+    expect(parsed.sources.map((s: { url: string }) => s.url)).toEqual(expect.arrayContaining(['https://rejected.example/b']));
+    const out = executorModule.withoutFingerprintOnlySources(text, parsed);
+    expect(out.sources.map((s: { url: string }) => s.url)).toEqual(['https://kept.example/one', 'https://kept.example/two']);
+    expect(out.sources.map((s: { id: number }) => s.id)).toEqual([1, 2]);
+    expect(out.indexMap[1]).toBe(1);
+    expect(out.indexMap[2]).toBe(2);
+    // An address the rest of the notes also names stays.
+    const shared = `${text}\nSee also https://rejected.example/b`;
+    const kept = executorModule.withoutFingerprintOnlySources(shared, executorModule.extractSourcesFromText(shared));
+    expect(kept.sources.map((s: { url: string }) => s.url)).toContain('https://rejected.example/b');
   });
 
   it('a pool pipeline config is validated by the TS loader too', () => {
