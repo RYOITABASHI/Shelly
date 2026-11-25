@@ -81,6 +81,35 @@ describe('cutArticleSelfTalk', () => {
   it('keeps a hard line break and CRLF on a line it edits', () => {
     expect(cut('最初。検索結果は無い。最後。  \r\n次の行。\r\n').text).toBe('最初。最後。  \r\n次の行。\r\n');
   });
+
+  // Fix round 1 (item 4): the gate's repro lost a fact and its source link.
+  it('never cuts a sentence with a Markdown link (gate repro)', () => {
+    const body = 'The search results confirm that the bridge reopened ([official notice](https://example.org/news)).';
+    expect(cut(body)).toEqual({ text: body, cut: 0 });
+    expect(cut(`# Title\n\n${body}`)).toEqual({ text: `# Title\n\n${body}`, cut: 0 });
+  });
+
+  it('never cuts a sentence with a URL or a citation bracket', () => {
+    for (const line of [
+      'The search results point to https://example.org/a for the rest.',
+      'The search results point to <https://example.org/a> for the rest.',
+      'The search results point to www.example.org for the rest.',
+      'The research notes agree [a].',
+      'The research notes agree [^note].',
+      'See the search results [official notice][ref].',
+      '調査メモ【出典】に従う。',
+      '調査メモ［公式発表］に従う。',
+    ]) {
+      expect(cut(`# 記事\n\n${line}`)).toEqual({ text: `# 記事\n\n${line}`, cut: 0 });
+    }
+  });
+
+  it('a bracketed reviser\'s note alone is still cut (it is not a citation)', () => {
+    expect(cut('前文。効果は大きい（未確認）。後文。').text).toBe('前文。後文。');
+    expect(cut('Fine. It helps [unverified]. Done.').text).toBe('Fine. Done.');
+    // A note next to a real citation bracket keeps the sentence.
+    expect(cut('Fine. It helps [unverified] [a]. Done.').cut).toBe(0);
+  });
 });
 
 describe('splitArticleSentences', () => {
@@ -171,5 +200,18 @@ describe('assembleArticle with the work-talk lint (3a)', () => {
   it('without quality.selfTalk nothing is cut', () => {
     const body = '# 記事\n\n検索結果からは取得できなかった。';
     expect(assemble(body, {})).toContain(body);
+  });
+
+  // Fix round 1 (item 4): the draft before the cut, for the held copy.
+  it('keepSelfTalk renders the same draft without the cut, and the cut count is readable', () => {
+    const body = '# 記事\n\n本文です。検索結果からは取得できなかった。';
+    const ctx = { steps, results: ['r', body, 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-25', fallbackTitle: 'F', savedAt: '2026-11-25T00:00:00.000Z' };
+    const cutText = executor.assembleArticle(local, ctx);
+    const before = executor.assembleArticle(local, { ...ctx, keepSelfTalk: true });
+    expect(executor.articleSelfTalkCutCount(cutText)).toBe(1);
+    expect(executor.articleSelfTalkCutCount(before)).toBe(0);
+    expect(before).toContain('本文です。検索結果からは取得できなかった。');
+    expect(executor.articleFrontmatterLint(before)).toContain(`${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: 検索結果`);
+    expect(executor.articleSelfTalkCutCount('# no frontmatter')).toBe(0);
   });
 });

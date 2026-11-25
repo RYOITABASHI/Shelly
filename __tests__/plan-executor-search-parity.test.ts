@@ -538,6 +538,25 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
   }, 60000);
 
+  // Fix round 1 (item 4): a cut never leaves the original text nowhere.
+  it('item 4: the held copy is the draft before the cut, whole', async () => {
+    const home = makeHome();
+    const cutAway = 'The search results said nothing more.';
+    const kept = 'The search results put it at 7 of 10 [1].';
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, `${ARTICLE} ${cutAway} ${kept}`, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir);
+    expect(readRunLog(home).outputPreview).toMatch(/^Held \(text-lint\): /);
+    const heldRoot = path.join(home, '.shelly/agents/held');
+    const [day] = fs.readdirSync(heldRoot);
+    const heldDir = path.join(heldRoot, day, 'agent-output');
+    const [name] = fs.readdirSync(heldDir);
+    const held = fs.readFileSync(path.join(heldDir, name), 'utf8');
+    expect(held.startsWith('---\nheld: "text-lint"\n')).toBe(true);
+    expect(held).toContain(`A second paragraph. ${cutAway} ${kept}`);
+    expect(held).not.toContain(executor.ARTICLE_SELF_TALK_CUT_FLAG);
+  }, 60000);
+
   it('3b: a draft the review did not pass is saved with its flags as before (not held)', async () => {
     const home = makeHome();
     const draft = `${ARTICLE} The search results put it at 7 of 10 [1].`;

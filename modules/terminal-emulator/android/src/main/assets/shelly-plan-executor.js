@@ -2872,7 +2872,8 @@ function articleHasMetaNote(body) {
 // holding a work-talk term (ARTICLE_SELF_TALK_TERMS, matched as
 // articleQualityFlags matches them) or a bracketed reviser's note
 // (ARTICLE_BRACKET_NOTE_RE) goes whole, only when it holds no figure and no
-// source marker (RESCUE_TOKEN_RE), so no fact a review read is lost. The
+// source marker (RESCUE_TOKEN_RE), no link, URL or citation bracket
+// (articleCarriesSource), so no fact a review read is lost. The
 // whole sentence, not the bracket alone: "効果量は（未確認）です" without its
 // bracket is no sentence. A list item or quote left with nothing but its
 // markup goes with it. Sentences end at 。！？ (or . ! ? before a space)
@@ -2898,6 +2899,20 @@ const ARTICLE_TEXT_LINT_TRAIL = `${ARTICLE_TEXT_LINT_CLOSE}*_\`"'`;
 
 function articleHasFactToken(text) {
   return new RegExp(RESCUE_TOKEN_RE.source, 'u').test(String(text));
+}
+
+// Fix round 1 (item 4): a sentence that carries a source is never cut either:
+// a Markdown link or reference (`[text](url)`, `[text][ref]`), a URL (bare,
+// autolinked or `www.`), or a citation bracket of any kind (`[^1]`, `[a]`,
+// `［…］`, `【…】`), beyond the figures, [n] and [M1] RESCUE_TOKEN_RE keeps.
+// The bracketed reviser's note itself (ARTICLE_BRACKET_NOTE_RE) is not a
+// citation: it is taken out before the test, so `[unverified]` alone can
+// still go. Gate repro: "The search results confirm that the bridge reopened
+// ([official notice](https://example.org/news))." lost its fact and its link.
+const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|\bwww\.[^\s.]|\[[^\]\n]+\]|［[^］\n]*］|【[^】\n]*】/i;
+function articleCarriesSource(piece) {
+  const rest = String(piece).replace(new RegExp(ARTICLE_BRACKET_NOTE_RE.source, 'gi'), ' ');
+  return ARTICLE_TEXT_LINT_SOURCE_RE.test(rest);
 }
 
 /** The sentences of one line of prose, joined back they are the line. Pure. */
@@ -2981,7 +2996,7 @@ function cutArticleSelfTalk(body) {
     for (const piece of pieces) {
       const lower = piece.toLowerCase();
       const talk = ARTICLE_SELF_TALK_TERMS.some((term) => lower.includes(term)) || bracketRe.test(piece);
-      lastCut = talk && !articleHasFactToken(piece) && articleTextLintBalanced(piece);
+      lastCut = talk && !articleHasFactToken(piece) && !articleCarriesSource(piece) && articleTextLintBalanced(piece);
       if (lastCut) lineCut += 1;
       else kept.push(piece);
     }
@@ -2996,6 +3011,22 @@ function cutArticleSelfTalk(body) {
   });
   if (!cut) return { text: String(body == null ? '' : body), cut: 0 };
   return { text: out.join('\n').replace(/(?:\r?\n){3,}/g, (m) => (m.includes('\r') ? '\r\n\r\n' : '\n\n')), cut };
+}
+
+/** An assembled draft's frontmatter `lint:` list, or []. Pure. */
+function articleFrontmatterLint(text) {
+  const block = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(text == null ? '' : text));
+  const line = block ? /^lint:[ \t]*(.*)$/m.exec(block[1]) : null;
+  const lint = line ? parseJsonValue(line[1].trim()) : null;
+  return Array.isArray(lint) ? lint.filter((f) => typeof f === 'string') : [];
+}
+
+/** How many work-talk sentences assemble cut from this draft (its lint says so), or 0. Pure. */
+function articleSelfTalkCutCount(text) {
+  const prefix = `${ARTICLE_SELF_TALK_CUT_FLAG}: `;
+  const flag = articleFrontmatterLint(text).find((f) => f.startsWith(prefix));
+  const n = flag ? Number(flag.slice(prefix.length)) : 0;
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
 /** The text-lint flags among a draft's lint list. Pure. */
@@ -3022,9 +3053,7 @@ function articleHeldTextLint(text) {
   const onlyCut = fm.review === 'unresolved' && !!noteLine && parseJsonValue(noteLine[1].trim()) === ARTICLE_SELF_TALK_CUT_NOTE;
   if (fm.review !== 'pass' && !onlyCut) return [];
   if (/^quality:/m.test(block[1]) && fm.quality !== 'pass') return [];
-  const line = /^lint:[ \t]*(.*)$/m.exec(block[1]);
-  const lint = line ? parseJsonValue(line[1].trim()) : null;
-  return articleTextLintFlags(lint);
+  return articleTextLintFlags(articleFrontmatterLint(text));
 }
 
 // The first "# " heading outside a code fence: a shell comment is not a title.
@@ -3473,7 +3502,10 @@ function assembleArticle(local, ctx) {
   // v68 (3a): the one bounded fix of the work-talk lint (cutArticleSelfTalk).
   // Here, so the final review, the editor and the facts checks all read the
   // same fixed text the save writes.
-  const selfTalk = local.quality && local.quality.selfTalk ? cutArticleSelfTalk(body) : { text: body, cut: 0 };
+  // Fix round 1 (item 4): `keepSelfTalk` renders the same draft without the
+  // cut, for the held copy (articleDraftBeforeCut): a cut never leaves the
+  // original text nowhere.
+  const selfTalk = local.quality && local.quality.selfTalk && !ctx.keepSelfTalk ? cutArticleSelfTalk(body) : { text: body, cut: 0 };
   body = selfTalk.text;
 
   let review = 'unresolved';
@@ -13199,6 +13231,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // Fix round 1: the no-web-sources hold is for a plan with a Web search step only.
   const planHasWebSearchStep = articleHeldRun && plan.steps.list.some((_s, k) => isResearchWebSearchCliStep(plan, k));
   let heldLanding = null;
+  // Fix round 1 (item 4): assemble's draft rendered without the work-talk cut
+  // (set only when the cut removed something), the text a held landing keeps.
+  let articleDraftBeforeCut = null;
   // v68: when each step first started (the held line's lastStep.startedAt).
   const stepStartedAtMs = new Map();
   // v30: the review and revise steps whose prompt had to cut a carried text.
@@ -13686,7 +13721,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       });
       return { text: renderDraftDigest(local, scan, sourcingToday) };
     }
+    articleDraftBeforeCut = null;
     const ctx = assembleContext(local);
+    let finalCtx = ctx;
     // v50: a last review of the final body, when no review passed that very text.
     // v44: the editor scores the text assemble is about to save.
     if (local.editor && !local.plain) {
@@ -13697,9 +13734,16 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // B3: a final editor fail gets one rescue revision on the notes alone.
       const chosen = best || ctx;
       const rescued = await editorRescueContext(i, local, chosen, stepOpts);
-      return { text: assembleArticle(local, rescued || chosen) };
+      finalCtx = rescued || chosen;
     }
-    return { text: assembleArticle(local, ctx) };
+    const text = assembleArticle(local, finalCtx);
+    // Fix round 1 (item 4): the same draft before the work-talk cut, for the
+    // held copy. Same context, same saved_at: only the cut differs.
+    if (!local.plain && articleSelfTalkCutCount(text) > 0) {
+      const savedAt = /^saved_at:[ \t]*(\S+)/m.exec(text);
+      articleDraftBeforeCut = assembleArticle(local, Object.assign({}, finalCtx, { keepSelfTalk: true, ...(savedAt ? { savedAt: savedAt[1] } : {}) }));
+    }
+    return { text };
   }
 
   // v48: an optional voice step (plan and owner's config file both say so)
@@ -14700,7 +14744,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const textLint = articleHeldTextLint(resultText);
       if (textLint.length) {
         dispatchedFinal = true;
-        heldLanding = { reason: 'text-lint', note: textLint, stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: resultText };
+        // Fix round 1 (item 4): held/ keeps the draft as written, before the cut.
+        heldLanding = { reason: 'text-lint', note: textLint, stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
         heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
         if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
         return {
@@ -14722,7 +14767,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // ticked since the work is kept, and the run lands held.
       if (!(isFinal && articleHeldRun && error instanceof ActionApprovalNotGranted && step.local !== undefined)) throw error;
       dispatchedFinal = true;
-      heldLanding = { reason: error.reason, note: [redact(error.message)], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: resultText };
+      heldLanding = { reason: error.reason, note: [redact(error.message)], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
       heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
       if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
       return {
@@ -16573,6 +16618,9 @@ module.exports = {
   ARTICLE_META_NOTE_CUT_FLAG,
   ARTICLE_META_NOTE_LEFT_FLAG,
   cutArticleSelfTalk,
+  articleCarriesSource,
+  articleFrontmatterLint,
+  articleSelfTalkCutCount,
   splitArticleSentences,
   articleTextLintBalanced,
   ARTICLE_SELF_TALK_CUT_NOTE,
