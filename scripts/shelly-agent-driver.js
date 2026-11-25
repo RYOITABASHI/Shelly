@@ -112,11 +112,16 @@ Options:
                              are the only items allowed besides text; each completed search is
                              audited (codex_web_search) and one carrying a secret stops the turn.
                              For the research step of an article pipeline (executor v58).
-  --web-search-max-queries <n>   (with --web-search) Stop the turn when more than n (1-50) searches
-                             complete (audit codex_web_search_limit, limit "count").
-  --web-search-max-query-chars <n>  (with --web-search) Stop the turn when a search query is longer
-                             than n (16-400) characters (limit "length"); the codex_web_search
-                             audit then keeps the query (redacted) up to max(120, n) characters.
+  --web-search-max-queries <n>   (with --web-search) The turn may use n (1-50) queries: each string a
+                             webSearch item carries (every action.queries entry, query, url, pattern)
+                             is one. Over n the turn stops (audit codex_web_search_limit, limit
+                             "count"); a webSearch item that starts with none left stops it too.
+  --web-search-max-query-chars <n>  (with --web-search) Stop the turn when any of those strings is
+                             longer than n (16-400) characters (limit "length"); the codex_web_search
+                             audit then keeps each (redacted) up to max(120, n) characters.
+  --web-search-count-file <path>  (with --web-search) Keep {"count": <queries used>} there, written
+                             (0) before the turn and after each completed search, so the caller can
+                             hold a budget across several turns (executor v68: per run).
   --text-only-model <name>   Model for a --text-only or --image-only turn. Required for Codex unless the
                              real config.toml names one.
   --image-only               (codex) A text-only turn whose one tool is image generation: no shell, no
@@ -267,6 +272,8 @@ function parseArgs(argv) {
       args.webSearchMaxQueries = next();
     } else if (arg === '--web-search-max-query-chars') {
       args.webSearchMaxQueryChars = next();
+    } else if (arg === '--web-search-count-file') {
+      args.webSearchCountFile = next();
     } else if (arg === '--image-only') {
       args.imageOnly = true;
     } else if (arg === '--image-style') {
@@ -852,6 +859,12 @@ function ensureConfig(args) {
   };
   const webSearchMaxQueries = webSearchCap(args.webSearchMaxQueries, '--web-search-max-queries', 1, 50);
   const webSearchMaxQueryChars = webSearchCap(args.webSearchMaxQueryChars, '--web-search-max-query-chars', 16, 400);
+  let webSearchCountFile = null;
+  if (args.webSearchCountFile !== undefined) {
+    if (!args.webSearch) throw new Error('--web-search-count-file needs --web-search');
+    if (typeof args.webSearchCountFile !== 'string' || !args.webSearchCountFile) throw new Error('invalid --web-search-count-file');
+    webSearchCountFile = path.resolve(args.webSearchCountFile);
+  }
   const imageArgsGiven = args.imageStyle !== null || args.imageSubject !== null || args.imageOut !== null;
   let imageOut = null;
   let imagePrompt = null;
@@ -896,6 +909,7 @@ function ensureConfig(args) {
     webSearch: args.webSearch === true,
     webSearchMaxQueries,
     webSearchMaxQueryChars,
+    webSearchCountFile,
     tainted: args.tainted === true,
     imageOut,
     cwd,
@@ -1442,22 +1456,64 @@ function codexWebSearchLeakCheck(item, secrets) {
  * cut; a value redact() would miss is withheld, not logged. Used on item/completed
  * because the query is empty on item/started.
  */
-function codexWebSearchQueryText(item) {
-  return [...codexWebSearchActionTexts(item), item && item.query]
-    .find((value) => typeof value === 'string' && value !== '');
+/**
+ * Every string a webSearch item sends: each action.queries entry, action.query,
+ * action.url, action.pattern and item.query, in that order, once each. These are
+ * what the length cap checks and the audit records, and their number is what
+ * the count cap counts (codexWebSearchUnits).
+ */
+function codexWebSearchQueryTexts(item) {
+  const out = [];
+  for (const value of [...codexWebSearchActionTexts(item), item && item.query]) {
+    if (typeof value === 'string' && value !== '' && !out.includes(value)) out.push(value);
+  }
+  return out;
 }
+
+/** Queries one completed webSearch item uses: its strings, at least 1. */
+function codexWebSearchUnits(item) {
+  return Math.max(1, codexWebSearchQueryTexts(item).length);
+}
+
+const CODEX_WEB_SEARCH_AUDIT_MAX_QUERIES = 50;
 
 function codexWebSearchAudit(item, secrets, maxChars = null) {
   const action = item && item.action && typeof item.action === 'object' ? item.action : {};
-  const text = codexWebSearchQueryText(item);
+  const texts = codexWebSearchQueryTexts(item);
   const auditMax = Number.isInteger(maxChars) ? Math.max(CODEX_WEB_SEARCH_AUDIT_MAX, maxChars) : CODEX_WEB_SEARCH_AUDIT_MAX;
-  const withheld = codexLeakDetect(text, secrets) || codexLeakDetect(item && item.query, secrets);
+  // Each string checked whole, then redacted, then cut; one redact() would
+  // miss is withheld (kept empty), and the entry says so.
+  let withheld = null;
+  const queries = texts.slice(0, CODEX_WEB_SEARCH_AUDIT_MAX_QUERIES).map((text) => {
+    const hit = codexLeakDetect(text, secrets);
+    if (hit) {
+      withheld = withheld || hit;
+      return '';
+    }
+    return redact(text).slice(0, auditMax);
+  });
   const entry = {
     itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null,
     action: typeof action.type === 'string' ? action.type.slice(0, 40) : null,
-    query: text && !withheld ? redact(text).slice(0, auditMax) : '',
+    query: queries.length ? queries[0] : '',
+    queries,
+    queryCount: texts.length,
   };
+  if (texts.length > queries.length) entry.queriesOmitted = texts.length - queries.length;
   return withheld ? { ...entry, withheld } : entry;
+}
+
+/** {"count": n} at `file`, replaced whole. False on any error. */
+function writeWebSearchCountFile(file, count) {
+  if (!file) return false;
+  try {
+    const tmpPath = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify({ count }), { mode: 0o600 });
+    fs.renameSync(tmpPath, file);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -3700,7 +3756,9 @@ async function runDriver(config) {
 
   // Stop the turn and fail the run for activity no gate can see. Only names are
   // recorded, never arguments.
+  // Queries used by this turn's completed web searches (codexWebSearchUnits).
   let completedWebSearches = 0;
+  if (config.webSearch && config.webSearchCountFile) writeWebSearchCountFile(config.webSearchCountFile, 0);
   const stopUngatedActivity = (kind, details, reason) => {
     if (completed) return;
     sawFailure = true;
@@ -4354,6 +4412,20 @@ async function runDriver(config) {
 
     if (message.method === 'item/started') {
       if (blockUngatedItem('started', message.params)) return;
+      // A search that starts with no query left in the budget stops the turn
+      // before it completes (its query is not known yet on item/started).
+      const startedItem = message.params && message.params.item;
+      if (startedItem && startedItem.type === 'webSearch' && Number.isInteger(config.webSearchMaxQueries)
+        && completedWebSearches >= config.webSearchMaxQueries) {
+        process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} queries); stopped.\n`);
+        stopUngatedActivity('codex_web_search_limit', {
+          threadId: message.params.threadId,
+          turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
+          itemId: typeof startedItem.id === 'string' ? startedItem.id.slice(0, 120) : null,
+          limit: 'count', phase: 'started', count: completedWebSearches, max: config.webSearchMaxQueries,
+        }, 'web search started with the query budget spent');
+        return;
+      }
       auditItemStarted(message.params);
       return;
     }
@@ -4423,22 +4495,22 @@ async function runDriver(config) {
           turnId: message.params.turnId,
           ...codexWebSearchAudit(message.params.item, leakSecrets, config.webSearchMaxQueryChars),
         });
-        completedWebSearches += 1;
+        completedWebSearches += codexWebSearchUnits(message.params.item);
+        if (config.webSearchCountFile) writeWebSearchCountFile(config.webSearchCountFile, completedWebSearches);
         const limitIds = {
           threadId: message.params.threadId,
           turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
           itemId: typeof message.params.item.id === 'string' ? message.params.item.id.slice(0, 120) : null,
         };
         if (Number.isInteger(config.webSearchMaxQueries) && completedWebSearches > config.webSearchMaxQueries) {
-          process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} searches); stopped.\n`);
+          process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} queries); stopped.\n`);
           stopUngatedActivity('codex_web_search_limit', {
             ...limitIds, limit: 'count', count: completedWebSearches, max: config.webSearchMaxQueries,
-          }, 'web search count over the per-turn limit');
+          }, 'web search count over the limit');
           return;
         }
         if (Number.isInteger(config.webSearchMaxQueryChars)) {
-          const queryText = codexWebSearchQueryText(message.params.item);
-          const chars = typeof queryText === 'string' ? Array.from(queryText).length : 0;
+          const chars = codexWebSearchQueryTexts(message.params.item).reduce((m, t) => Math.max(m, Array.from(t).length), 0);
           if (chars > config.webSearchMaxQueryChars) {
             process.stdout.write(`CODEX_ERROR Web search query over ${config.webSearchMaxQueryChars} characters; stopped.\n`);
             stopUngatedActivity('codex_web_search_limit', {

@@ -48,7 +48,9 @@ const RESEARCH_ANSWER = [
 const ARTICLE = '# A title\n\nThe body says 42% [1] and 120 people [2].\n\nA second paragraph.';
 const NOTIFICATION_CANARY = 'NOTIFICATION-CANARY-7f3a do not leak me';
 
-// answers[n]: a string is the answer; null fails; {fail: line} prints the line and exits 1.
+// answers[n]: a string is the answer; null fails; {fail: line} prints the line and exits 1;
+// {answer, count} answers and, like the real driver, writes {"count": count}
+// to --web-search-count-file when it was given one.
 const FAKE_DRIVER = `'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -61,7 +63,12 @@ const prompt = fs.readFileSync(get('--prompt-file'), 'utf8');
 fs.writeFileSync(path.join(dir, 'call-' + String(n).padStart(2, '0') + '.json'), JSON.stringify({ argv, prompt, cwd: process.cwd() }));
 const a = answers[n];
 if (a === undefined || a === null) { process.stdout.write('CODEX_ERROR refused by the fake\\n'); process.exit(1); }
-if (typeof a === 'object') { process.stdout.write(a.fail + '\\n'); process.exit(1); }
+if (typeof a === 'object' && a.fail !== undefined) { process.stdout.write(a.fail + '\\n'); process.exit(1); }
+if (typeof a === 'object') {
+  if (get('--web-search-count-file')) fs.writeFileSync(get('--web-search-count-file'), JSON.stringify({ count: a.count }));
+  fs.writeFileSync(get('--answer-file'), a.answer);
+  process.exit(0);
+}
 fs.writeFileSync(get('--answer-file'), a);
 process.exit(0);
 `;
@@ -73,7 +80,7 @@ function makeHome(): string {
   return home;
 }
 
-function makeDriver(answers: (string | null | { fail: string })[]): { driver: string; recordDir: string } {
+function makeDriver(answers: (string | null | { fail: string } | { answer: string; count: number })[]): { driver: string; recordDir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-fake-search-parity-'));
   const driver = path.join(dir, 'fake-agent-driver.js');
   fs.writeFileSync(driver, FAKE_DRIVER);
@@ -544,6 +551,51 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(saved).toContain(executor.ARTICLE_SELF_TALK_LEFT_FLAG);
     expect(readAudit(home).some((e) => e.event === 'article_held')).toBe(false);
     expect(readFeedback(home)).toEqual([]);
+  }, 60000);
+
+  // Fix round 1 (item 2): the opted-in query budget is per run, across every
+  // launch of the research step (here a numbers retry), not per driver turn.
+  const THIN_RESEARCH = [
+    '主研究: Paper A [1]',
+    '事実: the figure was 42% [1].',
+    '',
+    '## Sources',
+    `[1] Paper A — ${URL_A}`,
+    `[2] Paper B — ${URL_B}`,
+  ].join('\n');
+
+  it('item 2: a research retry gets only what is left of the run\'s query budget', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, count: 5 }, { answer: RESEARCH_ANSWER, count: 3 }, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    const calls = readCalls(recordDir);
+    const research = calls.filter((c) => c.argv.includes('--web-search'));
+    expect(research).toHaveLength(2);
+    const max = executor.WEB_SEARCH_OPT_IN_MAX_QUERIES;
+    expect(research.map((c) => flagValue(c, '--web-search-max-queries'))).toEqual([String(max), String(max - 5)]);
+    expect(research.every((c) => typeof flagValue(c, '--web-search-count-file') === 'string')).toBe(true);
+    const budget = readAudit(home).filter((e) => e.event === 'web_search_budget');
+    expect(budget.map((e) => [e.used, e.runUsed])).toEqual([[5, 5], [3, 8]]);
+  }, 60000);
+
+  it('item 2: with the run\'s budget spent the research is not retried', async () => {
+    const home = makeHome();
+    const max = executor.WEB_SEARCH_OPT_IN_MAX_QUERIES;
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, count: max }, { answer: RESEARCH_ANSWER, count: 1 }, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
+    expect(readAudit(home).filter((e) => e.event === 'web_search_budget').map((e) => e.runUsed)).toEqual([max]);
+  }, 60000);
+
+  it('item 2: a launch whose count cannot be read spends the rest of the budget (fail closed)', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([THIN_RESEARCH, RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
+    expect(readAudit(home).find((e) => e.event === 'web_search_budget')).toMatchObject({ used: null, runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES });
   }, 60000);
 
   it('any other research failure still fails the run as before (not held)', async () => {

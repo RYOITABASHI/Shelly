@@ -582,6 +582,7 @@ describe('Codex text-only turn', () => {
         ['max-query-chars 15', ['--text-only', '--web-search', '--web-search-max-query-chars', '15'], /invalid --web-search-max-query-chars/],
         ['max-query-chars 401', ['--text-only', '--web-search', '--web-search-max-query-chars', '401'], /invalid --web-search-max-query-chars/],
         ['max-query-chars abc', ['--text-only', '--web-search', '--web-search-max-query-chars', 'abc'], /invalid --web-search-max-query-chars/],
+        ['--web-search-count-file without --web-search', ['--text-only', '--web-search-count-file', '/tmp/x.json'], /--web-search-count-file needs --web-search/],
       ])('flag validation: %s', (_name, args, re) => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-caps-'));
         const r = childProcess.spawnSync(process.execPath, [driverPath, ...args, '--cwd', tmp, '--prompt', 'x', '--codex-bin', process.execPath, '--policy-json', '{}'], {
@@ -598,7 +599,7 @@ describe('Codex text-only turn', () => {
         const r = run([searchN(1, 'first query'), searchN(2, 'second query'), searchN(3, 'third query')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
         expect(r.status).toBe(1);
         expect(r.answer).toBeNull();
-        expect(r.out).toContain('Web search limit reached (2 searches); stopped.');
+        expect(r.out).toContain('Web search limit reached (2 queries); stopped.');
         expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 3, max: 2 });
         expect(auditAll(r.audit, 'codex_web_search').map((e: any) => e.query)).toEqual(['first query', 'second query', 'third query']);
       }, 60_000);
@@ -628,6 +629,63 @@ describe('Codex text-only turn', () => {
         expect(r.status).toBe(0);
         expect(auditOf(r.audit, 'codex_web_search').query).toBe('z'.repeat(120));
       }, 60_000);
+
+      // Fix round 1 (gate: only the first text was checked and audited).
+      const itemN = (i: number, action: Record<string, unknown>, query?: string) => ({
+        method: 'item/completed',
+        params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: `ws${i}`, ...(query === undefined ? {} : { query }), action } },
+      });
+
+      it('every action.queries entry counts against the cap and is audited', () => {
+        const r = run([itemN(1, { type: 'search', queries: ['q one', 'q two', 'q three'] })], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 3, max: 2 });
+        expect(auditOf(r.audit, 'codex_web_search')).toMatchObject({ query: 'q one', queries: ['q one', 'q two', 'q three'], queryCount: 3 });
+      }, 60_000);
+
+      it('a later action.queries entry over the length cap stops the turn', () => {
+        const r = run([itemN(1, { type: 'search', queries: ['short', 'y'.repeat(41)] })], {}, { extra: ['--web-search', '--web-search-max-query-chars', '40'] });
+        expect(r.status).toBe(1);
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'length', chars: 41, max: 40 });
+        expect(auditOf(r.audit, 'codex_web_search').queries).toEqual(['short', 'y'.repeat(41)]);
+      }, 60_000);
+
+      it('the pattern after a URL is length-checked and audited', () => {
+        const pattern = 'p'.repeat(41);
+        const r = run([itemN(1, { type: 'find_in_page', url: 'https://example.org/a', pattern })], {}, { extra: ['--web-search', '--web-search-max-query-chars', '40'] });
+        expect(r.status).toBe(1);
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'length', chars: 41 });
+        expect(auditOf(r.audit, 'codex_web_search').queries).toEqual(['https://example.org/a', pattern]);
+      }, 60_000);
+
+      it('a secret in a later entry is withheld from the audit and stops the turn', () => {
+        const secret = 'sk-AbCdEfGhIjKlMnOpQrSt1234';
+        const r = run([itemN(1, { type: 'search', queries: ['fine', `about ${secret}`] })], {}, { extra: ['--web-search'] });
+        expect(r.status).toBe(1);
+        expect(auditKinds(r.audit)).toContain('codex_web_search_leak_blocked');
+        expect(r.audit).not.toContain(secret);
+      }, 60_000);
+
+      it('a search that starts with the budget spent stops the turn before it completes', () => {
+        const started = { method: 'item/started', params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: 'ws2', query: '', action: { type: 'other' } } } };
+        const r = run([searchN(1, 'only one'), started], {}, { extra: ['--web-search', '--web-search-max-queries', '1'] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', phase: 'started', count: 1, max: 1, itemId: 'ws2' });
+      }, 60_000);
+
+      it('the count file holds the queries used, for a budget across turns', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-'));
+        const countFile = path.join(dir, 'count.json');
+        const r = run([itemN(1, { type: 'search', queries: ['a1', 'a2'] }), searchN(2, 'b')], {}, { extra: ['--web-search', '--web-search-max-queries', '5', '--web-search-count-file', countFile] });
+        expect(r.status).toBe(0);
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 3 });
+        const none = run([], {}, { extra: ['--web-search', '--web-search-count-file', countFile] });
+        expect(none.status).toBe(0);
+        expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 0 });
+        fs.rmSync(dir, { recursive: true, force: true });
+      }, 120_000);
     });
 
     it('the helpers say the same', () => {

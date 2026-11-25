@@ -6214,6 +6214,9 @@ function webSearchOptInState(definitionSha256, env, ingress) {
 
 // This run's opt-in state (run() sets it): only 'on' starts a search on a tainted run.
 let activeWebSearchOptIn = 'off';
+// Queries this run's opted-in web searches used, over every launch of the
+// research step (runCliStepDriver; fix round 1: the budget is per run).
+let webSearchRunQueriesUsed = 0;
 
 /** Why the research step's web search may not start on this run, or ''. */
 function webSearchStartRefusal(opts) {
@@ -12711,12 +12714,21 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   // opted in starts the search, with the per-turn caps (driver
   // --web-search-max-queries / --web-search-max-query-chars, every query audited).
   const webSearchOptedIn = webSearch && !!(opts && opts.tainted) && activeWebSearchOptIn === 'on';
+  // Fix round 1: the query budget is per run (WEB_SEARCH_OPT_IN_MAX_QUERIES
+  // across every launch of the research step, retries included): each launch
+  // gets what is left, and the driver's count file says what it used.
+  const webSearchRemaining = WEB_SEARCH_OPT_IN_MAX_QUERIES - webSearchRunQueriesUsed;
+  if (webSearchOptedIn && webSearchRemaining <= 0) {
+    cliStepAudit(paths, plan, 'web_search_budget_spent', { stepIndex, engine, used: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES });
+    throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step: the run's web search budget (${WEB_SEARCH_OPT_IN_MAX_QUERIES} queries) is spent`, { exitCode: EXIT.TOOL_DENY, heldReason: 'web-search-stopped' });
+  }
   if (webSearchOptedIn) {
     cliStepAudit(paths, plan, 'web_search_opt_in_applied', {
       stepIndex,
       engine,
       definitionSha256: activePlanIdentity && activePlanIdentity.definitionSha256 ? activePlanIdentity.definitionSha256.slice(0, 16) : null,
-      maxQueries: WEB_SEARCH_OPT_IN_MAX_QUERIES,
+      maxQueries: webSearchRemaining,
+      runMaxQueries: WEB_SEARCH_OPT_IN_MAX_QUERIES,
       maxQueryChars: WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS,
     });
   }
@@ -12743,6 +12755,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   const promptFile = path.join(paths.tmpDir, `${fileBase}.prompt`);
   const answerFile = path.join(paths.tmpDir, `${fileBase}.answer`);
   const usageFile = path.join(paths.tmpDir, `${fileBase}.usage.json`);
+  const webSearchCountFile = path.join(paths.tmpDir, `${fileBase}.web-search-count.json`);
   const auditLog = path.join(paths.logDir, `agent-driver-audit-s${stepIndex}.jsonl`);
   const policy = Object.assign({}, worker.policy, { unattended: !attended });
   const driverArgs = [
@@ -12764,7 +12777,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
     ...(textOnly ? ['--text-only', ...(webSearch ? ['--web-search'] : []), ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
-    ...(webSearchOptedIn ? ['--web-search-max-queries', String(WEB_SEARCH_OPT_IN_MAX_QUERIES), '--web-search-max-query-chars', String(WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS)] : []),
+    ...(webSearchOptedIn ? ['--web-search-max-queries', String(webSearchRemaining), '--web-search-max-query-chars', String(WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS), '--web-search-count-file', webSearchCountFile] : []),
     // v59 (MCP ingress taint Inc 5): a run of an agent marked by MCP ingress
     // (native exports SHELLY_INGRESS_TAINTED=1) declines every write / exec /
     // network send in the driver's gate, attended too, with no escalation or
@@ -12775,6 +12788,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   unlinkQuiet(answerFile);
   unlinkQuiet(usageFile);
   unlinkQuiet(promptFile);
+  unlinkQuiet(webSearchCountFile);
   writePrivateFile(promptFile, prompt);
 
   const env = Object.assign(childEnv(paths, opts), { SHELLY_AGENT_RUN_ID: branchRunId, SHELLY_AGENT_ID: plan.agent.id });
@@ -12915,6 +12929,13 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       progressStepEvent(progress, stepIndex, 'usage', { usage });
       addRunCliUsage(usage);
     }
+    if (webSearchOptedIn) {
+      // What this launch used; an unreadable count (the driver never wrote it,
+      // or wrote nonsense) spends the rest of the budget: fail closed.
+      const used = readWebSearchCount(webSearchCountFile);
+      webSearchRunQueriesUsed += used === null ? webSearchRemaining : used;
+      cliStepAudit(paths, plan, 'web_search_budget', { stepIndex, engine, used, runUsed: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES });
+    }
     cliStepAudit(paths, plan, 'cli_branch_end', {
       stepIndex,
       engine,
@@ -12960,6 +12981,18 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     unlinkQuiet(promptFile);
     unlinkQuiet(answerFile);
     unlinkQuiet(usageFile);
+    unlinkQuiet(webSearchCountFile);
+  }
+}
+
+/** The driver's {"count": n} (--web-search-count-file), or null. Throws nothing. */
+function readWebSearchCount(file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const n = parsed && parsed.count;
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -14815,6 +14848,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const halted = () => haltedChain || isHalted(paths);
     const retrySkipReason = () => {
       if (isResearchWebSearchCliStep(plan, i) && webSearchStartRefusal(opts)) return 'tainted';
+      // Fix round 1: an opted-in run's query budget is per run; a retry with
+      // none left would only be refused.
+      if (isResearchWebSearchCliStep(plan, i) && opts.tainted && activeWebSearchOptIn === 'on'
+        && webSearchRunQueriesUsed >= WEB_SEARCH_OPT_IN_MAX_QUERIES) return 'budget';
       if (halted()) return 'halted';
       if (longformDeadlineMs - Date.now() - (Number(outcome.record && outcome.record.durationMs) || 0) < researchHistoryRetryReserveMs()) return 'time';
       return '';
