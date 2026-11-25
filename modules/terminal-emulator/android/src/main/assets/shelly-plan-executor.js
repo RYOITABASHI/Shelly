@@ -2921,7 +2921,9 @@ function articleHasFactToken(text) {
 // (CommonMark: `<`, a scheme of 2-32 characters, a letter then letters, digits,
 // `+`, `.` or `-`, then `:` and no space, `<` or `>` up to `>`), so
 // `<ftp://example.org/notice>` and `<urn:isbn:…>` keep their sentence.
-const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|<[a-z][a-z0-9+.-]{1,31}:[^<>\s]*>|\bwww\.[^\s.]|\bmailto:|<[^<>\s]+@[^<>\s]+>|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|\]\s*[([]|［[^］\n]*］|【[^】\n]*】/iu;
+// So does a bare URL of any scheme (`ftp://example.org/notice`, `git+ssh://…`)
+// and an HTML link or image (`<a href=…>`, `<img src=…>`), whatever its target.
+const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|<[a-z][a-z0-9+.-]{1,31}:[^<>\s]*>|\b[a-z][a-z0-9+.-]{1,31}:\/\/[^\s<>]|<(?:a|img)\b[^<>]*?\b(?:href|src)[ \t]*=|\bwww\.[^\s.]|\bmailto:|<[^<>\s]+@[^<>\s]+>|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|\]\s*[([]|［[^］\n]*］|【[^】\n]*】/iu;
 const ARTICLE_TEXT_LINT_CITATION_BRACKET_RE = /\[[^\]\n]+\]/g;
 function articleCarriesSource(piece) {
   const text = String(piece);

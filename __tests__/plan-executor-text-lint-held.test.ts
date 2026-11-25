@@ -140,6 +140,23 @@ describe('cutArticleSelfTalk', () => {
     expect(cut(`# Title\n\n${line}`)).toEqual({ text: `# Title\n\n${line}`, cut: 0 });
   });
 
+  it.each([
+    ['a bare ftp: URL', 'The search results confirm the notice at ftp://example.org/notice today.'],
+    ['a bare URL with + in its scheme', 'The research notes point to git+ssh://example.org/repo.git here.'],
+    ['an upper-case bare URL', 'The search results confirm the notice at FTP://example.org/notice today.'],
+    ['an HTML link', 'The search results confirm the notice <a href="notice.html">here</a> today.'],
+    ['an HTML image', 'The research notes show the chart <img src="chart.png" alt="chart"> today.'],
+  ])('never cuts a sentence with %s', (_name, line) => {
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+  });
+
+  it('a word before a colon is not a URL', () => {
+    for (const notLink of ['note: see above', 'ab:/x', 'a://x', '<abbr title="x">']) {
+      const line = `Fine. The search results say so ${notLink}. Done.`;
+      expect(cut(line).cut).toBe(1);
+    }
+  });
+
   it('angle brackets that are not a URI autolink are not a source', () => {
     for (const notLink of ['<b>', '<x: y>', '<-ab:c>', '<:x>', '<a:b>']) {
       const line = `Fine. The search results say so ${notLink}. Done.`;
