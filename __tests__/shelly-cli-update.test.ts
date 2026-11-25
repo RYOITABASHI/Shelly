@@ -1453,7 +1453,8 @@ describe('native command pipes', () => {
 describe('helper scripts', () => {
   it('are replaced whole, never rewritten in place', () => {
     expect(homeKt).not.toMatch(/\.outputStream\(\)\.use \{ output -> input\.copyTo\(output\) \}/);
-    expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(19);
+    expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(20);
+    expect(homeKt).toContain('input.copyToAtomically(runRecoveryScript)');
     expect(homeKt).toContain('input.copyToAtomically(saveDraftScript)');
     expect(homeKt).toContain('input.copyToAtomically(agentDriverScript)');
     expect(homeKt).toContain('input.copyToAtomically(gateDecideScript)');
