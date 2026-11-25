@@ -508,7 +508,12 @@ describe('a run with the Codex web-search research step (v68)', () => {
     const lines = readFeedback(home);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ reason: 'held', pipelineId: 'example-a', lastStep: { kind: 'assemble' }, artifacts: { draft: true, paths: [path.join(heldDir, name)] } });
-    expect(lines[0].note).toEqual([`${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`]);
+    // Fix round 2 (gate 2, finding 8): the original lint messages as they are,
+    // the fixture's minimum-length warning too, not only the text-lint flags.
+    expect(lines[0].note).toEqual([
+      expect.stringMatching(/^本文が短い: \d+字（目安 2500字以上）$/),
+      `${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`,
+    ]);
     const audit = readAudit(home);
     expect(audit.find((e) => e.event === 'article_self_talk_cut')).toMatchObject({ cut: 1, beforeCutKept: true });
     expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'text-lint', draftKept: true });

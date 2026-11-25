@@ -14791,10 +14791,15 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // the text published must be the text a review passed, and no review read
     // the cut one. Its note is the lint of the draft before the cut (the
     // original messages); the same-day retry gets a line either way.
+    // Fix round 2 (gate 2, finding 8): every original message as it is (a
+    // length warning too), not only the text-lint flags. Without the uncut
+    // render, the cut draft's own lint less the cut's own flag.
     if (isFinal && articleHeldRun && step.local !== undefined && plan.action && plan.action.type === 'draft') {
       const cutCount = articleSelfTalkCutCount(resultText);
       const textLint = cutCount > 0
-        ? articleTextLintFlags(articleFrontmatterLint(articleDraftBeforeCut || ''))
+        ? (articleDraftBeforeCut
+          ? articleFrontmatterLint(articleDraftBeforeCut)
+          : articleFrontmatterLint(resultText).filter((f) => !f.startsWith(`${ARTICLE_SELF_TALK_CUT_FLAG}:`)))
         : articleHeldTextLint(resultText);
       if (cutCount > 0 || textLint.length) {
         dispatchedFinal = true;
