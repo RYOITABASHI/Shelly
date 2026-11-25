@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings as BaseAppSettings, SocialConnectorMeta } from './types';
+import { sanitizeSlugTable } from '@/lib/hayato-chat-link';
 import { isReservedConnectorId } from '@/lib/backup/secure-store-inventory';
 import {
   saveApiKey,
@@ -61,6 +62,10 @@ export type AppSettings = BaseAppSettings & {
    *  but still a materially higher blast radius, so it stays a deliberate
    *  separate opt-in rather than inheriting Tier 3's default. */
   agentConversationalHighRiskActionsEnabled?: boolean;
+  /** Device-side `hayato://chat/<slug>` slug table (lib/hayato-chat-link.ts).
+   *  Entered by the owner in Settings; empty by default so every slug is
+   *  "unresolved" until registered. Max 32, each ^[a-z0-9-]{1,40}$. */
+  hayatoChatSlugs?: string[];
 };
 
 /** Build the same replace-lines-in-.env shell command updateSettings uses.
@@ -235,6 +240,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cliAutoUpdateWifi: false,
   autonomousCloudOnExhaustion: 'escalate' as const,
   webhookHostAllowlist: [],
+  hayatoChatSlugs: [],
   socialHostAllowlist: [],
   // Agent output: default to a clean, findable local folder. Switch to 'obsidian'
   // (with a Vault path) or 'custom' to unify saved drafts elsewhere.
@@ -510,6 +516,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       settings.webhookHostAllowlist = normalizeWebhookHostAllowlist(
         Array.isArray(settings.webhookHostAllowlist) ? settings.webhookHostAllowlist : [],
       );
+      settings.hayatoChatSlugs = sanitizeSlugTable(settings.hayatoChatSlugs);
       let shouldPersist = false;
       if (LEGACY_LOCAL_LLM_MODELS.has(settings.localLlmModel)) {
         settings.localLlmModel = DEFAULT_LOCAL_LLM_MODEL;
@@ -680,6 +687,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // driver (lib/agent-action-policy.ts AGENT_POLICY_ENV_FLAG).
       if ('agentPolicyEngine' in newSettings) {
         envUpdates.push(['SHELLY_AGENT_POLICY', newSettings.agentPolicyEngine === true ? '1' : '0']);
+      }
+      if ('hayatoChatSlugs' in newSettings) {
+        updated.hayatoChatSlugs = sanitizeSlugTable(newSettings.hayatoChatSlugs);
       }
       if ('webhookHostAllowlist' in newSettings && Array.isArray(newSettings.webhookHostAllowlist)) {
         const normalizedHosts = normalizeWebhookHostAllowlist(newSettings.webhookHostAllowlist);

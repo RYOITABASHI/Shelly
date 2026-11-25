@@ -27,6 +27,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { startXOAuthConnect } from '@/lib/x-oauth-connect';
+import { isValidSlug, MAX_SLUG_TABLE } from '@/lib/hayato-chat-link';
 import { useI18n, useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -283,6 +284,7 @@ function DeveloperSettingsScreen({
         <DoctorSection />
         <IntegrationsSection onOpenMcp={onOpenMcp} onOpenLlama={onOpenLlama} />
         <WebhookHostAllowlistSection />
+        <HayatoChatSlugsSection />
         <ScouterSection visible={scouterVisible} onCloseSettings={onCloseAllForMonitor} />
         <ResetSettingsSection />
       </ScrollView>
@@ -2091,6 +2093,63 @@ const WebhookHostAllowlistSection = React.memo(function WebhookHostAllowlistSect
         />
         <Pressable onPress={() => void addHost()} style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }]} hitSlop={6}>
           <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>{t('webhook_allowlist.add')}</Text>
+        </Pressable>
+      </View>
+    </Section>
+  );
+});
+
+// Device-side slug table for hayato://chat/<slug> links (lib/hayato-chat-link.ts).
+// Empty by default: a link is only queued for the agent when its slug is here.
+const HayatoChatSlugsSection = React.memo(function HayatoChatSlugsSection() {
+  const { t } = useTranslation();
+  const slugs = useSettingsStore((s) => s.settings.hayatoChatSlugs ?? []);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const [draft, setDraft] = useState('');
+
+  const addSlug = () => {
+    const slug = draft.trim();
+    if (!isValidSlug(slug)) {
+      Alert.alert(t('hayato_chat.invalid'));
+      return;
+    }
+    if (!slugs.includes(slug)) {
+      if (slugs.length >= MAX_SLUG_TABLE) {
+        Alert.alert(t('hayato_chat.full'));
+        return;
+      }
+      updateSettings({ hayatoChatSlugs: [...slugs, slug] });
+    }
+    setDraft('');
+  };
+
+  return (
+    <Section title={t('hayato_chat.title')}>
+      <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{t('hayato_chat.description')}</Text>
+      {slugs.map((slug) => (
+        <View key={slug} style={[styles.integrationRow, borderedChromeStyle()]}>
+          <MaterialIcons name="link" size={13} color={C.accent} />
+          <Text selectable style={[styles.integrationLabel, { color: C.text1 }]}>{slug}</Text>
+          <View style={{ flex: 1 }} />
+          <Pressable onPress={() => updateSettings({ hayatoChatSlugs: slugs.filter((item) => item !== slug) })} hitSlop={8}>
+            <MaterialIcons name="delete-outline" size={15} color={C.errorText} />
+          </Pressable>
+        </View>
+      ))}
+      <View style={styles.apiKeyEditRow}>
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          onSubmitEditing={addSlug}
+          style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+          placeholder={t('hayato_chat.placeholder')}
+          placeholderTextColor={C.text3}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+        />
+        <Pressable onPress={addSlug} style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }]} hitSlop={6}>
+          <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>{t('hayato_chat.add')}</Text>
         </Pressable>
       </View>
     </Section>

@@ -1010,6 +1010,14 @@ const ja: Record<string, string> = {
   'webhook_allowlist.description': '事前に確認済みのホストです。登録後もWebhookごとの承認は必須です。',
   'webhook_allowlist.placeholder': 'hooks.example.com',
   'webhook_allowlist.add': '追加',
+  'hayato_chat.title': 'チャットリンクのスラッグ',
+  'hayato_chat.description': 'hayato://chat/<slug> は、エージェントへの依頼としてキューに積むだけです。何も実行・承認されません。先にここへスラッグを登録してください。',
+  'hayato_chat.placeholder': 'my-chat',
+  'hayato_chat.add': '追加',
+  'hayato_chat.invalid': '小文字の英数字とハイフンで1〜40文字にしてください。',
+  'hayato_chat.full': '登録できるスラッグは最大32個です。',
+  'hayato_chat.queued': 'Hayato に {{slug}} を開くよう伝えました',
+  'hayato_chat.unresolved': '解決できないチャットリンクです',
   'webhook_allowlist.invalid': 'スキーム、ポート、パス、ワイルドカードを含まないホスト名を入力してください。',
 
   // ── Social Connectors（設定）— 「SNS投稿」エージェントアクション用の認証情報登録。

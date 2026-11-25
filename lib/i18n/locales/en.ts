@@ -1032,6 +1032,14 @@ const en: Record<string, string> = {
   'webhook_allowlist.description': 'Hosts you have already vetted. Every webhook still requires approval.',
   'webhook_allowlist.placeholder': 'hooks.example.com',
   'webhook_allowlist.add': 'ADD',
+  'hayato_chat.title': 'Chat link slugs',
+  'hayato_chat.description': 'hayato://chat/<slug> links are only queued as a request to your agent; nothing is run or approved. A slug must be registered here first.',
+  'hayato_chat.placeholder': 'my-chat',
+  'hayato_chat.add': 'ADD',
+  'hayato_chat.invalid': 'Use 1-40 lowercase letters, digits or hyphens.',
+  'hayato_chat.full': 'At most 32 slugs can be registered.',
+  'hayato_chat.queued': 'Asked Hayato to open {{slug}}',
+  'hayato_chat.unresolved': 'Unresolved chat link',
   'webhook_allowlist.invalid': 'Enter a hostname only, without a scheme, port, path, or wildcard.',
 
   // ── Social Connectors (Settings) — credential registration for the

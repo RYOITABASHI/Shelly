@@ -121,6 +121,19 @@ const config: ExpoConfig & { android?: any } = {
         ],
         category: ["BROWSABLE", "DEFAULT"],
       },
+      {
+        // hayato://chat/<slug> — a navigation request that Shelly only
+        // validates and queues (lib/hayato-chat-link.ts). Host fixed to
+        // `chat`; no link verification (custom scheme, any app may send it).
+        action: "VIEW",
+        data: [
+          {
+            scheme: "hayato",
+            host: "chat",
+          },
+        ],
+        category: ["BROWSABLE", "DEFAULT"],
+      },
     ],
   },
   web: {
