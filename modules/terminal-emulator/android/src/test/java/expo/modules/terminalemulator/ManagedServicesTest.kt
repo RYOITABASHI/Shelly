@@ -333,6 +333,22 @@ class ManagedServicesTest {
     }
 
     @Test
+    fun commandHomeIsCanonicalOnlyForAWorkDirLaunch() {
+        val abs = "/data/user/0/x/files/home"
+        val canon = "/data/data/x/files/home"
+        // article-delivery: unchanged absolute spelling.
+        assertEquals(abs, ManagedServices.commandHome(launch, abs, canon))
+        // council-facade (workDir set): the canonical path node's ESM entry check compares against.
+        val facade = launch.copy(script = "council-spike/dist/http/server.js", workDir = "council-spike")
+        assertEquals(canon, ManagedServices.commandHome(facade, abs, canon))
+        val cmd = ManagedServices.hostCommand(facade, ManagedServices.commandHome(facade, abs, canon), "/l", "$abs/log")
+        assertTrue(cmd.contains("'$canon/council-spike/dist/http/server.js'"))
+        // Unknown or relative canonical form: falls back to the absolute one.
+        assertEquals(abs, ManagedServices.commandHome(facade, abs, null))
+        assertEquals(abs, ManagedServices.commandHome(facade, abs, "relative"))
+    }
+
+    @Test
     fun serviceControlSpecAuditLineIsClosed() {
         val digest = "a".repeat(64)
         val line = IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", digest)

@@ -136,6 +136,19 @@ object ManagedServices {
 
     fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
+    /**
+     * The home spelling a launch's command is built with. council-facade (a
+     * launch with [Launch.workDir]) is an ES module whose entry runs only when
+     * `import.meta.url === pathToFileURL(resolve(process.argv[1])).href`; node
+     * resolves the main module's real path (`/data/user/0` is a symlink to
+     * `/data/data` on Android), so argv[1] must already be the canonical path
+     * or the server exits 0 without listening (measured on device, 2026-11-25).
+     * article-delivery keeps the absolute spelling it has always used.
+     * Process verification accepts both (ManagedServiceSupervisor.homeSpellings).
+     */
+    fun commandHome(launch: Launch, absolute: String, canonical: String?): String =
+        if (launch.workDir != null && canonical != null && canonical.startsWith("/")) canonical else absolute
+
     /** The system linker every app-data binary is started through (W^X: never exec'd directly). */
     const val LINKER64 = "/system/bin/linker64"
 
