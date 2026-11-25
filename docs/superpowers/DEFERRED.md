@@ -100,6 +100,26 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### executor リカバリ（S5）— 出荷済み（PR #204、build 3074）、残件を登録（2026-11-25）
+
+起動時調整（reconcile）＋アプリ側単独 re-fire＋recovery-feedback JSONL は出荷済み。実機検証（A5 相当：SIGKILL 中断→plan_orphaned＋再発火1回、アプリプロセス死→次回起動 sweep、codex 単独 kill→plan_hung、配信済み slot の再発火なし、freeze ファイルの残留なし等）は payload 出荷後のビルドで実施する。残件：
+- (P2) MONITOR が終了済みランを RUNNING と表示する（progress.jsonl に run_end が無いため）。
+- (P2) re-fire がキューのトピックを1つ進めてしまう。
+- (P3) legacy.sh エージェントは対象外。
+- (P3) tier 2（plan_hung_suspect）はネイティブ待ちの上限 30 分のため発火が稀。
+- (P2) `logs/` 配下（run-launches.jsonl / recovery-feedback.jsonl）はゲートの policy-write 保護の外にあり、同 uid のワーカーから偽造可能（re-fire 側で origin／unattended を再確認するため権限昇格にはならない）。
+- (P2) 起動↔ランの同一性の根本修正：executor が起動 id（env `SHELLY_RUN_LAUNCH_ID`）または scheduledAt を plan_start に書くこと。現行は継承制限で代替しており、schedule 交差の残余が残る。
+- (P2) 配信ループ側の reviveLoop（ハートビート stale でループを復活させる）が supervisor の stop 状態を読まないため、service_control で止めてもループが蘇る可能性がある。S2（autostart）が stop 状態に依存する前に、ブリッジ側と調整して解消すること。
+- 実機のインストール状態の検証はペイロード鮮度の A5 と同一便で行う（2026-11-24 時点で端末は build 3061、更新チャンネルの最新は 3068 だった＝未インストール分があった）。
+
+### ペイロード鮮度 — 状況更新と workflow フォローアップ（2026-11-25、P2）
+
+PR #206 で main 着地、ブランチ CI（run 45540550674）で Gradle ビルド＋全ユニットテスト通過を検証済み（下の 2026-11-24 の項目の「Gradle 未検証」は解消）。残件：(1) A5 実機検証（下の項目の列挙どおり）。(2) build-android.yml の「Embed JS bundle fingerprint」ステップは hayato-ops トークンに Workflows スコープが無いため同梱できなかった。workflows 権限のある経路で別途入稿すること。それまでは A3 の fingerprint は source "dev" を報告する（劣化であって故障ではない）。(3) `PayloadHygieneTest.kt` の CI 配線（`testDebugUnitTest`）は未実施。
+
+### exec ブリッジの fd 増大源の特定（2026-11-25、P2）
+
+2026-11-24 のネイティブクラッシュ（FD_SETSIZE 超過 abort）は PR #201（select→poll＋pipe2 O_CLOEXEC、build 3061〜）で修正済み。ただし事実シートで未特定のまま残した論点：**プロセス全体の fd 件数が時間とともに増大するかどうか**。当該ランは約2時間12分の稼働で fd 1035 に達していた。execSubprocess 内の close 経路は表向き揃っているため、増大源が exec ブリッジ以外（別モジュール）にある可能性がある。poll 化で天井は消えたが、増大が実在すれば最終的に EMFILE で exec が壊れる。特定方法：Shelly プロセスの /proc/<pid>/fd 件数を exec サイクルの前後で実測し、由来を切り分ける。増大源が特定できれば close 経路の修正までをこの項目で扱う。関連：`execSubprocess の waitpid が deadline を超えてブロックし得る`（下記、P2）。
+
 ### ペイロード鮮度（A1〜A4）— 実装済み、実機・Gradle・JVM テスト未検証（2026-11-24、ブランチ `feat/payload-freshness`、P1）
 
 端末で `termux-libs/codex_exec`（0.142.0、setup v231 で廃止済み）が残り、`~/.shelly-mcp-server.js` と RN バンドルが APK より古かった件。**実装**: (A1) `PayloadHygiene.RETIRED_LIB_FILES`（`codex_exec`）を `LibExtractor.extractAll()` が毎回削除してログに残す。(A2) `HomeInitializer.initialize()` の先頭で `~/.shelly-mcp-server.js` を asset とバイト比較し、違えば置き換えて読み戻しで確認（`PayloadHygiene.syncExact`）。(A3) `device_status` の ok 応答に `payloads`（インストール済み／実行中の MCP スクリプトの sha256、`.extract_version` の vc、`app-info.json` の版、`codex_tui` / `codex_exec` の有無・サイズ・mtime）と、RN スナップショットの `bundle`（CI がビルド前に書く `lib/bundle-fingerprint.json`）。(A4) refresh 時に自分の `*.new` 残骸（書き手のプロセスが死んでいる／10 分更新なし）を削除。
