@@ -8,6 +8,7 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import org.json.JSONObject
 
 /**
  * Native supervisor for the long-running services in ManagedServices.REGISTRY
@@ -67,18 +68,80 @@ object ManagedServiceSupervisor {
      * Returns the fields lib/mcp-service-control.ts parseServiceControlResult reads.
      */
     fun control(context: Context, action: String, serviceId: String, principal: String?): Map<String, Any?> {
-        val spec = ManagedServices.spec(serviceId)
-        if (spec == null || action !in ManagedServices.ACTIONS) {
+        val base = ManagedServices.spec(serviceId)
+        if (base == null || action !in ManagedServices.ACTIONS) {
             throw IllegalArgumentException("unknown service or action")
         }
         val app = context.applicationContext
         synchronized(controlLock) {
+            val spec = resolvedSpec(app, base)
             return when (action) {
                 "start" -> start(app, spec, principal)
                 "stop" -> stop(app, spec, principal, reason = "request")
                 else -> result("status", spec, status(app, spec))
             }
         }
+    }
+
+    // ── council-facade: on-device launch spec resolution ────────────────────
+    //
+    // REGISTRY's own "council-facade" entry never changes (launch = null,
+    // shape only); every caller here that needs its launch asks resolvedSpec
+    // for a copy with launch/health filled in from the on-device file
+    // (ManagedServices.ExternalSpec), or the same launch=null Spec back when
+    // the file is absent or invalid. Re-validated on every call: nothing is
+    // cached beyond the dedup key for the audit line below.
+
+    private const val FACADE_ID = "council-facade"
+    @Volatile private var lastFacadeAudit: Triple<Boolean, String, String?>? = null
+
+    private fun resolvedSpec(context: Context, base: ManagedServices.Spec): ManagedServices.Spec {
+        if (base.launch != null || base.id != FACADE_ID) return base
+        return resolveFacadeSpec(context, base)
+    }
+
+    private fun resolveFacadeSpec(context: Context, base: ManagedServices.Spec): ManagedServices.Spec {
+        val home = home(context)
+        val file = File(home, "${ManagedServices.serviceDir(base.id)}/${ManagedServices.ExternalSpec.FILE}")
+        val text = readSmall(file, ManagedServices.ExternalSpec.MAX_BYTES)
+        val parsed = ManagedServices.ExternalSpec.parse(text, home.absolutePath)
+        val digest = text?.let { sha256Hex(it) }
+        val outcome = Triple(parsed.launch != null, parsed.reason, digest)
+        if (lastFacadeAudit != outcome) {
+            lastFacadeAudit = outcome
+            if (!IngressAuditWriter.appendServiceControlSpecLine(context, base.id, outcome.first, outcome.second, digest)) {
+                Log.w(TAG, "council-facade spec audit line not written (reason=${parsed.reason})")
+            }
+            if (parsed.launch == null) Log.w(TAG, "council-facade launch spec not usable: reason=${parsed.reason}")
+        }
+        if (parsed.launch == null) return base
+        return base.copy(launch = parsed.launch, health = parsed.health)
+    }
+
+    private fun sha256Hex(text: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /** A GET to `http://127.0.0.1:<port>/health`, loopback only, never following a redirect. True only on HTTP 200 + `{"ok":true,…}`. */
+    private fun pollHealth(port: Int, timeoutMs: Long): Boolean = try {
+        val conn = java.net.URL("http://127.0.0.1:$port/health").openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = timeoutMs.toInt()
+        conn.readTimeout = timeoutMs.toInt()
+        conn.requestMethod = "GET"
+        conn.instanceFollowRedirects = false
+        conn.useCaches = false
+        try {
+            if (conn.responseCode != 200) false
+            else {
+                val body = conn.inputStream.use { it.readBytes() }
+                body.size <= 4096 && JSONObject(String(body, Charsets.UTF_8)).optBoolean("ok", false)
+            }
+        } finally {
+            conn.disconnect()
+        }
+    } catch (e: Exception) {
+        false
     }
 
     private fun result(code: String, spec: ManagedServices.Spec, s: ManagedServices.Status): Map<String, Any?> = mapOf(
@@ -104,6 +167,24 @@ object ManagedServiceSupervisor {
     fun status(context: Context, spec: ManagedServices.Spec): ManagedServices.Status {
         val now = System.currentTimeMillis()
         val record = readRecord(context, spec.id)
+        val health = spec.health
+        if (health != null) {
+            // No heartbeat file to cross-check a pid against: findLive only
+            // ever returns a process this supervisor spawned or one its own
+            // record/cmdline match verifies, never a guess from the poll.
+            val live = findLive(context, spec, record, null)
+            val healthy = pollHealth(health.port, health.timeoutMs)
+            if (live != null) {
+                val beat = if (healthy) ManagedServices.Beat(live.pid, now) else null
+                return ManagedServices.decide(spec, live, record, beat, now)
+            }
+            // Alive at that port, but not a pid this supervisor can verify
+            // (started outside Shelly, or started before an app update moved
+            // its own cmdline check): reported running without a pid, same as
+            // "not_running" elsewhere answers without one.
+            if (healthy) return ManagedServices.Status(ManagedServices.State.RUNNING, null, null, now, supervised = false)
+            return ManagedServices.decide(spec, null, record, null, now)
+        }
         val beat = spec.heartbeat?.let { hb ->
             ManagedServices.parseBeat(readSmall(File(home(context), hb.file)))
         }
@@ -164,7 +245,10 @@ object ManagedServiceSupervisor {
             return result("halted", spec, status(context, spec))
         }
         val before = status(context, spec)
-        if (before.pid != null) {
+        // A health-checked service with no verifiable pid still counts as
+        // running (status() reports RUNNING with pid=null for that case): a
+        // second spawn would only race the port the first one already holds.
+        if (before.pid != null || before.state == ManagedServices.State.RUNNING) {
             audit(context, principal, "start", spec, "already_running")
             return result("already_running", spec, before)
         }
@@ -349,8 +433,8 @@ object ManagedServiceSupervisor {
             synchronized(controlLock) {
                 val live = synchronized(lock) { running.values.filter { startOf(it.pid) == it.startTime }.map { it.id } }
                 for (id in live) {
-                    val spec = ManagedServices.spec(id) ?: continue
-                    runCatching { stop(app, spec, null, reason) }
+                    val base = ManagedServices.spec(id) ?: continue
+                    runCatching { stop(app, resolvedSpec(app, base), null, reason) }
                 }
                 live.size
             }
@@ -370,8 +454,8 @@ object ManagedServiceSupervisor {
                     if (ids.isEmpty()) break
                     if (StopAllSwitches.halted(context)) {
                         for (id in ids) {
-                            val spec = ManagedServices.spec(id) ?: continue
-                            runCatching { synchronized(controlLock) { stop(context, spec, null, "STOP-ALL") } }
+                            val base = ManagedServices.spec(id) ?: continue
+                            runCatching { synchronized(controlLock) { stop(context, resolvedSpec(context, base), null, "STOP-ALL") } }
                         }
                     }
                     runCatching { Thread.sleep(HALT_POLL_MS) }
@@ -415,10 +499,10 @@ object ManagedServiceSupervisor {
         }
     }
 
-    /** At most 4 KiB, never following a symlink at the leaf. */
-    private fun readSmall(f: File): String? = runCatching {
+    /** At most [maxBytes] (4 KiB by default), never following a symlink at the leaf. */
+    private fun readSmall(f: File, maxBytes: Long = 4096): String? = runCatching {
         val st = Os.lstat(f.path)
-        if (!OsConstants.S_ISREG(st.st_mode) || st.st_size > 4096) null else f.readText()
+        if (!OsConstants.S_ISREG(st.st_mode) || st.st_size > maxBytes) null else f.readText()
     }.getOrNull()
 
     // ── /proc ──────────────────────────────────────────────────────────────

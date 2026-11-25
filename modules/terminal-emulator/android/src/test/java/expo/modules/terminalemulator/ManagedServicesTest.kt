@@ -158,6 +158,25 @@ class ManagedServicesTest {
         assertEquals(ManagedServices.State.STOPPED, ManagedServices.decide(delivery, null, null, null, now).state)
     }
 
+    @Test
+    fun decideTreatsAResolvedHealthCheckLikeAHeartbeat() {
+        // A resolved council-facade Spec (REGISTRY's own entry stays launch=null;
+        // this is the shape ManagedServiceSupervisor builds from the on-device file).
+        val resolved = facade.copy(
+            launch = launch.copy(script = "council-spike/dist/http/server.js", workDir = "council-spike"),
+            health = ManagedServices.HealthCheck(port = 8790, timeoutMs = 1_500L, staleMs = 60_000L),
+        )
+        val live = ManagedServices.Live(4242, now - 10_000, supervised = true)
+        // status() synthesizes the Beat from the poll result (pid = the live
+        // pid, at = now) instead of reading a file; decide() treats it the same.
+        val healthyBeat = ManagedServices.Beat(4242, now)
+        assertEquals(ManagedServices.State.RUNNING, ManagedServices.decide(resolved, live, null, healthyBeat, now).state)
+        // Still within one health staleMs of its own start: starting, not unhealthy.
+        assertEquals(ManagedServices.State.STARTING, ManagedServices.decide(resolved, live, null, null, now).state)
+        assertEquals(ManagedServices.State.UNHEALTHY,
+            ManagedServices.decide(resolved, live.copy(startedAt = now - 61_000), null, null, now).state)
+    }
+
     private fun tempDir(): java.io.File = java.nio.file.Files.createTempDirectory("svc-test").toFile()
 
     /** Symlink creation needs a privilege on some Windows setups: skip those cases there. */
@@ -268,5 +287,27 @@ class ManagedServicesTest {
         // Extra fields (a path, a command) are refused.
         assertNull(IngressAuditWriter.buildServiceControlLineFromJson(now,
             """{"kind":"mcp_service_control","event":"mcp_service_control","principal":"$p","action":"start","serviceId":"article-delivery","code":"x","path":"/sdcard"}"""))
+    }
+
+    @Test
+    fun serviceControlSpecAuditLineIsClosed() {
+        val digest = "a".repeat(64)
+        val line = IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", digest)
+        assertNotNull(line)
+        val o = JSONObject(line!!)
+        assertEquals("mcp_service_control_spec", o.getString("kind"))
+        assertEquals("mcp_service_control_spec", o.getString("event"))
+        assertEquals("council-facade", o.getString("serviceId"))
+        assertTrue(o.getBoolean("ok"))
+        assertEquals("ok", o.getString("reason"))
+        assertEquals(digest, o.getString("digest"))
+        // A refused reading carries no digest; an "ok" one must have one.
+        val refused = IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", false, "bad_json", null)
+        assertNotNull(refused)
+        assertFalse(JSONObject(refused!!).has("digest"))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", null))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", "not-hex"))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "other", true, "ok", digest))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "Not Lowercase!", digest))
     }
 }

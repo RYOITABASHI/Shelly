@@ -50,8 +50,35 @@ object ManagedServices {
 
     val DEFAULT_ENV = LaunchEnv(sourceBashrc = true, libraryPath = LibraryPath.LIB_DIR)
 
-    /** `node <home>/<script> <args…>`, run from the script's directory. */
-    data class Launch(val script: String, val args: List<String>, val env: LaunchEnv)
+    /**
+     * `node <home>/<script> <args…>`, run from the script's directory, unless
+     * [workDir] overrides it (home-relative; council-facade's clone root is not
+     * the directory the entry script itself lives in, so the default dirname
+     * rule does not apply to it). [extraEnv]: additional variables the
+     * generated script exports before the exec (empty for article-delivery;
+     * council-facade's resolved env, built by ExternalSpec.parse).
+     */
+    data class Launch(
+        val script: String,
+        val args: List<String>,
+        val env: LaunchEnv,
+        val workDir: String? = null,
+        val extraEnv: List<EnvVar> = emptyList(),
+    )
+
+    /**
+     * An extra environment variable the host script exports before the exec.
+     * [Literal.value] is written into the generated script as a quoted literal
+     * (fine for non-secret configuration: principals, ports, flags — never
+     * anything the caller supplies, only values ExternalSpec.parse derived from
+     * a validated on-device file). [FromFile.path] is read by the shell itself
+     * at run time (`$(cat -- path)`), so the secret's value never becomes a
+     * literal in a string this app builds, logs, or holds past the read.
+     */
+    sealed class EnvVar {
+        data class Literal(val name: String, val value: String) : EnvVar()
+        data class FromFile(val name: String, val path: String) : EnvVar()
+    }
 
     /**
      * Liveness written by the service itself: a JSON file `{"pid":…, "at":…}`
@@ -59,8 +86,21 @@ object ManagedServices {
      */
     data class Heartbeat(val file: String, val staleMs: Long)
 
-    /** [launch] null = registered by shape only (answers `not_configured`). */
-    data class Spec(val id: String, val launch: Launch?, val heartbeat: Heartbeat?)
+    /**
+     * Liveness answered by the service itself over HTTP instead of a file
+     * (council-facade's /health): [port] on loopback, [timeoutMs] bounds the
+     * poll, [staleMs] is the same grace/staleness window [Heartbeat.staleMs]
+     * plays for decide() (a synthesized Beat stands in for the file read).
+     */
+    data class HealthCheck(val port: Int, val timeoutMs: Long, val staleMs: Long)
+
+    /**
+     * [launch] null = registered by shape only (answers `not_configured`).
+     * [health] is set only for a resolved council-facade Spec (never on the
+     * static REGISTRY entry): ManagedServiceSupervisor builds that copy from
+     * the on-device file, REGISTRY itself never changes.
+     */
+    data class Spec(val id: String, val launch: Launch?, val heartbeat: Heartbeat?, val health: HealthCheck? = null)
 
     // article-delivery: the article delivery loop (5-minute rounds). Its
     // heartbeat is written each round; the script's own staleness rule is
@@ -102,7 +142,7 @@ object ManagedServices {
      */
     fun hostCommand(launch: Launch, homePath: String, libPath: String, logPath: String): String {
         val script = "$homePath/${launch.script}"
-        val dir = script.substringBeforeLast('/')
+        val dir = launch.workDir?.let { "$homePath/$it" } ?: script.substringBeforeLast('/')
         val node = "$libPath/node"
         val sb = StringBuilder()
         sb.append("exec >>").append(shQuote(logPath)).append(" 2>&1 </dev/null\n")
@@ -116,6 +156,18 @@ object ManagedServices {
         }
         sb.append("cd ").append(shQuote(dir)).append(" || exit 126\n")
         sb.append("[ -f ").append(shQuote(node)).append(" ] || exit 127\n")
+        // Extra env (council-facade): a literal is exported as a quoted value;
+        // a FromFile var is read by the shell itself, so its value is never a
+        // literal in this (or any) string the app builds.
+        for (v in launch.extraEnv) {
+            when (v) {
+                is EnvVar.Literal -> sb.append("export ").append(v.name).append('=').append(shQuote(v.value)).append('\n')
+                is EnvVar.FromFile -> {
+                    sb.append("[ -f ").append(shQuote(v.path)).append(" ] || exit 127\n")
+                    sb.append("export ").append(v.name).append("=\"\$(cat -- ").append(shQuote(v.path)).append(")\"\n")
+                }
+            }
+        }
         sb.append("printf '%s service start\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n")
         // STOP-ALL, checked again as the very last statement before exec: `[`
         // is a builtin, so no external command runs between the check and exec.
@@ -329,10 +381,14 @@ object ManagedServices {
         if (spec.launch == null) return Status(State.NOT_CONFIGURED, null, null, null, supervised = false)
         val hbAt = beat?.at
         if (live != null) {
-            val hb = spec.heartbeat
-            val fresh = hb == null || (beat != null && now - beat.at in -60_000L..hb.staleMs &&
+            // staleMs is the file heartbeat's for article-delivery, the HTTP
+            // health check's for a resolved council-facade Spec (its "beat" is
+            // synthesized from the poll result, not read from a file) — decide()
+            // itself does not care which.
+            val staleMs = spec.heartbeat?.staleMs ?: spec.health?.staleMs
+            val fresh = staleMs == null || (beat != null && now - beat.at in -60_000L..staleMs &&
                 (beat.pid == 0 || beat.pid == live.pid))
-            val graceOk = hb != null && live.startedAt != null && now - live.startedAt in -60_000L..hb.staleMs
+            val graceOk = staleMs != null && live.startedAt != null && now - live.startedAt in -60_000L..staleMs
             val state = when {
                 fresh -> State.RUNNING
                 graceOk -> State.STARTING
@@ -345,5 +401,135 @@ object ManagedServices {
                 exitCode = record.exitCode, exitedAt = record.exitedAt)
         }
         return Status(State.STOPPED, null, null, hbAt, supervised = false)
+    }
+}
+
+/**
+ * Parses council-facade's on-device launch spec
+ * (`<home>/.shelly/services/council-facade/launch-spec.json`, ManagedServices.
+ * ExternalSpec.FILE) into a ManagedServices.Launch + HealthCheck, or refuses
+ * with a short, closed [Result.reason] — never a Launch/HealthCheck built
+ * from a half-valid file. Pure (no Android imports, no I/O): the caller reads
+ * the file (symlink/size-checked, as the rest of ManagedServices) and passes
+ * its text here.
+ *
+ * Closed by construction: every top-level and env key is from a fixed set;
+ * `root` / `script` / `COUNCIL_HOME` are single safe path segments (no `.`,
+ * no `/`, no `..`); COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS are fixed
+ * constants this object sets, never read from the file (so the file cannot
+ * steer what codex command the facade shells out to); the one secret key
+ * (COUNCIL_HTTP_TOKEN) accepts only the literal marker `{"fromFile":true}` —
+ * a literal string value for it is refused, never read into a Kotlin string.
+ */
+object ExternalSpec {
+    const val FILE = "launch-spec.json"
+    const val MAX_BYTES = 8192L
+
+    /** One safe relative path segment: `root`, `script`'s directories, `COUNCIL_HOME`. */
+    private val SEGMENT_RE = Regex("^[A-Za-z0-9_-]{1,64}$")
+    private val SCRIPT_RE = Regex("^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*\\.js$")
+    private val PORT_RE = Regex("^[1-9][0-9]{0,4}$")
+    /** Printable ASCII only, bounded: COUNCIL_PRINCIPAL / COUNCIL_HUMAN_PRINCIPALS. */
+    private val SAFE_VALUE_RE = Regex("^[\\x20-\\x7e]{1,200}$")
+
+    private const val DEFAULT_PORT = 8790
+    private const val DEFAULT_PRINCIPAL = "host:operator"
+    private const val TOKEN_FILE_NAME = ".http-token"
+    /** A GET to /health is expected to answer at once; bounds a stuck or absent server. */
+    const val HEALTH_TIMEOUT_MS = 1_500L
+    /** One minute to bind the port and answer /health after the process starts. */
+    const val HEALTH_STALE_MS = 60_000L
+
+    /** Owner-settable keys. COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS are not here: fixed, never from the file. */
+    private val ENV_KEYS: Set<String> = setOf(
+        "COUNCIL_HTTP_TOKEN", "COUNCIL_PRINCIPAL", "COUNCIL_HUMAN_PRINCIPALS",
+        "COUNCIL_HOME", "COUNCIL_HTTP_PORT", "COUNCIL_PAIRING_ARM",
+    )
+    /** No default: the file must set these explicitly. */
+    private val REQUIRED_ENV_KEYS: Set<String> = setOf("COUNCIL_HTTP_TOKEN", "COUNCIL_HOME", "COUNCIL_PAIRING_ARM")
+    private val TOP_KEYS: Set<String> = setOf("v", "root", "script", "env")
+
+    data class Result(val launch: ManagedServices.Launch?, val health: ManagedServices.HealthCheck?, val reason: String)
+
+    private fun refuse(reason: String) = Result(null, null, reason)
+
+    /** True only for the exact marker `{"fromFile":true}` (no other keys, no other value). */
+    private fun isFromFileMarker(v: Any?): Boolean {
+        if (v !is JSONObject) return false
+        val keys = HashSet<String>()
+        val it = v.keys()
+        while (it.hasNext()) keys.add(it.next())
+        return keys == setOf("fromFile") && (v.opt("fromFile") as? Boolean) == true
+    }
+
+    /**
+     * [homePath]: absolute, used to resolve `root` (the clone's cwd) and
+     * `COUNCIL_HOME` (and, under it, the fixed token file name) to absolute
+     * paths; `script` stays home-relative (ManagedServices.Launch.script).
+     */
+    fun parse(text: String?, homePath: String): Result {
+        if (text == null) return refuse("missing")
+        if (text.length > MAX_BYTES) return refuse("too_large")
+        val o = try { JSONObject(text) } catch (e: Exception) { return refuse("bad_json") }
+        val keys = HashSet<String>()
+        run { val it = o.keys(); while (it.hasNext()) keys.add(it.next()) }
+        if (!TOP_KEYS.containsAll(keys)) return refuse("unknown_key")
+        if (o.opt("v") != 1) return refuse("bad_version")
+        val root = o.opt("root") as? String ?: return refuse("bad_root")
+        if (!SEGMENT_RE.matches(root)) return refuse("bad_root")
+        val script = o.opt("script") as? String ?: return refuse("bad_script")
+        if (!SCRIPT_RE.matches(script)) return refuse("bad_script")
+        val envObj = o.opt("env") as? JSONObject ?: return refuse("bad_env")
+        val envKeys = HashSet<String>()
+        run { val it = envObj.keys(); while (it.hasNext()) envKeys.add(it.next()) }
+        if (!ENV_KEYS.containsAll(envKeys)) return refuse("unknown_env_key")
+        if (!REQUIRED_ENV_KEYS.all { it in envKeys }) return refuse("missing_env_key")
+
+        if (!isFromFileMarker(envObj.opt("COUNCIL_HTTP_TOKEN"))) return refuse("secret_not_reference")
+
+        val councilHome = envObj.opt("COUNCIL_HOME") as? String ?: return refuse("bad_env_value")
+        if (!SEGMENT_RE.matches(councilHome)) return refuse("bad_env_value")
+
+        val pairingArm = envObj.opt("COUNCIL_PAIRING_ARM") as? String ?: return refuse("bad_env_value")
+        if (pairingArm != "1") return refuse("bad_env_value")
+
+        var port = DEFAULT_PORT
+        if ("COUNCIL_HTTP_PORT" in envKeys) {
+            val raw = envObj.opt("COUNCIL_HTTP_PORT") as? String ?: return refuse("bad_env_value")
+            if (!PORT_RE.matches(raw)) return refuse("bad_env_value")
+            port = raw.toIntOrNull()?.takeIf { it in 1..65535 } ?: return refuse("bad_env_value")
+        }
+        fun principalOrDefault(key: String): String {
+            if (key !in envKeys) return DEFAULT_PRINCIPAL
+            val v = envObj.opt(key) as? String ?: return ""
+            return if (SAFE_VALUE_RE.matches(v)) v else ""
+        }
+        val principal = principalOrDefault("COUNCIL_PRINCIPAL")
+        if (principal.isEmpty()) return refuse("bad_env_value")
+        val humanPrincipals = principalOrDefault("COUNCIL_HUMAN_PRINCIPALS")
+        if (humanPrincipals.isEmpty()) return refuse("bad_env_value")
+
+        val councilHomeAbs = "$homePath/$councilHome"
+        val extraEnv = listOf(
+            ManagedServices.EnvVar.Literal("COUNCIL_HOME", councilHomeAbs),
+            ManagedServices.EnvVar.Literal("COUNCIL_PRINCIPAL", principal),
+            ManagedServices.EnvVar.Literal("COUNCIL_HUMAN_PRINCIPALS", humanPrincipals),
+            ManagedServices.EnvVar.Literal("COUNCIL_HTTP_PORT", port.toString()),
+            ManagedServices.EnvVar.Literal("COUNCIL_PAIRING_ARM", "1"),
+            // Fixed, never from the file: the file cannot steer what codex command runs.
+            ManagedServices.EnvVar.Literal("COUNCIL_CODEX_COMMAND", "codex_exec"),
+            ManagedServices.EnvVar.Literal("COUNCIL_CODEX_ARGS", "--skip-git-repo-check -"),
+            // The secret: read by the shell at run time, never a literal here.
+            ManagedServices.EnvVar.FromFile("COUNCIL_HTTP_TOKEN", "$councilHomeAbs/$TOKEN_FILE_NAME"),
+        )
+        val launch = ManagedServices.Launch(
+            script = "$root/$script",
+            args = emptyList(),
+            env = ManagedServices.DEFAULT_ENV,
+            workDir = root,
+            extraEnv = extraEnv,
+        )
+        val health = ManagedServices.HealthCheck(port = port, timeoutMs = HEALTH_TIMEOUT_MS, staleMs = HEALTH_STALE_MS)
+        return Result(launch, health, "ok")
     }
 }

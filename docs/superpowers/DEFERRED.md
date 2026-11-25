@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-25: CC（PCセッション、ブランチ `hayato/facade-wiring`、ハヤトの起票依頼）が council-facade の起動仕様配線（service_control 監督下への移行）を実装。`SERVICE_CONTROL_BIND_DOMAIN` v1→v2 も完了（上の S2 項目の残件を解消）。Gradle はサンドボックスの permission gate で実行不可、実機未検証。詳細は上の「council-facade の起動仕様を配線」項目。
 - 2026-11-24: CC（`feat/service-control-p1`、P1 バッチ S1）が MCP typed op `service_control` を実装し、「配達ループの typed な起動経路と生存確保」に進捗と残り 4 件を追記。ハヤトの依頼で「executor が終端記録を残さずに死ぬ経路」を P1（バッチの次点）に登録。Gradle・実機未検証。
 - 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
 - 2026-11-23: Codex（`feat/pipeline-config-op`）が `update_pipeline_config` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
@@ -115,12 +116,30 @@
 ### service_control の承認ラダー（S2）— 実装済み（2026-11-25、ブランチ `feat/service-control-ladder`）、残件を登録
 
 service_control を run_agent と同じ承認ラダー（always-allow ルール照合 → 「すべての承認を省略」で once 自動承認 → 非フォアグラウンドなら not_attended 即拒否 → ダイアログ）に載せた。バインド値は版付き定数ドメインのハッシュ（`SERVICE_CONTROL_BIND_DOMAIN` v1、target のみを束縛）。残件：
-- (P2) **council-facade の起動仕様を配線するとき**、bind を v2 に上げるかネイティブの仕様ダイジェストに切り替えること。未設定の時期に作られた `service:council-facade:start` の規則が、後から置かれた仕様の起動を無言で承認してしまうのを防ぐため。`~/.shelly/services/` の policy-write 保護追加と同じ受け入れ条件に入れる。
+- (P2) ~~council-facade の起動仕様を配線するとき、bind を v2 に上げるかネイティブの仕様ダイジェストに切り替えること~~ → **対応済み（2026-11-25、ブランチ `hayato/facade-wiring`）**。`SERVICE_CONTROL_BIND_DOMAIN` を v2 に上げた（`lib/mcp-service-control.ts`）。詳細は下記「council-facade の起動仕様を配線（service_control 監督下）」。
 - (P3) MCP サーバーのツール説明（`scripts/shelly-mcp-server.js` ＋ asset コピー）の service_control の description が「on-device approval for each call」のまま。run_agent と同じく「always-allow を設定していなければタップが要る」趣旨に直す。
 - (P3) Settings の規則一覧で service_control の規則にも「Launch dialog only (actions not preapproved)」と出る（actionPolicyPin が無いため）。誤りではないが op にそぐわない文言。
 - (P3) ロールバック注意：この変更より古い APK に戻すと、ネイティブの decode が `service_control` の規則を拒否し規則ストア全体が unreadable になる（＝規則なし扱い、run_agent の規則も含めて無効、fail closed）。戻した後は規則の付け直しが要る。
 - (P3) approveAll の読み取りは run_agent 8b と同じ非原子的方式（読んでから実行）。読み取り直後に OFF にされた1件は実行されうる（STOP-ALL は実行直前に再確認するので越えない）。エスカレーション側の approveAllToken 方式に寄せるかは run_agent と合わせて判断する。
 - 実機確認（build 着地後）：(a) スイッチ ON でダイアログなし、(b) バックグラウンドで即 not_attended、(c) 「常に許可」で Settings に規則が出て次回ダイアログなし、(d) STOP-ALL 中の start が拒否、の4点と、S1 実サイクル（start/status/stop＋監督下移行）。
+
+### council-facade の起動仕様を配線（service_control 監督下）— 実装済み・Gradle/実機未検証（2026-11-25、ブランチ `hayato/facade-wiring`、P1）
+
+`ManagedServices.REGISTRY["council-facade"]`（launch=null、shape only）はそのまま変更していない。`ManagedServiceSupervisor.resolvedSpec()` が `control()`／STOP-ALL の2箇所（`stopAllSupervised` / `ensureHaltWatcher`）から呼ばれ、`~/.shelly/services/council-facade/launch-spec.json` を都度読んで検証し、有効なら launch/health 入りの Spec コピーを返す（無効・不在なら元の launch=null を返し、現行どおり `not_configured`）。
+
+**実装**:
+- `ManagedServices.kt`: `Launch` に `workDir`（home 相対、null ならダイレクトネーム＝既存動作そのまま）と `extraEnv`（`EnvVar.Literal` / `EnvVar.FromFile`）を追加。`FromFile` はシェル自身が `$(cat -- <path>)` で読む形で、Kotlin 側の文字列に秘密の値が一度も乗らない。`Spec` に `health: HealthCheck?` を追加（REGISTRY の静的エントリには常に null）。`decide()` は `spec.heartbeat?.staleMs ?: spec.health?.staleMs` に一般化（article-delivery の既存挙動は不変）。新規 `ExternalSpec`（pure、JVM テスト可）が `launch-spec.json` を閉じた形で検証：トップレベル `{v,root,script,env}` のみ、`root`/`script`/`COUNCIL_HOME` は安全な1セグメント、`env` のキーは許可リスト6個のみ（`COUNCIL_CODEX_COMMAND`/`COUNCIL_CODEX_ARGS` はファイルから読めない固定値 `codex_exec` / `--skip-git-repo-check -`）、秘密（`COUNCIL_HTTP_TOKEN`）はマーカー `{"fromFile":true}` のみ許可（文字列直書きは `secret_not_reference` で拒否、Kotlin 文字列に一度も入らない）、`COUNCIL_PAIRING_ARM` は明示必須＆値は `"1"` のみ、`COUNCIL_HOME`/`COUNCIL_PRINCIPAL`/`COUNCIL_HUMAN_PRINCIPALS`/`COUNCIL_HTTP_PORT` は必須/既定値の規則どおり。
+- `ManagedServiceSupervisor.kt`: `status()` は `spec.health != null` のとき `http://127.0.0.1:<port>/health` を同期ポーリング（1.5秒タイムアウト、ループバック限定、リダイレクト不追従、応答 2KB 上限、200+`{"ok":true}` のみ成功）してその場で Beat を合成（ファイル読みなし）。既知 pid が無いが health が通る場合は `RUNNING, pid=null` を返す（他経路で起動済みの facade を二重起動しないため）。`start()` の already_running 判定にこのケースを追加。仕様の読み取り結果（ok/reason/sha256 digest）が変わった時だけ `IngressAuditWriter.appendServiceControlSpecLine`（新規、kind `mcp_service_control_spec`）で監査に残す（生テキストは一切書かない）。
+- `lib/mcp-service-control.ts`: `SERVICE_CONTROL_BIND_DOMAIN` を v1→v2 に変更（council-facade の起動仕様が無配線だった時期に作られた always-allow 規則を無効化し、ダイアログを1回出し直させる）。
+- テスト: `ExternalSpecTest.kt`（新規、仕様検証の正常系・壊れたJSON・許可外パス・traversal・秘密直書き拒否・ポート/pairing-arm の境界）、`ManagedServicesTest.kt` に health 版 `decide()` と spec 監査行のテストを追加。既存 `ManagedServicesTest` / `mcp-service-control.test.ts` / `mcp-service-control-op.test.ts` / `mcp-always-allow.test.ts` / `mcp-server-protocol.test.ts` は変更なしで green（jest で確認済み）。
+
+**残件**:
+- (P1) **Gradle/Kotlin ユニットテスト未実行**。このセッションのサンドボックスで `gradlew` 自体が permission gate で拒否され（`This command requires approval` で非対話実行不可）、`ExternalSpecTest.kt` / `ManagedServicesTest.kt` の新規テストを実機/CI 上でまだ一度も走らせていない。手でコンパイル可否を精査したが、出荷前に必ず `./gradlew :terminal-emulator:testDebugUnitTest`（または CI）で確認すること。
+- (P1) 実機未検証全般：`launch-spec.json` を実際に `~/.shelly/services/council-facade/` に置いての start/status/stop/STOP-ALL 一巡、`/health` ポーリングの実応答、`dist/` 未ビルド時の `not_installed`/`launch_failed` 分岐。
+- (P2) `stop()` / STOP-ALL は呼び出し毎に `launch-spec.json` を再読みする設計のため、**facade 稼働中にファイルが削除・破損された場合、stop/STOP-ALL が `not_configured` を返しプロセスを止められない**既知の穴がある（通常運用ではファイルは稼働中に変化しないため実害は限定的）。直すなら「稼働中は起動時に使った Spec を記憶し、stop 系はそれを優先」というキャッシュが必要。
+- (P2) `FromFile` の秘密参照は `COUNCIL_HTTP_TOKEN` 専用の固定ファイル名（`$COUNCIL_HOME/.http-token`）に限定した設計（汎用パス参照は traversal/symlink 検証が増えるため今回は実装していない）。他の secret-from-file が今後必要になれば汎用化を検討。
+- (P3) MCP サーバーのツール説明・Settings の規則一覧表示（既存の run_agent 由来の文言差分）は上の service_control 承認ラダー項目のまま未対応。
+- (P3) CLAUDE.md の巨大な Architecture Decisions 表には今回の変更を反映していない（既存記述が長大なため、オーナー/ハヤトのゲート時にまとめて追記する想定）。
 
 ### ペイロード鮮度 — 状況更新と workflow フォローアップ（2026-11-25、P2）
 

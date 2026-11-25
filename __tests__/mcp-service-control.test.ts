@@ -101,7 +101,7 @@ describe('always-allow readiness (not enabled in v1)', () => {
     const a = { action: 'start', serviceId: 'article-delivery' } as const;
     const bind = await serviceControlRuleBind(a, nodeSha256);
     expect(bind).toMatch(/^[0-9a-f]{64}$/);
-    expect(SERVICE_CONTROL_BIND_DOMAIN).toBe('shelly-service-control-bind-v1:');
+    expect(SERVICE_CONTROL_BIND_DOMAIN).toBe('shelly-service-control-bind-v2:');
     const expected = createHash('sha256').update(`${SERVICE_CONTROL_BIND_DOMAIN}service:article-delivery:start`).digest('hex');
     expect(bind).toBe(expected);
     expect(await serviceControlRuleBind({ action: 'stop', serviceId: 'article-delivery' }, nodeSha256)).not.toBe(bind);
