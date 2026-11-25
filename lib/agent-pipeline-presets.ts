@@ -218,7 +218,22 @@ export interface ArticlePipelineConfig {
   /** Review -> revise rounds (executor v53): 2 (the default) or 3. Round 3
    *  adds two steps, and the whole chain must stay within HARD_MAX_STEPS. */
   reviewRounds?: 2 | 3;
+  /** Executor v68: the closed lists the research step's main-study fingerprint
+   *  takes its five values from (ARTICLE_FINGERPRINT_FIELDS). The executor
+   *  reads them from this file at run start; an invalid answer gets one
+   *  re-output, then the draft is held. */
+  fingerprint?: ArticleFingerprintConfig;
+  /** Executor v68: `true` offers the research step the unused candidates of
+   *  `<outputFolder>/_pool.json` (written by another tool, never by Shelly)
+   *  before today's search. Needs `fingerprint`; not with `queue`. */
+  pool?: boolean;
 }
+
+/** The five fields of a main-study fingerprint (executor FINGERPRINT_FIELDS). */
+export const ARTICLE_FINGERPRINT_FIELDS = ['population', 'intervention', 'outcome', 'direction', 'question'] as const;
+export const ARTICLE_FINGERPRINT_MAX_VALUES = 16;
+export const ARTICLE_FINGERPRINT_VALUE_MAX_CHARS = 40;
+export type ArticleFingerprintConfig = Record<(typeof ARTICLE_FINGERPRINT_FIELDS)[number], string[]>;
 
 /** Source full text: how many sources, and how much of each. */
 export interface ArticleFetchSourcesConfig {
@@ -344,7 +359,33 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds', 'fingerprint', 'pool'] as const;
+
+// Mirrors normalizeFingerprintConfig in scripts/shelly-plan-executor.js.
+// eslint-disable-next-line no-control-regex
+const ARTICLE_FINGERPRINT_BAD_CHAR_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029<>`|]/;
+
+function articleFingerprintError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { ${ARTICLE_FINGERPRINT_FIELDS.map((f) => `"${f}": [...]`).join(', ')} }`;
+  const keyError = unknownKeyError(v, ARTICLE_FINGERPRINT_FIELDS, where);
+  if (keyError) return keyError;
+  for (const field of ARTICLE_FINGERPRINT_FIELDS) {
+    const list = v[field];
+    if (!Array.isArray(list) || list.length < 1 || list.length > ARTICLE_FINGERPRINT_MAX_VALUES) {
+      return `${where}.${field}: needs a list of 1 to ${ARTICLE_FINGERPRINT_MAX_VALUES} values`;
+    }
+    const seen = new Set<string>();
+    for (const value of list) {
+      if (typeof value !== 'string' || !value.trim() || value !== value.trim() || Array.from(value).length > ARTICLE_FINGERPRINT_VALUE_MAX_CHARS || ARTICLE_FINGERPRINT_BAD_CHAR_RE.test(value)) {
+        return `${where}.${field}: each value needs text of at most ${ARTICLE_FINGERPRINT_VALUE_MAX_CHARS} characters, with no space around it and no control character, <, >, \` or |`;
+      }
+      const key = value.normalize('NFKC');
+      if (seen.has(key)) return `${where}.${field}: "${value}" is listed twice`;
+      seen.add(key);
+    }
+  }
+  return null;
+}
 
 /** Review -> revise rounds of an article chain without `reviewRounds`. */
 export const ARTICLE_DEFAULT_REVIEW_ROUNDS = 2;
@@ -450,6 +491,15 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (raw.fetchSources !== undefined) {
     const fetchError = articleFetchSourcesError(raw.fetchSources, `${where}.fetchSources`);
     if (fetchError) return fetchError;
+  }
+  if (raw.fingerprint !== undefined) {
+    const fingerprintError = articleFingerprintError(raw.fingerprint, `${where}.fingerprint`);
+    if (fingerprintError) return fingerprintError;
+  }
+  if (raw.pool !== undefined) {
+    if (typeof raw.pool !== 'boolean') return `${where}.pool: needs true or false`;
+    if (raw.pool && raw.fingerprint === undefined) return `${where}.pool: needs "fingerprint" (the candidates use its lists)`;
+    if (raw.pool && raw.queue === true) return `${where}.pool: not with "queue": true (the topic comes from the queue)`;
   }
   if (raw.materials !== undefined) {
     if (raw.queue !== true) return `${where}.materials: needs "queue": true (the files are named under a queue item)`;
