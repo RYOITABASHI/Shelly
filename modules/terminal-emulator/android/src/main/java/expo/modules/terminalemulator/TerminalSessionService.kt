@@ -93,6 +93,15 @@ class TerminalSessionService : Service() {
         // with ingress-taint reason "mcp", and reports into its run ticket.
         const val EXTRA_MCP_RUN_HANDLE = "mcp_run_handle"
         const val EXTRA_MCP_PRINCIPAL = "mcp_principal"
+        // S5 recovery (RunRecovery.dispatchRefires): set ONLY on the one-time
+        // re-fire of a scheduled run that died without a trace. The re-fire is
+        // an unattended "schedule" run of the same agent through every gate
+        // below; it carries no interval/cron, so it never claims, arms or
+        // counts an occurrence. REFIRE_OF is the dead run's id, LAUNCH_ID the
+        // re-fire's own id, SCHEDULED_AT the slot it recovers.
+        const val EXTRA_RECOVERY_REFIRE_OF = "recovery_refire_of"
+        const val EXTRA_RECOVERY_LAUNCH_ID = "recovery_launch_id"
+        const val EXTRA_RECOVERY_SCHEDULED_AT = "recovery_scheduled_at"
         // Mirrors ShellyNotificationListener.MAX_INBOUND_NOTIFICATION_TEXT /
         // lib/telegram-inbound.ts MAX_INBOUND_TEXT — defensive re-bound at the
         // service boundary (the service is not exported, but bounding twice is
@@ -277,6 +286,11 @@ class TerminalSessionService : Service() {
                     runCatching { onStartCommand(late, 0, startId) }
                         .onFailure { Log.e(TAG, "Late run dispatch failed for ${late.getStringExtra(EXTRA_AGENT_ID)}", it) }
                 }
+                // S5 recovery: close runs a dead executor / dead process left
+                // open, end the MCP run tickets it left running, and re-fire a
+                // fresh scheduled one once (RunRecovery, off the main thread).
+                runCatching { RunRecovery.sweepInBackground(applicationContext, reason) }
+                    .onFailure { Log.e(TAG, "Run recovery sweep ($reason) failed to start", it) }
                 if (!hasProtectedWork()) {
                     stopForegroundAndMark()
                     stopSelf(startId)
@@ -454,6 +468,25 @@ class TerminalSessionService : Service() {
                         return START_STICKY
                     }
                 }
+                // S5 recovery re-fire (RunRecovery.dispatchRefires). All three
+                // extras or none; anything malformed refuses the run.
+                val refireOf = intent.getStringExtra(EXTRA_RECOVERY_REFIRE_OF)
+                val isRefire = intent.hasExtra(EXTRA_RECOVERY_REFIRE_OF)
+                val refireLaunchId = intent.getStringExtra(EXTRA_RECOVERY_LAUNCH_ID)
+                val refireScheduledAt = intent.getLongExtra(EXTRA_RECOVERY_SCHEDULED_AT, 0L)
+                if (isRefire && (!RunRecovery.isValidRunId(refireOf) || !RunRecovery.isValidRunId(refireLaunchId) ||
+                        refireScheduledAt <= 0L || manual || scheduled || intent.hasExtra(EXTRA_MCP_RUN_HANDLE))
+                ) {
+                    Log.w(TAG, "RUN_AGENT for $agentId refused: malformed recovery re-fire extras")
+                    if (!hasProtectedWork()) {
+                        startForegroundWithNotification(null)
+                        stopForegroundAndMark()
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
                 val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)
                 val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
                 if (manual && widgetAgent == null) {
@@ -475,7 +508,7 @@ class TerminalSessionService : Service() {
                 // unattended so per-action approval remains fail-closed exactly as
                 // for an AlarmManager fire, even though it intentionally carries no
                 // interval/cron extras and must not re-arm the schedule.
-                val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground())
+                val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground()) || isRefire
                 startForegroundWithNotification("Agent running in background")
                 if (manual) {
                     ScouterStateStore(applicationContext).recordWidgetAgentRunStarted(
@@ -506,6 +539,8 @@ class TerminalSessionService : Service() {
                 val origin = when {
                     notificationTriggered || notificationText != null -> "notification"
                     scheduled || intent.hasExtra(EXTRA_INTERVAL_MS) || intent.hasExtra(EXTRA_CRON) -> "schedule"
+                    // S5 recovery: the re-fire of a scheduled run is that schedule's run.
+                    isRefire -> "schedule"
                     manual -> "widget"
                     tainted -> "event"
                     intent.getStringExtra(EXTRA_RUN_ORIGIN) == "user" -> "user"
@@ -513,7 +548,17 @@ class TerminalSessionService : Service() {
                 }
                 // Every service gate above has passed; the worker thread marks
                 // the occurrence STARTED immediately before AgentRuntime.runAgent.
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal, occurrenceToStart)
+                if (!isRefire) {
+                    runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal, occurrenceToStart)
+                } else {
+                    // S5 recovery re-fire: no occurrence of its own (never claimed / STARTED).
+                    runAgentInBackground(
+                        agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin, mcpRunHandle, mcpPrincipal, null,
+                        recoveryScheduledAt = refireScheduledAt,
+                        refireOf = refireOf,
+                        recoveryLaunchId = refireLaunchId
+                    )
+                }
                 return START_STICKY
             }
         }
@@ -684,7 +729,11 @@ class TerminalSessionService : Service() {
         mcpPrincipal: String? = null,
         /** The schedule occurrence this run is for (late run / regular
          *  recurring fire), marked STARTED right before AgentRuntime.runAgent. */
-        scheduledOccurrence: Long? = null
+        scheduledOccurrence: Long? = null,
+        /** S5 recovery re-fire: the slot it recovers (RunRecovery). */
+        recoveryScheduledAt: Long? = null,
+        refireOf: String? = null,
+        recoveryLaunchId: String? = null
     ) {
         activeAgentRuns.incrementAndGet()
         // Fable5 review (2026-08-29): recorded before the run starts so
@@ -762,7 +811,12 @@ class TerminalSessionService : Service() {
                                 }
                             }
                             markRefused
-                        }
+                        },
+                        // S5 recovery: the slot this run is for (a re-fire
+                        // recovers its dead run's slot), for the launch record.
+                        scheduledAtMs = scheduledOccurrence ?: recoveryScheduledAt,
+                        refireOf = refireOf,
+                        recoveryLaunchId = recoveryLaunchId
                     )
                     runEndMs = System.currentTimeMillis()
                 }

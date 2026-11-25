@@ -255,6 +255,57 @@ describe('get_run_result direct read', () => {
     expect(fs.readFileSync(path.join(dir, 'runs', `${HANDLE}.json`), 'utf8')).toBe(before);
   });
 
+  describe('S5: a running ticket past 35 min reads lost only when its progress stalled', () => {
+    const MIN = 60_000;
+    const progress = (mtime: number | undefined) => ({ progressMtimeMs: () => mtime });
+
+    it.each([
+      ['progress 2 min ago → still running', 40, 2, 'running'],
+      ['progress 11 min ago → lost/stale', 40, 11, 'lost'],
+      ['no progress file → lost/stale (as before)', 40, undefined, 'lost'],
+      ['progress from before this run started → lost/stale', 40, 45, 'lost'],
+      ['under 35 min, no progress → still running', 30, undefined, 'running'],
+      ['past the 65 min hard ceiling, fresh progress → lost/stale', 66, 1, 'lost'],
+    ] as Array<[string, number, number | undefined, string]>)('%s', async (_label, startedMinAgo, progressMinAgo, state) => {
+      const now = Date.now();
+      writeTicket(ticket({ acceptedAt: now - startedMinAgo * MIN - 1000, startedAt: now - startedMinAgo * MIN }));
+      const r = await server.getRunResultDirect(dir, { runHandle: HANDLE }, ingress,
+        progress(progressMinAgo === undefined ? undefined : now - progressMinAgo * MIN));
+      expect(r.data.state).toBe(state);
+      if (state === 'lost') expect(r.data.reason).toBe('stale');
+    });
+
+    it('reads the agent progress.jsonl mtime next to the queue dir by default', async () => {
+      const now = Date.now();
+      writeTicket(ticket({ acceptedAt: now - 41 * MIN, startedAt: now - 40 * MIN }));
+      // A home of its own, with the queue dir inside it ($HOME/.shelly-mcp-queue).
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-direct-home-'));
+      const queue = path.join(home, '.shelly-mcp-queue');
+      fs.mkdirSync(path.join(queue, 'runs'), { recursive: true });
+      fs.copyFileSync(path.join(dir, 'runs', `${HANDLE}.json`), path.join(queue, 'runs', `${HANDLE}.json`));
+      const progressFile = path.join(home, '.shelly', 'agents', 'logs', 'agent-1', 'progress.jsonl');
+      fs.mkdirSync(path.dirname(progressFile), { recursive: true });
+      fs.writeFileSync(progressFile, '{}\n');
+      expect((await server.getRunResultDirect(queue, { runHandle: HANDLE }, ingress)).data.state).toBe('running');
+      const old = (now - 20 * MIN) / 1000;
+      fs.utimesSync(progressFile, old, old);
+      expect((await server.getRunResultDirect(queue, { runHandle: HANDLE }, ingress)).data.state).toBe('lost');
+      fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    it('keeps the thresholds in step with McpRunTickets.kt', () => {
+      const kt = fs.readFileSync(path.resolve(__dirname, '../modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpRunTickets.kt'), 'utf8');
+      const js = fs.readFileSync(path.resolve(__dirname, '../scripts/shelly-mcp-server.js'), 'utf8');
+      expect(kt).toContain('const val RUNNING_STALE_MS = 35L * 60L * 1000L');
+      expect(kt).toContain('const val RUNNING_PROGRESS_STALL_MS = 10L * 60L * 1000L');
+      expect(kt).toContain('const val RUNNING_HARD_STALE_MS = 65L * 60L * 1000L');
+      expect(js).toContain('const RUN_RUNNING_STALE_MS = 35 * 60 * 1000;');
+      expect(js).toContain('const RUN_PROGRESS_STALL_MS = 10 * 60 * 1000;');
+      expect(js).toContain('const RUN_RUNNING_HARD_STALE_MS = 65 * 60 * 1000;');
+      expect(fs.readFileSync(path.resolve(__dirname, '../modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js'), 'utf8')).toBe(js);
+    });
+  });
+
   it('caps the output at maxBytes on a character boundary, after redaction', async () => {
     writeTicket(ticket({ state: 'succeeded', finishedAt: Date.now(), outputFile: `${HANDLE}.out` }));
     fs.writeFileSync(path.join(dir, 'runs', `${HANDLE}.out`), 'あ'.repeat(100));

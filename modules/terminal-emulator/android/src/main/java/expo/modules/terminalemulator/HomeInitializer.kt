@@ -1790,6 +1790,18 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-plan-executor.js extract failed: ${e.message}")
         }
 
+        // S5 executor recovery (RunRecovery.kt): closes runs the executor could
+        // not close itself, aborts hung runs, writes the recovery feedback and
+        // decides the one-time re-fire.
+        val runRecoveryScript = File(home, ".shelly-run-recovery.js")
+        try {
+            context.assets.open("shelly-run-recovery.js").use { input ->
+                input.copyToAtomically(runRecoveryScript)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-run-recovery.js extract failed: ${e.message}")
+        }
+
         // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
         // local LLM autostart が無い" (2026-07-18): bundled bash function library
         // extracted from lib/agent-executor.ts's ensure_local_llm_server() and its

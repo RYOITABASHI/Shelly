@@ -2027,6 +2027,13 @@ const RUN_LOG_KEYS = new Set(['timestamp', 'status', 'outputPreview', 'errorMess
 const RUN_TICKET_MAX_BYTES = 16 * 1024; // McpRunTickets.MAX_TICKET_CHARS
 const RUN_ACCEPTED_STALE_MS = 2 * 60 * 1000;
 const RUN_RUNNING_STALE_MS = 35 * 60 * 1000;
+// S5 (McpRunTickets.RUNNING_PROGRESS_STALL_MS / RUNNING_HARD_STALE_MS): a
+// running ticket past RUN_RUNNING_STALE_MS reads lost only when its agent's
+// progress stream (logs/<agentId>/progress.jsonl) has not changed for 10
+// minutes (the hang tier-1 threshold) — or past the orchestration ceiling (1 h)
+// plus 5 minutes whatever the stream says.
+const RUN_PROGRESS_STALL_MS = 10 * 60 * 1000;
+const RUN_RUNNING_HARD_STALE_MS = 65 * 60 * 1000;
 const RUN_OUTPUT_DEFAULT_BYTES = 16 * 1024;
 const RUN_OUTPUT_MAX_BYTES = 64 * 1024;
 const RUN_RESULT_POLL_MS = 500;
@@ -2138,11 +2145,33 @@ function decodeRunTicket(text, handle) {
   return t;
 }
 
-/** McpRunTickets.applyStale, without persisting it (this process only reads). */
-function applyRunStale(t, nowMs) {
-  const stale = (t.state === 'accepted' && nowMs - t.acceptedAt > RUN_ACCEPTED_STALE_MS)
-    || (t.state === 'running' && nowMs - (t.startedAt === undefined ? t.acceptedAt : t.startedAt) > RUN_RUNNING_STALE_MS);
+/**
+ * McpRunTickets.applyStale, without persisting it (this process only reads).
+ * `lastProgressMs`: mtime (ms) of the agent's progress.jsonl, or undefined.
+ */
+function applyRunStale(t, nowMs, lastProgressMs) {
+  let stale = false;
+  if (t.state === 'accepted') {
+    stale = nowMs - t.acceptedAt > RUN_ACCEPTED_STALE_MS;
+  } else if (t.state === 'running') {
+    const started = t.startedAt === undefined ? t.acceptedAt : t.startedAt;
+    const elapsed = nowMs - started;
+    const progressing = typeof lastProgressMs === 'number' && Number.isFinite(lastProgressMs) &&
+      lastProgressMs >= started && nowMs - lastProgressMs < RUN_PROGRESS_STALL_MS;
+    stale = elapsed > RUN_RUNNING_HARD_STALE_MS || (elapsed > RUN_RUNNING_STALE_MS && !progressing);
+  }
   return stale ? { ...t, state: 'lost', reason: 'stale', finishedAt: nowMs } : t;
+}
+
+/** mtime (ms) of $HOME/.shelly/agents/logs/<agentId>/progress.jsonl (queueDir is $HOME/.shelly-mcp-queue), or undefined. */
+function runProgressMtimeMs(queueDir, agentId) {
+  if (typeof agentId !== 'string' || !RUN_AGENT_ID_RE.test(agentId)) return undefined;
+  try {
+    const st = fs.lstatSync(path.join(path.dirname(queueDir), '.shelly', 'agents', 'logs', agentId, 'progress.jsonl'));
+    return st.isFile() ? st.mtimeMs : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** At most `maxBytes` of a regular (not symlinked) file, or null. */
@@ -2267,7 +2296,8 @@ async function getRunResultDirect(queueDir, args, ingress, opts = {}) {
     const raw = readRunTicketFile(runsDir, parsed.runHandle);
     // Another client's handle reads exactly like a missing one.
     if (!raw || raw.principal !== principal) return RUN_UNKNOWN_HANDLE;
-    const ticket = applyRunStale(raw, now());
+    const progressMtime = opts.progressMtimeMs || runProgressMtimeMs;
+    const ticket = applyRunStale(raw, now(), raw.state === 'running' ? progressMtime(queueDir, raw.agentId) : undefined);
     const left = deadline - now();
     if (RUN_TERMINAL_STATES.has(ticket.state) || left <= 0) {
       let output = null;
