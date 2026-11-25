@@ -261,6 +261,10 @@ class McpAlwaysAllowStoreTest {
         val id = McpAlwaysAllowStore.newRuleId(emptyList())
         assertTrue(Regex("^r_[0-9a-f]{16}$").matches(id))
         assertTrue(McpAlwaysAllowStore.isTypedOp("run_agent"))
+        assertTrue(McpAlwaysAllowStore.isTypedOp("service_control"))
+        assertTrue(McpAlwaysAllowStore.isValidTarget("service_control", "service:article-delivery:start"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("service_control", "service:article-delivery:*"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("run_agent", "service:article-delivery:start"))
         assertFalse(McpAlwaysAllowStore.isTypedOp("run_command"))
         assertFalse(McpAlwaysAllowStore.isTypedOp("write_file"))
     }
