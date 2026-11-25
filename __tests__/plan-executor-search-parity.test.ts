@@ -133,9 +133,9 @@ function writePipelines(home: string) {
   }));
 }
 
-function runExecutor(planFile: string, home: string, driver: string, recordDir: string, env: Record<string, string> = {}): Promise<number | null> {
+function runExecutor(planFile: string, home: string, driver: string, recordDir: string, env: Record<string, string> = {}, attended = false): Promise<number | null> {
   return new Promise((resolve) => {
-    const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver, '--unattended', '1'];
+    const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver, ...(attended ? [] : ['--unattended', '1'])];
     const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...env };
     delete childEnv.SHELLY_RUN_ORIGIN;
     for (const key of ['SHELLY_CAP_TAINTED', 'SHELLY_INGRESS_TAINTED', 'SHELLY_INGRESS_TAINTED_REASON', 'SHELLY_WEB_SEARCH_OPT_IN_SHA256', 'SHELLY_NOTIFICATION_TEXT']) {
@@ -383,6 +383,55 @@ describe('a run with the Codex web-search research step (v68)', () => {
     const [line] = readFeedback(home);
     expect(line.note[0]).toBe('web-search-stopped');
     expect(line.note[1]).toContain('Web search limit reached');
+  }, 60000);
+
+  /** An attended run's .env: the global default asks for the tap, and the wait is 1 s. */
+  function attendedEnv(home: string) {
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='1'\nSHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS='1'\n`);
+  }
+
+  it('5a: an agent that pins the tap and gets no answer keeps the full draft in held/ (approval-timeout)', async () => {
+    const home = makeHome();
+    writePipelines(home);
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const plan = basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE));
+    plan.agent.requireActionApproval = true;
+    const planFile = writePlan(home, port, plan);
+    attendedEnv(home);
+    const status = await runExecutor(planFile, home, driver, recordDir, {}, true);
+    expect(status).toBe(0);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toMatch(/^Held \(approval-timeout\): /);
+    // Nothing in the output folder; the whole draft in held/<today>/agent-output/.
+    expect(fs.existsSync(path.join(home, 'agent-output')) ? fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md')) : []).toEqual([]);
+    const heldRoot = path.join(home, '.shelly/agents/held');
+    const [day] = fs.readdirSync(heldRoot);
+    expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    const heldDir = path.join(heldRoot, day, 'agent-output');
+    const [name] = fs.readdirSync(heldDir);
+    expect(name).toBe(`${day}-search-parity.md`);
+    const held = fs.readFileSync(path.join(heldDir, name), 'utf8');
+    expect(held.startsWith('---\nheld: "approval-timeout"\n')).toBe(true);
+    expect(held).toContain('The body says 42% [1] and 120 people [2].');
+    expect(held).toContain(URL_A);
+    expect(held).toContain('review: pass');
+    expect((fs.statSync(path.join(heldDir, name)).mode & 0o777)).toBe(0o600);
+
+    const [line] = readFeedback(home);
+    expect(Object.keys(line).sort()).toEqual(FEEDBACK_KEYS);
+    expect(line).toMatchObject({
+      reason: 'held',
+      pipelineId: 'example-a',
+      lastStep: { kind: 'assemble' },
+      artifacts: { draft: true, paths: [path.join(heldDir, name)] },
+      delivery: { delivered: false, channel: 'draft' },
+    });
+    expect(line.note[0]).toBe('approval-timeout');
+    expect(line.note[1]).toBe('draft action approval timed out');
+    const audit = readAudit(home);
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', draftKept: true });
+    expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
   }, 60000);
 
   it('any other research failure still fails the run as before (not held)', async () => {

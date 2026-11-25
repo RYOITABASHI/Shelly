@@ -14382,9 +14382,27 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: haltMessage(paths) },
       };
     }
-    const action = isFinal
-      ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
-      : { status: 'success', preview };
+    let action;
+    try {
+      action = isFinal
+        ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
+        : { status: 'success', preview };
+    } catch (error) {
+      // v68 (5a): the article draft's save approval timed out / was declined /
+      // could not be verified. The finished draft is kept in held/ with the
+      // reason (it used to be lost with the run), the popped queue item is
+      // ticked since the work is kept, and the run lands held.
+      if (!(isFinal && articleHeldRun && error instanceof ActionApprovalNotGranted && step.local !== undefined)) throw error;
+      dispatchedFinal = true;
+      heldLanding = { reason: error.reason, note: [redact(error.message)], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: resultText };
+      heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
+      if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
+      return {
+        record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: heldLanding.landed.preview },
+        failed: true,
+        resultFileText,
+      };
+    }
     if (isFinal) {
       dispatchedFinal = true;
       if (action.actionResults) finalActionResults = action.actionResults;
