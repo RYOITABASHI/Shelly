@@ -121,6 +121,25 @@ describe('parity with the native registry and the server', () => {
     expect(states).toEqual([...SERVICE_STATES]);
   });
 
+  // Kotlin unit tests run only in CI; this pins the launch form on the JS side too.
+  // The bundled node lives in the app's data dir and exec'ing it directly is
+  // refused (W^X: exit 126 "termux-libs/node: Permission denied" on the device,
+  // 2026-11-25), so the service is started through the system linker exactly
+  // like AgentRuntime's executor launch.
+  it('starts node through /system/bin/linker64, never by exec node', () => {
+    expect(registryKt).toContain('const val LINKER64 = "/system/bin/linker64"');
+    expect(registryKt).toContain('val node = "$libPath/node"');
+    expect(registryKt).toContain(
+      `sb.append("exec ").append(LINKER64).append(' ').append(shQuote(node)).append(' ').append(shQuote(script))`,
+    );
+    expect(registryKt).toContain('sb.append("[ -f ").append(shQuote(node)).append(" ] || exit 127\\n")');
+    expect(registryKt).not.toContain('exec node ');
+    expect(registryKt).not.toContain('command -v node');
+    const agentRuntimeKt = readFileSync(join(KT_DIR, 'AgentRuntime.kt'), 'utf8');
+    expect(agentRuntimeKt).toContain('append(" && unset LD_PRELOAD && /system/bin/linker64 ")');
+    expect(agentRuntimeKt).toContain('append(shellQuote("$libPath/node"))');
+  });
+
   it('offers the same enums in the MCP tool schema', () => {
     expect(serverJs).toContain(`action: { type: 'string', enum: ['start', 'status', 'stop'] }`);
     expect(serverJs).toContain(`serviceId: { type: 'string', enum: ['article-delivery', 'council-facade'] }`);

@@ -37,13 +37,21 @@ class ManagedServicesTest {
         assertTrue(cmd.contains("unset LD_PRELOAD\n"))
         assertTrue(cmd.contains("export LD_LIBRARY_PATH='/data/lib'\n"))
         assertTrue(cmd.contains("cd '/data/user/0/x/files/home/.shelly/agents' || exit 126\n"))
+        assertTrue(cmd.contains("[ -f '/data/lib/node' ] || exit 127\n"))
         // STOP-ALL is the very last statement before exec (nothing in between),
         // and the start line (which runs `date`) comes before it.
         val lines = cmd.trimEnd('\n').split('\n')
         assertEquals("[ -e '/data/user/0/x/files/home/.shelly/agents/.halted' ] && exit 125", lines[lines.size - 2])
-        assertTrue(lines.last().startsWith("exec node "))
         assertTrue(lines.indexOfFirst { it.startsWith("printf ") } in 0 until lines.size - 2)
-        assertTrue(cmd.endsWith("exec node '/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js' 'loop'\n"))
+        // node is never exec'd directly (W^X, exit 126 on the device 2026-11-25):
+        // it goes through the system linker, as AgentRuntime's executor launch.
+        assertEquals("exec /system/bin/linker64 '/data/lib/node' '/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js' 'loop'", lines.last())
+        assertFalse(cmd.contains("exec node"))
+        assertFalse(cmd.contains("command -v node"))
+        // What that exec leaves in /proc/<pid>/cmdline is this service to cmdlineMatches.
+        val paths = ManagedServices.scriptPaths(launch, listOf("/data/user/0/x/files/home"))
+        val argv = listOf("/system/bin/linker64", "/data/lib/node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop")
+        assertTrue(ManagedServices.cmdlineMatches(launch, paths, argv.joinToString("\u0000") + "\u0000"))
 
         val unset = launch.copy(env = ManagedServices.LaunchEnv(sourceBashrc = false, libraryPath = ManagedServices.LibraryPath.UNSET))
         val cmd2 = ManagedServices.hostCommand(unset, "/h", "/l", "/h/log")
