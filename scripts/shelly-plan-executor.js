@@ -2908,13 +2908,21 @@ function articleHasFactToken(text) {
 // autolinked or `www.`), or a citation bracket of any kind (`[^1]`, `[a]`,
 // `［…］`, `【…】`), beyond the figures, [n] and [M1] RESCUE_TOKEN_RE keeps.
 // The bracketed reviser's note itself (ARTICLE_BRACKET_NOTE_RE) is not a
-// citation: it is taken out before the test, so `[unverified]` alone can
-// still go. Gate repro: "The search results confirm that the bridge reopened
-// ([official notice](https://example.org/news))." lost its fact and its link.
-const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|\bwww\.[^\s.]|\[[^\]\n]+\]|［[^］\n]*］|【[^】\n]*】/i;
+// citation, so `[unverified]` alone can still go. Gate repro: "The search
+// results confirm that the bridge reopened ([official notice](https://example.org/news))." lost its fact and its link.
+//
+// Fix round 2 (gate 2, finding 4): every check reads the sentence as written;
+// nothing is taken out of it first. A bracket is a citation unless the bracket
+// itself, whole, is a reviser's note and no link target follows it, so
+// `([unverified](notice.md))` is a link and stays. A `mailto:` link (autolinked
+// or not) and an e-mail address are sources too.
+const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|\bwww\.[^\s.]|\bmailto:|<[^<>\s]+@[^<>\s]+>|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|\]\s*[([]|［[^］\n]*］|【[^】\n]*】/iu;
+const ARTICLE_TEXT_LINT_CITATION_BRACKET_RE = /\[[^\]\n]+\]/g;
 function articleCarriesSource(piece) {
-  const rest = String(piece).replace(new RegExp(ARTICLE_BRACKET_NOTE_RE.source, 'gi'), ' ');
-  return ARTICLE_TEXT_LINT_SOURCE_RE.test(rest);
+  const text = String(piece);
+  if (ARTICLE_TEXT_LINT_SOURCE_RE.test(text)) return true;
+  const note = new RegExp(`^(?:${ARTICLE_BRACKET_NOTE_RE.source})$`, 'i');
+  return (text.match(ARTICLE_TEXT_LINT_CITATION_BRACKET_RE) || []).some((bracket) => !note.test(bracket));
 }
 
 /** The sentences of one line of prose, joined back they are the line. Pure. */
@@ -2995,13 +3003,17 @@ function cutArticleSelfTalk(body) {
     let lineCut = 0;
     let lastCut = false;
     const kept = [];
-    for (const piece of pieces) {
+    pieces.forEach((piece, p) => {
       const lower = piece.toLowerCase();
       const talk = ARTICLE_SELF_TALK_TERMS.some((term) => lower.includes(term)) || bracketRe.test(piece);
-      lastCut = talk && !articleHasFactToken(piece) && !articleCarriesSource(piece) && articleTextLintBalanced(piece);
+      // Fix round 2: the facts and sources are read as written, so the first
+      // sentence is read with its line's list or quote markup (an ordered
+      // item's number is a figure of that sentence).
+      const asWritten = p === 0 ? `${lead}${piece}` : piece;
+      lastCut = talk && !articleHasFactToken(asWritten) && !articleCarriesSource(asWritten) && articleTextLintBalanced(piece);
       if (lastCut) lineCut += 1;
       else kept.push(piece);
-    }
+    });
     if (!lineCut) {
       out.push(raw);
       return;

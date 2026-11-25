@@ -46,9 +46,11 @@ describe('cutArticleSelfTalk', () => {
   });
 
   it('drops a list item or quote left with only its markup, and keeps the markup of one that stays', () => {
+    // An ordered item's number is read with its first sentence (fix round 2):
+    // `1. 要出典` stays, flagged.
     const out = cut('# 記事\n\n- 検索結果には無かった\n- 二つ目。調査メモより。\n> 出典不明\n1. 要出典\n\n続き。');
-    expect(out.text).toBe('# 記事\n\n- 二つ目。\n\n続き。');
-    expect(out.cut).toBe(4);
+    expect(out.text).toBe('# 記事\n\n- 二つ目。\n1. 要出典\n\n続き。');
+    expect(out.cut).toBe(3);
   });
 
   it('collapses the blank lines a cut paragraph leaves', () => {
@@ -109,6 +111,30 @@ describe('cutArticleSelfTalk', () => {
     expect(cut('Fine. It helps [unverified]. Done.').text).toBe('Fine. Done.');
     // A note next to a real citation bracket keeps the sentence.
     expect(cut('Fine. It helps [unverified] [a]. Done.').cut).toBe(0);
+  });
+
+  // Fix round 2 (gate 2, finding 4): the source and fact checks read the
+  // sentence as written, never a copy with the reviser's note or the list
+  // number taken out first. The gate's three repros, as they were run.
+  it.each([
+    ['a link whose label is a reviser\'s note', 'The search results confirm the notice ([unverified](notice.md)).'],
+    ['a mailto: autolink', 'The search results confirm the notice <mailto:press@example.org>.'],
+    ['an ordered list item', '1. The search results confirm the bridge reopened.'],
+  ])('gate 2 repro: never cuts %s', (_name, line) => {
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+    expect(cut(`# Title\n\n${line}`)).toEqual({ text: `# Title\n\n${line}`, cut: 0 });
+  });
+
+  it('never cuts a sentence with a link whose label is a note, a mailto: link or an e-mail address', () => {
+    for (const line of [
+      'The research notes say so [unverified][ref].',
+      'The search results name a contact (mailto:press@example.org).',
+      'The search results name press@example.org as the contact.',
+      '2) The research notes agree.',
+      '- 1. The research notes agree.',
+    ]) {
+      expect(cut(`# 記事\n\n${line}`)).toEqual({ text: `# 記事\n\n${line}`, cut: 0 });
+    }
   });
 });
 
