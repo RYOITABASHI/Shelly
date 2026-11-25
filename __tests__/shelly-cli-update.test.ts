@@ -1453,7 +1453,14 @@ describe('native command pipes', () => {
 describe('helper scripts', () => {
   it('are replaced whole, never rewritten in place', () => {
     expect(homeKt).not.toMatch(/\.outputStream\(\)\.use \{ output -> input\.copyTo\(output\) \}/);
+    // 19 helper scripts are replaced whole via copyToAtomically; the MCP
+    // server script is replaced whole and verified by PayloadHygiene.syncExact
+    // instead (payload freshness A2), and the run-recovery script is one of
+    // the 19 (executor recovery S5).
     expect(homeKt.match(/input\.copyToAtomically\(/g)).toHaveLength(19);
+    expect(homeKt).toContain('PayloadHygiene.syncExact(');
+    expect(homeKt).toContain('log = { msg -> LibExtractor.logHygiene("HomeInitializer", msg) }');
+    expect(homeKt).toContain('input.copyToAtomically(runRecoveryScript)');
     expect(homeKt).toContain('input.copyToAtomically(saveDraftScript)');
     expect(homeKt).toContain('input.copyToAtomically(agentDriverScript)');
     expect(homeKt).toContain('input.copyToAtomically(gateDecideScript)');

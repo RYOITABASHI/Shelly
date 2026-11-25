@@ -144,6 +144,28 @@ class McpRunTicketsTest {
         assertEquals(done, McpRunTickets.applyStale(done, t0 + 100L * 24 * 3600 * 1000))
     }
 
+    @Test
+    fun runningPastStaleIsLostOnlyWhenProgressStalled() {
+        val started = t0 + 60_000
+        val r = McpRunTickets.withRunning(accepted(), started)!!
+        val min = 60_000L
+        val at = started + 40 * min
+        // Progress 2 min ago: a healthy long run is not lost.
+        assertEquals(r, McpRunTickets.applyStale(r, at, at - 2 * min))
+        // Progress 10+ min ago, none, or from before the run: lost/stale.
+        assertEquals("lost", McpRunTickets.applyStale(r, at, at - McpRunTickets.RUNNING_PROGRESS_STALL_MS).state)
+        assertEquals("lost", McpRunTickets.applyStale(r, at, null).state)
+        assertEquals("lost", McpRunTickets.applyStale(r, at, started - 1).state)
+        // Under 35 min: running whatever the progress.
+        assertEquals(r, McpRunTickets.applyStale(r, started + 30 * min, null))
+        // Past the hard ceiling: lost even with fresh progress.
+        val late = started + McpRunTickets.RUNNING_HARD_STALE_MS + 1
+        assertEquals("lost", McpRunTickets.applyStale(r, late, late - 1000).state)
+        // liveCount follows the same rule.
+        assertEquals(1, McpRunTickets.liveCount(listOf(r), r.principal, at) { at - 2 * min })
+        assertEquals(0, McpRunTickets.liveCount(listOf(r), r.principal, at) { null })
+    }
+
     // ── Run log choice ───────────────────────────────────────────────────
 
     @Test

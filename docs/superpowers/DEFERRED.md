@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-25: CC（PCセッション、ブランチ `hayato/facade-wiring`、ハヤトの起票依頼）が council-facade の起動仕様配線（service_control 監督下への移行）を実装。`SERVICE_CONTROL_BIND_DOMAIN` v1→v2 も完了（上の S2 項目の残件を解消）。PC 対話セッションで Gradle ユニットテスト通過、稼働中の spec 消失で stop/STOP-ALL が効かなくなる穴を出荷前に修正（起動時の Spec を保持）。Codex ゲート（VM 側、NOT OK・blocking 3件）の指摘（health ポーリングの境界、トークンのトレース経路と script の範囲、spec 破損時の緊急停止、コンパイル不能）をすべて修正。実機検証は出荷後。詳細は上の「council-facade の起動仕様を配線」項目。
 - 2026-11-24: CC（`feat/service-control-p1`、P1 バッチ S1）が MCP typed op `service_control` を実装し、「配達ループの typed な起動経路と生存確保」に進捗と残り 4 件を追記。ハヤトの依頼で「executor が終端記録を残さずに死ぬ経路」を P1（バッチの次点）に登録。Gradle・実機未検証。
 - 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
 - 2026-11-23: Codex（`feat/pipeline-config-op`）が `update_pipeline_config` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
@@ -99,6 +100,65 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### executor リカバリ（S5）— 出荷済み（PR #204、build 3074）、残件を登録（2026-11-25）
+
+起動時調整（reconcile）＋アプリ側単独 re-fire＋recovery-feedback JSONL は出荷済み。実機検証（A5 相当：SIGKILL 中断→plan_orphaned＋再発火1回、アプリプロセス死→次回起動 sweep、codex 単独 kill→plan_hung、配信済み slot の再発火なし、freeze ファイルの残留なし等）は payload 出荷後のビルドで実施する。残件：
+- (P2) MONITOR が終了済みランを RUNNING と表示する（progress.jsonl に run_end が無いため）。
+- (P2) re-fire がキューのトピックを1つ進めてしまう。
+- (P3) legacy.sh エージェントは対象外。
+- (P3) tier 2（plan_hung_suspect）はネイティブ待ちの上限 30 分のため発火が稀。
+- (P2) `logs/` 配下（run-launches.jsonl / recovery-feedback.jsonl）はゲートの policy-write 保護の外にあり、同 uid のワーカーから偽造可能（re-fire 側で origin／unattended を再確認するため権限昇格にはならない）。
+- (P2) 起動↔ランの同一性の根本修正：executor が起動 id（env `SHELLY_RUN_LAUNCH_ID`）または scheduledAt を plan_start に書くこと。現行は継承制限で代替しており、schedule 交差の残余が残る。
+- (P2) 配信ループ側の reviveLoop（ハートビート stale でループを復活させる）が supervisor の stop 状態を読まないため、service_control で止めてもループが蘇る可能性がある。S2（autostart）が stop 状態に依存する前に、ブリッジ側と調整して解消すること。
+- 実機のインストール状態の検証はペイロード鮮度の A5 と同一便で行う（2026-11-24 時点で端末は build 3061、更新チャンネルの最新は 3068 だった＝未インストール分があった）。
+
+### service_control の承認ラダー（S2）— 実装済み（2026-11-25、ブランチ `feat/service-control-ladder`）、残件を登録
+
+service_control を run_agent と同じ承認ラダー（always-allow ルール照合 → 「すべての承認を省略」で once 自動承認 → 非フォアグラウンドなら not_attended 即拒否 → ダイアログ）に載せた。バインド値は版付き定数ドメインのハッシュ（`SERVICE_CONTROL_BIND_DOMAIN` v1、target のみを束縛）。残件：
+- (P2) ~~council-facade の起動仕様を配線するとき、bind を v2 に上げるかネイティブの仕様ダイジェストに切り替えること~~ → **対応済み（2026-11-25、ブランチ `hayato/facade-wiring`）**。`SERVICE_CONTROL_BIND_DOMAIN` を v2 に上げた（`lib/mcp-service-control.ts`）。詳細は下記「council-facade の起動仕様を配線（service_control 監督下）」。
+- (P3) MCP サーバーのツール説明（`scripts/shelly-mcp-server.js` ＋ asset コピー）の service_control の description が「on-device approval for each call」のまま。run_agent と同じく「always-allow を設定していなければタップが要る」趣旨に直す。
+- (P3) Settings の規則一覧で service_control の規則にも「Launch dialog only (actions not preapproved)」と出る（actionPolicyPin が無いため）。誤りではないが op にそぐわない文言。
+- (P3) ロールバック注意：この変更より古い APK に戻すと、ネイティブの decode が `service_control` の規則を拒否し規則ストア全体が unreadable になる（＝規則なし扱い、run_agent の規則も含めて無効、fail closed）。戻した後は規則の付け直しが要る。
+- (P3) approveAll の読み取りは run_agent 8b と同じ非原子的方式（読んでから実行）。読み取り直後に OFF にされた1件は実行されうる（STOP-ALL は実行直前に再確認するので越えない）。エスカレーション側の approveAllToken 方式に寄せるかは run_agent と合わせて判断する。
+- 実機確認（build 着地後）：(a) スイッチ ON でダイアログなし、(b) バックグラウンドで即 not_attended、(c) 「常に許可」で Settings に規則が出て次回ダイアログなし、(d) STOP-ALL 中の start が拒否、の4点と、S1 実サイクル（start/status/stop＋監督下移行）。
+
+### council-facade の起動仕様を配線（service_control 監督下）— 実装済み・Gradle 通過・実機未検証（2026-11-25、ブランチ `hayato/facade-wiring`、P1）
+
+`ManagedServices.REGISTRY["council-facade"]`（launch=null、shape only）はそのまま変更していない。`ManagedServiceSupervisor.resolvedSpec()` が `control()`／STOP-ALL の2箇所（`stopAllSupervised` / `ensureHaltWatcher`）から呼ばれ、`~/.shelly/services/council-facade/launch-spec.json` を都度読んで検証し、有効なら launch/health 入りの Spec コピーを返す（無効・不在なら元の launch=null を返し、現行どおり `not_configured`）。
+
+**実装**:
+- `ManagedServices.kt`: `Launch` に `workDir`（home 相対、null ならダイレクトネーム＝既存動作そのまま）と `extraEnv`（`EnvVar.Literal` / `EnvVar.FromFile`）を追加。`FromFile` はシェル自身が `$(cat -- <path>)` で読む形で、Kotlin 側の文字列に秘密の値が一度も乗らない。`Spec` に `health: HealthCheck?` を追加（REGISTRY の静的エントリには常に null）。`decide()` は `spec.heartbeat?.staleMs ?: spec.health?.staleMs` に一般化（article-delivery の既存挙動は不変）。新規 `ExternalSpec`（pure、JVM テスト可）が `launch-spec.json` を閉じた形で検証：トップレベル `{v,root,script,env}` のみ、`root`/`script`/`COUNCIL_HOME` は安全な1セグメント、`env` のキーは許可リスト6個のみ（`COUNCIL_CODEX_COMMAND`/`COUNCIL_CODEX_ARGS` はファイルから読めない固定値 `codex_exec` / `--skip-git-repo-check -`）、秘密（`COUNCIL_HTTP_TOKEN`）はマーカー `{"fromFile":true}` のみ許可（文字列直書きは `secret_not_reference` で拒否、Kotlin 文字列に一度も入らない）、`COUNCIL_PAIRING_ARM` は明示必須＆値は `"1"` のみ、`COUNCIL_HOME`/`COUNCIL_PRINCIPAL`/`COUNCIL_HUMAN_PRINCIPALS`/`COUNCIL_HTTP_PORT` は必須/既定値の規則どおり。
+- `ManagedServiceSupervisor.kt`: `status()` は `spec.health != null` のとき `127.0.0.1:<port>` に生ソケットで `GET /health HTTP/1.0` を送る（プロキシ不使用、リダイレクト不追従、接続と各読み取りに残り時間だけを与える全体 1.5 秒の期限、読み取りは 8KiB で打ち切り、本文 4KiB 上限、Transfer-Encoding は拒否、200 かつ JSON の `ok` が真偽値 `true` のときだけ成功（文字列 "true" は不可）、判定は純関数 `ManagedServices.healthResponseOk`）。その場で Beat を合成する（ファイル読みなし）。既知 pid が無いが health が通る場合は `RUNNING, pid=null` を返す（他経路で起動済みの facade を二重起動しないため）。`start()` の already_running 判定にこのケースを追加。仕様の読み取り結果（ok/reason/sha256 digest）が変わった時だけ `IngressAuditWriter.appendServiceControlSpecLine`（新規、kind `mcp_service_control_spec`）で監査に残す（生テキストは一切書かない）。
+- `lib/mcp-service-control.ts`: `SERVICE_CONTROL_BIND_DOMAIN` を v1→v2 に変更（council-facade の起動仕様が無配線だった時期に作られた always-allow 規則を無効化し、ダイアログを1回出し直させる）。
+- テスト: `ExternalSpecTest.kt`（新規、仕様検証の正常系・壊れたJSON・許可外パス・traversal・秘密直書き拒否・ポート/pairing-arm の境界）、`ManagedServicesTest.kt` に health 版 `decide()` と spec 監査行のテストを追加。既存 `ManagedServicesTest` / `mcp-service-control.test.ts` / `mcp-service-control-op.test.ts` / `mcp-always-allow.test.ts` / `mcp-server-protocol.test.ts` は変更なしで green（jest で確認済み）。
+
+**残件**:
+- ~~(P1) Gradle/Kotlin ユニットテスト未実行~~ → **解消（2026-11-25、PC 対話セッション）**。`./gradlew :terminal-emulator:testDebugUnitTest` を実行し、最初の版は `ManagedServices.ExternalSpec`（実体はトップレベル object）の未解決でコンパイル不可だったため修正、モジュール全体のユニットテスト通過。
+- (P1) 実機未検証全般：`launch-spec.json` を実際に `~/.shelly/services/council-facade/` に置いての start/status/stop/STOP-ALL 一巡、`/health` ポーリングの実応答、`dist/` 未ビルド時の `not_installed`/`launch_failed` 分岐。
+- ~~(P2) 稼働中に `launch-spec.json` が削除・破損されると stop/STOP-ALL が `not_configured` を返して止められない~~ → **出荷前に修正（2026-11-25、Codex ゲートでも ship blocker 判定）**。二段構え: (1) `Running` に起動時の Spec を持たせ、このスーパーバイザーが起動したプロセスが生きている間は `resolvedSpec` がファイルを読まずにその Spec を返す（ファイルの変更は次回の起動から効く）。(2) 起動時に state.json（`Record.script`、`<root>/dist/http/server.js` の形だけ許可）へ起動したスクリプトを永続化し、ファイルが使えないときは記録の pid＋starttime と /proc の uid・cmdline（`node <home>/<script>` と完全一致）を照合して stop 専用の Spec（`Spec.stopOnly`、この Spec での start は拒否）を復元する。アプリ再起動で `running` を失った後でも stop できる。
+- 再ゲートの指摘で追加: state.json が生存中の検証済み facade を指している間は、その起動時の識別が spec ファイルより優先される（ファイルが同じ script を起動する内容のときだけファイル側の完全な Spec を使い、違えば stop 専用）。アプリ再起動を跨いで生き残った facade も、通知の Exit（`stopAllSupervised`）と STOP-ALL 監視スレッド（`TerminalSessionService.onCreate` → `adoptPersisted`、service_control 呼び出し時にも起動）が止める対象に入る。article-delivery は従来どおり `running` のみ。
+- (P3) `launch-spec.json` は検証のために一度 Kotlin の文字列として読む（JSON を読まずに検証はできない）。メモリ上だけで、ログ・監査には出さない。無効なファイルは digest も監査に書かない。
+- 秘密の読み込み: `.bashrc` がトレースを有効にしていても値が output.log に出ないよう、生成スクリプトは秘密を読む直前に `set +o xtrace +o verbose` と `trap - DEBUG` を行い、`$(cat …)` ではなく `IFS= builtin read -r <名前> < <パス>` で読んで `builtin export <名前>` する。悪意ある `.bashrc`（関数で builtin を差し替える等）は脅威モデル外（その時点で端末の全権を持つ）。
+- `script` は `dist/http/server.js` 固定（それ以外の .js は `bad_script`）。
+- 実機（3087）で判明・修正（ブランチ `fix/facade-canonical-home`）: facade の `server.js` は ESM で、`import.meta.url === pathToFileURL(resolve(process.argv[1]))` のときだけ `main()` を呼ぶ。node はメインモジュールを実パス（`/data/user/0` → `/data/data`）に解決するため、`/data/user/0` 表記で起動すると listen せずに exit 0 になっていた。`workDir` 付きの起動（facade）だけ正規パスでコマンドを組む（`ManagedServices.commandHome`）。article-delivery は不変。
+- (P2) `FromFile` の秘密参照は `COUNCIL_HTTP_TOKEN` 専用の固定ファイル名（`$COUNCIL_HOME/.http-token`）に限定した設計（汎用パス参照は traversal/symlink 検証が増えるため今回は実装していない）。他の secret-from-file が今後必要になれば汎用化を検討。
+- (P3) MCP サーバーのツール説明・Settings の規則一覧表示（既存の run_agent 由来の文言差分）は上の service_control 承認ラダー項目のまま未対応。
+- (P3) CLAUDE.md の巨大な Architecture Decisions 表には今回の変更を反映していない（既存記述が長大なため、オーナー/ハヤトのゲート時にまとめて追記する想定）。
+
+### ペイロード鮮度 — 状況更新と workflow フォローアップ（2026-11-25、P2）
+
+PR #206 で main 着地、ブランチ CI（run 45540550674）で Gradle ビルド＋全ユニットテスト通過を検証済み（下の 2026-11-24 の項目の「Gradle 未検証」は解消）。残件：(1) A5 実機検証（下の項目の列挙どおり）。(2) build-android.yml の「Embed JS bundle fingerprint」ステップは hayato-ops トークンに Workflows スコープが無いため同梱できなかった。workflows 権限のある経路で別途入稿すること。それまでは A3 の fingerprint は source "dev" を報告する（劣化であって故障ではない）。(3) `PayloadHygieneTest.kt` の CI 配線（`testDebugUnitTest`）は未実施。
+
+### exec ブリッジの fd 増大源の特定（2026-11-25、P2）
+
+2026-11-24 のネイティブクラッシュ（FD_SETSIZE 超過 abort）は PR #201（select→poll＋pipe2 O_CLOEXEC、build 3061〜）で修正済み。ただし事実シートで未特定のまま残した論点：**プロセス全体の fd 件数が時間とともに増大するかどうか**。当該ランは約2時間12分の稼働で fd 1035 に達していた。execSubprocess 内の close 経路は表向き揃っているため、増大源が exec ブリッジ以外（別モジュール）にある可能性がある。poll 化で天井は消えたが、増大が実在すれば最終的に EMFILE で exec が壊れる。特定方法：Shelly プロセスの /proc/<pid>/fd 件数を exec サイクルの前後で実測し、由来を切り分ける。増大源が特定できれば close 経路の修正までをこの項目で扱う。関連：`execSubprocess の waitpid が deadline を超えてブロックし得る`（下記、P2）。
+
+### ペイロード鮮度（A1〜A4）— 実装済み、実機・Gradle・JVM テスト未検証（2026-11-24、ブランチ `feat/payload-freshness`、P1）
+
+端末で `termux-libs/codex_exec`（0.142.0、setup v231 で廃止済み）が残り、`~/.shelly-mcp-server.js` と RN バンドルが APK より古かった件。**実装**: (A1) `PayloadHygiene.RETIRED_LIB_FILES`（`codex_exec`）を `LibExtractor.extractAll()` が毎回削除してログに残す。(A2) `HomeInitializer.initialize()` の先頭で `~/.shelly-mcp-server.js` を asset とバイト比較し、違えば置き換えて読み戻しで確認（`PayloadHygiene.syncExact`）。(A3) `device_status` の ok 応答に `payloads`（インストール済み／実行中の MCP スクリプトの sha256、`.extract_version` の vc、`app-info.json` の版、`codex_tui` / `codex_exec` の有無・サイズ・mtime）と、RN スナップショットの `bundle`（CI がビルド前に書く `lib/bundle-fingerprint.json`）。(A4) refresh 時に自分の `*.new` 残骸（書き手のプロセスが死んでいる／10 分更新なし）を削除。
+**修正ラウンド 2（ゲート指摘 4 件）**: `syncExact` は既存ファイルを先に消さない（一時ファイル→読み戻し→rename、宛先がディレクトリなら触らず FAILED）。同期失敗は `HomeInitializer.mcpServerScriptInSync = false` と error ログで「未完」になり、次の `initialize()` で再試行（`McpServerSupervisor.homeInitialized` はこれが true のときだけ立つ）。廃止ペイロードの存在確認はリンクを辿らない（親の readdir、宙ぶらりんの symlink も削除）。`payloads.libs` の symlink はリンク先とリンク自体の mtime を報告し、実行中スクリプトの hash は起動時に 1 回だけ捕捉。
+**未検証**: `PayloadHygieneTest.kt` は CI で走らない（`testDebugUnitTest` 未配線、既存の ExtractionMemoTest と同じ）。Kotlin のコンパイルは CI の assembleRelease 頼み。**実機で確認すること（A5）**: スクリプトの hash 一致、`codex_exec` 不在と logcat `LibExtractor` の削除行、`codex_tui` 現行、`service_control` が queue 経由で応答、`device_status` の `payloads` / `bundle` が実物と一致。F5（端末の RN バンドルが古い）の機構は未特定のまま — `bundle` が null / 古い sha なら原因調査を再開する。
 
 ### 定時エージェントが Doze 等で抜ける — 先行 re-arm・ネイティブの遅延実行・起動時修復の修正を実装、実機・Gradle 未検証（2026-11-17、P1）
 

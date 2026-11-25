@@ -303,6 +303,40 @@ object IngressAuditWriter {
         null
     }
 
+    // ---- service_control spec resolution (council-facade; native-only, pure) -------
+
+    const val SERVICE_CONTROL_SPEC_KIND = "mcp_service_control_spec"
+
+    /**
+     * One `mcp_service_control_spec` line, written only by
+     * ManagedServiceSupervisor (never from RN/JSON) each time its reading of a
+     * service's on-device launch spec changes: [serviceId] a registered id,
+     * [ok] whether a Launch/HealthCheck came out of it, [reason] the closed,
+     * short code (ManagedServices.ExternalSpec.Result.reason — never the raw
+     * file text), [digest] the sha256 hex of the file's bytes when [ok] (null
+     * refused when ok but no digest, or digest present but not 64 hex).
+     */
+    fun buildServiceControlSpecLine(ts: Long, serviceId: String, ok: Boolean, reason: String, digest: String?): String? {
+        if (ManagedServices.spec(serviceId) == null) return null
+        if (!CODE_RE.matches(reason)) return null
+        if (digest != null && !SHA256_RE.matches(digest)) return null
+        if (ok && digest == null) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", SERVICE_CONTROL_SPEC_KIND).put("event", SERVICE_CONTROL_SPEC_KIND)
+                .put("serviceId", serviceId).put("ok", ok).put("reason", reason)
+            if (digest != null) out.put("digest", digest)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildServiceControlSpecLine] line to `audits/mcp-ingress-audit.jsonl`. */
+    fun appendServiceControlSpecLine(context: Context, serviceId: String, ok: Boolean, reason: String, digest: String?): Boolean {
+        val line = buildServiceControlSpecLine(System.currentTimeMillis(), serviceId, ok, reason, digest) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
     // ---- Writer --------------------------------------------------------------------
 
     /**

@@ -80,6 +80,13 @@ object McpRunTickets {
 
     const val ACCEPTED_STALE_MS = 2L * 60L * 1000L
     const val RUNNING_STALE_MS = 35L * 60L * 1000L
+    /** S5: past [RUNNING_STALE_MS] a running ticket is lost only when its agent's
+     *  progress stream has not changed for this long (the hang tier-1 threshold,
+     *  RunRecovery.HANG_ABORT_NO_PROGRESS_MS). */
+    const val RUNNING_PROGRESS_STALL_MS = 10L * 60L * 1000L
+    /** S5: lost whatever the progress stream says — the orchestration ceiling
+     *  (HARD_TOTAL_TIMEOUT_MS, 1 h) plus 5 minutes. */
+    const val RUNNING_HARD_STALE_MS = 65L * 60L * 1000L
     const val RETENTION_MS = 24L * 60L * 60L * 1000L
     const val MAX_PER_PRINCIPAL = 100
     const val MAX_OUTPUT_BYTES = 64 * 1024
@@ -274,14 +281,25 @@ object McpRunTickets {
 
     /**
      * The stale rule: `accepted` for longer than [ACCEPTED_STALE_MS] (the intent
-     * never reached the service) or `running` for longer than [RUNNING_STALE_MS]
-     * (past the ~30 min native wall clock; the process died) becomes `lost`.
-     * Returns the ticket unchanged otherwise.
+     * never reached the service) becomes `lost`. `running` becomes `lost` past
+     * [RUNNING_STALE_MS] (past the ~30 min native wall clock) only when the run
+     * is not progressing — [lastProgressMs] (mtime of the agent's
+     * logs/<id>/progress.jsonl, null when unknown) is missing, older than the
+     * run, or [RUNNING_PROGRESS_STALL_MS] old — and always past
+     * [RUNNING_HARD_STALE_MS] (S5: a healthy long run is not read as lost).
+     * Returns the ticket unchanged otherwise. Mirrored by shelly-mcp-server.js
+     * applyRunStale.
      */
-    fun applyStale(t: Ticket, now: Long): Ticket {
+    fun applyStale(t: Ticket, now: Long, lastProgressMs: Long? = null): Ticket {
         val stale = when (t.state) {
             STATE_ACCEPTED -> now - t.acceptedAt > ACCEPTED_STALE_MS
-            STATE_RUNNING -> now - (t.startedAt ?: t.acceptedAt) > RUNNING_STALE_MS
+            STATE_RUNNING -> {
+                val started = t.startedAt ?: t.acceptedAt
+                val elapsed = now - started
+                val progressing = lastProgressMs != null && lastProgressMs >= started &&
+                    now - lastProgressMs < RUNNING_PROGRESS_STALL_MS
+                elapsed > RUNNING_HARD_STALE_MS || (elapsed > RUNNING_STALE_MS && !progressing)
+            }
             else -> false
         }
         return if (stale) t.copy(state = STATE_LOST, reason = REASON_STALE, finishedAt = now) else t
@@ -294,9 +312,9 @@ object McpRunTickets {
      * never started (markRunning refuses it); a `running` one keeps running
      * but its ticket stays cancelled (markFinished can't leave a terminal state).
      */
-    fun withCancelled(t: Ticket, principal: String?, now: Long): Ticket? {
+    fun withCancelled(t: Ticket, principal: String?, now: Long, lastProgressMs: Long? = null): Ticket? {
         if (principal != null && t.principal != principal) return null
-        val s = applyStale(t, now)
+        val s = applyStale(t, now, lastProgressMs)
         if (isTerminal(s.state)) return null
         return withFinished(s, STATE_CANCELLED, REASON_REVOKED, null, null, null, now)
     }
@@ -412,8 +430,8 @@ object McpRunTickets {
         }.maxByOrNull { it.acceptedAt }
 
     /** lib/mcp-typed-ops.ts liveRunCount, on tickets with the stale rule applied. */
-    fun liveCount(tickets: List<Ticket>, principal: String, now: Long): Int =
-        tickets.count { it.principal == principal && !isTerminal(applyStale(it, now).state) }
+    fun liveCount(tickets: List<Ticket>, principal: String, now: Long, progressOf: (Ticket) -> Long? = { null }): Int =
+        tickets.count { it.principal == principal && !isTerminal(applyStale(it, now, progressOf(it)).state) }
 
     sealed class Accept {
         /** The accepted ticket was written; send the intent. */
@@ -583,6 +601,25 @@ object McpRunTickets {
         return if (t.handle == handle) t else null
     }
 
+    /**
+     * mtime of `$HOME/.shelly/agents/logs/<agentId>/progress.jsonl` for a runs
+     * dir at `$HOME/.shelly-mcp-queue/runs`, or null (S5 stale rule).
+     */
+    private fun progressMtimeMs(runsDir: File, agentId: String): Long? {
+        if (!isValidAgentId(agentId)) return null
+        val home = runsDir.parentFile?.parentFile ?: return null
+        return try {
+            val f = File(home, ".shelly/agents/logs/$agentId/progress.jsonl")
+            if (isRegularFile(f)) f.lastModified().takeIf { it > 0L } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** [applyStale] with the run's progress (running tickets only). */
+    private fun staleView(runsDir: File, t: Ticket, now: Long): Ticket =
+        applyStale(t, now, if (t.state == STATE_RUNNING) progressMtimeMs(runsDir, t.agentId) else null)
+
     private fun writeTicket(dir: File, t: Ticket) {
         ClosePawRunResults.writePrivateAtomic(ticketFile(dir, t.handle), encode(t))
     }
@@ -604,7 +641,7 @@ object McpRunTickets {
                 continue
             }
             known.add(handle)
-            entries.add(PruneEntry(handle, t.principal, applyStale(t, now).state, t.acceptedAt))
+            entries.add(PruneEntry(handle, t.principal, staleView(dir, t, now).state, t.acceptedAt))
         }
         val drop = handlesToPrune(entries, now) - setOfNotNull(incoming?.handle)
         for (h in drop) {
@@ -674,7 +711,8 @@ object McpRunTickets {
             null
         } else {
             val now = System.currentTimeMillis()
-            findIdempotent(ticketsOf(runsDir(context), principal), principal, requestId, now)?.let { applyStale(it, now) }
+            val dir = runsDir(context)
+            findIdempotent(ticketsOf(dir, principal), principal, requestId, now)?.let { staleView(dir, it, now) }
         }
     } catch (e: Exception) {
         Log.w(TAG, "findIdempotentForMcp failed type=${e.javaClass.simpleName}")
@@ -704,11 +742,13 @@ object McpRunTickets {
                 return Accept.Failed
             }
             val now = System.currentTimeMillis()
-            val mine = ticketsOf(runsDir(context), principal)
+            val dir = runsDir(context)
+            val mine = ticketsOf(dir, principal)
             if (requestId != null) {
-                findIdempotent(mine, principal, requestId, now)?.let { return Accept.Existing(applyStale(it, now)) }
+                findIdempotent(mine, principal, requestId, now)?.let { return Accept.Existing(staleView(dir, it, now)) }
             }
-            if (liveCount(mine, principal, now) >= MAX_LIVE_RUNS_PER_PRINCIPAL) return Accept.Busy
+            val progressOf: (Ticket) -> Long? = { if (it.state == STATE_RUNNING) progressMtimeMs(dir, it.agentId) else null }
+            if (liveCount(mine, principal, now, progressOf) >= MAX_LIVE_RUNS_PER_PRINCIPAL) return Accept.Busy
             if (!beforeWrite()) return Accept.Refused
             if (writeAccepted(context, handle, principal, requestId, agentId)) Accept.Written else Accept.Failed
         } catch (e: Exception) {
@@ -854,7 +894,7 @@ object McpRunTickets {
                 null
             } else {
                 val now = System.currentTimeMillis()
-                val s = applyStale(t, now)
+                val s = staleView(dir, t, now)
                 if (s != t) runCatching { writeTicket(ensureRunsDir(context), s) }
                 encode(s)
             }
@@ -886,7 +926,7 @@ object McpRunTickets {
                     if (!isValidHandle(handle)) continue
                     val t = readTicketFile(dir, handle) ?: continue
                     if (t.principal != principal) continue
-                    arr.put(JSONObject(encode(applyStale(t, now))))
+                    arr.put(JSONObject(encode(staleView(dir, t, now))))
                 }
             }
             arr.toString()
@@ -917,7 +957,7 @@ object McpRunTickets {
                 val handle = name.removeSuffix(".json")
                 if (!isValidHandle(handle)) continue
                 val t = readTicketFile(dir, handle, failOnStatError = true) ?: continue
-                val next = withCancelled(t, principal, now) ?: continue
+                val next = withCancelled(t, principal, now, if (t.state == STATE_RUNNING) progressMtimeMs(dir, t.agentId) else null) ?: continue
                 try {
                     writeTicket(dir, next)
                     n++
@@ -928,6 +968,48 @@ object McpRunTickets {
             return if (failed) -1 else n
         } catch (e: Exception) {
             Log.w(TAG, "ticket cancel failed type=${e.javaClass.simpleName}")
+            return -1
+        }
+    }
+
+    /** Wall-clock start (ms) of this process. */
+    private val processStartWallMs: Long by lazy {
+        System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime())
+    }
+
+    /**
+     * S5 startup reconcile (RunRecovery.sweepInBackground, S5-0 §2 (c)): a
+     * `running` ticket started before this process did, of an agent this
+     * process is not running, can never be finished (markFinished ran in the
+     * process that died): it ends `lost`/`crashed` now instead of waiting for
+     * the stale rule. The executor side of that run is closed by the recovery
+     * sweep. The count ended, or -1 on a listing error. Never throws.
+     */
+    @Synchronized
+    fun reconcileAfterRestart(context: Context): Int {
+        try {
+            val dir = runsDir(context)
+            if (lstatIfPresent(dir) == null) return 0
+            val files = dir.listFiles() ?: return -1
+            val processStart = processStartWallMs
+            val now = System.currentTimeMillis()
+            var n = 0
+            for (f in files) {
+                val name = f.name
+                if (!name.endsWith(".json")) continue
+                val handle = name.removeSuffix(".json")
+                if (!isValidHandle(handle)) continue
+                val t = readTicketFile(dir, handle) ?: continue
+                if (t.state != STATE_RUNNING) continue
+                if ((t.startedAt ?: t.acceptedAt) >= processStart) continue
+                if (NativeAgentRunRegistry.activeRunStartedAt(t.agentId) != null) continue
+                val next = withFinished(t, STATE_LOST, REASON_CRASHED, null, null, null, now) ?: continue
+                runCatching { writeTicket(dir, next) }.onSuccess { n++ }
+            }
+            if (n > 0) Log.i(TAG, "ended $n run ticket(s) left running by a previous process")
+            return n
+        } catch (e: Exception) {
+            Log.w(TAG, "ticket restart reconcile failed type=${e.javaClass.simpleName}")
             return -1
         }
     }

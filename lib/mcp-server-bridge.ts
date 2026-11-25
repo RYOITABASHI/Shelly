@@ -100,7 +100,8 @@ import {
 } from '@/lib/mcp-typed-ops';
 import { ARTICLE_PIPELINE_FILE_MAX_BYTES, articleOutputRoots } from '@/lib/agent-article-pipeline-file';
 import {
-  parseServiceControlResult, SERVICE_FAILURE_CODES, validateServiceControlArgs, type ServiceControlErrorCode,
+  parseServiceControlResult, SERVICE_FAILURE_CODES, serviceControlRuleBind, serviceControlRuleLabel,
+  serviceControlRuleTarget, validateServiceControlArgs, type ServiceControlErrorCode,
 } from '@/lib/mcp-service-control';
 import {
   articleOutputFolderError, buildArticleDigestPipeline, buildArticlePipeline, parseArticlePipelineFile,
@@ -110,6 +111,9 @@ import type { Agent } from '@/store/types';
 import { beginMcpExecWindow, endMcpExecWindow, MCP_SHELLY_LAZY_FN, mcpIngressEnvPrefix, noteRequestSeenInWindow } from '@/lib/mcp-ingress-origin';
 import { turnOffMcpSkipApproval } from '@/lib/mcp-skip-approval';
 import { isApproveAllWithoutAskingOn, turnOffApproveAll } from '@/lib/approve-all-without-asking';
+// Compiled into the JS bundle; CI rewrites it before the Gradle build (same
+// pattern as optional-packs-pins.json).
+import bundleFingerprintJson from '@/lib/bundle-fingerprint.json';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
 const REQUESTS_DIR = `${QUEUE_DIR}/requests`;
@@ -1295,13 +1299,21 @@ printf '{"status":"%s","sha256":"%s","bytes":%s,"backup":%s,"previousSha256":%s}
  * service_control (lib/mcp-service-control.ts): start / stop / status of a
  * registered long-running service. The caller names an action and an id only;
  * what runs is fixed natively (ManagedServices.kt) and runs under the native
- * supervisor, never from the MCP server's process. v1: an approval tap on
- * every call (always-allow is prepared in mcp-service-control.ts, not on).
+ * supervisor, never from the MCP server's process.
+ *
+ * Order: the refusal classes (arguments, epoch, exec setting, native support,
+ * deadline, STOP-ALL for a start) first, then the approval ladder of the
+ * typed ops (same shape as run_agent steps 8–10): (1) an always-allow rule
+ * for `service:<id>:<action>`, (2) the "Skip all approvals" switch (once, no
+ * rule written), (3) `not_attended` at once when Shelly is not in the
+ * foreground, (4) the dialog, which offers "always allow". Neither a rule nor
+ * the switch ever gets past STOP-ALL: execution re-checks it right before the
+ * native call (and native checks it again at the spawn).
  * Audit: RN writes the approval stages and its own refusals; the native side
  * writes every start / stop outcome itself.
  */
 async function serviceControlTool(
-  args: Record<string, unknown>, epoch: number, ingress: McpIngress, callId: string, deadlineMs: number,
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, _callId: string, deadlineMs: number,
 ): Promise<ToolResult> {
   const lineBase = { kind: 'mcp_service_control', event: 'mcp_service_control', principal: ingress.principal };
   const audit = async (code: string, fields: { action?: string; serviceId?: string } = {}): Promise<void> => {
@@ -1337,23 +1349,28 @@ async function serviceControlTool(
   // STOP-ALL refuses a start before asking (native checks again at the spawn).
   if (action === 'start' && await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
 
-  try {
-    await audit('approval_requested', fields);
-    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
-    const approvalExpiresAt = Math.min(Date.now() + approvalTimeoutMs, deadlineMs);
-    const decision = await approveRawTool({
-      kind: 'service_control',
-      summary: t('mcp.approval_service_control'),
-      detail: t('mcp.approval_service_control_detail', { action, service: serviceId }),
-      origin: ingress,
-    }, callId);
-    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
-    if (decision === 'deny') return refuse('denied', 'denied by user (or timed out waiting for a response)');
-    if (Date.now() >= approvalExpiresAt) return refuse('timeout', 'the approval came after the request expired');
+  const op = 'service_control';
+  const principalTag = ingress.principal.slice(0, 8);
+  const ruleGone = 'the always-allow rule no longer applies (removed, or the rules became unreadable); call service_control again';
+
+  // Runs the action once, after every check the authorization relied on is
+  // repeated: the rule itself when no one tapped, then setting and STOP-ALL
+  // (a rule / the switch never rescue it), epoch and deadline. The setting and
+  // STOP-ALL come after the rule re-match so that a flip during its awaits is
+  // still seen; STOP-ALL is the last await before the native call, and only
+  // synchronous checks follow it.
+  const execute = async (auth: { via: 'tap' | 'switch' } | { via: 'rule'; ruleId: string; target: string; bind: string }): Promise<ToolResult> => {
+    if (auth.via === 'rule') {
+      if (!(await mcpAlwaysAllowMatches(ingress.principal, op, auth.target, auth.bind))) return refuse('target_changed', ruleGone);
+      const still = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, auth.target, auth.bind);
+      if (!still || still.id !== auth.ruleId) return refuse('target_changed', ruleGone);
+    }
     if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
     if (action === 'start' && await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before it could run');
 
-    const raw = await TerminalEmulator.serviceControl(action, serviceId, ingress.principal);
+    const raw = await TerminalEmulator.serviceControl!(action, serviceId, ingress.principal);
     if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
     const parsed = parseServiceControlResult(raw, serviceId);
     if (!parsed) return refuse('native_error', 'could not read the service state');
@@ -1365,6 +1382,72 @@ async function serviceControlTool(
       return { ok: false, error: `${action} ${serviceId}: ${parsed.code} ${JSON.stringify(parsed.status)}`, code: parsed.code as ServiceControlErrorCode };
     }
     return { ok: true, data };
+  };
+
+  try {
+    const target = serviceControlRuleTarget(valid.args);
+    const bind = await serviceControlRuleBind(valid.args, requestSha256);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+
+    // 1. always-allow rule (only after every refusal class above). The rule
+    // must be identifiable: its id is re-matched right before the native call.
+    if (await mcpAlwaysAllowMatches(ingress.principal, op, target, bind)) {
+      const rule = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, target, bind);
+      if (rule) {
+        logInfo('MCPBridge', `always-allow rule ${rule.id} matched service_control ${target} (principal=${principalTag})`);
+        await audit('always_allowed', fields);
+        return await execute({ via: 'rule', ruleId: rule.id, target, bind });
+      }
+      logError('MCPBridge', `always-allow rule matched service_control ${target} but could not be listed; asking instead`);
+    }
+
+    // 2. "Skip all approvals" (Settings only): a one-time 'once', no rule written.
+    if (await isApproveAllWithoutAskingOn()) {
+      logInfo('MCPBridge', `service_control ${target} auto-approved once (approveAllWithoutAsking, principal=${principalTag})`);
+      await audit('auto_approved', fields);
+      return await execute({ via: 'switch' });
+    }
+
+    // 3. Nobody to ask: refuse at once, never queue a dialog in the background.
+    if (!appIsForeground()) {
+      logInfo('MCPBridge', `service_control refused (not_attended) ${target}`);
+      return await refuse('not_attended', 'Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now');
+    }
+
+    // 4. Dialog (three buttons: deny / once / always allow this service + action).
+    await audit('approval_requested', fields);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const approvalExpiresAt = Math.min(Date.now() + approvalTimeoutMs, deadlineMs);
+    const label = serviceControlRuleLabel(valid.args);
+    // Shelly may have left the foreground during the audit write: never queue
+    // a dialog nobody can see.
+    if (!appIsForeground()) {
+      logInfo('MCPBridge', `service_control refused (not_attended) ${target}`);
+      return await refuse('not_attended', 'Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now');
+    }
+    const { decision } = await requestApprovalDetailed({
+      kind: 'service_control',
+      summary: t('mcp.approval_service_control'),
+      detail: t('mcp.approval_service_control_detail', { action, service: serviceId }),
+      origin: ingress,
+      alwaysAllowable: { op, targetLabel: label },
+    });
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (decision === 'deny') return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (Date.now() >= approvalExpiresAt) return refuse('timeout', 'the approval came after the request expired');
+    if (decision === 'always') {
+      const added = await addMcpAlwaysAllowRule(ingress.principal, op, target, bind, label);
+      if (added.ok) {
+        logInfo('MCPBridge', `always-allow rule ${added.id} ${added.code} for service_control ${target} (principal=${principalTag})`);
+        await audit('always_allow_saved', fields);
+      } else {
+        logError('MCPBridge', `always-allow rule not saved (${added.code}); running once`);
+        await audit('always_allow_not_saved', fields);
+        showToast('mcp.always_allow_not_saved_service', 'The "always allow" rule could not be saved. The service action runs this once.');
+      }
+    }
+    // A tap authorized this call itself (once or always): no rule re-match.
+    return await execute({ via: 'tap' });
   } catch {
     return refuse('native_error', 'could not control the service');
   }
@@ -2609,10 +2692,27 @@ const DEVICE_SECTION_MAX_CHARS = 4096;
 
 export type McpDeviceSection = {
   capturedAt: string;
+  /** Build-embedded fingerprint of this JS bundle (absent in bundles that predate it). */
+  bundle?: Record<string, string | number | null> | null;
 } & Partial<Record<(typeof DEVICE_SECTIONS)[number], Record<string, unknown> | null>>;
 
 function isPlainRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+const BUNDLE_FINGERPRINT_KEYS = ['schema', 'source', 'gitSha', 'runId', 'runNumber'] as const;
+
+/** Validated copy of lib/bundle-fingerprint.json: known keys only, strings / numbers / null. Exported for tests. */
+export function bundleFingerprint(raw: unknown = bundleFingerprintJson): Record<string, string | number | null> | null {
+  if (!isPlainRecord(raw)) return null;
+  const out: Record<string, string | number | null> = {};
+  for (const key of BUNDLE_FINGERPRINT_KEYS) {
+    const v = raw[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+    else if (typeof v === 'string' && v.length <= 64) out[key] = v;
+    else out[key] = null;
+  }
+  return out;
 }
 
 /**
@@ -2630,6 +2730,7 @@ export function deviceSectionFromNative(raw: unknown): McpDeviceSection | null {
     if (isPlainRecord(v) && JSON.stringify(v).length <= DEVICE_SECTION_MAX_CHARS) out[key] = v;
     else out[key] = null;
   }
+  out.bundle = bundleFingerprint();
   return out;
 }
 

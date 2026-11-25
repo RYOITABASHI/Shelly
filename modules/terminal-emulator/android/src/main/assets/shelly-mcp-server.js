@@ -125,6 +125,20 @@ const crypto = require('crypto');
 const { Buffer } = require('buffer');
 const { execFile } = require('child_process');
 
+// device_status.payloads (payloadProvenance below): the running server's own
+// source, hashed once, as the first thing this process does after loading
+// it. The reply reports this captured value and never re-reads the file, so
+// the running version's hash stays fixed when the file on disk is replaced
+// later (e.g. HomeInitializer's sync on the next app start). null when it
+// cannot be read.
+const RUNNING_SCRIPT_SHA256 = (() => {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex');
+  } catch {
+    return null;
+  }
+})();
+
 const RESULT_POLL_MS = 250;
 // Runaway guard: two 4 MiB output streams can expand 6x with JSON escapes
 // (48 MiB total), with headroom for the result envelope.
@@ -289,7 +303,8 @@ const TOOLS = [
   {
     name: 'device_status',
     description: 'Battery, thermal status, memory and storage totals, Shelly\'s version and uptimes, as last captured by the app. '
-      + 'capturedAt / ageMs / stale say how old the reading is (it is refreshed while Shelly is open, not while it is in the background).',
+      + 'capturedAt / ageMs / stale say how old the reading is (it is refreshed while Shelly is open, not while it is in the background). '
+      + 'Also reports payload provenance: payloads (hash of the installed MCP server script vs the running one, extract marker version, app version, native lib presence) and bundle (build fingerprint of the app\'s JS bundle; null on a bundle that predates it).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -700,7 +715,13 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
 //     one bounded queue refresh unless the heartbeat says RN is paused. If
 //     the refresh fails or is skipped, return the stale reading with
 //     live: false and refreshError. A verified snapshot whose device section
-//     is missing or malformed answers a plain error.
+//     is missing or malformed answers a plain error. Every ok answer also
+//     carries `payloads` (payloadProvenance below: sha256 of the installed
+//     $HOME/.shelly-mcp-server.js vs the running script, the extract marker's
+//     vc, app-info.json's version, codex_tui / codex_exec presence) so a stale
+//     payload on the device is visible in one read-only call, and `bundle`
+//     (the JS bundle's build-embedded fingerprint, passed through from the
+//     snapshot; null = a bundle older than the fingerprint).
 // The snapshot carries an HMAC keyed by the bearer token, so a file planted
 // in the queue dir by anything that doesn't hold the token is ignored and
 // the call falls back to the queue (the old behaviour). read_terminal_output,
@@ -732,7 +753,7 @@ const DIRECT_READ_TOOLS = new Set(['list_agents', 'list_repos', 'git_status', 'd
 const DEVICE_STALE_AFTER_MS = 15 * 60_000;
 // Clock skew tolerated before a capturedAt "from the future" is refused.
 const DEVICE_FUTURE_SKEW_MS = 5 * 60_000;
-const DEVICE_SECTIONS = ['battery', 'thermal', 'memory', 'storage', 'app', 'uptime'];
+const DEVICE_SECTIONS = ['battery', 'thermal', 'memory', 'storage', 'app', 'uptime', 'bundle'];
 const DEVICE_UNAVAILABLE = 'device status unavailable: the app has not captured a valid reading yet (open Shelly once with the MCP server on)';
 
 /**
@@ -914,13 +935,123 @@ async function defaultRunGit(repoPath) {
   return { ok: true, data: st.stdout };
 }
 
+// ── Payload provenance (device_status.payloads) ──────────────────────────
+//
+// What is actually installed, as opposed to what the APK shipped: stale
+// copies of $HOME/.shelly-mcp-server.js, a lagging .extract_version marker
+// and leftover retired libs were found on a device. Read-only, bounded, no
+// paths or identifiers in the output except a lib symlink's own target;
+// every field is null when unreadable. The running script's hash is
+// RUNNING_SCRIPT_SHA256 (captured at startup, top of this file).
+
+const PAYLOAD_SCRIPT_MAX_BYTES = 4 * 1024 * 1024;
+const PAYLOAD_SMALL_MAX_BYTES = 16 * 1024;
+const PAYLOAD_LIBS = ['codex_tui', 'codex_exec'];
+const PAYLOAD_LINK_TARGET_MAX_CHARS = 512;
+
+/** Reads a regular file (not a symlink) of at most maxBytes, or null. */
+function readRegularFileBounded(file, maxBytes) {
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    return fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
+function isoOrNull(ms) {
+  return typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 && ms < 8.64e15 ? new Date(ms).toISOString() : null;
+}
+
+/**
+ * One termux-libs entry, without following links. A regular file: size and
+ * mtime. A symlink (dangling or not): symlink: true, its target when
+ * readlink works (bounded, no control characters; else null) and the link's
+ * own mtime; size stays null (the link is not the payload).
+ */
+function payloadLibEntry(file) {
+  let st;
+  try {
+    st = fs.lstatSync(file);
+  } catch {
+    return { present: false, size: null, mtime: null };
+  }
+  if (st.isSymbolicLink()) {
+    let target = null;
+    try {
+      const t = fs.readlinkSync(file);
+      if (typeof t === 'string' && t.length > 0 && t.length <= PAYLOAD_LINK_TARGET_MAX_CHARS && !/[\u0000-\u001f\u007f-\u009f]/.test(t)) target = t;
+    } catch { /* target stays null */ }
+    return { present: true, symlink: true, target, size: null, mtime: isoOrNull(st.mtimeMs) };
+  }
+  return { present: true, symlink: false, size: st.size, mtime: isoOrNull(st.mtimeMs) };
+}
+
+function payloadProvenance({ homeDir, libDir, runningScriptSha256 = RUNNING_SCRIPT_SHA256 } = {}) {
+  const out = {
+    mcpServerScript: { onDiskSha256: null, runningSha256: null, match: null },
+    extractMarker: { vc: null, present: false },
+    appInfo: null,
+    libs: {},
+  };
+  try {
+    const running = typeof runningScriptSha256 === 'string' ? runningScriptSha256 : null;
+    let onDisk = null;
+    if (homeDir) {
+      const buf = readRegularFileBounded(path.join(homeDir, '.shelly-mcp-server.js'), PAYLOAD_SCRIPT_MAX_BYTES);
+      if (buf) onDisk = crypto.createHash('sha256').update(buf).digest('hex');
+    }
+    out.mcpServerScript = { onDiskSha256: onDisk, runningSha256: running, match: onDisk && running ? onDisk === running : null };
+  } catch { /* keep nulls */ }
+  try {
+    if (libDir) {
+      const buf = readRegularFileBounded(path.join(libDir, '.extract_version'), PAYLOAD_SMALL_MAX_BYTES);
+      if (buf) {
+        const m = /^(?:vc=)?(\d{1,10})(?=$|[|\s])/.exec(buf.toString('utf8'));
+        out.extractMarker = { vc: m ? Number(m[1]) : null, present: true };
+      }
+    }
+  } catch { /* keep default */ }
+  try {
+    if (homeDir) {
+      const buf = readRegularFileBounded(path.join(homeDir, '.shelly', 'app-info.json'), PAYLOAD_SMALL_MAX_BYTES);
+      const info = buf ? JSON.parse(buf.toString('utf8')) : null;
+      if (isPlainObject(info)) {
+        const versionCode = Number.isInteger(info.versionCode) ? info.versionCode : null;
+        const versionName = typeof info.versionName === 'string' && info.versionName.length <= 64 ? info.versionName : null;
+        out.appInfo = { versionCode, versionName, writtenAt: isoOrNull(info.writtenAtMs) };
+      }
+    }
+  } catch { /* appInfo stays null */ }
+  for (const name of PAYLOAD_LIBS) {
+    let entry = { present: false, size: null, mtime: null };
+    try {
+      if (libDir) entry = payloadLibEntry(path.join(libDir, name));
+    } catch { /* absent or unreadable */ }
+    out.libs[name] = entry;
+  }
+  return out;
+}
+
+/** Adds `payloads` to an ok device_status answer whose data is an object. */
+function withPayloads(res, homeDir, libDir) {
+  if (!res || res.ok !== true || !isPlainObject(res.data)) return res;
+  return { ...res, data: { ...res.data, payloads: payloadProvenance({ homeDir, libDir }) } };
+}
+
+function defaultPayloadLibDir(homeDir) {
+  return gitLibDir() || path.join(path.dirname(homeDir), 'termux-libs');
+}
+
 /**
  * Wraps the queue-backed callTool: answers the direct-read tools from the
  * verified snapshot, and falls back to the queue when there is no valid
  * snapshot (RN never published one, or it was signed with an older token)
  * or git can't be spawned from here.
  */
-function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {}, now = () => Date.now(), homeDir = path.dirname(queueDir), logIo = DEFAULT_LOG_IO }) {
+function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {}, now = () => Date.now(), homeDir = path.dirname(queueDir), libDir = defaultPayloadLibDir(homeDir), logIo = DEFAULT_LOG_IO }) {
+  const withProvenance = (res) => withPayloads(res, homeDir, libDir);
   return async function callTool(toolName, args, ingress) {
     if (toolName === 'stage_install_result') {
       let auditedReadFailure = false;
@@ -973,26 +1104,30 @@ function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultR
     if (toolName === 'list_drafts') return listDrafts(homeDir, args || {}, logIo);
     if (toolName === 'read_draft') return readDraft(homeDir, args || {}, logIo);
     const snap = readVerifiedSnapshot(queueDir, token);
-    if (!snap) return fallback(toolName, args, ingress);
+    if (!snap) {
+      const queued = await fallback(toolName, args, ingress);
+      return toolName === 'device_status' ? withProvenance(queued) : queued;
+    }
     if (toolName === 'list_agents') return { ok: true, data: snap.agents };
     if (toolName === 'list_repos') return { ok: true, data: snap.repoPaths };
     if (toolName === 'device_status') {
       const nowMs = now();
       const reading = deviceStatusFromSnapshot(snap.device, nowMs);
-      if (!reading.ok || !reading.data.stale) return reading;
+      if (!reading.ok) return reading;
+      if (!reading.data.stale) return withProvenance(reading);
 
       let refreshError = 'bridge not live';
       if (rnLiveFromHeartbeat(queueDir, nowMs) !== false) {
         refreshError = 'live refresh failed';
         try {
           const live = await fallback(toolName, args, ingress, { timeoutMs: DEVICE_LIVE_REFRESH_TIMEOUT_MS });
-          if (live?.ok === true) return live;
+          if (live?.ok === true) return withProvenance(live);
           refreshError = live?.error || refreshError;
         } catch (e) {
           refreshError = e?.message || refreshError;
         }
       }
-      return { ok: true, data: { ...reading.data, live: false, refreshError } };
+      return withProvenance({ ok: true, data: { ...reading.data, live: false, refreshError } });
     }
     if (toolName === 'read_agent_audit') return readAgentAudit(homeDir, snap.agents, args || {}, logIo);
     if (toolName === 'read_article_history') return readArticleHistory(homeDir, args || {}, logIo);
@@ -2027,6 +2162,13 @@ const RUN_LOG_KEYS = new Set(['timestamp', 'status', 'outputPreview', 'errorMess
 const RUN_TICKET_MAX_BYTES = 16 * 1024; // McpRunTickets.MAX_TICKET_CHARS
 const RUN_ACCEPTED_STALE_MS = 2 * 60 * 1000;
 const RUN_RUNNING_STALE_MS = 35 * 60 * 1000;
+// S5 (McpRunTickets.RUNNING_PROGRESS_STALL_MS / RUNNING_HARD_STALE_MS): a
+// running ticket past RUN_RUNNING_STALE_MS reads lost only when its agent's
+// progress stream (logs/<agentId>/progress.jsonl) has not changed for 10
+// minutes (the hang tier-1 threshold) — or past the orchestration ceiling (1 h)
+// plus 5 minutes whatever the stream says.
+const RUN_PROGRESS_STALL_MS = 10 * 60 * 1000;
+const RUN_RUNNING_HARD_STALE_MS = 65 * 60 * 1000;
 const RUN_OUTPUT_DEFAULT_BYTES = 16 * 1024;
 const RUN_OUTPUT_MAX_BYTES = 64 * 1024;
 const RUN_RESULT_POLL_MS = 500;
@@ -2138,11 +2280,33 @@ function decodeRunTicket(text, handle) {
   return t;
 }
 
-/** McpRunTickets.applyStale, without persisting it (this process only reads). */
-function applyRunStale(t, nowMs) {
-  const stale = (t.state === 'accepted' && nowMs - t.acceptedAt > RUN_ACCEPTED_STALE_MS)
-    || (t.state === 'running' && nowMs - (t.startedAt === undefined ? t.acceptedAt : t.startedAt) > RUN_RUNNING_STALE_MS);
+/**
+ * McpRunTickets.applyStale, without persisting it (this process only reads).
+ * `lastProgressMs`: mtime (ms) of the agent's progress.jsonl, or undefined.
+ */
+function applyRunStale(t, nowMs, lastProgressMs) {
+  let stale = false;
+  if (t.state === 'accepted') {
+    stale = nowMs - t.acceptedAt > RUN_ACCEPTED_STALE_MS;
+  } else if (t.state === 'running') {
+    const started = t.startedAt === undefined ? t.acceptedAt : t.startedAt;
+    const elapsed = nowMs - started;
+    const progressing = typeof lastProgressMs === 'number' && Number.isFinite(lastProgressMs) &&
+      lastProgressMs >= started && nowMs - lastProgressMs < RUN_PROGRESS_STALL_MS;
+    stale = elapsed > RUN_RUNNING_HARD_STALE_MS || (elapsed > RUN_RUNNING_STALE_MS && !progressing);
+  }
   return stale ? { ...t, state: 'lost', reason: 'stale', finishedAt: nowMs } : t;
+}
+
+/** mtime (ms) of $HOME/.shelly/agents/logs/<agentId>/progress.jsonl (queueDir is $HOME/.shelly-mcp-queue), or undefined. */
+function runProgressMtimeMs(queueDir, agentId) {
+  if (typeof agentId !== 'string' || !RUN_AGENT_ID_RE.test(agentId)) return undefined;
+  try {
+    const st = fs.lstatSync(path.join(path.dirname(queueDir), '.shelly', 'agents', 'logs', agentId, 'progress.jsonl'));
+    return st.isFile() ? st.mtimeMs : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** At most `maxBytes` of a regular (not symlinked) file, or null. */
@@ -2267,7 +2431,8 @@ async function getRunResultDirect(queueDir, args, ingress, opts = {}) {
     const raw = readRunTicketFile(runsDir, parsed.runHandle);
     // Another client's handle reads exactly like a missing one.
     if (!raw || raw.principal !== principal) return RUN_UNKNOWN_HANDLE;
-    const ticket = applyRunStale(raw, now());
+    const progressMtime = opts.progressMtimeMs || runProgressMtimeMs;
+    const ticket = applyRunStale(raw, now(), raw.state === 'running' ? progressMtime(queueDir, raw.agentId) : undefined);
     const left = deadline - now();
     if (RUN_TERMINAL_STATES.has(ticket.state) || left <= 0) {
       let output = null;
@@ -2911,6 +3076,7 @@ if (require.main === module) {
   module.exports = {
     createMcpHandler,
     createDirectReadCallTool,
+    payloadProvenance,
     createFileQueueCallTool,
     rnLiveFromHeartbeat,
     RESULT_MAX_BYTES,

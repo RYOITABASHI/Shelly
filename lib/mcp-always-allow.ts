@@ -25,9 +25,10 @@
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { MCP_PRINCIPAL_RE, type Sha256 } from '@/lib/mcp-request-auth';
 import { logInfo, logWarn } from '@/lib/debug-logger';
+import { SERVICE_CONTROL_TARGET_RE, serviceControlRuleTarget, validateServiceControlArgs } from '@/lib/mcp-service-control';
 
 /** Keep in step with McpAlwaysAllowStore.TYPED_OPS. */
-export const TYPED_OPS = ['run_agent'] as const;
+export const TYPED_OPS = ['run_agent', 'service_control'] as const;
 export type TypedOp = (typeof TYPED_OPS)[number];
 
 export const MAX_RULES = 200;
@@ -38,6 +39,7 @@ export const ALWAYS_ALLOW_STATUS_VERSION = 1;
 const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const TARGET_RES: Record<TypedOp, RegExp> = {
   run_agent: /^agent:[A-Za-z0-9_-]{1,128}$/,
+  service_control: SERVICE_CONTROL_TARGET_RE,
 };
 const RULE_ID_RE = /^r_[0-9a-f]{16}$/;
 const BIND_RE = /^[0-9a-f]{64}$/;
@@ -87,6 +89,10 @@ export function normalizeTarget(op: unknown, args: unknown): string | null {
     case 'run_agent': {
       const agentId = (args as { agentId?: unknown }).agentId;
       return typeof agentId === 'string' && AGENT_ID_RE.test(agentId) ? `agent:${agentId}` : null;
+    }
+    case 'service_control': {
+      const valid = validateServiceControlArgs(args);
+      return valid.ok ? serviceControlRuleTarget(valid.args) : null;
     }
     default:
       return null;

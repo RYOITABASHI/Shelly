@@ -737,7 +737,17 @@ object AgentRuntime {
          *  settles it (markOccurrenceSettled). Not called when the call
          *  throws. Only TerminalSessionService passes it, for a scheduled
          *  occurrence; manual / widget / MCP runs never do. */
-        onRefusedBeforeLaunch: ((previousRunActive: Boolean, reason: String) -> Unit)? = null
+        onRefusedBeforeLaunch: ((previousRunActive: Boolean, reason: String) -> Unit)? = null,
+        /** S5 recovery (RunRecovery): the schedule occurrence (ms) this run is
+         *  for — a regular / late fire, or the slot a re-fire recovers. Null
+         *  for an ad-hoc run (never re-fired). */
+        scheduledAtMs: Long? = null,
+        /** S5 recovery: set only on a re-fire — the run id of the dead run it
+         *  recovers (a re-fire is never re-fired again). */
+        refireOf: String? = null,
+        /** S5 recovery: the launch id a re-fire was given when it was decided
+         *  (the feedback line's refireRunId); null = a new id. */
+        recoveryLaunchId: String? = null
     ): AgentRunResult {
         // MONITOR widget hook (push-only updates; never throws). Counted per
         // call, paired with runEnded in the finally below.
@@ -757,7 +767,7 @@ object AgentRuntime {
                     onExecutionStart?.invoke()
                 }
             }
-            val result = runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved, startHook)
+            val result = runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved, startHook, scheduledAtMs, refireOf, recoveryLaunchId)
             if (!launched && onRefusedBeforeLaunch != null) {
                 val previousRunActive = result.stderr == PREVIOUS_RUN_ACTIVE_MESSAGE
                 runCatching { onRefusedBeforeLaunch(previousRunActive, result.stderr) }
@@ -836,7 +846,10 @@ object AgentRuntime {
         origin: String,
         ingressRunReason: String?,
         mcpActionsPreapproved: Boolean,
-        onExecutionStart: (() -> Unit)?
+        onExecutionStart: (() -> Unit)?,
+        scheduledAtMs: Long?,
+        refireOf: String?,
+        recoveryLaunchId: String?
     ): AgentRunResult {
         val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
@@ -953,7 +966,7 @@ object AgentRuntime {
         }
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart, scheduledAtMs, refireOf, recoveryLaunchId)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -1151,7 +1164,10 @@ object AgentRuntime {
         runOrigin: String = "event",
         ingressReason: String? = null,
         mcpActionsPreapproved: Boolean = false,
-        onExecutionStart: (() -> Unit)? = null
+        onExecutionStart: (() -> Unit)? = null,
+        scheduledAtMs: Long? = null,
+        refireOf: String? = null,
+        recoveryLaunchId: String? = null
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -1400,6 +1416,7 @@ object AgentRuntime {
         }
         // Every gate and preparation step (incl. the local-LLM preflight) is
         // behind us: the scheduled occurrence counts as started from here on.
+        val launch = RunRecovery.beginLaunch(context, homeDir, agentId, recoveryLaunchId, scheduledAtMs, runOrigin, unattended, refireOf) // S5
         fireExecutionStart(agentId, onExecutionStart)
         val runStartedAtMs = System.currentTimeMillis()
         val result = try {
@@ -1414,12 +1431,31 @@ object AgentRuntime {
         } finally {
             actionApprovalNotifierStop.set(true)
             runCatching { actionApprovalNotifier.join(1000) }
+            launch.watchdog.stop()
+            // S5: the launch's end (the script ties a run to the launch whose
+            // start..end holds its plan_start), before finalize reads it.
+            RunRecovery.endLaunch(homeDir, agentId, launch.launchId, System.currentTimeMillis())
         }
 
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
+        // S5 recovery (1): the executor writes plan_finish on every exit it can
+        // see (success, skipped, SIGTERM / STOP-ALL). Any exit — a crash, a
+        // signal, the native timeout, a hang abort, or an exit 0 that still
+        // left no plan_finish — may have left plan_start without an end: the
+        // driver's terminal record (exit code / signal) + plan_orphaned close
+        // it, and a run the watchdog or a sweep already closed gets the exit
+        // code it ended with. So finalize runs after every launch (a run with
+        // plan_finish is left untouched). The one-time re-fire the recovery
+        // script decided is dispatched at the end.
+        val refires = ArrayList<RunRecovery.Refire>(launch.watchdog.refires)
+        run {
+            val timedOut = exitCode == 137 && System.currentTimeMillis() - runStartedAtMs >= DEFAULT_TIMEOUT_MS - 5_000L
+            refires.addAll(RunRecovery.finalize(context, homeDir, agentId, exitCode, launch.startedAtMs, launch.launchId, timedOut, launch.watchdog.abortedRunStartTs).refires)
+        }
         if (stoppedByKillSwitch(homeDir, agentId, exitCode, runStartedAtMs)) {
+            RunRecovery.dispatchRefires(context, refires)
             return AgentRunResult(agentId, exitCode, stdout, stderr)
         }
         val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
@@ -1465,6 +1501,9 @@ object AgentRuntime {
                 failureMessage
             )
         }
+        // After the failure bookkeeping (backoff count, run log): the re-fire
+        // then passes through the same backoff gate as any unattended run.
+        RunRecovery.dispatchRefires(context, refires)
         return AgentRunResult(agentId, exitCode, stdout, stderr)
     }
 

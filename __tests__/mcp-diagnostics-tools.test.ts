@@ -58,6 +58,7 @@ import {
   __setMCPSnapshotSha256ForTests,
   capLogLines,
   deviceSectionFromNative,
+  bundleFingerprint,
   filterLogcatLines,
   READ_LOGS_MAX_BYTES,
   redactForMcp,
@@ -359,7 +360,15 @@ describe('device_status', () => {
     expect(deviceSectionFromNative(null)).toBeNull();
     expect(deviceSectionFromNative({ battery: {} })).toBeNull();
     const s = deviceSectionFromNative({ capturedAtMs: 0, battery: 'x', thermal: null, memory: { a: 1 }, extra: { b: 2 } });
-    expect(s).toEqual({ capturedAt: '1970-01-01T00:00:00.000Z', battery: null, thermal: null, memory: { a: 1 }, storage: null, app: null, uptime: null });
+    expect(s).toEqual({ capturedAt: '1970-01-01T00:00:00.000Z', battery: null, thermal: null, memory: { a: 1 }, storage: null, app: null, uptime: null, bundle: expect.objectContaining({ schema: 1 }) });
+  });
+
+  it('deviceSectionFromNative embeds a validated bundle fingerprint (known keys only)', () => {
+    const s = deviceSectionFromNative({ capturedAtMs: 0 });
+    expect(Object.keys(s!.bundle!).sort()).toEqual(['gitSha', 'runId', 'runNumber', 'schema', 'source']);
+    expect(bundleFingerprint({ schema: 1, source: 'ci', gitSha: 'abc', runId: 7, runNumber: 9, extra: 'x' })).toEqual({ schema: 1, source: 'ci', gitSha: 'abc', runId: 7, runNumber: 9 });
+    expect(bundleFingerprint({ schema: {}, gitSha: ['x'], runId: NaN })).toEqual({ schema: null, source: null, gitSha: null, runId: null, runNumber: null });
+    expect(bundleFingerprint('nope')).toBeNull();
   });
 
   it('the publisher puts a signed device section in the snapshot the server can answer from', async () => {

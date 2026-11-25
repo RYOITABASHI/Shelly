@@ -10,7 +10,7 @@
  * shape as CodexRemoteHost), never from the MCP server's own process.
  *
  * Pure: no native module, no store, no timers. lib/mcp-server-bridge.ts does
- * the I/O (validation → approval → native call → audit).
+ * the I/O (validation → refusals → approval ladder → native call → audit).
  */
 
 /** Keep in step with ManagedServices.ACTIONS (Kotlin). */
@@ -53,6 +53,8 @@ export type ServiceControlErrorCode =
   | 'disabled'
   | 'invalid_params'
   | 'denied'
+  | 'not_attended'
+  | 'target_changed'
   | 'revoked'
   | 'timeout'
   | 'native_error'
@@ -147,19 +149,54 @@ export const SERVICE_FAILURE_CODES: ReadonlySet<ServiceResultCode> = new Set([
   'halted', 'not_configured', 'not_installed', 'launch_failed', 'stop_failed',
 ]);
 
-// ── Always-allow readiness (not enabled in v1) ─────────────────────────────
+// ── Always-allow (S2) ──────────────────────────────────────────────────────
 //
-// v1 asks for a tap on every call. A later stage may let the owner add an
-// always-allow rule for this op through lib/mcp-always-allow.ts. The target a
-// rule would name is fixed here so that step is only: add 'service_control'
-// to TYPED_OPS (here and McpAlwaysAllowStore.TYPED_OPS), map it to
-// SERVICE_CONTROL_TARGET_RE in TARGET_RES, and consult the store in the
-// bridge after the halted check. A rule names ONE service and ONE action
-// (a `status` rule never covers `start`).
+// service_control is a typed op of lib/mcp-always-allow.ts (TYPED_OPS there
+// and McpAlwaysAllowStore.TYPED_OPS). The bridge consults the store only
+// after every refusal class (arguments, epoch, exec setting, deadline,
+// STOP-ALL); a rule never rescues a STOP-ALL refusal. A rule names ONE
+// service and ONE action (a `status` rule never covers `start`).
 
 export const SERVICE_CONTROL_TARGET_RE = /^service:(article-delivery|council-facade):(start|status|stop)$/;
 
 /** The canonical always-allow target for these arguments: `service:<id>:<action>`. */
 export function serviceControlRuleTarget(args: ServiceControlArgs): string {
   return `service:${args.serviceId}:${args.action}`;
+}
+
+/**
+ * Version of what a service_control rule's binding means. v1: the binding
+ * names only the registry entry's identity (target), because what a start
+ * runs is fixed natively (ManagedServices.REGISTRY, plus the on-device spec
+ * for council-facade) and RN cannot read or hash it.
+ *
+ * Why a versioned value and not "no binding": a rule without a binding
+ * matches ANY binding (findAlwaysAllowMatch), so if a later stage starts
+ * binding rules to a native launch-spec digest, unbound rules would keep
+ * authorizing whatever the spec then says. A v1 binding stops matching the
+ * moment the derivation changes, and the dialog comes back (fail closed).
+ * Bump this when what a service id runs changes in a way a rule must not
+ * survive (e.g. when council-facade gets its launch spec wired).
+ *
+ * v2 (2026-11-25): council-facade's launch spec is now wired
+ * (ManagedServiceSupervisor.resolveFacadeSpec, from the on-device
+ * launch-spec.json) — any "always allow start/stop/status council-facade"
+ * rule saved under v1 (when it always answered not_configured) stops
+ * matching here, so the dialog comes back once before it can authorize an
+ * actual process start/stop under the newly-wired spec.
+ */
+export const SERVICE_CONTROL_BIND_DOMAIN = 'shelly-service-control-bind-v2:';
+
+/** sha256 hex of `SERVICE_CONTROL_BIND_DOMAIN + target` (64 lowercase hex). */
+export async function serviceControlRuleBind(
+  args: ServiceControlArgs,
+  sha256: (data: Uint8Array) => Promise<Uint8Array>,
+): Promise<string> {
+  const digest = await sha256(new TextEncoder().encode(`${SERVICE_CONTROL_BIND_DOMAIN}${serviceControlRuleTarget(args)}`));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** The rule label shown in Settings / the dialog: `<action> <serviceId>` (closed alphabet). */
+export function serviceControlRuleLabel(args: ServiceControlArgs): string {
+  return `${args.action} ${args.serviceId}`;
 }
