@@ -479,6 +479,7 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(line.note).toBeUndefined();
     const audit = readAudit(home);
     expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', draftKept: true, detail: 'draft action approval timed out' });
+    expect(audit.find((e) => e.event === 'article_held').approval).toBe('timeout');
     expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
   }, 60000);
 
@@ -564,6 +565,105 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(audit.filter((e) => e.kind === 'plan.recovery').map((e) => e.event)).toEqual(['recovery_feedback', 'recovery_feedback_shared']);
     // Never dispatched: no save, no approval request.
     expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
+  }, 60000);
+
+  /**
+   * Answers the run's approval requests while it waits: `decide(request)`
+   * returns 'accept' or 'decline' (a well-formed, unsigned reply with that
+   * decision) or null (no answer). Returns a stop function.
+   */
+  function answerApprovals(home: string, decide: (req: any) => 'accept' | 'decline' | null): () => void {
+    const reqDir = path.join(home, '.shelly/agents/action-approvals');
+    const replyDir = path.join(home, '.shelly/agents/action-approval-replies');
+    const done = new Set<string>();
+    const timer = setInterval(() => {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(reqDir).filter((n) => /^action-.*\.json$/.test(n) && !n.endsWith('.reply.json'));
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        if (done.has(name)) continue;
+        let text = '';
+        try {
+          text = fs.readFileSync(path.join(reqDir, name), 'utf8');
+        } catch {
+          continue;
+        }
+        const req = JSON.parse(text);
+        const verdict = decide(req);
+        if (!verdict) continue;
+        done.add(name);
+        const reply = JSON.stringify({ runId: req.runId, requestSha256: require('crypto').createHash('sha256').update(text).digest('hex'), decision: verdict });
+        fs.mkdirSync(replyDir, { recursive: true });
+        fs.writeFileSync(path.join(replyDir, name.replace(/\.json$/, '.reply.json')), reply);
+      }
+    }, 50);
+    return () => clearInterval(timer);
+  }
+
+  /** An attended run's .env with a wait long enough to answer in. */
+  function attendedAnswerEnv(home: string) {
+    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='1'\nSHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS='15'\n`);
+  }
+
+  // Fix round 1 (item 7): a save whose approval came back but was not granted
+  // is the same held reason as a timeout. This plan has CLI steps, so only a
+  // Keystore-signed reply counts and the unsigned decline reads as
+  // approval-unverified (it used to land as its own reason).
+  it('item 7: a refused draft save lands held as approval-timeout (the audit keeps the outcome)', async () => {
+    const home = makeHome();
+    writePipelines(home);
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const plan = basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE));
+    plan.agent.requireActionApproval = true;
+    const planFile = writePlan(home, port, plan);
+    attendedAnswerEnv(home);
+    const stop = answerApprovals(home, () => 'decline');
+    try {
+      await runExecutor(planFile, home, driver, recordDir, {}, true);
+    } finally {
+      stop();
+    }
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toMatch(/^Held \(approval-timeout\): /);
+    const audit = readAudit(home);
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', approval: 'unverified', draftKept: true });
+    const [line] = readFeedback(home);
+    expect(line).toMatchObject({ reason: 'held', artifacts: { draft: true } });
+    expect(line.note).toBeUndefined();
+  }, 60000);
+
+  // Item 7, multi-action: an article pipeline with a second action is refused
+  // before any step (longformPlanRefusal), so it can never read the other
+  // action's success as the run's. The dispatcher also reports the draft
+  // entry's approval failure (unit test below), and the chain lands held on
+  // it (defence in depth).
+  it('item 7: a multi-action article plan never runs, so no other action can make it a success', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const plan = basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE), { actions: [{ type: 'draft' }, { type: 'notify' }] });
+    const planFile = writePlan(home, port, plan);
+    await runExecutor(planFile, home, driver, recordDir, {}, true);
+    expect(readCalls(recordDir)).toHaveLength(0);
+    const log = readRunLog(home);
+    expect({ status: log.status, outputPreview: log.outputPreview }).toEqual({ status: 'error', outputPreview: executor.LONGFORM_DRAFT_ONLY_MESSAGE });
+  }, 60000);
+
+  it('item 7: the multi-action dispatcher reports the draft entry\'s approval failure instead of swallowing it', async () => {
+    const home = makeHome();
+    const rtPaths = executor.runtimePaths(home, AGENT_ID);
+    fs.mkdirSync(rtPaths.logDir, { recursive: true });
+    const plan = basePlan(home, [{ instruction: 'x' }], { actions: [{ type: 'draft' }, { type: 'notify' }] });
+    plan.agent.requireActionApproval = true;
+    const config = { SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS: '1' };
+    const result = await executor.dispatchActionsTrusted(rtPaths, {}, plan, config, [home], 'A finished article body with real content in it.', {});
+    expect(result.status).toBe('skipped');
+    expect(result.draftApprovalFailure).toBeInstanceOf(Error);
+    expect(result.draftApprovalFailure.reason).toBe('approval-timeout');
+    expect(result.actionResults.map((r: any) => [r.actionType, r.status])).toEqual([['draft', 'skipped'], ['notify', 'skipped']]);
   }, 60000);
 
   // Fix round 1 (item 4): a cut never leaves the original text nowhere.

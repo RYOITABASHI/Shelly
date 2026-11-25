@@ -288,7 +288,8 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // passed whose text lint is still there, lands held (text-lint) instead of
 // being saved, with the uncut draft in held/. (5) An article draft's save no longer waits for a tap on an
 // attended run unless the agent pins one or POLICY-001 asks; a tap that does
-// not come lands the draft held (approval-timeout / -declined / -unverified).
+// not come (timed out, declined, unverifiable) lands the draft held
+// (approval-timeout), on a multi-action plan too.
 const EXECUTOR_SCRIPT_VERSION = 68;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
@@ -6279,8 +6280,11 @@ function webSearchStartRefusal(opts) {
 //                        after one bounded fix (articleTextLintFlags), or the
 //                        fix cut anything at all (fix round 1, item 5); the
 //                        held copy is the draft before the cut
-//   approval-timeout / approval-declined / approval-unverified
-//                        the draft's save approval did not come
+//   approval-timeout     the draft's save approval did not come: timed out,
+//                        declined or not verifiable (fix round 1, item 7:
+//                        one reason; the audit's `approval` says which), on a
+//                        single draft action or on the draft entry of a
+//                        multi-action plan, whatever the other actions did
 // The first three land before the write step (no draft). An MCP-ingress run
 // writes no held file (its writes are refused); its line still goes out.
 // The JSONL line is the S5-0 §3 shape with reason "held" and, only on a held
@@ -6292,7 +6296,11 @@ function webSearchStartRefusal(opts) {
 // scripts/shelly-run-recovery.js (S5) backfills from.
 const ARTICLE_HELD_DIR = '.shelly/agents/held';
 const RECOVERY_FEEDBACK_JSONL_FILE = '.shelly/agents/recovery-feedback.jsonl';
-const ARTICLE_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout', 'approval-declined', 'approval-unverified']);
+// Fix round 1 (item 7): a draft save's approval that timed out, was declined
+// or could not be verified is one held reason, approval-timeout; which of the
+// three it was is the article_held audit line's `approval`.
+const ARTICLE_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout']);
+const ARTICLE_HELD_APPROVAL_OUTCOMES = { 'approval-timeout': 'timeout', 'approval-declined': 'declined', 'approval-unverified': 'unverified' };
 const ARTICLE_HELD_NOTE_MAX = 20;
 const ARTICLE_HELD_NOTE_MAX_CHARS = 500;
 const ARTICLE_HELD_PIPELINE_ID_RE = /^[a-z0-9-]{1,32}$/;
@@ -6301,9 +6309,7 @@ const ARTICLE_HELD_MESSAGES = {
   'web-search-stopped': 'the research step\'s web search was stopped, so no article was written',
   'no-web-sources': 'the research found no web source, so no article was written from the materials alone',
   'text-lint': 'work talk or an editor\'s note was in the draft (a cut text is never saved unreviewed); the draft is in held/ as written',
-  'approval-timeout': 'the draft\'s save approval timed out; the draft is in held/',
-  'approval-declined': 'the draft\'s save was declined; the draft is in held/',
-  'approval-unverified': 'the draft\'s save approval could not be verified; the draft is in held/',
+  'approval-timeout': 'the draft\'s save approval did not come (timed out, declined or not verifiable); the draft is in held/',
 };
 
 /** `Held (<reason>): <message>` — the run log / notification preview. */
@@ -12005,6 +12011,11 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
   let successCount = 0;
   let errorCount = 0;
   let skippedCount = 0;
+  // Fix round 1 (item 7): the draft entry's approval that did not come. Still
+  // that entry's own skip here (the others dispatch as before), but returned
+  // so an article chain lands held with the full draft instead of reading a
+  // success from the other entries.
+  let draftApprovalFailure = null;
   for (let i = 0; i < plan.actions.length; i += 1) {
     // STOP-ALL: no further action once the kill-switch is on.
     if (isHalted(paths)) throw new RunHalted(haltMessage(paths));
@@ -12038,6 +12049,7 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
         // down every other action's independent delivery.
         // STOP-ALL is the exception: it stops the WHOLE run, so it escapes.
         if (e instanceof RunHalted) throw e;
+        if (e instanceof ActionApprovalNotGranted && subAction && subAction.type === 'draft' && !draftApprovalFailure) draftApprovalFailure = e;
         if (e instanceof ActionSkipped) {
           outcome = { status: 'skipped', preview: redact(e.message), errorMessage: redact(e.message) };
         } else if (e instanceof PlanFailure) {
@@ -12081,7 +12093,7 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
   // (mirrors the .sh executor's identical "last write wins" design for the
   // same reason).
   writeNotification(paths, plan, status, preview);
-  return { status, preview, errorMessage: status === 'success' ? '' : preview, actionResults: results };
+  return { status, preview, errorMessage: status === 'success' ? '' : preview, actionResults: results, ...(draftApprovalFailure ? { draftApprovalFailure } : {}) };
 }
 
 function mirrorBrokerAudit(paths, plan) {
@@ -14783,19 +14795,24 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         };
       }
     }
-    let action;
-    try {
-      action = isFinal
-        ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
-        : { status: 'success', preview };
-    } catch (error) {
-      // v68 (5a): the article draft's save approval timed out / was declined /
-      // could not be verified. The finished draft is kept in held/ with the
-      // reason (it used to be lost with the run), the popped queue item is
-      // ticked since the work is kept, and the run lands held.
-      if (!(isFinal && articleHeldRun && error instanceof ActionApprovalNotGranted && step.local !== undefined)) throw error;
+    // v68 (5a): the article draft's save approval timed out / was declined /
+    // could not be verified. The finished draft is kept in held/ (it used to
+    // be lost with the run), the popped queue item is ticked since the work is
+    // kept, and the run lands held. Fix round 1 (item 7): one reason,
+    // approval-timeout, for all three (the audit's `approval` says which), and
+    // a multi-action plan's draft entry lands the same way whatever the other
+    // entries did (dispatchActionsTrusted returns its draftApprovalFailure).
+    const landDraftApprovalHeld = async (error) => {
       dispatchedFinal = true;
-      heldLanding = { reason: error.reason, note: [], detail: redact(error.message), stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
+      heldLanding = {
+        reason: 'approval-timeout',
+        approval: ARTICLE_HELD_APPROVAL_OUTCOMES[error.reason] || 'timeout',
+        note: [],
+        detail: redact(error.message),
+        stepIndex: i,
+        stepStartedAt: stepStartedAtMs.get(i) || null,
+        text: articleDraftBeforeCut || resultText,
+      };
       heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
       if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
       return {
@@ -14803,6 +14820,19 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         failed: true,
         resultFileText,
       };
+    };
+    let action;
+    try {
+      action = isFinal
+        ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
+        : { status: 'success', preview };
+    } catch (error) {
+      if (!(isFinal && articleHeldRun && error instanceof ActionApprovalNotGranted && step.local !== undefined)) throw error;
+      return await landDraftApprovalHeld(error);
+    }
+    if (isFinal && articleHeldRun && step.local !== undefined && action && action.draftApprovalFailure) {
+      if (action.actionResults) finalActionResults = action.actionResults;
+      return await landDraftApprovalHeld(action.draftApprovalFailure);
     }
     if (isFinal) {
       dispatchedFinal = true;
@@ -16803,6 +16833,7 @@ module.exports = {
   dispatchApiCallRequest,
   brokerStepSuffix,
   dispatchActionTrusted,
+  dispatchActionsTrusted,
   // social-post (2026-07-22) — exported for host unit tests only, same
   // convention as the exports above. Not part of the executor's CLI surface.
   socialConnectorEnvPrefix,
