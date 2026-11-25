@@ -5094,19 +5094,37 @@ const FINGERPRINT_LINE_RE = /^(?:#{1,6}\s+|[-*+•]\s+)?(?:\*\*|__)?(population|
  * `<field>: missing` / `<field>: not allowed` / `<field>: conflicting`. A value
  * counts only when, with its surrounding white space removed, it is exactly
  * one of the configured values: no markup, punctuation, case or width is
- * stripped or folded (fix round 1, B2). Pure.
+ * stripped or folded (fix round 1, B2). Reasoning blocks are skipped as in
+ * stripReasoning, but a value on a line a reasoning tag touched is never
+ * accepted: removing the tag would join the text around it into a value the
+ * model did not write (fix round 2, B2). Pure.
  */
+const FINGERPRINT_REASONING_MARK = '\u0000';
 function parseFingerprint(text, lists) {
   const seen = {};
-  for (const rawLine of stripReasoning(String(text || '')).split(/\r?\n/)) {
+  const tainted = new Set();
+  // Each reasoning block or stray tag leaves a mark that no configured value can
+  // hold (normalizeFingerprintConfig refuses control characters).
+  const marked = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, FINGERPRINT_REASONING_MARK)
+    .replace(/<\/?think>/gi, FINGERPRINT_REASONING_MARK);
+  for (const rawLine of marked.split(/\r?\n/)) {
     const m = FINGERPRINT_LINE_RE.exec(rawLine.trim());
     if (!m) continue;
     const field = m[1].toLowerCase();
+    if (m[2].indexOf(FINGERPRINT_REASONING_MARK) !== -1) {
+      tainted.add(field);
+      continue;
+    }
     (seen[field] = seen[field] || []).push(m[2].trim());
   }
   const values = {};
   const problems = [];
   for (const field of FINGERPRINT_FIELDS) {
+    if (tainted.has(field)) {
+      problems.push(`${field}: not allowed`);
+      continue;
+    }
     const got = Array.from(new Set((seen[field] || []).filter(Boolean)));
     if (!got.length) {
       problems.push(`${field}: missing`);
@@ -5126,16 +5144,31 @@ function parseFingerprint(text, lists) {
   return { ok: problems.length === 0, values, problems };
 }
 
+/** The notes without the lines the parser reads as fingerprint lines. Pure. */
+function notesWithoutFingerprint(text) {
+  return String(text || '').split(/\r?\n/).filter((line) => !FINGERPRINT_LINE_RE.test(line.trim())).join('\n');
+}
+
+/** The five accepted lines, in the form the parser reads, values as accepted. Pure. */
+function fingerprintLinesBlock(values) {
+  return FINGERPRINT_FIELDS.map((field) => `${field}: ${values[field]}`).join('\n');
+}
+
 /**
- * The notes with every fingerprint line removed and the given values appended
- * as the five lines, so that what later steps read carries the fingerprint
- * the executor accepted (fix round 1, B3). Pure.
+ * The notes with every fingerprint line removed and the accepted values put
+ * back as the five lines, before a Sources section if the notes have one (it
+ * is dropped downstream) and else at the end. The values are carried exactly
+ * as accepted: this runs on the carried text, after the absorption's NFKC, so
+ * nothing folds them (fix round 1 B3, fix round 2 B3). Pure.
  */
 function notesWithFingerprint(text, values) {
   const kept = String(text || '').split(/\r?\n/).filter((line) => !FINGERPRINT_LINE_RE.test(line.trim()));
-  while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
-  const lines = FINGERPRINT_FIELDS.map((field) => `${field}: ${values[field]}`);
-  return kept.length ? `${kept.join('\n')}\n${lines.join('\n')}` : lines.join('\n');
+  const block = fingerprintLinesBlock(values);
+  const at = kept.findIndex((line) => SOURCES_HEADING_RE.test(line));
+  const head = at === -1 ? kept : kept.slice(0, at);
+  while (head.length && !head[head.length - 1].trim()) head.pop();
+  const out = head.length ? `${head.join('\n')}\n${block}` : block;
+  return at === -1 ? out : `${out}\n\n${kept.slice(at).join('\n')}`;
 }
 
 /** The one re-output request: classify the main study of these notes. Pure. */
@@ -7400,12 +7433,12 @@ function draftAlreadySaved(paths, plan, config) {
 }
 
 // One cut, at a line end when that keeps most of the notes.
-function capLongformResearch(text) {
+function capLongformResearch(text, max = LONGFORM_RESEARCH_MAX_CHARS) {
   const s = String(text == null ? '' : text);
-  if (s.length <= LONGFORM_RESEARCH_MAX_CHARS) return s;
-  const head = s.slice(0, LONGFORM_RESEARCH_MAX_CHARS);
+  if (s.length <= max) return s;
+  const head = s.slice(0, max);
   const lineEnd = head.lastIndexOf('\n');
-  return lineEnd >= LONGFORM_RESEARCH_MAX_CHARS * 0.8 ? head.slice(0, lineEnd) : head;
+  return lineEnd >= max * 0.8 ? head.slice(0, lineEnd) : head;
 }
 
 // The engines of the other side of the review loop, taken off step i's ladder.
@@ -12845,7 +12878,14 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
             hosts: notes.hosts,
           });
         }
-        outcome.result = capLongformResearch(outcome.result);
+        const fingerprint = outcome.research.fingerprint;
+        if (fingerprint) {
+          // v68: the accepted fingerprint, verbatim, survives the cap too.
+          const room = LONGFORM_RESEARCH_MAX_CHARS - fingerprintLinesBlock(fingerprint).length - 1;
+          outcome.result = notesWithFingerprint(capLongformResearch(notesWithoutFingerprint(outcome.result), room), fingerprint);
+        } else {
+          outcome.result = capLongformResearch(outcome.result);
+        }
       }
       researchStepsDone += 1;
       appendJsonl(paths.planAuditFile, {
@@ -13147,11 +13187,11 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       }
     }
     poolAudit(i, 'research_fingerprint', { values: fp.values, retried });
-    if (!retried) return outcome;
-    // The later steps read these notes: they carry the accepted fingerprint,
-    // not the one that failed (fix round 1, B3).
+    // The later steps read the carried notes: absorbOutcome puts the accepted
+    // fingerprint into them, not the one that failed, and not a copy the
+    // absorption's Sources removal or NFKC could drop or fold (fix round 2, B3).
     return Object.assign({}, outcome, {
-      research: Object.assign({}, outcome.research, { text: notesWithFingerprint(notes, fp.values) }),
+      research: Object.assign({}, outcome.research, { fingerprint: Object.assign({}, fp.values) }),
     });
   }
   // v60: logs/<agentId>/review-full.jsonl (see appendReviewFull).
@@ -16340,6 +16380,7 @@ module.exports = {
   articlePoolSettings,
   fingerprintInstructionBlock,
   parseFingerprint,
+  notesWithFingerprint,
   fingerprintReoutputPrompt,
   poolCandidate,
   parsePool,

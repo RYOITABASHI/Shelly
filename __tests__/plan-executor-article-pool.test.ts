@@ -347,6 +347,26 @@ describe('v68 main-study fingerprint (brief 3)', () => {
     expect(executorModule.parseFingerprint(write, LISTS).ok).toBe(true);
   });
 
+  it('hands the writer the accepted fingerprint when the notes end in a Sources section (fix round 2, B3)', () => {
+    const notes = [memo('fresh', []), '', '## Sources', `[1] Study fresh — ${url('fresh')}`, ...FP_LINES.slice(0, 4)].join('\n');
+    const r = run([notes, FP_LINES.join('\n'), draft], { entry: { pool: false } });
+    expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true }));
+    const write = r.prompts[2];
+    expect(write).toContain(writeInstruction);
+    for (const line of FP_LINES) expect(write).toContain(line);
+    expect(executorModule.parseFingerprint(write, LISTS).ok).toBe(true);
+  });
+
+  it('hands the writer an accepted full-width value as it is, never folded (fix round 2, B3)', () => {
+    const lists = { ...LISTS, population: [...LISTS.population, 'Ａ群'] };
+    const r = run([memo('fresh', FP_LINES.slice(1)), ['population: Ａ群', ...FP_LINES.slice(1)].join('\n'), draft], { entry: { pool: false, fingerprint: lists } });
+    expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true, values: expect.objectContaining({ population: 'Ａ群' }) }));
+    const write = r.prompts[2];
+    expect(write).toContain('population: Ａ群');
+    expect(write).not.toContain('population: A群');
+    expect(executorModule.parseFingerprint(write, lists).ok).toBe(true);
+  });
+
   it('still asks once more with less than 12 minutes left (fix round 1, B4)', () => {
     const r = run([memo('fresh', FP_LINES.slice(0, 4)), FP_LINES.join('\n'), draft], { entry: { pool: false } }, { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(10 * 60_000) });
     expect(r.events('research_fingerprint_retry')).toHaveLength(1);
@@ -455,6 +475,32 @@ describe('v68 pure helpers', () => {
     for (const v of ['`valid`', '**valid**', '"valid"', 'valid。', 'VALID', 'ｖａｌｉｄ']) {
       expect(executorModule.parseFingerprint(lines(v), one('valid'))).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
     }
+  });
+
+  it('never accepts a value that reasoning-tag removal joined together (fix round 2, B2)', () => {
+    const fields = ['population', 'intervention', 'outcome', 'direction', 'question'];
+    const lists = Object.fromEntries(fields.map((f) => [f, ['valid']]));
+    // The gate's reproduction.
+    const probe = fields.map((f) => `${f}: ${f === 'population' ? 'va<think>aside</think>lid' : 'valid'}`).join('\n');
+    expect(executorModule.parseFingerprint(probe, lists)).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    const others = fields.slice(1).map((f) => `${f}: valid`);
+    for (const line of ['population: valid<think>x</think>', 'population: <think>x</think>valid', 'population: valid</think>', 'population: valid<think>']) {
+      expect(executorModule.parseFingerprint([line, ...others].join('\n'), lists)).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    }
+    // A tag spanning lines taints the value line it starts on.
+    expect(executorModule.parseFingerprint(['population: valid<think>', 'aside', '</think>', ...others].join('\n'), lists))
+      .toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    // Reasoning on lines of its own is still ignored, fingerprint lines inside it too.
+    expect(executorModule.parseFingerprint(['<think>', 'population: other', '</think>', 'population: valid', ...others].join('\n'), lists))
+      .toEqual(expect.objectContaining({ ok: true, values: expect.objectContaining({ population: 'valid' }) }));
+  });
+
+  it('puts the accepted fingerprint back before a Sources section, values verbatim (fix round 2, B3)', () => {
+    const values = { population: 'Ａ群', intervention: 'auto feedback', outcome: 'achievement', direction: 'positive', question: 'effect' };
+    const block = ['population: Ａ群', 'intervention: auto feedback', 'outcome: achievement', 'direction: positive', 'question: effect'].join('\n');
+    expect(executorModule.notesWithFingerprint('Notes\npopulation: aliens\n\n## Sources\n[1] x\nquestion: effect', values))
+      .toBe(`Notes\n${block}\n\n## Sources\n[1] x`);
+    expect(executorModule.notesWithFingerprint('Notes\n\n', values)).toBe(`Notes\n${block}`);
   });
 
   it('a pool pipeline config is validated by the TS loader too', () => {
