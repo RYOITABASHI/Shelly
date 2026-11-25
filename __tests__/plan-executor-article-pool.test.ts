@@ -106,7 +106,7 @@ function writePlan(home: string, setup: Setup) {
 
 const readLines = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 
-function run(replies: string[], setup: Setup = {}) {
+function run(replies: string[], setup: Setup = {}, extraEnv: Record<string, string> = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-article-pool-'));
   try {
     const { planFile, outputDir, agents } = writePlan(home, setup);
@@ -117,7 +117,7 @@ function run(replies: string[], setup: Setup = {}) {
       '127.0.0.1': replies.map((content) => ({ body: { choices: [{ message: { content }, finish_reason: 'stop' }] } })),
     }));
     const result = spawnSync(process.execPath, [executor, '--plan-file', planFile, '--home', home, '--agent-id', agentId, '--broker', broker, '--unattended', '1'], {
-      env: { ...process.env, HOME: home, SHELLY_TEST_FAKE_HTTP: http, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10' },
+      env: { ...process.env, HOME: home, SHELLY_TEST_FAKE_HTTP: http, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...extraEnv },
       encoding: 'utf8', timeout: 30_000,
     });
     const prompts: string[] = readLines(`${http}.bodies`).map((body) => JSON.parse(body).messages[0].content);
@@ -140,6 +140,12 @@ function run(replies: string[], setup: Setup = {}) {
 }
 
 const frontmatterOf = (text: string) => (/^---\n([\s\S]*?)\n---/.exec(text) || ['', ''])[1];
+// The executor's own `today` (local calendar date, localIsoDate).
+const localToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const poolBlockOf = (prompt: string) => prompt.slice(prompt.indexOf('# Candidate studies collected earlier'), prompt.indexOf('Consider these candidates first.'));
 
 describe('v68 candidate pool: composite research (AC1)', () => {
   it('offers unused candidates first, records the adopted one in frontmatter and history, and never writes the pool', () => {
@@ -248,6 +254,48 @@ describe('v68 candidate pool: selection-time exclusion (brief 2)', () => {
     expect(r.events('pool_selection')).toEqual([expect.objectContaining({ mode: 'pool', candidateId: 'ok' })]);
   });
 
+  it('leaves out candidates named by a draft saved or held today (fix round 1, B1)', () => {
+    const today = localToday();
+    const pool = { version: 1, candidates: ['t1', 't2', 'ok'].map((id) => candidate(id)) };
+    const r = run([memo('ok'), draft], {
+      pool,
+      savedDrafts: [{ name: `${today}-earlier.md`, frontmatter: 'title: "Saved today"\npoolCandidateId: "t1"' }],
+      heldDrafts: [{ day: today, name: `${today}-held.md`, frontmatter: 'title: "Held today"\npoolCandidateId: t2' }],
+    });
+    expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: '' });
+    const poolBlock = poolBlockOf(r.prompts[0]);
+    expect(poolBlock).not.toContain(url('t1'));
+    expect(poolBlock).not.toContain(url('t2'));
+    expect(poolBlock).toContain(url('ok'));
+    expect(r.events('pool_offered')).toEqual([expect.objectContaining({ counts: expect.objectContaining({ unused: 3, excludedUsed: 2, offered: 1 }) })]);
+    // Today's titles stay out of the previously-covered block, as before.
+    expect(r.prompts[0]).not.toContain('Saved today');
+    expect(r.prompts[0]).not.toContain('Held today');
+  });
+
+  it('offers a main-eligible candidate even when comparison-only ones fill the cap (fix round 1, B5)', () => {
+    const cap = executorModule.POOL_PROMPT_MAX_CANDIDATES as number;
+    const comparison = Array.from({ length: cap }, (_v, n) => candidate(`cmp${n}`, { numbersVerified: false }));
+    const pool = { version: 1, candidates: [...comparison, candidate('main1')] };
+    const r = run([memo('main1'), draft], { pool });
+    expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: '' });
+    const poolBlock = poolBlockOf(r.prompts[0]);
+    expect(poolBlock).toContain(url('main1'));
+    expect(r.events('pool_offered')).toEqual([expect.objectContaining({ counts: expect.objectContaining({ unused: cap + 1, offered: cap, mainEligible: 1 }) })]);
+    expect(r.events('pool_selection')).toEqual([expect.objectContaining({ mode: 'pool', candidateId: 'main1' })]);
+  });
+
+  it('keeps file order and fills the rest with comparison-only candidates (fix round 1, B5)', () => {
+    const cands = [
+      { id: 'a', mainAllowed: false, status: 'unused', url: url('a') },
+      { id: 'b', mainAllowed: true, status: 'unused', url: url('b') },
+      { id: 'c', mainAllowed: false, status: 'unused', url: url('c') },
+    ];
+    const sel = executorModule.selectPoolCandidates(cands, new Set(), new Set());
+    expect(sel.offered.map((c: { id: string }) => c.id)).toEqual(['a', 'b', 'c']);
+    expect(sel.counts).toEqual(expect.objectContaining({ offered: 3, mainEligible: 1 }));
+  });
+
   it('falls back with reason exhausted when the records used every unused candidate', () => {
     const r = run([memo('fresh'), draft], {
       pool: { version: 1, candidates: [candidate('u1')] },
@@ -282,7 +330,34 @@ describe('v68 main-study fingerprint (brief 3)', () => {
     expect(r.prompts[1]).toContain('The last answer could not be used: question: missing.');
     expect(r.prompts[1]).toContain('主研究: Study fresh');
     expect(r.prompts[2]).toContain(writeInstruction);
+    // The writer gets the corrected fingerprint in the research notes (B3).
+    expect(r.prompts[2]).toContain('question: effect');
     expect(noteOf(r.drafts[0]) || '').not.toContain('主研究の指紋');
+  });
+
+  it('hands the writer the corrected fingerprint, not the out-of-list one (fix round 1, B3)', () => {
+    const bad = ['population: aliens', ...FP_LINES.slice(1)];
+    const r = run([memo('fresh', bad), FP_LINES.join('\n'), draft], { entry: { pool: false } });
+    expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true }));
+    const write = r.prompts[2];
+    expect(write).toContain(writeInstruction);
+    expect(write).not.toContain('population: aliens');
+    for (const line of FP_LINES) expect(write).toContain(line);
+    expect(write).toContain('主研究: Study fresh');
+    expect(executorModule.parseFingerprint(write, LISTS).ok).toBe(true);
+  });
+
+  it('still asks once more with less than 12 minutes left (fix round 1, B4)', () => {
+    const r = run([memo('fresh', FP_LINES.slice(0, 4)), FP_LINES.join('\n'), draft], { entry: { pool: false } }, { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(10 * 60_000) });
+    expect(r.events('research_fingerprint_retry')).toHaveLength(1);
+    expect(r.events('research_fingerprint_failed')).toEqual([]);
+    expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true }));
+  });
+
+  it('holds without asking only when less time is left than the re-output needs (fix round 1, B4)', () => {
+    const r = run([memo('fresh', FP_LINES.slice(0, 4)), draft], { entry: { pool: false } }, { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(100_000) });
+    expect(r.events('research_fingerprint_retry')).toEqual([]);
+    expect(r.events('research_fingerprint_failed')).toEqual([expect.objectContaining({ reason: 'time' })]);
   });
 
   it('holds the draft with the reason when the re-output is still invalid', () => {
@@ -362,11 +437,24 @@ describe('v68 pure helpers', () => {
     expect(executorModule.normalizeFingerprintConfig({ ...LISTS, outcome: [' a'] })).toBeNull();
   });
 
-  it('parses fingerprint lines with markup and full-width colons', () => {
-    const text = ['- **population**：pupils', '* intervention: `auto feedback`', 'outcome: achievement。', 'Direction: positive', 'question = effect'].join('\n');
+  it('parses fingerprint lines with field-name markup and full-width colons', () => {
+    const text = ['- **population**：pupils', '* intervention:  auto feedback ', 'outcome: achievement', 'Direction: positive', 'question = effect'].join('\n');
     expect(executorModule.parseFingerprint(text, LISTS)).toEqual({ ok: true, problems: [], values: {
       population: 'pupils', intervention: 'auto feedback', outcome: 'achievement', direction: 'positive', question: 'effect',
     } });
+  });
+
+  it('matches a value only exactly as configured, never reshaped (fix round 1, B2)', () => {
+    const one = (v: string) => ({ population: [v], intervention: ['i'], outcome: ['o'], direction: ['d'], question: ['q'] });
+    const lines = (v: string) => [`population: ${v}`, 'intervention: i', 'outcome: o', 'direction: d', 'question: q'].join('\n');
+    expect(executorModule.normalizeFingerprintConfig(one('valid.'))).toEqual(one('valid.'));
+    // The gate's reproduction: `valid.` against `valid`, and the reverse.
+    expect(executorModule.parseFingerprint(lines('valid.'), one('valid'))).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    expect(executorModule.parseFingerprint(lines('valid.'), one('valid.'))).toEqual(expect.objectContaining({ ok: true, values: expect.objectContaining({ population: 'valid.' }) }));
+    expect(executorModule.parseFingerprint(lines('valid'), one('valid.'))).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    for (const v of ['`valid`', '**valid**', '"valid"', 'valid。', 'VALID', 'ｖａｌｉｄ']) {
+      expect(executorModule.parseFingerprint(lines(v), one('valid'))).toEqual(expect.objectContaining({ ok: false, problems: ['population: not allowed'] }));
+    }
   });
 
   it('a pool pipeline config is validated by the TS loader too', () => {

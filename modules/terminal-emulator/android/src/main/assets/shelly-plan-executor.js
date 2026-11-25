@@ -5016,7 +5016,9 @@ const FINGERPRINT_MAX_VALUES = 16;
 const FINGERPRINT_VALUE_MAX_CHARS = 40;
 const FINGERPRINT_INVALID_NOTE_PREFIX = '主研究の指紋が不正';
 const FINGERPRINT_REOUTPUT_TIMEOUT_SECONDS = 120;
-const FINGERPRINT_REOUTPUT_RESERVE_MS = 12 * 60 * 1000;
+// The re-output is skipped only when the run cannot fit the request itself
+// (its timeout plus a margin): AC3 asks once before holding (fix round 1, B4).
+const FINGERPRINT_REOUTPUT_RESERVE_MS = (FINGERPRINT_REOUTPUT_TIMEOUT_SECONDS + 30) * 1000;
 const POOL_FILE_NAME = '_pool.json';
 const POOL_FILE_VERSION = 1;
 const POOL_MAX_BYTES = 512 * 1024;
@@ -5083,25 +5085,24 @@ function fingerprintInstructionBlock(lists) {
   ].join('\n');
 }
 
-function cleanFingerprintValue(raw) {
-  return String(raw || '')
-    .replace(/\*\*|__|`/g, '')
-    .replace(/^[\s"'“”「『(（[]+|[\s"'“”」』)）\]。．.、,;；]+$/g, '')
-    .trim();
-}
+// A fingerprint line: optional heading / bullet and field-name markup, the
+// field, `:` / `：` / `=`, then the value. Only the field side is lenient.
+const FINGERPRINT_LINE_RE = /^(?:#{1,6}\s+|[-*+•]\s+)?(?:\*\*|__)?(population|intervention|outcome|direction|question)(?:\*\*|__)?\s*[:：=]\s*(.*)$/i;
 
 /**
  * The fingerprint the text gives: { ok, values, problems } where problems are
- * `<field>: missing` / `<field>: not allowed` / `<field>: conflicting`. Pure.
+ * `<field>: missing` / `<field>: not allowed` / `<field>: conflicting`. A value
+ * counts only when, with its surrounding white space removed, it is exactly
+ * one of the configured values: no markup, punctuation, case or width is
+ * stripped or folded (fix round 1, B2). Pure.
  */
 function parseFingerprint(text, lists) {
   const seen = {};
-  for (const rawLine of nfkc(stripReasoning(String(text || ''))).split(/\r?\n/)) {
-    const line = rawLine.trim().replace(/^(?:#{1,6}\s+|[-*+•]\s+)?(?:\*\*|__)?/, '');
-    const m = /^(population|intervention|outcome|direction|question)(?:\*\*|__)?\s*[:=]\s*(.*)$/i.exec(line);
+  for (const rawLine of stripReasoning(String(text || '')).split(/\r?\n/)) {
+    const m = FINGERPRINT_LINE_RE.exec(rawLine.trim());
     if (!m) continue;
     const field = m[1].toLowerCase();
-    (seen[field] = seen[field] || []).push(cleanFingerprintValue(m[2]));
+    (seen[field] = seen[field] || []).push(m[2].trim());
   }
   const values = {};
   const problems = [];
@@ -5115,7 +5116,7 @@ function parseFingerprint(text, lists) {
       problems.push(`${field}: conflicting`);
       continue;
     }
-    const want = lists[field].find((v) => fingerprintValueKey(v) === fingerprintValueKey(got[0]));
+    const want = lists[field].find((v) => v === got[0]);
     if (!want) {
       problems.push(`${field}: not allowed`);
       continue;
@@ -5123,6 +5124,18 @@ function parseFingerprint(text, lists) {
     values[field] = want;
   }
   return { ok: problems.length === 0, values, problems };
+}
+
+/**
+ * The notes with every fingerprint line removed and the given values appended
+ * as the five lines, so that what later steps read carries the fingerprint
+ * the executor accepted (fix round 1, B3). Pure.
+ */
+function notesWithFingerprint(text, values) {
+  const kept = String(text || '').split(/\r?\n/).filter((line) => !FINGERPRINT_LINE_RE.test(line.trim()));
+  while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
+  const lines = FINGERPRINT_FIELDS.map((field) => `${field}: ${values[field]}`);
+  return kept.length ? `${kept.join('\n')}\n${lines.join('\n')}` : lines.join('\n');
 }
 
 /** The one re-output request: classify the main study of these notes. Pure. */
@@ -5216,7 +5229,7 @@ function parsePool(data, lists) {
  */
 function selectPoolCandidates(candidates, usedIds, historyKeys) {
   const counts = { total: candidates.length, unused: 0, excludedUsed: 0, excludedHistory: 0, offered: 0, mainEligible: 0 };
-  const offered = [];
+  const open = [];
   for (const c of candidates) {
     if (c.status !== 'unused') continue;
     counts.unused += 1;
@@ -5228,10 +5241,15 @@ function selectPoolCandidates(candidates, usedIds, historyKeys) {
       counts.excludedHistory += 1;
       continue;
     }
-    if (offered.length >= POOL_PROMPT_MAX_CANDIDATES) continue;
-    offered.push(c);
-    if (c.mainAllowed) counts.mainEligible += 1;
+    open.push(c);
   }
+  // Candidates usable as the main study take the cap first; comparison-only
+  // ones fill what is left (fix round 1, B5). The offer keeps file order.
+  const main = open.filter((c) => c.mainAllowed).slice(0, POOL_PROMPT_MAX_CANDIDATES);
+  const comparison = open.filter((c) => !c.mainAllowed).slice(0, POOL_PROMPT_MAX_CANDIDATES - main.length);
+  const chosen = new Set(main.concat(comparison));
+  const offered = open.filter((c) => chosen.has(c));
+  counts.mainEligible = main.length;
   counts.offered = offered.length;
   let reason = '';
   if (!candidates.length) reason = 'empty';
@@ -6629,7 +6647,9 @@ function readPreviouslyCoveredHead(file, st, f) {
 }
 
 // v68: with `opts.poolIds` the scan also reads every listed draft's
-// `poolCandidateId` (no cap) and returns them as `poolCandidateIds`.
+// `poolCandidateId` (no cap) and returns them as `poolCandidateIds`. Today's
+// drafts (by filename, or held under today's date) give no title, as before,
+// but their ids still count (fix round 1, B1).
 function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opts) {
   const f = fsImpl || fs;
   const wantIds = !!(opts && opts.poolIds);
@@ -6641,15 +6661,17 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
 
   function listDrafts(dir, root, archiveDate) {
     for (const name of f.readdirSync(dir)) {
-      if (datePrefix.test(name) && name.endsWith('.md') && !name.startsWith(today + '-')) {
-        candidates.push({
-          name,
-          file: path.join(dir, name),
-          root,
-          sortDate: archiveDate ?? name.slice(0, 10),
-          held: archiveDate !== undefined,
-        });
-      }
+      if (!datePrefix.test(name) || !name.endsWith('.md')) continue;
+      const idsOnly = name.startsWith(today + '-') || archiveDate === today;
+      if (idsOnly && !wantIds) continue;
+      candidates.push({
+        name,
+        file: path.join(dir, name),
+        root,
+        sortDate: archiveDate ?? name.slice(0, 10),
+        held: archiveDate !== undefined,
+        idsOnly,
+      });
     }
   }
 
@@ -6668,7 +6690,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
       const realHeld = f.realpathSync(heldDir);
       const folder = path.basename(articleFolderKey(outputDir) || path.resolve(String(outputDir || '')));
       for (const day of f.readdirSync(realHeld)) {
-        if (day === today || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+        if ((day === today && !wantIds) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
         if (!folder || folder === '.') continue;
         try {
           const dateDir = path.join(realHeld, day);
@@ -6695,7 +6717,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
     return Number(b.held) - Number(a.held);
   });
   const titles = new Set();
-  for (const { file, root, held } of candidates) {
+  for (const { file, root, held, idsOnly } of candidates) {
     try {
       // Capture identity before realpath checks for an escaped parent. Compare
       // it after open to catch a later swap, then read from the pinned descriptor.
@@ -6706,6 +6728,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
       if (head === null) continue;
       const fm = parseDraftFrontmatter(head);
       if (wantIds && fm.poolCandidateId) poolIds.add(fm.poolCandidateId);
+      if (idsOnly) continue;
       const title = cleanHistoryTitle(fm.title);
       if (title && titles.size < PREVIOUSLY_COVERED_MAX_TITLES) titles.add(title);
       if (!wantIds && titles.size === PREVIOUSLY_COVERED_MAX_TITLES) break;
@@ -13124,7 +13147,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       }
     }
     poolAudit(i, 'research_fingerprint', { values: fp.values, retried });
-    return outcome;
+    if (!retried) return outcome;
+    // The later steps read these notes: they carry the accepted fingerprint,
+    // not the one that failed (fix round 1, B3).
+    return Object.assign({}, outcome, {
+      research: Object.assign({}, outcome.research, { text: notesWithFingerprint(notes, fp.values) }),
+    });
   }
   // v60: logs/<agentId>/review-full.jsonl (see appendReviewFull).
   const reviewFullFile = path.join(paths.logDir, REVIEW_FULL_FILE);
