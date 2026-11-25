@@ -173,8 +173,10 @@ function readFeedback(home: string): any[] {
 const definitionHash = (planFile: string) => executor.planDefinitionSha256(JSON.parse(fs.readFileSync(planFile, 'utf8')));
 const flagValue = (call: any, flag: string) => (call.argv.indexOf(flag) === -1 ? undefined : call.argv[call.argv.indexOf(flag) + 1]);
 
-// The S5-0 §3 fields, plus `note` (held only).
-const FEEDBACK_KEYS = ['agentId', 'artifacts', 'delivery', 'lastStep', 'note', 'pipelineId', 'planId', 'reason', 'refire', 'runId', 'scheduledAt', 'startedAt', 'terminatedAt'];
+// The S5-0 §3 fields; `note` (the lint messages, nothing else) only on a held
+// line that has lint messages (fix round 1, item 6).
+const FEEDBACK_KEYS = ['agentId', 'artifacts', 'delivery', 'lastStep', 'pipelineId', 'planId', 'reason', 'refire', 'runId', 'scheduledAt', 'startedAt', 'terminatedAt'];
+const FEEDBACK_KEYS_WITH_NOTE = [...FEEDBACK_KEYS, 'note'].sort();
 
 describe('the definition hash and the opt-in state', () => {
   const plan = { kind: 'k', agent: { id: 'a' }, steps: { list: [{ instruction: 'x' }] }, generatedAt: 1 };
@@ -324,8 +326,8 @@ describe('a run with the Codex web-search research step (v68)', () => {
       refire: { eligible: false, refired: false, refireRunId: null },
     });
     expect(line.planId).toMatch(new RegExp(`^plan-agent-${AGENT_ID}@[0-9a-f]{12}$`));
-    expect(line.note[0]).toBe('web-search-refused');
-    expect(line.note.every((n: unknown) => typeof n === 'string')).toBe(true);
+    // No lint, no note (item 6): the reason is in the audit.
+    expect(line.note).toBeUndefined();
     expect(typeof line.runId).toBe('string');
     expect(Date.parse(line.startedAt)).toBeLessThanOrEqual(Date.parse(line.terminatedAt));
     expect(typeof line.lastStep.startedAt).toBe('string');
@@ -398,7 +400,7 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(audit.some((e) => e.event === 'sourcing_no_sources')).toBe(false);
     const [line] = readFeedback(home);
     expect(line).toMatchObject({ reason: 'held', lastStep: { index: 0, kind: 'research' }, artifacts: { draft: false, paths: [] } });
-    expect(line.note).toEqual(['no-web-sources']);
+    expect(line.note).toBeUndefined();
     expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
   }, 60000);
 
@@ -410,8 +412,10 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(readCalls(recordDir)).toHaveLength(1);
     expect(readRunLog(home).outputPreview).toMatch(/^Held \(web-search-stopped\): /);
     const [line] = readFeedback(home);
-    expect(line.note[0]).toBe('web-search-stopped');
-    expect(line.note[1]).toContain('Web search limit reached');
+    // Item 6: the driver's line is the audit's detail, never the note.
+    expect(line.note).toBeUndefined();
+    expect(readAudit(home).find((e) => e.event === 'article_held')).toMatchObject({ reason: 'web-search-stopped' });
+    expect(readAudit(home).find((e) => e.event === 'article_held').detail).toContain('Web search limit reached');
   }, 60000);
 
   /** An attended run's .env: the global default asks for the tap, and the wait is 1 s. */
@@ -471,10 +475,10 @@ describe('a run with the Codex web-search research step (v68)', () => {
       artifacts: { draft: true, paths: [path.join(heldDir, name)] },
       delivery: { delivered: false, channel: 'draft' },
     });
-    expect(line.note[0]).toBe('approval-timeout');
-    expect(line.note[1]).toBe('draft action approval timed out');
+    // Item 6: no lint, no note; the approval error is the audit's detail.
+    expect(line.note).toBeUndefined();
     const audit = readAudit(home);
-    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', draftKept: true });
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', draftKept: true, detail: 'draft action approval timed out' });
     expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
   }, 60000);
 
@@ -503,7 +507,7 @@ describe('a run with the Codex web-search research step (v68)', () => {
     const lines = readFeedback(home);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ reason: 'held', pipelineId: 'example-a', lastStep: { kind: 'assemble' }, artifacts: { draft: true, paths: [path.join(heldDir, name)] } });
-    expect(lines[0].note).toContain(`${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`);
+    expect(lines[0].note).toEqual([`${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`]);
     const audit = readAudit(home);
     expect(audit.find((e) => e.event === 'article_self_talk_cut')).toMatchObject({ cut: 1, beforeCutKept: true });
     expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'text-lint', draftKept: true });
@@ -544,7 +548,7 @@ describe('a run with the Codex web-search research step (v68)', () => {
     const lines = readFeedback(home);
     expect(lines).toHaveLength(1);
     const [line] = lines;
-    expect(Object.keys(line).sort()).toEqual(FEEDBACK_KEYS);
+    expect(Object.keys(line).sort()).toEqual(FEEDBACK_KEYS_WITH_NOTE);
     expect(line).toMatchObject({
       reason: 'held',
       pipelineId: 'example-a',
@@ -553,7 +557,8 @@ describe('a run with the Codex web-search research step (v68)', () => {
       delivery: { delivered: false, channel: 'draft' },
       refire: { eligible: false, refired: false, refireRunId: null },
     });
-    expect(line.note).toEqual(['text-lint', `${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`]);
+    // Item 6: the lint messages only, no reason string.
+    expect(line.note).toEqual([`${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`]);
     const audit = readAudit(home);
     expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'text-lint', draftKept: true });
     expect(audit.filter((e) => e.kind === 'plan.recovery').map((e) => e.event)).toEqual(['recovery_feedback', 'recovery_feedback_shared']);

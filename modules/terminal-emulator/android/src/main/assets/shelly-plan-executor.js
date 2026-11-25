@@ -6283,8 +6283,10 @@ function webSearchStartRefusal(opts) {
 //                        the draft's save approval did not come
 // The first three land before the write step (no draft). An MCP-ingress run
 // writes no held file (its writes are refused); its line still goes out.
-// The JSONL line is the S5-0 §3 shape with reason "held" and, only here, `note`
-// (strings: the held reason first, then the lint messages for text-lint). Its
+// The JSONL line is the S5-0 §3 shape with reason "held" and, only on a held
+// line with lint messages (text-lint), `note`: the lint messages and nothing
+// else (fix round 1, item 6). The held reason and any sub-reason (a driver
+// line, the approval's own outcome) are in the article_held audit line. Its
 // content goes to the audit first (`recovery_feedback`, kind plan.recovery),
 // then the shared line, then `recovery_feedback_shared`, the order
 // scripts/shelly-run-recovery.js (S5) backfills from.
@@ -6399,10 +6401,15 @@ function articleHeldPipelineId(home, plan) {
   }
 }
 
-/** The note strings of a held line: printable, capped, the reason first. Pure. */
-function articleHeldNote(reason, extra) {
+/**
+ * The note of a held line: the lint messages only (printable, capped, no
+ * duplicates). Fix round 1 (item 6, note contract): never the held reason,
+ * an approval error or a search-refusal detail; those stay in the audit
+ * (article_held `detail`). Pure.
+ */
+function articleHeldNote(lint) {
   const out = [];
-  for (const raw of [reason].concat(Array.isArray(extra) ? extra : [])) {
+  for (const raw of Array.isArray(lint) ? lint : []) {
     if (typeof raw !== 'string') continue;
     const line = recoveryFeedbackLines(raw).join(' ').slice(0, ARTICLE_HELD_NOTE_MAX_CHARS);
     if (line && out.indexOf(line) === -1) out.push(line);
@@ -6439,8 +6446,11 @@ function recordArticleHeldFeedback(paths, plan, landing, startedAt) {
       artifacts: { draft: !!landing.heldPath, paths: landing.heldPath ? [landing.heldPath] : [] },
       delivery: { delivered: false, channel: String((plan.action && plan.action.type) || 'unknown').slice(0, 40) },
       refire: { eligible: false, refired: false, refireRunId: null },
-      note: articleHeldNote(landing.reason, landing.note),
     };
+    // Fix round 1 (item 6): `note` only on a held line that has lint messages
+    // (text-lint); none at all otherwise.
+    const note = landing.reason === 'text-lint' ? articleHeldNote(landing.note) : [];
+    if (note.length) feedback.note = note;
     appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.recovery', event: 'recovery_feedback', feedback });
     if (appendHomeJsonlLine(paths.home, RECOVERY_FEEDBACK_JSONL_FILE, feedback)) {
       appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.recovery', event: 'recovery_feedback_shared', agentId: plan.agent.id, runId, reason: 'held' });
@@ -6471,6 +6481,10 @@ function landArticleHeld(paths, plan, config, landing, startedAt) {
       reason,
       stepIndex: Number.isInteger(landing.stepIndex) ? landing.stepIndex : null,
       draftKept: !!heldPath,
+      // Fix round 1 (item 6): the sub-reason (a search stop's driver line, an
+      // approval's own outcome) lives here, never in the feedback note.
+      ...(typeof landing.detail === 'string' && landing.detail ? { detail: redact(landing.detail).slice(0, ARTICLE_HELD_NOTE_MAX_CHARS) } : {}),
+      ...(typeof landing.approval === 'string' && landing.approval ? { approval: landing.approval } : {}),
     }, landing.text && !heldPath ? { heldWriteFailed: !ingressTainted(), ...(ingressTainted() ? { ingress: true } : {}) } : {}));
   } catch (_) {}
   recordArticleHeldFeedback(paths, plan, full, startedAt);
@@ -14781,7 +14795,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // ticked since the work is kept, and the run lands held.
       if (!(isFinal && articleHeldRun && error instanceof ActionApprovalNotGranted && step.local !== undefined)) throw error;
       dispatchedFinal = true;
-      heldLanding = { reason: error.reason, note: [redact(error.message)], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
+      heldLanding = { reason: error.reason, note: [], detail: redact(error.message), stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
       heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
       if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
       return {
@@ -15348,7 +15362,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         if (publish) absorbOutcome(outcome);
         records.push(outcome.record);
         if (outcome.heldReason && !heldLanding) {
-          heldLanding = { reason: outcome.heldReason, note: outcome.heldDetail ? [outcome.heldDetail] : [], stepIndex: i + offset, stepStartedAt: stepStartedAtMs.get(i + offset) || null };
+          heldLanding = { reason: outcome.heldReason, note: [], detail: outcome.heldDetail || '', stepIndex: i + offset, stepStartedAt: stepStartedAtMs.get(i + offset) || null };
           break;
         }
         if (outcome.abortRun) {
@@ -15407,7 +15421,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (outcome.research && !outcome.failed) await runSourceTexts(i);
     records.push(outcome.record);
     if (outcome.heldReason) {
-      heldLanding = { reason: outcome.heldReason, note: outcome.heldDetail ? [outcome.heldDetail] : [], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null };
+      heldLanding = { reason: outcome.heldReason, note: [], detail: outcome.heldDetail || '', stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null };
       break;
     }
     if (outcome.abortRun) {
