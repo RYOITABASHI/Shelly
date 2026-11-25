@@ -158,6 +158,25 @@ class ManagedServicesTest {
         assertEquals(ManagedServices.State.STOPPED, ManagedServices.decide(delivery, null, null, null, now).state)
     }
 
+    @Test
+    fun decideTreatsAResolvedHealthCheckLikeAHeartbeat() {
+        // A resolved council-facade Spec (REGISTRY's own entry stays launch=null;
+        // this is the shape ManagedServiceSupervisor builds from the on-device file).
+        val resolved = facade.copy(
+            launch = launch.copy(script = "council-spike/dist/http/server.js", workDir = "council-spike"),
+            health = ManagedServices.HealthCheck(port = 8790, timeoutMs = 1_500L, staleMs = 60_000L),
+        )
+        val live = ManagedServices.Live(4242, now - 10_000, supervised = true)
+        // status() synthesizes the Beat from the poll result (pid = the live
+        // pid, at = now) instead of reading a file; decide() treats it the same.
+        val healthyBeat = ManagedServices.Beat(4242, now)
+        assertEquals(ManagedServices.State.RUNNING, ManagedServices.decide(resolved, live, null, healthyBeat, now).state)
+        // Still within one health staleMs of its own start: starting, not unhealthy.
+        assertEquals(ManagedServices.State.STARTING, ManagedServices.decide(resolved, live, null, null, now).state)
+        assertEquals(ManagedServices.State.UNHEALTHY,
+            ManagedServices.decide(resolved, live.copy(startedAt = now - 61_000), null, null, now).state)
+    }
+
     private fun tempDir(): java.io.File = java.nio.file.Files.createTempDirectory("svc-test").toFile()
 
     /** Symlink creation needs a privilege on some Windows setups: skip those cases there. */
@@ -268,5 +287,70 @@ class ManagedServicesTest {
         // Extra fields (a path, a command) are refused.
         assertNull(IngressAuditWriter.buildServiceControlLineFromJson(now,
             """{"kind":"mcp_service_control","event":"mcp_service_control","principal":"$p","action":"start","serviceId":"article-delivery","code":"x","path":"/sdcard"}"""))
+    }
+
+    @Test
+    fun recordCarriesOnlyTheFacadeScriptShape() {
+        val r = ManagedServices.Record(6293, "123", 1_000L, script = "council-spike/dist/http/server.js")
+        assertEquals(r, ManagedServices.parseRecord(ManagedServices.encodeRecord(r)))
+        // A record without script (article-delivery) round-trips without one.
+        val plain = ManagedServices.Record(6293, "123", 1_000L)
+        assertFalse(JSONObject(ManagedServices.encodeRecord(plain)).has("script"))
+        // Any other script value is dropped, never the record itself.
+        for (bad in listOf("../x/dist/http/server.js", "a/b/dist/http/server.js", "x/dist/other.js", "/abs/dist/http/server.js")) {
+            val parsed = ManagedServices.parseRecord("""{"v":1,"pid":6293,"startTime":"123","startedAt":1000,"script":"$bad"}""")
+            assertNotNull(parsed)
+            assertNull(parsed!!.script)
+            assertFalse(JSONObject(ManagedServices.encodeRecord(r.copy(script = bad))).has("script"))
+        }
+    }
+
+    private fun http(head: String, body: String): ByteArray = (head + "\r\n\r\n" + body).toByteArray(Charsets.UTF_8)
+
+    @Test
+    fun healthResponseOkAcceptsOnlyA200WithTheBooleanTrue() {
+        assertTrue(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK\r\nContent-Type: application/json", """{"ok":true,"v":1}""")))
+        assertTrue(ManagedServices.healthResponseOk(http("HTTP/1.0 200 OK\r\nContent-Length: 11", """{"ok":true}""")))
+        // The string "true", false, missing, not an object, not JSON.
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", """{"ok":"true"}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", """{"ok":false}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", """{"status":"ok"}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", "true")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", "<html>")))
+        // Any other status, a redirect, a chunked body, no header terminator.
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 503 Service Unavailable", """{"ok":true}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 302 Found\r\nLocation: http://evil/", """{"ok":true}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked", "b\r\n{\"ok\":true}\r\n0")))
+        assertFalse(ManagedServices.healthResponseOk("HTTP/1.1 200 OK\r\n{\"ok\":true}".toByteArray()))
+        // Content-Length beyond what arrived, duplicated, or malformed.
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK\r\nContent-Length: 50", """{"ok":true}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nContent-Length: 11", """{"ok":true}""")))
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK\r\nContent-Length: -1", """{"ok":true}""")))
+        // Size caps: the body, and the whole response.
+        val padded = """{"ok":true,"pad":"${"x".repeat(ManagedServices.HEALTH_MAX_BODY)}"}"""
+        assertFalse(ManagedServices.healthResponseOk(http("HTTP/1.1 200 OK", padded)))
+        assertFalse(ManagedServices.healthResponseOk(ByteArray(ManagedServices.HEALTH_MAX_RESPONSE + 1)))
+    }
+
+    @Test
+    fun serviceControlSpecAuditLineIsClosed() {
+        val digest = "a".repeat(64)
+        val line = IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", digest)
+        assertNotNull(line)
+        val o = JSONObject(line!!)
+        assertEquals("mcp_service_control_spec", o.getString("kind"))
+        assertEquals("mcp_service_control_spec", o.getString("event"))
+        assertEquals("council-facade", o.getString("serviceId"))
+        assertTrue(o.getBoolean("ok"))
+        assertEquals("ok", o.getString("reason"))
+        assertEquals(digest, o.getString("digest"))
+        // A refused reading carries no digest; an "ok" one must have one.
+        val refused = IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", false, "bad_json", null)
+        assertNotNull(refused)
+        assertFalse(JSONObject(refused!!).has("digest"))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", null))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "ok", "not-hex"))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "other", true, "ok", digest))
+        assertNull(IngressAuditWriter.buildServiceControlSpecLine(now, "council-facade", true, "Not Lowercase!", digest))
     }
 }

@@ -177,8 +177,15 @@ export function serviceControlRuleTarget(args: ServiceControlArgs): string {
  * moment the derivation changes, and the dialog comes back (fail closed).
  * Bump this when what a service id runs changes in a way a rule must not
  * survive (e.g. when council-facade gets its launch spec wired).
+ *
+ * v2 (2026-11-25): council-facade's launch spec is now wired
+ * (ManagedServiceSupervisor.resolveFacadeSpec, from the on-device
+ * launch-spec.json) — any "always allow start/stop/status council-facade"
+ * rule saved under v1 (when it always answered not_configured) stops
+ * matching here, so the dialog comes back once before it can authorize an
+ * actual process start/stop under the newly-wired spec.
  */
-export const SERVICE_CONTROL_BIND_DOMAIN = 'shelly-service-control-bind-v1:';
+export const SERVICE_CONTROL_BIND_DOMAIN = 'shelly-service-control-bind-v2:';
 
 /** sha256 hex of `SERVICE_CONTROL_BIND_DOMAIN + target` (64 lowercase hex). */
 export async function serviceControlRuleBind(
