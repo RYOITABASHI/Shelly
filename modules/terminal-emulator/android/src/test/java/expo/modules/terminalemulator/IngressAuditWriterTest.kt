@@ -259,4 +259,74 @@ class IngressAuditWriterTest {
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json(*base, "ts" to "1999")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, "not json"))
     }
+
+    // ── Launcher ingress lines (C2, A2, D1 audit) ──────────────────────────
+
+    private val lp = "launcher:$p"
+    private val sid = "ls_" + "c".repeat(32)
+    private fun launcher(kind: String = "launcher_submit_pending", code: String = "pending") = IngressAuditWriter.LauncherLine(
+        kind = kind, event = IngressAuditWriter.LAUNCHER_EVENT_SUBMIT, code = code, principal = lp,
+        certDigest = committedSha256, schemaVersion = 1, submissionId = sid, correlationRef = "task:42/a.b-c",
+        tainted = true, exemptApplied = false, textSha256 = previousSha256, textCodePoints = 12,
+    )
+
+    @Test
+    fun buildsTheFixedLauncherLineWithoutText() {
+        val o = JSONObject(IngressAuditWriter.buildLauncherLine(ts, launcher())!!)
+        assertEquals("launcher_submit_pending", o.getString("kind"))
+        assertEquals("launcher_submit_instruction", o.getString("event"))
+        assertEquals("launcher", o.getString("origin"))
+        assertEquals("submit_instruction", o.getString("op"))
+        assertEquals(lp, o.getString("principal"))
+        assertEquals(committedSha256, o.getString("certDigest"))
+        assertEquals(1, o.getInt("schemaVersion"))
+        assertEquals(sid, o.getString("submissionId"))
+        assertEquals("task:42/a.b-c", o.getString("correlationRef"))
+        assertEquals(true, o.getBoolean("tainted"))
+        assertEquals(false, o.getBoolean("exemptApplied"))
+        assertEquals(previousSha256, o.getString("textSha256"))
+        assertEquals(12, o.getInt("textCodePoints"))
+        assertEquals("2024-11-15T05:53:20.000Z", o.getString("ts"))
+        val keys = HashSet<String>()
+        o.keys().forEach { keys.add(it) }
+        assertEquals(
+            setOf("ts", "kind", "event", "origin", "code", "principal", "certDigest", "op", "schemaVersion", "submissionId",
+                "correlationRef", "tainted", "exemptApplied", "textSha256", "textCodePoints"),
+            keys,
+        )
+    }
+
+    @Test
+    fun everyLauncherSubmitKindIsWritable() {
+        for (k in IngressAuditWriter.LAUNCHER_KINDS - "launcher_feed_read") assertNotNull(k, IngressAuditWriter.buildLauncherLine(ts, launcher(kind = k)))
+        // A denied verification line: only the check that failed, no principal.
+        val denied = IngressAuditWriter.LauncherLine(kind = "launcher_submit_denied", event = IngressAuditWriter.LAUNCHER_EVENT_SUBMIT, code = "verify_signature")
+        assertEquals("verify_signature", JSONObject(IngressAuditWriter.buildLauncherLine(ts, denied)!!).getString("code"))
+    }
+
+    @Test
+    fun refusesOffShapeLauncherFields() {
+        val bad = listOf(
+            launcher(kind = "launcher_submit_whatever"),
+            launcher(code = "Has Spaces"),
+            launcher().copy(event = "mcp_run_agent"),
+            launcher().copy(principal = p), // an MCP principal is not a launcher principal
+            launcher().copy(submissionId = "mr_" + "c".repeat(32)),
+            launcher().copy(correlationRef = "free text with spaces"),
+            launcher().copy(correlationRef = "x".repeat(257)),
+            launcher().copy(textSha256 = "nothex"),
+            launcher().copy(textCodePoints = LauncherIngressLimits.MAX_TEXT_CODE_POINTS + 1),
+            launcher().copy(feedBytes = 10),
+            IngressAuditWriter.LauncherLine(kind = "launcher_feed_read", event = IngressAuditWriter.LAUNCHER_EVENT_SUBMIT, code = "ok"),
+            IngressAuditWriter.LauncherLine(kind = "launcher_feed_read", event = IngressAuditWriter.LAUNCHER_EVENT_FEED, code = "ok", submissionId = sid),
+        )
+        for (l in bad) assertNull(l.toString(), IngressAuditWriter.buildLauncherLine(ts, l))
+        val feed = IngressAuditWriter.LauncherLine(
+            kind = "launcher_feed_read", event = IngressAuditWriter.LAUNCHER_EVENT_FEED, code = "ok", principal = lp,
+            certDigest = committedSha256, feedSha256 = previousSha256, feedBytes = 20_000,
+        )
+        val o = JSONObject(IngressAuditWriter.buildLauncherLine(ts, feed)!!)
+        assertFalse(o.has("op"))
+        assertEquals(20_000, o.getInt("feedBytes"))
+    }
 }

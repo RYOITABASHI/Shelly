@@ -303,6 +303,95 @@ object IngressAuditWriter {
         null
     }
 
+    // ---- Launcher ingress lines (LauncherIngressProvider; pure) ---------------------
+
+    /**
+     * Kinds the launcher ingress writes (fact sheet §3 C2, A2, D1 audit). Every
+     * submission outcome is a line: accepted (approved at once), pending,
+     * denied (any reason, with a short code: a VERIFY_FAILED line carries which
+     * check failed, the caller never learns it), and the later approval
+     * outcomes. `launcher_feed_read` is the light read line for get_stream_feed.
+     */
+    val LAUNCHER_KINDS: Set<String> = setOf(
+        "launcher_submit_accepted", "launcher_submit_pending", "launcher_submit_denied",
+        "launcher_submit_approved", "launcher_submit_user_denied", "launcher_submit_expired",
+        "launcher_feed_read",
+    )
+    const val LAUNCHER_EVENT_SUBMIT = "launcher_submit_instruction"
+    const val LAUNCHER_EVENT_FEED = "launcher_get_stream_feed"
+    private val LAUNCHER_PRINCIPAL_RE = Regex("^launcher:[0-9a-f]{32}$")
+    private val SUBMISSION_ID_RE = Regex("^ls_[0-9a-f]{32}$")
+    /** Fact sheet §8 R5: opaque, but no free text can ride on it. */
+    val CORRELATION_REF_RE = Regex("^[A-Za-z0-9._:/-]{1,256}$")
+
+    /**
+     * One launcher line's fields. Fixed shapes only; the instruction text, the
+     * feed body and anything the caller sent besides these are never written.
+     */
+    data class LauncherLine(
+        val kind: String,
+        val event: String,
+        val code: String,
+        val principal: String? = null,
+        /** SHA-256 (lower hex) of the caller certificate that verified. */
+        val certDigest: String? = null,
+        val schemaVersion: Int? = null,
+        val submissionId: String? = null,
+        val correlationRef: String? = null,
+        val tainted: Boolean? = null,
+        val exemptApplied: Boolean? = null,
+        val textSha256: String? = null,
+        val textCodePoints: Int? = null,
+        val duplicate: Boolean? = null,
+        val feedSha256: String? = null,
+        val feedBytes: Int? = null,
+    )
+
+    /** Null when any field is off. `origin` is always `launcher`; the ts is this side's clock. */
+    fun buildLauncherLine(ts: Long, l: LauncherLine): String? {
+        if (l.kind !in LAUNCHER_KINDS) return null
+        val feed = l.kind == "launcher_feed_read"
+        if (l.event != (if (feed) LAUNCHER_EVENT_FEED else LAUNCHER_EVENT_SUBMIT)) return null
+        if (!CODE_RE.matches(l.code)) return null
+        if (l.principal != null && !LAUNCHER_PRINCIPAL_RE.matches(l.principal)) return null
+        if (l.certDigest != null && !SHA256_RE.matches(l.certDigest)) return null
+        if (l.schemaVersion != null && l.schemaVersion !in 1..99) return null
+        if (l.submissionId != null && !SUBMISSION_ID_RE.matches(l.submissionId)) return null
+        if (l.correlationRef != null && !CORRELATION_REF_RE.matches(l.correlationRef)) return null
+        if (l.textSha256 != null && !SHA256_RE.matches(l.textSha256)) return null
+        if (l.textCodePoints != null && l.textCodePoints !in 0..LauncherIngressLimits.MAX_TEXT_CODE_POINTS) return null
+        if (l.feedSha256 != null && !SHA256_RE.matches(l.feedSha256)) return null
+        if (l.feedBytes != null && l.feedBytes !in 0..LauncherIngressLimits.MAX_FEED_BYTES) return null
+        if (feed && (l.submissionId != null || l.textSha256 != null || l.textCodePoints != null || l.exemptApplied != null)) return null
+        if (!feed && (l.feedSha256 != null || l.feedBytes != null)) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", l.kind).put("event", l.event)
+                .put("origin", IngressOrigin.LAUNCHER).put("code", l.code)
+            if (l.principal != null) out.put("principal", l.principal)
+            if (l.certDigest != null) out.put("certDigest", l.certDigest)
+            if (!feed) out.put("op", IngressDecision.OP_SUBMIT_INSTRUCTION)
+            if (l.schemaVersion != null) out.put("schemaVersion", l.schemaVersion)
+            if (l.submissionId != null) out.put("submissionId", l.submissionId)
+            if (l.correlationRef != null) out.put("correlationRef", l.correlationRef)
+            if (l.tainted != null) out.put("tainted", l.tainted)
+            if (l.exemptApplied != null) out.put("exemptApplied", l.exemptApplied)
+            if (l.textSha256 != null) out.put("textSha256", l.textSha256)
+            if (l.textCodePoints != null) out.put("textCodePoints", l.textCodePoints)
+            if (l.duplicate != null) out.put("duplicate", l.duplicate)
+            if (l.feedSha256 != null) out.put("feedSha256", l.feedSha256)
+            if (l.feedBytes != null) out.put("feedBytes", l.feedBytes)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildLauncherLine] line to `audits/mcp-ingress-audit.jsonl`. False when invalid or not written. */
+    fun appendLauncherLine(context: Context, l: LauncherLine): Boolean {
+        val line = buildLauncherLine(System.currentTimeMillis(), l) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
     // ---- Writer --------------------------------------------------------------------
 
     /**
