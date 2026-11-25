@@ -566,6 +566,70 @@ describe('Codex text-only turn', () => {
       expect(`${r.stdout}${r.stderr}`).toMatch(/--web-search/);
     }, 60_000);
 
+    describe('per-turn caps', () => {
+      const searchN = (i: number, query: string) => ({
+        method: 'item/completed',
+        params: { threadId: 'th1', turnId: 't1', item: { type: 'webSearch', id: `ws${i}`, query, action: { type: 'search', query } } },
+      });
+      const auditAll = (audit: string, kind: string) => audit.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e: any) => e && (e.kind === kind || e.event === kind || e.type === kind));
+
+      it.each([
+        ['--web-search-max-queries without --web-search', ['--text-only', '--web-search-max-queries', '3'], /--web-search-max-queries needs --web-search/],
+        ['--web-search-max-query-chars without --web-search', ['--text-only', '--web-search-max-query-chars', '100'], /--web-search-max-query-chars needs --web-search/],
+        ['max-queries 0', ['--text-only', '--web-search', '--web-search-max-queries', '0'], /invalid --web-search-max-queries/],
+        ['max-queries 51', ['--text-only', '--web-search', '--web-search-max-queries', '51'], /invalid --web-search-max-queries/],
+        ['max-queries 1.5', ['--text-only', '--web-search', '--web-search-max-queries', '1.5'], /invalid --web-search-max-queries/],
+        ['max-query-chars 15', ['--text-only', '--web-search', '--web-search-max-query-chars', '15'], /invalid --web-search-max-query-chars/],
+        ['max-query-chars 401', ['--text-only', '--web-search', '--web-search-max-query-chars', '401'], /invalid --web-search-max-query-chars/],
+        ['max-query-chars abc', ['--text-only', '--web-search', '--web-search-max-query-chars', 'abc'], /invalid --web-search-max-query-chars/],
+      ])('flag validation: %s', (_name, args, re) => {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-caps-'));
+        const r = childProcess.spawnSync(process.execPath, [driverPath, ...args, '--cwd', tmp, '--prompt', 'x', '--codex-bin', process.execPath, '--policy-json', '{}'], {
+          encoding: 'utf8',
+          timeout: 30000,
+          env: { ...process.env, HOME: tmp, CODEX_HOME: tmp },
+        });
+        fs.rmSync(tmp, { recursive: true, force: true });
+        expect(r.status).not.toBe(0);
+        expect(`${r.stdout}${r.stderr}`).toMatch(re);
+      }, 60_000);
+
+      it('the count cap stops the turn on search N+1 and every query is audited', () => {
+        const r = run([searchN(1, 'first query'), searchN(2, 'second query'), searchN(3, 'third query')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(r.out).toContain('Web search limit reached (2 searches); stopped.');
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'count', count: 3, max: 2 });
+        expect(auditAll(r.audit, 'codex_web_search').map((e: any) => e.query)).toEqual(['first query', 'second query', 'third query']);
+      }, 60_000);
+
+      it('searches within the count cap pass', () => {
+        const r = run([searchN(1, 'a'), searchN(2, 'b')], {}, { extra: ['--web-search', '--web-search-max-queries', '2'] });
+        expect(r.status).toBe(0);
+        expect(auditKinds(r.audit)).not.toContain('codex_web_search_limit');
+      }, 60_000);
+
+      it('the length cap stops a longer query, and a query under the cap is audited in full past 120 chars', () => {
+        const longOk = 'x'.repeat(300);
+        const ok = run([searchN(1, longOk)], {}, { extra: ['--web-search', '--web-search-max-query-chars', '400'] });
+        expect(ok.status).toBe(0);
+        expect(auditOf(ok.audit, 'codex_web_search').query).toBe(longOk);
+        const tooLong = 'y'.repeat(41);
+        const r = run([searchN(1, tooLong)], {}, { extra: ['--web-search', '--web-search-max-query-chars', '40'] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(r.out).toContain('Web search query over 40 characters; stopped.');
+        expect(auditOf(r.audit, 'codex_web_search_limit')).toMatchObject({ limit: 'length', chars: 41, max: 40 });
+        expect(auditOf(r.audit, 'codex_web_search').query).toBe(tooLong);
+      }, 120_000);
+
+      it('without the caps a long query is cut at 120 characters as before', () => {
+        const r = run([searchN(1, 'z'.repeat(300))], {}, { extra: ['--web-search'] });
+        expect(r.status).toBe(0);
+        expect(auditOf(r.audit, 'codex_web_search').query).toBe('z'.repeat(120));
+      }, 60_000);
+    });
+
     it('the helpers say the same', () => {
       expect(driver.codexTextOnlyWebSearchMode(true)).toBe('indexed');
       expect(driver.codexTextOnlyWebSearchMode(false)).toBe('disabled');

@@ -112,6 +112,11 @@ Options:
                              are the only items allowed besides text; each completed search is
                              audited (codex_web_search) and one carrying a secret stops the turn.
                              For the research step of an article pipeline (executor v58).
+  --web-search-max-queries <n>   (with --web-search) Stop the turn when more than n (1-50) searches
+                             complete (audit codex_web_search_limit, limit "count").
+  --web-search-max-query-chars <n>  (with --web-search) Stop the turn when a search query is longer
+                             than n (16-400) characters (limit "length"); the codex_web_search
+                             audit then keeps the query (redacted) up to max(120, n) characters.
   --text-only-model <name>   Model for a --text-only or --image-only turn. Required for Codex unless the
                              real config.toml names one.
   --image-only               (codex) A text-only turn whose one tool is image generation: no shell, no
@@ -258,6 +263,10 @@ function parseArgs(argv) {
       args.textOnlyModel = next();
     } else if (arg === '--web-search') {
       args.webSearch = true;
+    } else if (arg === '--web-search-max-queries') {
+      args.webSearchMaxQueries = next();
+    } else if (arg === '--web-search-max-query-chars') {
+      args.webSearchMaxQueryChars = next();
     } else if (arg === '--image-only') {
       args.imageOnly = true;
     } else if (arg === '--image-style') {
@@ -833,6 +842,16 @@ function ensureConfig(args) {
     // A tainted run sends nothing off the device on the model's say-so (MCP ingress taint Inc 5).
     if (args.tainted) throw new Error('--web-search is refused on a tainted run');
   }
+  const webSearchCap = (value, flag, min, max) => {
+    if (value === undefined) return null;
+    if (!args.webSearch) throw new Error(`${flag} needs --web-search`);
+    if (typeof value !== 'string' || !/^[0-9]{1,4}$/.test(value)) throw new Error(`invalid ${flag}`);
+    const n = Number(value);
+    if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error(`invalid ${flag}`);
+    return n;
+  };
+  const webSearchMaxQueries = webSearchCap(args.webSearchMaxQueries, '--web-search-max-queries', 1, 50);
+  const webSearchMaxQueryChars = webSearchCap(args.webSearchMaxQueryChars, '--web-search-max-query-chars', 16, 400);
   const imageArgsGiven = args.imageStyle !== null || args.imageSubject !== null || args.imageOut !== null;
   let imageOut = null;
   let imagePrompt = null;
@@ -875,6 +894,8 @@ function ensureConfig(args) {
     imageOnly: args.imageOnly === true,
     imageCanary: args.imageCanary === true,
     webSearch: args.webSearch === true,
+    webSearchMaxQueries,
+    webSearchMaxQueryChars,
     tainted: args.tainted === true,
     imageOut,
     cwd,
@@ -1421,15 +1442,20 @@ function codexWebSearchLeakCheck(item, secrets) {
  * cut; a value redact() would miss is withheld, not logged. Used on item/completed
  * because the query is empty on item/started.
  */
-function codexWebSearchAudit(item, secrets) {
-  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
-  const text = [...codexWebSearchActionTexts(item), item && item.query]
+function codexWebSearchQueryText(item) {
+  return [...codexWebSearchActionTexts(item), item && item.query]
     .find((value) => typeof value === 'string' && value !== '');
+}
+
+function codexWebSearchAudit(item, secrets, maxChars = null) {
+  const action = item && item.action && typeof item.action === 'object' ? item.action : {};
+  const text = codexWebSearchQueryText(item);
+  const auditMax = Number.isInteger(maxChars) ? Math.max(CODEX_WEB_SEARCH_AUDIT_MAX, maxChars) : CODEX_WEB_SEARCH_AUDIT_MAX;
   const withheld = codexLeakDetect(text, secrets) || codexLeakDetect(item && item.query, secrets);
   const entry = {
     itemId: item && typeof item.id === 'string' ? item.id.slice(0, 120) : null,
     action: typeof action.type === 'string' ? action.type.slice(0, 40) : null,
-    query: text && !withheld ? redact(text).slice(0, CODEX_WEB_SEARCH_AUDIT_MAX) : '',
+    query: text && !withheld ? redact(text).slice(0, auditMax) : '',
   };
   return withheld ? { ...entry, withheld } : entry;
 }
@@ -3674,6 +3700,7 @@ async function runDriver(config) {
 
   // Stop the turn and fail the run for activity no gate can see. Only names are
   // recorded, never arguments.
+  let completedWebSearches = 0;
   const stopUngatedActivity = (kind, details, reason) => {
     if (completed) return;
     sawFailure = true;
@@ -4394,8 +4421,32 @@ async function runDriver(config) {
         audit('codex_web_search', {
           threadId: message.params.threadId,
           turnId: message.params.turnId,
-          ...codexWebSearchAudit(message.params.item, leakSecrets),
+          ...codexWebSearchAudit(message.params.item, leakSecrets, config.webSearchMaxQueryChars),
         });
+        completedWebSearches += 1;
+        const limitIds = {
+          threadId: message.params.threadId,
+          turnId: typeof message.params.turnId === 'string' ? message.params.turnId : activeTurnId,
+          itemId: typeof message.params.item.id === 'string' ? message.params.item.id.slice(0, 120) : null,
+        };
+        if (Number.isInteger(config.webSearchMaxQueries) && completedWebSearches > config.webSearchMaxQueries) {
+          process.stdout.write(`CODEX_ERROR Web search limit reached (${config.webSearchMaxQueries} searches); stopped.\n`);
+          stopUngatedActivity('codex_web_search_limit', {
+            ...limitIds, limit: 'count', count: completedWebSearches, max: config.webSearchMaxQueries,
+          }, 'web search count over the per-turn limit');
+          return;
+        }
+        if (Number.isInteger(config.webSearchMaxQueryChars)) {
+          const queryText = codexWebSearchQueryText(message.params.item);
+          const chars = typeof queryText === 'string' ? Array.from(queryText).length : 0;
+          if (chars > config.webSearchMaxQueryChars) {
+            process.stdout.write(`CODEX_ERROR Web search query over ${config.webSearchMaxQueryChars} characters; stopped.\n`);
+            stopUngatedActivity('codex_web_search_limit', {
+              ...limitIds, limit: 'length', chars, max: config.webSearchMaxQueryChars,
+            }, 'web search query over the per-turn length limit');
+            return;
+          }
+        }
       }
       if (config.imageOnly && message.params.item.type === 'imageGeneration') {
         handleImageItem(message.params);
