@@ -474,11 +474,12 @@ describe('shelly-plan-executor.js longform chain', () => {
     replies = ['調査メモ（URLなし）'];
     await runExecutor(writePlan(home, port, articleChain()), home);
     expect(prompts).toHaveLength(1);
-    // v68 (search parity 2): an article run with no web source after its
-    // research lands held before the write step, not a bare error.
+    // Fix round 1 (item 3): the no-web-sources hold is for a plan with a Web
+    // search step only; this research is a generic HTTP step, so the old
+    // no-sources stop stands.
     const log = readRunLog(home);
-    expect(log.status).toBe('skipped');
-    expect(log.outputPreview).toMatch(/^Held \(no-web-sources\): /);
+    expect(log.status).toBe('error');
+    expect(log.outputPreview).not.toMatch(/^Held/);
   }, 20000);
 
   it('an invalid local config fails the step without calling a model', async () => {
