@@ -93,7 +93,7 @@ describe('always-allow readiness (not enabled in v1)', () => {
   it('is an always-allow op (S2), with the same target pattern on both sides', () => {
     expect(isTypedOp('service_control')).toBe(true);
     const storeKt = readFileSync(join(KT_DIR, 'McpAlwaysAllowStore.kt'), 'utf8');
-    expect(storeKt).toContain('val TYPED_OPS: Set<String> = setOf("run_agent", "service_control")');
+    expect(storeKt).toContain('val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", IngressDecision.OP_SUBMIT_INSTRUCTION)');
     expect(storeKt).toContain(`"service_control" to Regex("${SERVICE_CONTROL_TARGET_RE.source}")`);
   });
 

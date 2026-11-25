@@ -26,10 +26,32 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { MCP_PRINCIPAL_RE, type Sha256 } from '@/lib/mcp-request-auth';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import { SERVICE_CONTROL_TARGET_RE, serviceControlRuleTarget, validateServiceControlArgs } from '@/lib/mcp-service-control';
+import {
+  INGRESS_ORIGIN_LAUNCHER,
+  INGRESS_ORIGIN_MCP,
+  parseIngressPrincipal,
+  type IngressOriginName,
+} from '@/lib/ingress-origin';
 
 /** Keep in step with McpAlwaysAllowStore.TYPED_OPS. */
-export const TYPED_OPS = ['run_agent', 'service_control'] as const;
+export const TYPED_OPS = ['run_agent', 'service_control', 'submit_instruction'] as const;
 export type TypedOp = (typeof TYPED_OPS)[number];
+
+/**
+ * McpAlwaysAllowStore.OP_ORIGINS: the one origin whose principals may hold a
+ * rule for each op. MCP clients (bare 32-hex principal) for the MCP ops, the
+ * verified launcher (`launcher:<32 hex>`) for submit_instruction.
+ */
+export const OP_ORIGINS: Readonly<Record<TypedOp, IngressOriginName>> = {
+  run_agent: INGRESS_ORIGIN_MCP,
+  service_control: INGRESS_ORIGIN_MCP,
+  submit_instruction: INGRESS_ORIGIN_LAUNCHER,
+};
+
+/** The principal is of the origin [op] belongs to. */
+export function isValidPrincipalFor(op: unknown, principal: unknown): boolean {
+  return isTypedOp(op) && parseIngressPrincipal(principal)?.origin === OP_ORIGINS[op];
+}
 
 export const MAX_RULES = 200;
 export const MAX_LABEL_CHARS = 64;
@@ -40,6 +62,8 @@ const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const TARGET_RES: Record<TypedOp, RegExp> = {
   run_agent: /^agent:[A-Za-z0-9_-]{1,128}$/,
   service_control: SERVICE_CONTROL_TARGET_RE,
+  // The launcher ingress has one target (McpAlwaysAllowStore TARGET_RES).
+  submit_instruction: /^hayato$/,
 };
 const RULE_ID_RE = /^r_[0-9a-f]{16}$/;
 const BIND_RE = /^[0-9a-f]{64}$/;
@@ -107,7 +131,7 @@ export function ruleKey(principal: string, op: string, target: string): string {
 function isValidRule(r: AlwaysAllowRule): boolean {
   return (
     RULE_ID_RE.test(r.id)
-    && MCP_PRINCIPAL_RE.test(r.principal)
+    && isValidPrincipalFor(r.op, r.principal)
     && isValidAlwaysAllowTarget(r.op, r.target)
     && (r.bind === undefined || BIND_RE.test(r.bind))
     && (r.actionPolicyPin === undefined || (r.bind !== undefined && (r.actionPolicyPin === 'absent' || BIND_RE.test(r.actionPolicyPin))))
@@ -175,15 +199,21 @@ export function findAlwaysAllowMatch(
   target: string,
   bind: string | null,
 ): AlwaysAllowRule | null {
-  if (!MCP_PRINCIPAL_RE.test(principal) || !isValidAlwaysAllowTarget(op, target)) return null;
+  if (!isValidPrincipalFor(op, principal) || !isValidAlwaysAllowTarget(op, target)) return null;
   if (bind !== null && !BIND_RE.test(bind)) return null;
   return rules.find((r) => r.principal === principal && r.op === op && r.target === target
     && (r.bind === undefined || r.bind === bind)) ?? null;
 }
 
-/** First 8 characters of the principal: the client ID shown in Settings. */
+/** First 8 characters of the principal's id (origin prefix dropped): the client ID shown in Settings. */
 export function clientIdLabel(principal: string): string {
-  return principal.slice(0, 8);
+  const parsed = parseIngressPrincipal(principal);
+  return (parsed ? parsed.id : principal).slice(0, 8);
+}
+
+/** Where a rule's principal comes from, for the Settings list (MCP client or the verified launcher). */
+export function ruleOrigin(principal: string): IngressOriginName | null {
+  return parseIngressPrincipal(principal)?.origin ?? null;
 }
 
 function utf8(text: string): Uint8Array {
