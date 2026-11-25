@@ -83,6 +83,7 @@ object ManagedServiceSupervisor {
         val app = context.applicationContext
         synchronized(controlLock) {
             val spec = resolvedSpec(app, base)
+            if (spec.stopOnly) ensureHaltWatcher(app)
             return when (action) {
                 "start" -> start(app, spec, principal)
                 "stop" -> stop(app, spec, principal, reason = "request")
@@ -110,9 +111,39 @@ object ManagedServiceSupervisor {
         if (base.launch != null || base.id != FACADE_ID) return base
         val live = synchronized(lock) { running[base.id] }
         if (live != null && startOf(live.pid) == live.startTime) return live.spec
-        val resolved = resolveFacadeSpec(context, base)
-        if (resolved.launch != null) return resolved
-        return recoveredFacadeSpec(context, base) ?: resolved
+        val fromFile = resolveFacadeSpec(context, base)
+        // A live facade named by state.json outranks the file: the file may have
+        // been deleted, broken or changed since that process was launched, and
+        // only its launch-time identity still verifies (and so stops) it. The
+        // file's full Spec is used only when it launches that same script.
+        val persisted = recoveredFacadeSpec(context, base) ?: return fromFile
+        if (fromFile.launch != null && fromFile.launch.script == persisted.launch?.script) return fromFile
+        Log.w(TAG, "council-facade: using the launch-time identity from state.json (pid live, spec file unusable or changed)")
+        return persisted
+    }
+
+    /**
+     * A persisted live facade this process did not spawn (it survived an app
+     * restart), as a stop-only Spec, or null. Used by the Exit sweep and the
+     * STOP-ALL watcher, which otherwise only know [running].
+     */
+    private fun persistedOrphan(context: Context): ManagedServices.Spec? {
+        val base = ManagedServices.spec(FACADE_ID) ?: return null
+        val live = synchronized(lock) { running[base.id] }
+        if (live != null && startOf(live.pid) == live.startTime) return null
+        return recoveredFacadeSpec(context, base)
+    }
+
+    /**
+     * Called when the app's service starts (TerminalSessionService.onCreate):
+     * if a facade from before an app restart is still alive, the STOP-ALL
+     * watcher watches it too. Runs its /proc checks off the caller's thread.
+     */
+    fun adoptPersisted(context: Context) {
+        val app = context.applicationContext
+        Thread({
+            runCatching { if (persistedOrphan(app) != null) ensureHaltWatcher(app) }
+        }, "ShellySvcAdopt").apply { isDaemon = true; start() }
     }
 
     /**
@@ -129,7 +160,6 @@ object ManagedServiceSupervisor {
         if (rec.stoppedAt != null || rec.exitedAt != null || startOf(rec.pid) != rec.startTime) return null
         val launch = ManagedServices.Launch(script, emptyList(), ManagedServices.DEFAULT_ENV, workDir = script.substringBefore('/'))
         if (!isServiceProcess(context, launch, rec.pid)) return null
-        Log.w(TAG, "council-facade launch spec unusable; recovered a stop-only spec from state.json (pid=${rec.pid})")
         return base.copy(launch = launch, stopOnly = true)
     }
 
@@ -507,7 +537,13 @@ object ManagedServiceSupervisor {
             }
         }
         if (!emptied) Log.w(TAG, "stopAllSupervised($reason): services still running after ${ManagedServices.EXIT_SWEEP_MAX_ROUNDS} rounds")
-        return emptied
+        // A facade that survived an app restart is not in [running]: stopped
+        // from its persisted, /proc-verified launch identity.
+        val orphanStopped = synchronized(controlLock) {
+            val orphan = persistedOrphan(app) ?: return@synchronized true
+            runCatching { stop(app, orphan, null, reason)["code"] in setOf("stopped", "not_running") }.getOrDefault(false)
+        }
+        return emptied && orphanStopped
     }
 
     // ── STOP-ALL ───────────────────────────────────────────────────────────
@@ -518,11 +554,17 @@ object ManagedServiceSupervisor {
             haltWatcher = Thread({
                 while (true) {
                     val ids = synchronized(lock) { running.keys.toList() }
-                    if (ids.isEmpty()) break
+                    val orphan = runCatching { persistedOrphan(context) }.getOrNull()
+                    if (ids.isEmpty() && orphan == null) break
                     if (StopAllSwitches.halted(context)) {
                         for (id in ids) {
                             val base = ManagedServices.spec(id) ?: continue
                             runCatching { synchronized(controlLock) { stop(context, resolvedSpec(context, base), null, "STOP-ALL") } }
+                        }
+                        if (orphan != null) {
+                            runCatching {
+                                synchronized(controlLock) { persistedOrphan(context)?.let { stop(context, it, null, "STOP-ALL") } }
+                            }
                         }
                     }
                     runCatching { Thread.sleep(HALT_POLL_MS) }
