@@ -10959,6 +10959,20 @@ function isUnattendedLocalOnlyAction(actionType) {
   return actionType === 'draft' || actionType === 'notify';
 }
 
+// v68 (search parity 5b): whether an article pipeline's draft save skips the
+// approval tap on an attended run. The save follows the unattended rule
+// (isUnattendedLocalOnlyAction) for an article draft (quietDraftNotification:
+// long-form, not a digest) unless a user policy rule forced an approval
+// (POLICY-001 ask) or the agent itself pins requireActionApproval: true. Those
+// two still wait, and a tap that does not come lands the draft held (5a).
+// The global default (SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL) no longer
+// gates it. An MCP-ingress run never gets here (its draft is refused).
+function articleDraftSaveNeedsNoTap(plan, actionType, policyForcedApproval) {
+  if (actionType !== 'draft' || policyForcedApproval || plan.__policyForcedApproval) return false;
+  if (!quietDraftNotification(plan, actionType)) return false;
+  return !(plan.agent && plan.agent.requireActionApproval === true);
+}
+
 // Resolves whether the mandatory "Runtime Review" approval TAP defaults on
 // or off for THIS plan/action — independent of trustedNativeLowRiskAction
 // (which governs whether the action may run unattended at all).
@@ -11497,6 +11511,20 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
         ts: new Date().toISOString(),
         kind: 'plan.executor',
         event: 'action_unattended_local_allow',
+        agentId: plan.agent.id,
+        actionType,
+        toolType: plan.tool.type,
+      });
+    } else if (articleDraftSaveNeedsNoTap(plan, actionType, policyForcedApproval)) {
+      // v68 (search parity 5b): an article pipeline's draft is a local file in
+      // the owner's own output folder, the same save an unattended run makes
+      // with no tap. An attended run (task screen "Run now", or a notification
+      // run while Shelly is on screen) no longer waits for one either, so a
+      // passed draft is never lost to an approval nobody was there to give.
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'plan.executor',
+        event: 'action_article_draft_allow',
         agentId: plan.agent.id,
         actionType,
         toolType: plan.tool.type,

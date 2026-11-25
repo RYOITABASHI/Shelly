@@ -390,6 +390,21 @@ describe('a run with the Codex web-search research step (v68)', () => {
     fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='1'\nSHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS='1'\n`);
   }
 
+  it('5b: an attended run saves the article draft with no tap, even when the global default asks for one', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    attendedEnv(home);
+    const status = await runExecutor(planFile, home, driver, recordDir, {}, true);
+    expect(status).toBe(0);
+    expect(readRunLog(home).status).toBe('success');
+    expect(fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md'))).toHaveLength(1);
+    const audit = readAudit(home);
+    expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(true);
+    expect(fs.existsSync(path.join(home, '.shelly/agents/action-approvals'))
+      ? fs.readdirSync(path.join(home, '.shelly/agents/action-approvals')).filter((n) => n.startsWith('action-')) : []).toEqual([]);
+  }, 60000);
+
   it('5a: an agent that pins the tap and gets no answer keeps the full draft in held/ (approval-timeout)', async () => {
     const home = makeHome();
     writePipelines(home);
