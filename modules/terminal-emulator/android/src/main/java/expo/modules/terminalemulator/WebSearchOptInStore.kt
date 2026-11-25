@@ -323,6 +323,31 @@ object WebSearchOptInStore {
     }
 
     /**
+     * Search parity item 4 (MCP request_pipeline_refire): the agent of the
+     * article pipeline [pipelineId], when that pipeline's web-search opt-in is
+     * on now (the same check as the Settings list: a verified stored hash equal
+     * to the hash the executor computes for the current definition). Read
+     * only: nothing is stored or audited here. Returns (agentId, "ok") or
+     * (null, code): unknown_pipeline (no candidate, or more than one, carries
+     * this id), not_opted_in (off or lapsed), native_error (the executor op
+     * failed or its output did not parse).
+     */
+    fun optedInAgentForPipeline(
+        context: Context,
+        pipelineId: String,
+        runCandidates: (Context) -> Pair<String?, String>,
+    ): Pair<String?, String> {
+        val (stdout, _) = try { runCandidates(context) } catch (e: Exception) { Pair(null, "failed") }
+        if (stdout == null) return Pair(null, "native_error")
+        val candidates = parseCandidates(stdout) ?: return Pair(null, "native_error")
+        val matching = candidates.filter { it.pipelineId == pipelineId }
+        if (matching.size != 1) return Pair(null, "unknown_pipeline")
+        val c = matching[0]
+        val entry = read(context).firstOrNull { it.agentId == c.agentId }
+        return if (stateOf(entry, c) == "on") Pair(c.agentId, "ok") else Pair(null, "not_opted_in")
+    }
+
+    /**
      * The module's `setWebSearchOptIn`, only from the owner's Settings toggle.
      * ON: runs the executor op, finds [agentId], requires `webSearchStep`, and
      * (when [expectedSha256] is given) that the fresh hash is the one Settings

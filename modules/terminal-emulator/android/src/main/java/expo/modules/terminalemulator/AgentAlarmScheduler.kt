@@ -1177,6 +1177,23 @@ object AgentAlarmScheduler {
         armReconcileWatchdog(context, target)
     }
 
+    /**
+     * A reconcile tick by [atMs] at the latest (search parity item 4: an MCP
+     * re-fire request a sweep has not taken yet). An earlier future tick is
+     * kept; nothing is armed while STOP-ALL is on (the request expires then).
+     * Unlike [ensureReconcileWatchdog] this does not need a reconcilable
+     * schedule: the requested pipeline may run on notifications only.
+     */
+    fun armReconcileWatchdogNoLaterThan(context: Context, atMs: Long) {
+        if (isGloballyHalted(context)) return
+        val now = System.currentTimeMillis()
+        val prefs = context.getSharedPreferences(RECONCILE_PREFS, Context.MODE_PRIVATE)
+        val armedAt = prefs.getLong(WATCHDOG_AT_KEY, 0L)
+        val piAlive = watchdogPendingIntent(context, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) != null
+        if (piAlive && armedAt > now && armedAt <= atMs) return
+        armReconcileWatchdog(context, atMs)
+    }
+
     fun cancelReconcileWatchdog(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         watchdogPendingIntent(context, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)?.let {

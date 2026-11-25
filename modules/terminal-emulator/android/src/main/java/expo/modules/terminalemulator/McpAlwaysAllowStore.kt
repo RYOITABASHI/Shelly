@@ -65,7 +65,7 @@ object McpAlwaysAllowStore {
      * (run_command, write_file) are deliberately absent and never added here.
      * Keep in step with TYPED_OPS in lib/mcp-always-allow.ts.
      */
-    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control")
+    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", "request_pipeline_refire")
 
     private val PRINCIPAL_RE = Regex("^[0-9a-f]{32}$")
     private val BIND_RE = Regex("^[0-9a-f]{64}$")
@@ -74,6 +74,8 @@ object McpAlwaysAllowStore {
         "run_agent" to Regex("^agent:[A-Za-z0-9_-]{1,128}$"),
         // Same as SERVICE_CONTROL_TARGET_RE in lib/mcp-service-control.ts.
         "service_control" to Regex("^service:(article-delivery|council-facade):(start|status|stop)$"),
+        // Same as PIPELINE_REFIRE_TARGET_RE in lib/mcp-pipeline-refire.ts.
+        "request_pipeline_refire" to Regex("^pipeline:[a-z0-9-]{1,32}$"),
     )
     private val RULE_KEYS = setOf("id", "principal", "op", "target", "bind", "label", "createdAt", "actionPolicyPin")
     private val ROOT_KEYS = setOf("version", "rules")

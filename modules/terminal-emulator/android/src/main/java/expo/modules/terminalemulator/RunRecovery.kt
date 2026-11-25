@@ -75,7 +75,9 @@ object RunRecovery {
         /** hang-check `hung`: the run it names and the progress stream size it read. */
         val runStartTs: String? = null,
         val progressBytes: Long = -1L,
-        val noProgressMs: Long = -1L
+        val noProgressMs: Long = -1L,
+        /** sweep: MCP re-fire requests left waiting (a live executor of their agent). */
+        val pendingRequests: Int = 0
     )
 
     private val FAILED = OpResult(false, null, emptyList())
@@ -184,11 +186,15 @@ object RunRecovery {
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\"'\"'") + "'"
 
-    private fun runOp(context: Context, homeDir: File, args: List<String>): OpResult {
+    private fun runOp(context: Context, homeDir: File, args: List<String>): OpResult =
+        runOpLine(context, homeDir, args)?.let { parseResult(it) } ?: FAILED
+
+    /** Runs one script op; its last non-blank stdout line, or null. */
+    private fun runOpLine(context: Context, homeDir: File, args: List<String>): String? {
         val script = File(homeDir, SCRIPT_NAME)
         if (!script.isFile) {
             Log.w(TAG, "recovery script missing; skipped ${args.firstOrNull { !it.startsWith("--") } ?: ""}")
-            return FAILED
+            return null
         }
         val libPath = LibExtractor.getLibDir(context).absolutePath
         val command = buildString {
@@ -223,11 +229,10 @@ object RunRecovery {
             )
         } catch (e: Throwable) {
             Log.e(TAG, "recovery script failed to start type=${e.javaClass.simpleName}")
-            return FAILED
+            return null
         }
         val stdout = result.getOrNull(1).orEmpty()
-        val line = stdout.lineSequence().lastOrNull { it.isNotBlank() } ?: return FAILED
-        return parseResult(line)
+        return stdout.lineSequence().lastOrNull { it.isNotBlank() }
     }
 
     /** The script's one JSON line → [OpResult]. Never throws. */
@@ -253,7 +258,8 @@ object RunRecovery {
             refires,
             o.optString("runStartTs", "").takeIf { it.isNotEmpty() && it.length <= 64 },
             o.optLong("progressBytes", -1L),
-            o.optLong("noProgressMs", -1L)
+            o.optLong("noProgressMs", -1L),
+            o.optInt("pendingRequests", 0).coerceAtLeast(0)
         )
     } catch (e: Exception) {
         FAILED
@@ -362,12 +368,73 @@ object RunRecovery {
                 runCatching { McpRunTickets.reconcileAfterRestart(app) }
                     .onFailure { Log.w(TAG, "ticket reconcile failed type=${it.javaClass.simpleName}") }
                 val r = runOp(app, homeDir, listOf("--op", "sweep"))
-                Log.i(TAG, "sweep ($reason) ok=${r.ok} refires=${r.refires.size}")
+                Log.i(TAG, "sweep ($reason) ok=${r.ok} refires=${r.refires.size} pendingRequests=${r.pendingRequests}")
                 dispatchRefires(app, r.refires)
+                // An MCP re-fire request still waiting (its agent's executor
+                // was alive) is taken by a later reconcile pass.
+                if (r.pendingRequests > 0) armRequestFollowUp(app)
             } catch (e: Throwable) {
                 Log.e(TAG, "sweep ($reason) failed type=${e.javaClass.simpleName}")
             }
         }, "shelly-run-recovery-sweep").start()
+    }
+
+    // ── an MCP-requested re-fire (search parity item 4) ──────────────────
+
+    /** What `--op refire-request` answered: [code] accepted, duplicate or a refusal code. */
+    data class RefireRequestResult(val code: String, val requestId: String?)
+
+    private val REQUEST_CODE_RE = Regex("^[a-z_]{1,32}$")
+    private val REQUEST_ID_RE = Regex("^rq-[0-9]{1,16}-[0-9a-f]{8}$")
+    private val PRINCIPAL_RE = Regex("^[0-9a-f]{32}$")
+    private val PIPELINE_ID_RE = Regex("^[a-z0-9-]{1,32}$")
+    /** A request a sweep could not take yet is looked at again by this reconcile tick. */
+    private const val REQUEST_FOLLOW_UP_MS = 5L * 60L * 1000L
+
+    /**
+     * Records an MCP re-fire request for [agentId] (the caller resolved
+     * [pipelineId] to it and checked the web-search opt-in) through the
+     * recovery script, under its lock. An accepted request is in the agent's
+     * audit before this returns (it outlives a kill); a sweep is started now
+     * to turn it into an S5 re-fire, and a reconcile tick is armed as the
+     * fallback. Blocking: call off the main thread. Never throws.
+     */
+    fun requestRefire(context: Context, agentId: String, pipelineId: String, principal: String?): RefireRequestResult {
+        if (!AGENT_ID_RE.matches(agentId) || !PIPELINE_ID_RE.matches(pipelineId)) return RefireRequestResult("invalid_params", null)
+        val app = context.applicationContext
+        return try {
+            val homeDir = HomeInitializer.getHomeDir(app)
+            val args = mutableListOf("--op", "refire-request", "--agent-id", agentId, "--pipeline-id", pipelineId)
+            if (principal != null && PRINCIPAL_RE.matches(principal)) args += listOf("--principal", principal)
+            val r = runOpLine(app, homeDir, args)?.let { parseRefireRequest(it) } ?: RefireRequestResult("native_error", null)
+            Log.i(TAG, "re-fire request agent=$agentId pipeline=$pipelineId code=${r.code}")
+            if (r.code == "accepted") {
+                armRequestFollowUp(app)
+                sweepInBackground(app, "mcp-refire")
+            }
+            r
+        } catch (e: Throwable) {
+            Log.e(TAG, "re-fire request failed type=${e.javaClass.simpleName}")
+            RefireRequestResult("native_error", null)
+        }
+    }
+
+    /** The script's refire-request line → [RefireRequestResult]; native_error when it is not one. Never throws. */
+    fun parseRefireRequest(line: String): RefireRequestResult = try {
+        val o = JSONObject(line)
+        val code = o.optString("code", "")
+        if (!o.optBoolean("ok", false) || o.optString("op", "") != "refire-request" || !REQUEST_CODE_RE.matches(code)) {
+            RefireRequestResult("native_error", null)
+        } else {
+            RefireRequestResult(code, o.optString("requestId", "").takeIf { REQUEST_ID_RE.matches(it) })
+        }
+    } catch (e: Exception) {
+        RefireRequestResult("native_error", null)
+    }
+
+    private fun armRequestFollowUp(context: Context) {
+        runCatching { AgentAlarmScheduler.armReconcileWatchdogNoLaterThan(context, System.currentTimeMillis() + REQUEST_FOLLOW_UP_MS) }
+            .onFailure { Log.w(TAG, "re-fire request follow-up not armed type=${it.javaClass.simpleName}") }
     }
 
     /** How a dispatch ended: the service took it, it was refused / threw, or we could not tell. */

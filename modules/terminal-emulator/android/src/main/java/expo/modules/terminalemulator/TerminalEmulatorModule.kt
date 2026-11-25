@@ -1487,6 +1487,28 @@ class TerminalEmulatorModule : Module() {
             }
         }
 
+        // Search parity item 4: MCP request_pipeline_refire, after the RN
+        // bridge's approval ladder. STOP-ALL first, then the pipeline's
+        // web-search opt-in (read only, the Settings check), then the
+        // recovery script decides on today's run and records the request
+        // (RunRecovery.requestRefire). Returns {code, requestId?}.
+        AsyncFunction("requestPipelineRefire") Coroutine { pipelineId: String, principal: String? ->
+            withContext(Dispatchers.IO) {
+                val context = requireReactContext()
+                val answer = { code: String, requestId: String? ->
+                    mapOf<String, Any?>("code" to code, "requestId" to requestId)
+                }
+                if (!Regex("^[a-z0-9-]{1,32}$").matches(pipelineId)) return@withContext answer("invalid_params", null)
+                if (StopAllSwitches.halted(context)) return@withContext answer("halted", null)
+                val (agentId, optIn) = WebSearchOptInStore.optedInAgentForPipeline(context, pipelineId) {
+                    AgentRuntime.webSearchOptInCandidatesOutput(it)
+                }
+                if (agentId == null) return@withContext answer(optIn, null)
+                val r = RunRecovery.requestRefire(context, agentId, pipelineId, principal)
+                answer(r.code, r.requestId)
+            }
+        }
+
         // "Keep ChatGPT connected" (CodexRemoteHost.kt). The source of truth
         // is the Keystore-HMAC'd native switch (CodexRemoteAutostart.kt);
         // settings-store only mirrors it. The shell can only turn it off.

@@ -594,6 +594,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  service. Untrusted shape: parse with lib/mcp-service-control.ts parseServiceControlResult.
    *  Optional: absent on builds without the native method. */
   serviceControl?(action: string, serviceId: string, principal: string | null): Promise<unknown>;
+  /** Search parity item 4 (MCP request_pipeline_refire): {code, requestId}. */
+  requestPipelineRefire?(pipelineId: string, principal: string | null): Promise<unknown>;
   /** Per-agent MCP ingress taint (AgentIngressTaint.kt). Use lib/agent-ingress-taint.ts.
    *  Write methods return status JSON {status: 'empty'|'ok'|'unreadable'|'overflow', overflow, entries}. */
   markAgentIngress?(agentId: string, source: 'mcp', principal: string): Promise<string>;

@@ -303,6 +303,56 @@ object IngressAuditWriter {
         null
     }
 
+    // ---- request_pipeline_refire lines (RN bridge; pure) ----------------------------
+
+    const val PIPELINE_REFIRE_KIND = "mcp_pipeline_refire"
+    private val REFIRE_REQUEST_ID_RE = Regex("^rq-[0-9]{1,16}-[0-9a-f]{8}$")
+
+    /**
+     * One `mcp_pipeline_refire` line (search parity item 4): kind == event, no
+     * agent, principal 32 hex, pipelineId the op's closed id form (absent only
+     * on `invalid_params`), code short, requestId only the script's own form.
+     * Null when any field is off. No free text is ever written.
+     */
+    fun buildPipelineRefireLine(ts: Long, principal: String?, pipelineId: String?, code: String, requestId: String?): String? {
+        if (principal != null && !PRINCIPAL_RE.matches(principal)) return null
+        if (pipelineId != null && !PIPELINE_ID_RE.matches(pipelineId)) return null
+        if (pipelineId == null && code != "invalid_params") return null
+        if (!CODE_RE.matches(code)) return null
+        if (requestId != null && !REFIRE_REQUEST_ID_RE.matches(requestId)) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", PIPELINE_REFIRE_KIND).put("event", PIPELINE_REFIRE_KIND)
+            if (principal != null) out.put("principal", principal)
+            if (pipelineId != null) out.put("pipelineId", pipelineId)
+            out.put("code", code)
+            if (requestId != null) out.put("requestId", requestId)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** RN's lines for request_pipeline_refire, rebuilt from the closed fields, or refused (null). */
+    fun buildPipelineRefireLineFromJson(ts: Long, json: String): String? = try {
+        if (json.length > 1024) null else {
+            val o = JSONObject(json)
+            val keys = HashSet<String>()
+            val it = o.keys()
+            while (it.hasNext()) keys.add(it.next())
+            if (!setOf("kind", "event", "principal", "pipelineId", "code", "requestId").containsAll(keys)) null
+            else if (o.optString("kind") != PIPELINE_REFIRE_KIND || o.optString("event") != PIPELINE_REFIRE_KIND) null
+            else {
+                val principal = if (o.has("principal")) o.get("principal") as? String ?: throw IllegalArgumentException() else null
+                val pipelineId = if (o.has("pipelineId")) o.get("pipelineId") as? String ?: throw IllegalArgumentException() else null
+                val requestId = if (o.has("requestId")) o.get("requestId") as? String ?: throw IllegalArgumentException() else null
+                val code = o.get("code") as? String ?: throw IllegalArgumentException()
+                buildPipelineRefireLine(ts, principal, pipelineId, code, requestId)
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     // ---- service_control spec resolution (council-facade; native-only, pure) -------
 
     const val SERVICE_CONTROL_SPEC_KIND = "mcp_service_control_spec"
@@ -381,6 +431,7 @@ object IngressAuditWriter {
     fun appendMcpLine(context: Context, agentId: String?, json: String): Boolean {
         val now = System.currentTimeMillis()
         val line = (if (agentId == null && json.contains("\"$SERVICE_CONTROL_KIND\"")) buildServiceControlLineFromJson(now, json) else null)
+            ?: (if (agentId == null && json.contains("\"$PIPELINE_REFIRE_KIND\"")) buildPipelineRefireLineFromJson(now, json) else null)
             ?: buildMcpLine(now, agentId, json) ?: return false
         return append(context, agentId, MCP_AGENTLESS_FILE, line)
     }
