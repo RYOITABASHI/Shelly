@@ -845,20 +845,24 @@ function loadPlan(planFile) {
 // v68: the plan, plus what the held line and the web-search opt-in know it by,
 // from the very bytes it was loaded from: planId (scripts/shelly-run-recovery.js
 // readPlan's `plan-agent-<id>@<sha256 of the file, 12>`) and the definition
-// hash (planDefinitionSha256, taken before validatePlan can touch the object).
-function loadPlanWithIdentity(planFile) {
+// hash (planDefinitionSha256 of the file as parsed, before validatePlan can
+// touch the object, with the plan's article-pipelines.json entry when `home`
+// is given: pipelineDefinitionSha256).
+function loadPlanWithIdentity(planFile, home) {
   if (!planFile) throw new PlanFailure('--plan-file is required');
   let text;
   let parsed;
+  let raw;
   try {
     text = fs.readFileSync(planFile, 'utf8');
     parsed = JSON.parse(text);
+    raw = JSON.parse(text);
   } catch (e) {
     throw new PlanFailure(`cannot read plan: ${e && e.message ? e.message : e}`);
   }
-  const definitionSha256 = planDefinitionSha256(parsed);
   const plan = validatePlan(parsed);
   const planId = `plan-agent-${plan.agent.id}@${crypto.createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
+  const definitionSha256 = home ? pipelineDefinitionSha256(home, plan, raw) : planDefinitionSha256(raw);
   return { plan, identity: { planId, definitionSha256 } };
 }
 
@@ -6129,15 +6133,73 @@ function canonicalJson(value) {
 }
 
 /**
- * The definition hash the opt-in binds to: SHA-256 of the canonical JSON of the
- * plan file as parsed, without its `generatedAt` stamp. '' for a non-object.
- * Shelly's UI gets the same value from `--op web-search-definition-hash`. Pure.
+ * The definition hash the opt-in binds to: SHA-256 of the canonical JSON of
+ * {plan: the plan file as parsed without its `generatedAt` stamp, pipeline:
+ * the plan's article-pipelines.json entry or null}. The entry is in it because
+ * a v63 article run lays that entry's tunables (engines per phase, …) over the
+ * plan: editing either one lapses the consent. '' for a non-object. Pure.
  */
-function planDefinitionSha256(parsed) {
+function planDefinitionSha256(parsed, pipelineEntry) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
   const copy = Object.assign({}, parsed);
   delete copy.generatedAt;
-  return sha256Hex(canonicalJson(copy));
+  const entry = pipelineEntry && typeof pipelineEntry === 'object' && !Array.isArray(pipelineEntry) ? pipelineEntry : null;
+  return sha256Hex(canonicalJson({ plan: copy, pipeline: entry }));
+}
+
+/**
+ * planDefinitionSha256 of `raw` (the plan file as parsed) with the validated
+ * plan's article-pipelines.json entry read from `home` the audit way (null when
+ * the file is missing, unreadable or names no single matching pipeline).
+ * Throws nothing.
+ */
+function pipelineDefinitionSha256(home, plan, raw) {
+  let entry = null;
+  try {
+    entry = articlePipelineEntryFor(plan, readArticlePipelineFileForAudit(home, fs));
+  } catch (_) {
+    entry = null;
+  }
+  return planDefinitionSha256(raw, entry);
+}
+
+// The opt-in UI's list (`--web-search-opt-in-candidates`, run by native's
+// Settings toggle; WebSearchOptInStore.kt): every article (long-form, not a
+// digest) plan under ~/.shelly/agents/plans with its definition hash. Native
+// stores the hash of the one the owner turns on and exports it to that agent's
+// notification-triggered runs only. Read-only; a plan that does not load is
+// left out. Throws nothing.
+const WEB_SEARCH_OPT_IN_PLAN_RE = /^plan-agent-([A-Za-z0-9_-]{1,120})\.json$/;
+function webSearchOptInCandidates(home) {
+  const out = [];
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(home, '.shelly', 'agents', 'plans')).sort();
+  } catch (_) {
+    return out;
+  }
+  for (const name of names) {
+    const m = WEB_SEARCH_OPT_IN_PLAN_RE.exec(name);
+    if (!m) continue;
+    try {
+      const file = path.join(home, '.shelly', 'agents', 'plans', name);
+      if (!fs.lstatSync(file).isFile()) continue;
+      const { plan, identity } = loadPlanWithIdentity(file, home);
+      if (plan.agent.id !== m[1]) continue;
+      if (!plan.steps || plan.steps.longform !== true || !Array.isArray(plan.steps.list) || isDigestPlan(plan)) continue;
+      const pipelineId = articleHeldPipelineId(home, plan);
+      out.push({
+        agentId: plan.agent.id,
+        name: typeof plan.agent.name === 'string' ? plan.agent.name.slice(0, 120) : null,
+        pipelineId,
+        definitionSha256: identity.definitionSha256,
+        webSearchStep: plan.steps.list.some((_s, k) => isResearchWebSearchCliStep(plan, k)),
+      });
+    } catch (_) {
+      // not a loadable plan: not listed
+    }
+  }
+  return out;
 }
 
 /** 'on' | 'off' | 'invalid' | 'lapsed' | 'ingress' for this run. Pure on its inputs. */
@@ -15338,14 +15400,18 @@ function finishSkipped(paths, plan, startedAt, message) {
 }
 
 async function run(args) {
-  const loaded = loadPlanWithIdentity(args['plan-file']);
+  const argHome = args.home || process.env.HOME;
+  // v68: the definition hash binds the plan with its article-pipelines.json
+  // entry, read from the run's own home (a relative one reads none here and is
+  // refused just below).
+  const loaded = loadPlanWithIdentity(args['plan-file'], argHome && path.isAbsolute(argHome) ? argHome : '');
   let plan = loaded.plan;
   activePlanIdentity = loaded.identity;
   const expectedAgentId = String(args['agent-id'] || '').trim();
   if (expectedAgentId && expectedAgentId !== plan.agent.id) {
     throw new PlanFailure(`plan agent id mismatch: expected ${expectedAgentId}`, { exitCode: EXIT.PLAN_DENY });
   }
-  const home = args.home || process.env.HOME;
+  const home = argHome;
   if (!home || !path.isAbsolute(home)) {
     throw new PlanFailure('--home or absolute HOME is required', { exitCode: EXIT.PLAN_DENY });
   }
@@ -16208,7 +16274,15 @@ async function main() {
     if (process.argv[2] === '--continuous-op') process.exit(runContinuousCli(process.argv.slice(2)));
     // v68: the definition hash Shelly's opt-in UI binds the web-search consent to.
     if (process.argv[2] === '--web-search-definition-hash') {
-      process.stdout.write(`${loadPlanWithIdentity(process.argv[3]).identity.definitionSha256}\n`);
+      const home = process.env.HOME && path.isAbsolute(process.env.HOME) ? process.env.HOME : '';
+      process.stdout.write(`${loadPlanWithIdentity(process.argv[3], home).identity.definitionSha256}\n`);
+      process.exit(EXIT.OK);
+    }
+    // v68: the Settings opt-in list (webSearchOptInCandidates). Read-only.
+    if (process.argv[2] === '--web-search-opt-in-candidates') {
+      const home = process.env.HOME && path.isAbsolute(process.env.HOME) ? process.env.HOME : '';
+      if (!home) throw new PlanFailure('absolute HOME is required');
+      process.stdout.write(`${JSON.stringify({ pipelines: webSearchOptInCandidates(home) })}\n`);
       process.exit(EXIT.OK);
     }
     process.exit(await run(parseArgs(process.argv.slice(2))));

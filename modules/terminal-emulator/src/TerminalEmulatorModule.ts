@@ -532,6 +532,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   disableDraftPreapproval?(destinations: string[]): Promise<string>;
   /** Status JSON {entries: [{dest, cap, enabledAt, usedToday, remainingToday}]}. */
   getDraftPreapproval?(): Promise<string>;
+  /** "Web search on notification-triggered runs" (WebSearchOptInStore.kt).
+   *  JSON {ok, code, pipelines: [{agentId, name, pipelineId, definitionSha256,
+   *  webSearchStep, state: 'on'|'off'|'lapsed', enabledAt, missing}]}. */
+  getWebSearchOptIns?(): Promise<string>;
+  /** Call with enabled=true ONLY from the owner's Settings toggle
+   *  (lib/web-search-opt-in.ts). Native computes and stores the hash itself;
+   *  expectedSha256 (the listed hash) must match it. false is safe from
+   *  anywhere. Returns JSON {ok, code}. */
+  setWebSearchOptIn?(agentId: string, enabled: boolean, expectedSha256: string | null): Promise<string>;
   /** "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt).
    *  Call with true ONLY for words the owner typed in the AI pane composer
    *  (lib/closepaw-shell-preapproval.ts); false is safe from anywhere.

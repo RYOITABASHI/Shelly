@@ -198,8 +198,30 @@ describe('the definition hash and the opt-in state', () => {
   it('the CLI prints the same hash the run binds to', () => {
     const home = makeHome();
     const planFile = writePlan(home, 1, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
-    const out = require('child_process').execFileSync(process.execPath, [scriptCopy, '--web-search-definition-hash', planFile], { encoding: 'utf8' });
+    const out = require('child_process').execFileSync(process.execPath, [scriptCopy, '--web-search-definition-hash', planFile], { encoding: 'utf8', env: { ...process.env, HOME: home } });
     expect(out.trim()).toBe(definitionHash(planFile));
+  });
+
+  // Fix round 1 (item 1): the consent binds the plan with its
+  // article-pipelines.json entry, and Settings lists the article plans with
+  // the very hash the run computes.
+  it('binds the article-pipelines.json entry too, and the candidates op lists that hash', () => {
+    const home = makeHome();
+    writePipelines(home);
+    const planFile = writePlan(home, 1, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    const execFile = (args: string[]) => require('child_process').execFileSync(process.execPath, [scriptCopy, ...args], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+    const withEntry = execFile(['--web-search-definition-hash', planFile]).trim();
+    expect(withEntry).not.toBe(definitionHash(planFile));
+    const entry = JSON.parse(fs.readFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), 'utf8')).pipelines[0];
+    expect(withEntry).toBe(executor.planDefinitionSha256(JSON.parse(fs.readFileSync(planFile, 'utf8')), entry));
+    const listed = JSON.parse(execFile(['--web-search-opt-in-candidates']));
+    expect(listed).toEqual({ pipelines: [{ agentId: AGENT_ID, name: 'Fallback title', pipelineId: 'example-a', definitionSha256: withEntry, webSearchStep: true }] });
+    // Editing the owner's pipeline entry changes the hash (the consent lapses).
+    fs.writeFileSync(path.join(home, '.shelly/agents/article-pipelines.json'), JSON.stringify({
+      version: 1,
+      pipelines: [{ id: 'example-a', outputFolder: `${path.join(home, 'agent-output')}/`, reviewRounds: 3 }],
+    }));
+    expect(execFile(['--web-search-definition-hash', planFile]).trim()).not.toBe(withEntry);
   });
 
   it('the executor never reads the notification text (premise 3 of the opt-in)', () => {

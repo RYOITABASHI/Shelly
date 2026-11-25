@@ -2026,6 +2026,26 @@ class TerminalEmulatorModule : Module() {
             ClosePawDraftPreapproval.statusJson(context)
         }
 
+        // "Web search on notification-triggered runs", per article pipeline
+        // (WebSearchOptInStore.kt, executor v68). ON only from the owner's
+        // Settings toggle (lib/web-search-opt-in.ts); no MCP op, shell command,
+        // file or env reaches this. Native computes the stored hash itself by
+        // running the executor's read-only candidates op (off the main thread);
+        // expectedSha256 is only checked against it. OFF is safe from anywhere.
+        AsyncFunction("getWebSearchOptIns") Coroutine { ->
+            withContext(Dispatchers.IO) {
+                WebSearchOptInStore.listJson(requireReactContext()) { AgentRuntime.webSearchOptInCandidatesOutput(it) }
+            }
+        }
+
+        AsyncFunction("setWebSearchOptIn") Coroutine { agentId: String, enabled: Boolean, expectedSha256: String? ->
+            withContext(Dispatchers.IO) {
+                WebSearchOptInStore.setFromSettings(requireReactContext(), agentId, enabled, expectedSha256) {
+                    AgentRuntime.webSearchOptInCandidatesOutput(it)
+                }
+            }
+        }
+
         // "Run ClosePaw without Shelly's approval" (ClosePawShellPreapproval.kt).
         // ON only from RN's handler for words the owner typed in the AI pane
         // composer (lib/closepaw-shell-preapproval.ts); nothing in the shell,
