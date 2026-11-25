@@ -112,6 +112,9 @@ export type IngressStage = (typeof INGRESS_STAGE_ORDER)[number];
 export const INGRESS_OP_STAGES: Readonly<Record<string, readonly IngressStage[]>> = {
   run_agent: ['SETTING', 'ARGS', 'EPOCH', 'TARGET', 'STOP_ALL', 'TAINT', 'ACTION_CONSENT', 'STEP7', 'IDEMPOTENT', 'ALWAYS_ALLOW'],
   submit_instruction: ['SETTING', 'ARGS', 'STOP_ALL', 'TAINT', 'IDEMPOTENT', 'ALWAYS_ALLOW', 'APPROVE_ALL'],
+  // Stream feed (C7): content always tainted, so no TAINT stage to pass and
+  // no APPROVE_ALL; only a per-op always-allow rule or a tap stores it.
+  put_stream_feed: ['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL', 'ALWAYS_ALLOW'],
 };
 
 const PRINCIPAL_ID_RE = /^[0-9a-f]{32}$/;

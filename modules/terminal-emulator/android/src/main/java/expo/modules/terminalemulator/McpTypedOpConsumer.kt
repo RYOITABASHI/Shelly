@@ -454,6 +454,12 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             delete(claimed)
             return
         }
+        // put_stream_feed (StreamFeedCore, C7) has its own decision; everything
+        // else is run_agent's (an unknown tool is refused there at ARGS).
+        if (request.tool == StreamFeedCore.OP) {
+            processStreamFeed(request, name, claimed, now)
+            return
+        }
         when (val outcome = McpTypedOpDecision.decide(request, steps, now)) {
             is McpTypedOpDecision.Outcome.Refuse -> {
                 refuse(request, claimed, outcome.refusal, outcome.agentId, outcome.taint)
@@ -546,15 +552,15 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         return null
     }
 
-    private fun handOff(request: McpTypedOpDecision.Request, name: String, claimed: File, agentId: String?) {
+    private fun handOff(request: McpTypedOpDecision.Request, name: String, claimed: File, agentId: String?, feed: Boolean = false) {
         val dest = File(requestsDir, name)
         val token = File(handoffsDir, request.callId)
         // The line first: a line without a move is harmless, a move without a line is not.
-        audit("mcp_typed_op_handed_off", agentId, request.principal, null)
+        if (feed) feedAudit(request.principal, "handed_off") else audit("mcp_typed_op_handed_off", agentId, request.principal, null)
         val result = if (writeHandoffToken(token, request.callId)) McpHandoffMove.move(claimed.path, dest.path, handoffFs) else null
         if (result is McpHandoffMove.Result.Moved) {
             // One way: from here on RN alone answers this request.
-            Log.i(TAG, "run_agent handed to RN (no rule match) route=${result.route}")
+            Log.i(TAG, "${request.tool} handed to RN (no rule match) route=${result.route}")
             return
         }
         // Its own code and errno, never `not_attended` (that hid this on device, build 2964).
@@ -562,14 +568,83 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         val errno = (result as? McpHandoffMove.Result.Failed)?.errno ?: -1
         val route = (result as? McpHandoffMove.Result.Failed)?.route ?: "-"
         Log.w(TAG, "handoff move failed code=$why errno=$errno route=$route")
-        audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
+        if (feed) feedAudit(request.principal, "handoff_failed") else audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
         val refusal = McpHandoffMove.refusalAfterFailure(lexists(claimed), lexists(dest))
         if (refusal != null) {
             // Still ours and not in RN's queue: refuse instead (and void the token).
             runCatching { Os.remove(token.path) }
-            refuse(request, claimed, refusal, agentId, false)
+            if (feed) feedRefuse(request, claimed, refusal) else refuse(request, claimed, refusal, agentId, false)
         } else {
             Log.w(TAG, "handoff state unknown; not answering (no second writer)")
+        }
+    }
+
+    // ── put_stream_feed (StreamFeedCore / StreamFeedStore; C7) ────────────
+
+    private fun processStreamFeed(request: McpTypedOpDecision.Request, name: String, claimed: File, now: Long) {
+        when (val outcome = StreamFeedCore.decide(request, feedSteps, now)) {
+            is StreamFeedCore.Outcome.Refuse -> feedRefuse(request, claimed, outcome.refusal)
+            is StreamFeedCore.Outcome.Execute -> feedExecute(request, claimed, outcome)
+            StreamFeedCore.Outcome.Handoff -> handOff(request, name, claimed, null, feed = true)
+        }
+    }
+
+    private fun feedRefuse(request: McpTypedOpDecision.Request, claimed: File, r: McpTypedOpDecision.Refusal) {
+        feedAudit(request.principal, r.code)
+        writeResult(request.callId, StreamFeedCore.errorResult(r))
+        delete(claimed)
+        Log.i(TAG, "put_stream_feed refused (${r.code})")
+    }
+
+    /**
+     * A rule matched: under [commitLock] re-check the epoch, the setting, the
+     * deadline and that the same rule still matches, then store (the store
+     * re-checks STOP-ALL and writes the `storing` audit line before the
+     * write; previous feed kept on any failure).
+     */
+    private fun feedExecute(request: McpTypedOpDecision.Request, claimed: File, x: StreamFeedCore.Outcome.Execute) {
+        val put: Any = synchronized(commitLock) {
+            when {
+                !isCurrent() -> StreamFeedCore.REVOKED
+                !feedSteps.typedOpsOn() -> StreamFeedCore.DISABLED
+                McpTypedOpDecision.isExpired(request.receivedAtMs, System.currentTimeMillis()) -> StreamFeedCore.EXPIRED
+                feedSteps.matchRule(request.principal) != x.ruleId -> StreamFeedCore.TARGET_CHANGED
+                else -> StreamFeedStore.put(app, x.feed, request.principal, request.receivedAtMs + McpTypedOpDecision.MAX_REQUEST_AGE_MS)
+            }
+        }
+        when (put) {
+            is StreamFeedStore.PutResult.Stored -> {
+                writeResult(request.callId, StreamFeedCore.storedResult(put.sha256, put.bytes, put.receivedAt))
+                delete(claimed)
+                Log.i(TAG, "always-allow rule ${x.ruleId} matched; stream feed stored headless bytes=${put.bytes}")
+            }
+            // The store wrote its own audit line for these.
+            is StreamFeedStore.PutResult.Refused -> {
+                writeResult(request.callId, StreamFeedCore.errorResult(put.refusal))
+                delete(claimed)
+                Log.i(TAG, "put_stream_feed not stored (${put.refusal.code})")
+            }
+            is McpTypedOpDecision.Refusal -> feedRefuse(request, claimed, put)
+            else -> feedRefuse(request, claimed, StreamFeedCore.STORE_FAILED)
+        }
+    }
+
+    private val feedSteps = object : StreamFeedCore.Steps {
+        override fun typedOpsOn(): Boolean = steps.typedOpsOn()
+        override fun epochCurrent(): Boolean = isCurrent()
+        // Strict (only ENOENT is "off"), unlike haltedOnDisk.
+        override fun halted(): Boolean = StreamFeedStore.haltedStrict(app)
+        override fun matchRule(principal: String): String? = try {
+            McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(app).rules, principal, StreamFeedCore.OP, StreamFeedCore.TARGET, null)?.id
+        } catch (e: Exception) {
+            null
+        }
+        override fun rnLive(): Boolean = steps.rnLive()
+    }
+
+    private fun feedAudit(principal: String?, code: String) {
+        if (!IngressAuditWriter.appendStreamFeedLine(app, principal, code, null, null, null)) {
+            Log.w(TAG, "audit line not written (${IngressAuditWriter.STREAM_FEED_KIND} $code)")
         }
     }
 

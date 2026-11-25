@@ -34,7 +34,7 @@ import {
 } from '@/lib/ingress-origin';
 
 /** Keep in step with McpAlwaysAllowStore.TYPED_OPS. */
-export const TYPED_OPS = ['run_agent', 'service_control', 'submit_instruction'] as const;
+export const TYPED_OPS = ['run_agent', 'service_control', 'submit_instruction', 'put_stream_feed'] as const;
 export type TypedOp = (typeof TYPED_OPS)[number];
 
 /**
@@ -46,6 +46,7 @@ export const OP_ORIGINS: Readonly<Record<TypedOp, IngressOriginName>> = {
   run_agent: INGRESS_ORIGIN_MCP,
   service_control: INGRESS_ORIGIN_MCP,
   submit_instruction: INGRESS_ORIGIN_LAUNCHER,
+  put_stream_feed: INGRESS_ORIGIN_MCP,
 };
 
 /** The principal is of the origin [op] belongs to. */
@@ -64,6 +65,8 @@ const TARGET_RES: Record<TypedOp, RegExp> = {
   service_control: SERVICE_CONTROL_TARGET_RE,
   // The launcher ingress has one target (McpAlwaysAllowStore TARGET_RES).
   submit_instruction: /^hayato$/,
+  // The stream feed has one fixed target (McpAlwaysAllowStore TARGET_RES).
+  put_stream_feed: /^stream-feed$/,
 };
 const RULE_ID_RE = /^r_[0-9a-f]{16}$/;
 const BIND_RE = /^[0-9a-f]{64}$/;
@@ -118,6 +121,9 @@ export function normalizeTarget(op: unknown, args: unknown): string | null {
       const valid = validateServiceControlArgs(args);
       return valid.ok ? serviceControlRuleTarget(valid.args) : null;
     }
+    case 'put_stream_feed':
+      // Fixed target; the feed itself never enters the rule.
+      return 'stream-feed';
     default:
       return null;
   }

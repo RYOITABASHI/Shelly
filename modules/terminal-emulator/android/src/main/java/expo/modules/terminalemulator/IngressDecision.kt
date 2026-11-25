@@ -50,6 +50,7 @@ object IngressDecision {
 
     const val OP_RUN_AGENT = "run_agent"
     const val OP_SUBMIT_INSTRUCTION = "submit_instruction"
+    const val OP_PUT_STREAM_FEED = "put_stream_feed"
 
     /**
      * The stages each op runs, in [ORDER]. run_agent's APPROVE_ALL (the RN
@@ -65,6 +66,16 @@ object IngressDecision {
         ),
         OP_SUBMIT_INSTRUCTION to setOf(
             Stage.SETTING, Stage.ARGS, Stage.STOP_ALL, Stage.TAINT, Stage.IDEMPOTENT, Stage.ALWAYS_ALLOW, Stage.APPROVE_ALL,
+        ),
+        // The stream feed (StreamFeedCore, fact sheet §6.2). Its content is
+        // ALWAYS tainted (IngressOrigin.taintFor(mcp)), so there is no TAINT
+        // stage to pass and no APPROVE_ALL: the blanket switch never covers
+        // tainted content. What lets it run unattended is only a per-op
+        // always-allow rule (D9): the op stores one opaque file that the
+        // launcher reads and nothing in Shelly executes. No TARGET (the sink is
+        // fixed), no action consent / step 7 / idempotency (it starts nothing).
+        OP_PUT_STREAM_FEED to setOf(
+            Stage.SETTING, Stage.ARGS, Stage.EPOCH, Stage.STOP_ALL, Stage.ALWAYS_ALLOW,
         ),
     )
 

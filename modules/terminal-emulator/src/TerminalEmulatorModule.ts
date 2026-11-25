@@ -550,6 +550,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   mcpAlwaysAllowRemove?(ids: string[]): Promise<string>;
   /** Token cascade: null removes every rule. Resolves true only when confirmed. */
   mcpAlwaysAllowPurgeExcept?(principal: string | null): Promise<boolean>;
+  /** put_stream_feed store (StreamFeedStore.kt), called by the RN MCP bridge only after a tap or a rule match.
+   *  Native re-validates and re-checks STOP-ALL and deadlineMs (epoch ms; 0 = refuse) right before the rename. Resolves JSON {ok:true, sha256, bytes, receivedAt} or {ok:false, code}. */
+  streamFeedPut?(feedJson: string, expectedSha256: string, expectedBytes: number, principal: string, deadlineMs: number): Promise<string>;
   /** MCP `run_agent` launch (McpRunTickets.kt). Writes the `accepted` ticket, then
    *  starts the run with origin "event" and ingress taint "mcp". runHandle is
    *  `mr_` + 32 hex; principal is 32 hex. Resolves true when the run was sent. */

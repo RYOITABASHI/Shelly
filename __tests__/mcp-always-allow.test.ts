@@ -96,7 +96,7 @@ afterEach(() => clearNative());
 
 describe('pure helpers', () => {
   it('the typed-op set is closed and excludes raw ops', () => {
-    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'submit_instruction']);
+    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'submit_instruction', 'put_stream_feed']);
     expect(isTypedOp('run_agent')).toBe(true);
     expect(isTypedOp('service_control')).toBe(true);
     for (const op of ['run_command', 'write_file', 'list_agents', 'RUN_AGENT', '', null, undefined, 1, {}]) {
@@ -356,7 +356,7 @@ describe('launcher rules (C3)', () => {
     const parsed = parseAlwaysAllowStatus(status([rule(), launcherRule()]));
     expect(parsed.status).toBe('ok');
     expect(parsed.rules).toHaveLength(2);
-    expect(OP_ORIGINS).toEqual({ run_agent: 'mcp', service_control: 'mcp', submit_instruction: 'launcher' });
+    expect(OP_ORIGINS).toEqual({ run_agent: 'mcp', service_control: 'mcp', submit_instruction: 'launcher', put_stream_feed: 'mcp' });
     for (const bad of [
       launcherRule({ principal: P1 }),
       launcherRule({ principal: `mcp:${P1}` }),

@@ -100,6 +100,10 @@ import {
 } from '@/lib/mcp-typed-ops';
 import { ARTICLE_PIPELINE_FILE_MAX_BYTES, articleOutputRoots } from '@/lib/agent-article-pipeline-file';
 import {
+  parseStreamFeedStoreResult, STREAM_FEED_OP, STREAM_FEED_TARGET, validateStreamFeedArgs,
+  type StreamFeedStoreFailureCode,
+} from '@/lib/mcp-stream-feed';
+import {
   parseServiceControlResult, SERVICE_FAILURE_CODES, serviceControlRuleBind, serviceControlRuleLabel,
   serviceControlRuleTarget, validateServiceControlArgs, type ServiceControlErrorCode,
 } from '@/lib/mcp-service-control';
@@ -595,7 +599,10 @@ type PipelineConfigErrorCode = 'invalid_path' | 'invalid_digest' | 'invalid_size
   | 'node_unavailable' | 'verify_failed' | 'syntax_error' | 'backup_failed'
   | 'denied' | 'native_error' | 'disabled' | 'revoked' | 'timeout';
 
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode | ServiceControlErrorCode };
+type StreamFeedErrorCode = StreamFeedStoreFailureCode
+  | 'disabled' | 'revoked' | 'denied' | 'not_attended' | 'timeout' | 'native_error' | 'target_changed';
+
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode | ServiceControlErrorCode | StreamFeedErrorCode };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -984,6 +991,8 @@ async function callTool(
       return stageInstallResultTool(epoch, ingress);
     case 'run_agent':
       return runAgentTool(args, epoch, ingress, deadlineMs);
+    case 'put_stream_feed':
+      return streamFeedTool(args, epoch, ingress, deadlineMs);
     case 'get_run_result':
       return getRunResultTool(args, epoch, ingress);
     default:
@@ -1450,6 +1459,146 @@ async function serviceControlTool(
     return await execute({ via: 'tap' });
   } catch {
     return refuse('native_error', 'could not control the service');
+  }
+}
+
+/**
+ * put_stream_feed (lib/mcp-stream-feed.ts, launcher ingress C7): stores the
+ * stream feed for the launcher's provider. It arrives here only through the
+ * native typed-op consumer's handoff (no rule matched natively).
+ *
+ * The feed is always tainted external data: it is handed to native as an
+ * opaque string and never logged, audited, shown or passed anywhere else (the
+ * dialog shows its byte count and a sha256 prefix only). Order: setting,
+ * arguments, epoch, STOP-ALL, native support, deadline, then (1) an
+ * always-allow rule for (principal, put_stream_feed, `stream-feed`), (2)
+ * `not_attended` when Shelly is not in the foreground, (3) the dialog, which
+ * offers "always allow". The "Skip all approvals" switch is NOT a step here:
+ * tainted content never gets blanket approval. Storing re-checks the setting,
+ * STOP-ALL, epoch and deadline (and the rule, when no one tapped); native
+ * validates and checks STOP-ALL again and writes the storing / outcome lines.
+ */
+async function streamFeedTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, deadlineMs: number,
+): Promise<ToolResult> {
+  const lineBase = { kind: 'mcp_stream_feed', event: 'mcp_stream_feed', principal: ingress.principal };
+  const audit = async (code: string): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({ ...lineBase, code }));
+      if (!ok) logError('MCPBridge', `put_stream_feed audit line not written (${code})`);
+    } catch {
+      logError('MCPBridge', `put_stream_feed audit line not written (${code})`);
+    }
+  };
+  const refuse = async (code: StreamFeedErrorCode, error: string): Promise<ToolResult> => {
+    if (epoch !== queueEpoch) {
+      await audit('revoked');
+      return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+    }
+    await audit(code);
+    return { ok: false, error, code };
+  };
+
+  if (!typedOpsEnabled()) return refuse('disabled', TYPED_OPS_DISABLED_MESSAGE);
+  const valid = validateStreamFeedArgs(args);
+  if ('message' in valid) return refuse(valid.code, valid.message);
+  if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+  if (await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
+  if (typeof TerminalEmulator.streamFeedPut !== 'function') return refuse('native_error', 'put_stream_feed is not available in this build');
+  if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before it could be shown for approval');
+
+  const { feedJson, expectedSha256, expectedBytes } = valid.args;
+  const op = STREAM_FEED_OP;
+  const target = STREAM_FEED_TARGET;
+  const principalTag = ingress.principal.slice(0, 8);
+  const feedTag = `sha=${valid.sha256.slice(0, 12)} bytes=${valid.bytes}`;
+  const ruleGone = 'the always-allow rule no longer applies (removed, or the rules became unreadable); call put_stream_feed again';
+
+  const store = async (auth: { via: 'tap' } | { via: 'rule'; ruleId: string }): Promise<ToolResult> => {
+    if (auth.via === 'rule') {
+      if (!(await mcpAlwaysAllowMatches(ingress.principal, op, target, null))) return refuse('target_changed', ruleGone);
+      const still = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, target, null);
+      if (!still || still.id !== auth.ruleId) return refuse('target_changed', ruleGone);
+    }
+    if (!typedOpsEnabled()) return refuse('disabled', TYPED_OPS_DISABLED_MESSAGE);
+    if (await stopAllActive()) return refuse('halted', 'all agents are stopped (STOP-ALL is on)');
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before the feed could be stored');
+
+    let raw: unknown;
+    try {
+      raw = await TerminalEmulator.streamFeedPut!(feedJson, expectedSha256, expectedBytes, ingress.principal, deadlineMs);
+    } catch {
+      return refuse('native_error', 'the feed could not be stored');
+    }
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const parsed = parseStreamFeedStoreResult(raw, { sha256: valid.sha256, bytes: valid.bytes });
+    if (!parsed) return refuse('native_error', 'could not read the store result');
+    // Native wrote the storing / outcome line itself.
+    if ('code' in parsed) {
+      logInfo('MCPBridge', `put_stream_feed not stored (${parsed.code}, ${feedTag})`);
+      return { ok: false, error: `the feed was not stored (${parsed.code}); the previous feed is kept`, code: parsed.code };
+    }
+    logInfo('MCPBridge', `put_stream_feed stored (${feedTag}, principal=${principalTag})`);
+    return { ok: true, data: { stored: true, sha256: parsed.sha256, bytes: parsed.bytes, receivedAt: parsed.receivedAt, untrusted: true } };
+  };
+
+  try {
+    // 1. always-allow rule (only after every refusal class above).
+    if (await mcpAlwaysAllowMatches(ingress.principal, op, target, null)) {
+      const rule = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, target, null);
+      if (rule) {
+        logInfo('MCPBridge', `always-allow rule ${rule.id} matched put_stream_feed (principal=${principalTag})`);
+        await audit('always_allowed');
+        return await store({ via: 'rule', ruleId: rule.id });
+      }
+      logError('MCPBridge', 'always-allow rule matched put_stream_feed but could not be listed; asking instead');
+    }
+
+    // No "Skip all approvals" step: the feed is tainted content.
+
+    // 2. Nobody to ask: refuse at once, never queue a dialog in the background.
+    const notAttended = 'Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now';
+    if (!appIsForeground()) {
+      logInfo('MCPBridge', 'put_stream_feed refused (not_attended)');
+      return await refuse('not_attended', notAttended);
+    }
+
+    // 3. Dialog (deny / once / always allow this client to store the feed).
+    await audit('approval_requested');
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (!appIsForeground()) {
+      logInfo('MCPBridge', 'put_stream_feed refused (not_attended)');
+      return await refuse('not_attended', notAttended);
+    }
+    const dialogBudgetMs = Math.min(approvalTimeoutMs, deadlineMs - Date.now() - DIALOG_DEADLINE_MARGIN_MS);
+    if (!(dialogBudgetMs > 0)) return refuse('timeout', 'the request expired before it could be shown for approval');
+    const label = t('mcp.stream_feed_rule_label');
+    const { decision } = await requestApprovalDetailed({
+      kind: 'put_stream_feed',
+      summary: t('mcp.approval_stream_feed'),
+      detail: t('mcp.approval_stream_feed_detail', { bytes: String(valid.bytes), sha: valid.sha256.slice(0, 12) }),
+      origin: ingress,
+      alwaysAllowable: { op, targetLabel: label },
+    }, dialogBudgetMs);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (decision === 'deny') return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (Date.now() >= deadlineMs) return refuse('timeout', 'the approval came after the request expired');
+    if (decision === 'always') {
+      const added = await addMcpAlwaysAllowRule(ingress.principal, op, target, null, label);
+      if (added.ok) {
+        logInfo('MCPBridge', `always-allow rule ${added.id} ${added.code} for put_stream_feed (principal=${principalTag})`);
+        await audit('always_allow_saved');
+      } else {
+        logError('MCPBridge', `always-allow rule not saved (${added.code}); storing once`);
+        await audit('always_allow_not_saved');
+        showToast('mcp.always_allow_not_saved_stream_feed', 'The "always allow" rule could not be saved. The feed is stored this once.');
+      }
+    }
+    // A tap authorized this call itself (once or always): no rule re-match.
+    return await store({ via: 'tap' });
+  } catch {
+    return refuse('native_error', 'the feed could not be stored');
   }
 }
 
@@ -2426,7 +2575,7 @@ let stopped = true;
 const inFlightRequestFiles = new Set<string>();
 
 /** Typed ops arrive in requests/ only through the native consumer's handoff. */
-const TYPED_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_agent']);
+const TYPED_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_agent', 'put_stream_feed']);
 /** So do raw tools (McpRawToolConsumer, scripts/shelly-mcp-server.js RAW_REQUEST_TOOLS). */
 const RAW_REQUEST_TOOLS: ReadonlySet<string> = new Set(['run_command', 'write_file']);
 export const HANDOFFS_DIR = `${QUEUE_DIR}/handoffs`;

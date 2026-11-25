@@ -303,6 +303,66 @@ object IngressAuditWriter {
         null
     }
 
+    // ---- Stream feed lines (put_stream_feed: StreamFeedStore, McpTypedOpConsumer, RN; pure) ----
+
+    const val STREAM_FEED_KIND = "mcp_stream_feed"
+
+    /**
+     * One `mcp_stream_feed` line: kind == event, no agent, principal 32 hex
+     * (or absent), a short code, and for a feed that passed validation its
+     * sha256, size and item count. Never any of the feed's content (fact
+     * sheet §6.2 P4). Null when any field is off.
+     */
+    fun buildStreamFeedLine(ts: Long, principal: String?, code: String, sha256: String?, bytes: Int?, items: Int?): String? {
+        if (principal != null && !PRINCIPAL_RE.matches(principal)) return null
+        if (!CODE_RE.matches(code)) return null
+        if (sha256 != null && !SHA256_RE.matches(sha256)) return null
+        if (bytes != null && bytes !in 1..LauncherIngressLimits.MAX_FEED_BYTES) return null
+        if (items != null && items !in 0..LauncherIngressLimits.MAX_FEED_BYTES) return null
+        if ((sha256 == null) != (bytes == null)) return null
+        if (items != null && sha256 == null) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", STREAM_FEED_KIND).put("event", STREAM_FEED_KIND)
+            if (principal != null) out.put("principal", principal)
+            out.put("code", code)
+            if (sha256 != null) out.put("sha256", sha256)
+            if (bytes != null) out.put("bytes", bytes)
+            if (items != null) out.put("items", items)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildStreamFeedLine] line to `audits/mcp-ingress-audit.jsonl`. */
+    fun appendStreamFeedLine(context: Context, principal: String?, code: String, sha256: String?, bytes: Int?, items: Int?): Boolean {
+        val line = buildStreamFeedLine(System.currentTimeMillis(), principal, code, sha256, bytes, items) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
+    /**
+     * RN's lines for this op (approval stages, its refusals) through
+     * appendMcpIngressAudit: exactly {kind, event, principal?, code}, rebuilt
+     * here. RN never sends a digest or size; native writes those itself.
+     */
+    fun buildStreamFeedLineFromJson(ts: Long, json: String): String? = try {
+        if (json.length > 512) null else {
+            val o = JSONObject(json)
+            val keys = HashSet<String>()
+            val it = o.keys()
+            while (it.hasNext()) keys.add(it.next())
+            if (!setOf("kind", "event", "principal", "code").containsAll(keys)) null
+            else if (o.optString("kind") != STREAM_FEED_KIND || o.optString("event") != STREAM_FEED_KIND) null
+            else {
+                val principal = if (o.has("principal")) o.get("principal") as? String ?: throw IllegalArgumentException() else null
+                val code = o.get("code") as? String ?: throw IllegalArgumentException()
+                buildStreamFeedLine(ts, principal, code, null, null, null)
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     // ---- Launcher ingress lines (LauncherIngressProvider; pure) ---------------------
 
     /**
@@ -436,6 +496,7 @@ object IngressAuditWriter {
     fun appendMcpLine(context: Context, agentId: String?, json: String): Boolean {
         val now = System.currentTimeMillis()
         val line = (if (agentId == null && json.contains("\"$SERVICE_CONTROL_KIND\"")) buildServiceControlLineFromJson(now, json) else null)
+            ?: (if (agentId == null && json.contains("\"$STREAM_FEED_KIND\"")) buildStreamFeedLineFromJson(now, json) else null)
             ?: buildMcpLine(now, agentId, json) ?: return false
         return append(context, agentId, MCP_AGENTLESS_FILE, line)
     }

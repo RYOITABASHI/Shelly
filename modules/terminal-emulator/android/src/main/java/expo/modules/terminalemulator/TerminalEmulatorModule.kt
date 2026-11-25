@@ -2064,6 +2064,32 @@ class TerminalEmulatorModule : Module() {
             McpAlwaysAllowStore.purgeExcept(requireReactContext(), principal)
         }
 
+        // Stream feed (StreamFeedStore.kt, C7): the RN MCP bridge stores a
+        // put_stream_feed request it was handed after the approval tap or a rule
+        // match. Native re-validates the bytes, re-checks STOP-ALL and writes the
+        // audit line itself; the previous feed is kept on any failure. Returns
+        // {"ok":true,"sha256","bytes","receivedAt"} or {"ok":false,"code"}.
+        // No content is ever returned, logged or audited here.
+        AsyncFunction("streamFeedPut") { feedJson: String, expectedSha256: String, expectedBytes: Double, principal: String, deadlineMs: Double ->
+            val ctx = requireReactContext()
+            val p = if (McpAlwaysAllowStore.isValidPrincipal(principal)) principal else null
+            // The same full validator as the headless path (StreamFeedCore.validate).
+            val args = org.json.JSONObject().put("feedJson", feedJson).put("expectedSha256", expectedSha256).put("expectedBytes", expectedBytes)
+            val deadline = if (deadlineMs.isFinite() && deadlineMs > 0) deadlineMs.toLong() else 0L
+            when (val checked = StreamFeedCore.validate(args)) {
+                is StreamFeedCore.Feed -> when (val r = StreamFeedStore.put(ctx, checked, p, deadline)) {
+                    is StreamFeedStore.PutResult.Stored -> org.json.JSONObject().put("ok", true).put("sha256", r.sha256)
+                        .put("bytes", r.bytes).put("receivedAt", r.receivedAt).toString()
+                    is StreamFeedStore.PutResult.Refused -> org.json.JSONObject().put("ok", false).put("code", r.refusal.code).toString()
+                }
+                is McpTypedOpDecision.Refusal -> {
+                    IngressAuditWriter.appendStreamFeedLine(ctx, p, checked.code, null, null, null)
+                    org.json.JSONObject().put("ok", false).put("code", checked.code).toString()
+                }
+                else -> org.json.JSONObject().put("ok", false).put("code", "invalid_params").toString()
+            }
+        }
+
         // Per-agent MCP ingress taint (AgentIngressTaint.kt, DEFERRED.md P1 "MCP の入口").
         // mark: MCP ingress path only. clear/reset: owner only. remove: owner's explicit delete only.
         AsyncFunction("markAgentIngress") { agentId: String, source: String, principal: String ->

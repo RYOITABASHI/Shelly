@@ -43,6 +43,9 @@ describe('IngressDecision order (Kotlin) == TS mirror', () => {
   it('per-op stages match, and submit_instruction skips the run_agent-only stages', () => {
     expect(stagesIn(listBetween(decision, 'OP_RUN_AGENT to setOf('))).toEqual([...INGRESS_OP_STAGES.run_agent]);
     expect(stagesIn(listBetween(decision, 'OP_SUBMIT_INSTRUCTION to setOf('))).toEqual([...INGRESS_OP_STAGES.submit_instruction]);
+    expect(stagesIn(listBetween(decision, 'OP_PUT_STREAM_FEED to setOf('))).toEqual([...INGRESS_OP_STAGES.put_stream_feed]);
+    expect(INGRESS_OP_STAGES.put_stream_feed).not.toContain('TAINT');
+    expect(INGRESS_OP_STAGES.put_stream_feed).not.toContain('APPROVE_ALL');
     for (const s of ['EPOCH', 'TARGET', 'ACTION_CONSENT', 'STEP7']) {
       expect(INGRESS_OP_STAGES.submit_instruction).not.toContain(s);
     }
