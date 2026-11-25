@@ -444,7 +444,9 @@ describe('a longform run with Gemini research (fixture broker)', () => {
     expect(result).not.toContain('vertexaisearch');
     const audit = fs.readFileSync(path.join(home, '.shelly/agents/logs', AGENT_ID, 'plan-executor-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(audit.find((e: any) => e.event === 'grounding_research')).toMatchObject({ redirects: 2, resolved: 0, droppedRedirects: 2 });
-    expect(audit.some((e: any) => e.event === 'sourcing_no_sources')).toBe(true);
+    // v68: an article chain's no-sources path is the held landing before the write step.
+    expect(audit.some((e: any) => e.event === 'sourcing_no_web_sources')).toBe(true);
+    expect(audit.find((e: any) => e.event === 'article_held')).toMatchObject({ reason: 'no-web-sources' });
   }, 30000);
 
   it('v46: two of three links resolved keeps two sources, renumbered, with no marker left dangling', async () => {

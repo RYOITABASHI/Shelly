@@ -318,7 +318,12 @@ describe('native + .sh wiring (source pins)', () => {
     const at = js.indexOf('async function guardResearchHistory(');
     const body = js.slice(at, js.indexOf('\n  }', at));
     expect(at).toBeGreaterThan(-1);
-    expect(body).toContain("if ((opts.tainted || ingressTainted()) && isResearchWebSearchCliStep(plan, i)) return 'tainted';");
+    // v68: the same rule as the step itself (webSearchStartRefusal: ingress always,
+    // a tainted run unless the owner's opt-in matches the plan's definition).
+    expect(body).toContain("if (isResearchWebSearchCliStep(plan, i) && webSearchStartRefusal(opts)) return 'tainted';");
+    const rule = js.slice(js.indexOf('function webSearchStartRefusal('), js.indexOf('\n}', js.indexOf('function webSearchStartRefusal(')));
+    expect(rule).toContain('if (ingressTainted()) return');
+    expect(rule).toContain("if (opts && opts.tainted && activeWebSearchOptIn !== 'on')");
     // The retry is the ordinary step run: dispatchCliStep adds --tainted for an MCP-marked run.
     expect(body).toContain('retry = await executeStepWithProgress(i, contextResults, carriedIndexes, true);');
     expect(body).not.toContain('dispatchCliStep(');

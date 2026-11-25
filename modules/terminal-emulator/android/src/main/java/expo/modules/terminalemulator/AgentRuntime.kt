@@ -595,7 +595,8 @@ object AgentRuntime {
     // v63: an article run lays the article-pipelines.json tunables (engines per phase, editor.minScore, a lower reviewRounds) over a copy of its plan at run start; never on a tainted run, never plan.tool / prompt / output / actions. JS-only (executor).
     // v64: an untainted article run with today's entry in ~/.shelly/agents/recovery-feedback.json takes that entry's topic at queue-pop (no _queue.md read or tick) and its write step gets the previous attempt's critique as a data block. JS-only (executor).
     // v66: research-history repeats fail closed after extra excluded retries (research_topic_exhausted); previously covered articles include history titles. JS-only (executor).
-    private const val CURRENT_EXECUTOR_VERSION = 67
+    // v68: search parity — a notification-triggered article run starts its web-search research step when SHELLY_WEB_SEARCH_OPT_IN_SHA256 matches the plan's definition hash (not exported by native yet: off), never on MCP ingress; a refused / stopped search or zero web sources lands the run held (skipped) before the write step with a recovery-feedback.jsonl line. JS-only (executor + driver).
+    private const val CURRENT_EXECUTOR_VERSION = 68
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=67
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=68
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -275,7 +275,14 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // article_recovery_feedback_applied.
 // v66: retry repeated research with named exclusions, then abort before writing
 // if research is exhausted. Include article-history titles in previously-covered data.
-const EXECUTOR_SCRIPT_VERSION = 67;
+// v68 (2026-11-25, search parity): (1) a notification-triggered run of an article
+// pipeline the owner opted in (native SHELLY_WEB_SEARCH_OPT_IN_SHA256 = the
+// plan's definition hash, planDefinitionSha256) starts the research step's
+// web search, with driver caps; MCP ingress never. (2) A refused or stopped
+// search, or a research with no web source, lands the run held before the
+// write step (landArticleHeld): run log skipped "Held (<reason>): …", audit
+// article_held, one reason "held" line in ~/.shelly/agents/recovery-feedback.jsonl.
+const EXECUTOR_SCRIPT_VERSION = 68;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -400,6 +407,9 @@ class PlanFailure extends Error {
     this.status = options && options.status ? options.status : 'error';
     this.exitCode = options && typeof options.exitCode === 'number' ? options.exitCode : EXIT.PLAN_DENY;
     this.handled = options && options.handled === true;
+    // v68: a failure an article run lands as held instead of failing
+    // (articleHeldLanding): 'web-search-refused' or 'web-search-stopped'.
+    this.heldReason = options && typeof options.heldReason === 'string' ? options.heldReason : '';
   }
 }
 
@@ -407,6 +417,17 @@ class ActionSkipped extends Error {
   constructor(message) {
     super(message);
     this.name = 'ActionSkipped';
+  }
+}
+
+// v68: the action's approval tap did not come (timed out), was declined, or its
+// reply could not be verified. Still a skip everywhere it was one; an article
+// pipeline's draft is kept in held/ with the reason instead of being lost.
+class ActionApprovalNotGranted extends ActionSkipped {
+  constructor(message, reason) {
+    super(message);
+    this.name = 'ActionApprovalNotGranted';
+    this.reason = reason;
   }
 }
 
@@ -812,14 +833,27 @@ function validatePlan(raw) {
 }
 
 function loadPlan(planFile) {
+  return loadPlanWithIdentity(planFile).plan;
+}
+
+// v68: the plan, plus what the held line and the web-search opt-in know it by,
+// from the very bytes it was loaded from: planId (scripts/shelly-run-recovery.js
+// readPlan's `plan-agent-<id>@<sha256 of the file, 12>`) and the definition
+// hash (planDefinitionSha256, taken before validatePlan can touch the object).
+function loadPlanWithIdentity(planFile) {
   if (!planFile) throw new PlanFailure('--plan-file is required');
+  let text;
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    text = fs.readFileSync(planFile, 'utf8');
+    parsed = JSON.parse(text);
   } catch (e) {
     throw new PlanFailure(`cannot read plan: ${e && e.message ? e.message : e}`);
   }
-  return validatePlan(parsed);
+  const definitionSha256 = planDefinitionSha256(parsed);
+  const plan = validatePlan(parsed);
+  const planId = `plan-agent-${plan.agent.id}@${crypto.createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
+  return { plan, identity: { planId, definitionSha256 } };
 }
 
 function sleepMs(ms) {
@@ -5841,27 +5875,330 @@ let activeRecoveryFeedback = null;
 // link, and the descriptor must be the file at the real home's fixed path.
 // Anything off: nothing is written. Throws nothing.
 function appendRecoveryReceipt(home, entry) {
+  appendHomeJsonlLine(home, RECOVERY_FEEDBACK_RECEIPTS_FILE, entry);
+}
+
+// v68: the receipt's append, shared with the held feedback line. `rel` is a
+// fixed path under the home's own .shelly/agents. True when the line was
+// written in one write. Throws nothing.
+function appendHomeJsonlLine(home, relPath, entry) {
   try {
-    const rel = RECOVERY_FEEDBACK_RECEIPTS_FILE.split('/');
+    const rel = relPath.split('/');
     const file = path.join(home, ...rel);
     // The folder must already be the real home's own .shelly/agents (the drop
     // file was just read there): no linked .shelly or agents, nothing created,
     // so O_CREAT can only make the file in that folder.
     const realDir = path.join(fs.realpathSync(home), ...rel.slice(0, -1));
-    if (fs.realpathSync(path.dirname(file)) !== realDir) return;
+    if (fs.realpathSync(path.dirname(file)) !== realDir) return false;
     const c = fs.constants;
     const fd = fs.openSync(file, c.O_WRONLY | c.O_APPEND | c.O_CREAT | (c.O_NOFOLLOW || 0) | (c.O_NONBLOCK || 0), 0o600);
     try {
       const st = fs.fstatSync(fd);
-      if (!st.isFile() || st.nlink !== 1) return;
-      if (fs.readlinkSync(`/proc/self/fd/${fd}`) !== path.join(fs.realpathSync(home), ...rel)) return;
-      fs.writeSync(fd, `${JSON.stringify(entry)}\n`);
+      if (!st.isFile() || st.nlink !== 1) return false;
+      if (fs.readlinkSync(`/proc/self/fd/${fd}`) !== path.join(fs.realpathSync(home), ...rel)) return false;
+      const line = Buffer.from(`${JSON.stringify(entry)}\n`, 'utf8');
+      return fs.writeSync(fd, line) === line.length;
     } finally {
       fs.closeSync(fd);
     }
   } catch (_) {
-    // best effort: the receipt never fails the run
+    // best effort: the line never fails the run
+    return false;
   }
+}
+
+// ── Web search on a notification-triggered run: the owner's opt-in (v68) ──────
+// The research step's hosted web search (isResearchWebSearchCliStep) sends
+// queries off the device, so a tainted run never started it (v58). A
+// notification-triggered run (opts.tainted, SHELLY_CAP_TAINTED) of a pipeline
+// whose definition the owner opted in now starts it. The line is "who decided
+// the inputs the queries come from": the PlanSpec executor never puts the
+// notification's text in a prompt (it does not read SHELLY_NOTIFICATION_TEXT;
+// a test pins that), so the notification only decides *when* the owner's own
+// fixed plan runs.
+//   - The opt-in is native's readonly SHELLY_WEB_SEARCH_OPT_IN_SHA256: the
+//     definition hash (planDefinitionSha256) the owner consented to in
+//     Shelly's own UI. Native exports it from owner-only storage; nothing this
+//     process or an agent writes can set it, and MCP has no tool for it.
+//     Absent (every run today) = off.
+//   - Bound to the definition: a plan whose hash differs (any edit or a
+//     rebuild that changes anything but generatedAt) is "lapsed" = off.
+//   - MCP ingress (SHELLY_INGRESS_TAINTED) is never opened, flag or not.
+//   - It opens the search start only: the driver's text-only containment,
+//     write / exec / send limits, source-text fetch and redirect resolution on
+//     a tainted run are unchanged. The turn gets per-turn caps
+//     (WEB_SEARCH_OPT_IN_MAX_QUERIES searches, WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS
+//     a query) and every query is in the driver's audit in full.
+//   - The state is audited at run start (web_search_opt_in) and on use
+//     (web_search_opt_in_applied).
+const WEB_SEARCH_OPT_IN_ENV = 'SHELLY_WEB_SEARCH_OPT_IN_SHA256';
+const WEB_SEARCH_OPT_IN_MAX_QUERIES = 20;
+const WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS = 200;
+const WEB_SEARCH_OPT_IN_SHA_RE = /^[0-9a-f]{64}$/;
+
+/** JSON with every object's keys sorted (arrays keep their order). Pure. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().filter((k) => value[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * The definition hash the opt-in binds to: SHA-256 of the canonical JSON of the
+ * plan file as parsed, without its `generatedAt` stamp. '' for a non-object.
+ * Shelly's UI gets the same value from `--op web-search-definition-hash`. Pure.
+ */
+function planDefinitionSha256(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+  const copy = Object.assign({}, parsed);
+  delete copy.generatedAt;
+  return sha256Hex(canonicalJson(copy));
+}
+
+/** 'on' | 'off' | 'invalid' | 'lapsed' | 'ingress' for this run. Pure on its inputs. */
+function webSearchOptInState(definitionSha256, env, ingress) {
+  const raw = String((env || {})[WEB_SEARCH_OPT_IN_ENV] || '').trim().toLowerCase();
+  if (!raw) return 'off';
+  if (ingress) return 'ingress';
+  if (!WEB_SEARCH_OPT_IN_SHA_RE.test(raw)) return 'invalid';
+  if (!definitionSha256 || raw !== definitionSha256) return 'lapsed';
+  return 'on';
+}
+
+// This run's opt-in state (run() sets it): only 'on' starts a search on a tainted run.
+let activeWebSearchOptIn = 'off';
+
+/** Why the research step's web search may not start on this run, or ''. */
+function webSearchStartRefusal(opts) {
+  if (ingressTainted()) return `web search on an ingress-tainted run (${ingressTaintReason()})`;
+  if (opts && opts.tainted && activeWebSearchOptIn !== 'on') {
+    return activeWebSearchOptIn === 'off' ? 'web search on a tainted run' : `web search on a tainted run (opt-in ${activeWebSearchOptIn})`;
+  }
+  return '';
+}
+
+// ── Held landings of an article run (v68, search parity) ──────────────────────
+// An article (longform, not a digest) run that cannot publish a draft it may
+// stand behind no longer ends in a silent success or a bare failure. It lands
+// "held": the run log says skipped with a `Held (<reason>): …` preview, the
+// audit gets `article_held`, the draft (when there is one) goes to
+// ~/.shelly/agents/held/<date>/<output folder>/ instead of the output folder,
+// and one line goes to ~/.shelly/agents/recovery-feedback.jsonl.
+// Reasons (closed set, ARTICLE_HELD_REASONS):
+//   web-search-refused   the research step's web search may not start on this
+//                        run (tainted without the owner's opt-in, MCP ingress)
+//   web-search-stopped   the driver stopped the research turn's web search
+//                        (per-turn cap, a secret in a query, a tainted item)
+//   no-web-sources       the research ran and returned no web source: a plan
+//                        with a web research step never writes from the
+//                        owner's materials alone
+//   text-lint            work talk / an editor's note is still in the draft
+//                        after one bounded fix (articleTextLintFlags)
+//   approval-timeout / approval-declined / approval-unverified
+//                        the draft's save approval did not come
+// The first three land before the write step (no draft). An MCP-ingress run
+// writes no held file (its writes are refused); its line still goes out.
+// The JSONL line is the S5-0 §3 shape with reason "held" and, only here, `note`
+// (strings: the held reason first, then the lint messages for text-lint). Its
+// content goes to the audit first (`recovery_feedback`, kind plan.recovery),
+// then the shared line, then `recovery_feedback_shared`, the order
+// scripts/shelly-run-recovery.js (S5) backfills from.
+const ARTICLE_HELD_DIR = '.shelly/agents/held';
+const RECOVERY_FEEDBACK_JSONL_FILE = '.shelly/agents/recovery-feedback.jsonl';
+const ARTICLE_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout', 'approval-declined', 'approval-unverified']);
+const ARTICLE_HELD_NOTE_MAX = 20;
+const ARTICLE_HELD_NOTE_MAX_CHARS = 500;
+const ARTICLE_HELD_PIPELINE_ID_RE = /^[a-z0-9-]{1,32}$/;
+const ARTICLE_HELD_MESSAGES = {
+  'web-search-refused': 'the research step may not search the web on this run, so no article was written',
+  'web-search-stopped': 'the research step\'s web search was stopped, so no article was written',
+  'no-web-sources': 'the research found no web source, so no article was written from the materials alone',
+  'text-lint': 'work talk or an editor\'s note is still in the draft after one fix; the draft is in held/',
+  'approval-timeout': 'the draft\'s save approval timed out; the draft is in held/',
+  'approval-declined': 'the draft\'s save was declined; the draft is in held/',
+  'approval-unverified': 'the draft\'s save approval could not be verified; the draft is in held/',
+};
+
+/** `Held (<reason>): <message>` — the run log / notification preview. */
+function articleHeldMessage(reason, heldPath) {
+  const base = `Held (${reason}): ${ARTICLE_HELD_MESSAGES[reason] || reason}`;
+  return heldPath ? `${base} (${heldPath})` : `${base}.`;
+}
+
+// The S5 step kind ('research', 'write', a local kind, a hand-off kind, …) of
+// step i. Same rule as scripts/shelly-run-recovery.js stepKind. Pure.
+function articleStepKind(plan, index) {
+  const list = plan && plan.steps && Array.isArray(plan.steps.list) ? plan.steps.list : null;
+  const step = list ? list[index] : null;
+  if (!step || typeof step !== 'object') return 'unknown';
+  if (step.handoff && typeof step.handoff.kind === 'string') return step.handoff.kind.slice(0, 40);
+  if (step.local && typeof step.local.kind === 'string') return step.local.kind.slice(0, 40);
+  if (step.apiCall) return 'api-call';
+  const plain = [];
+  list.forEach((s, i) => {
+    if (s && typeof s === 'object' && s.local === undefined && !s.apiCall && s.handoff === undefined) plain.push(i);
+  });
+  if (plain[0] === index) return 'research';
+  if (plain[1] === index) return 'write';
+  if (step.tool && step.tool.type === 'cli') return `cli:${String(step.tool.cli || '').slice(0, 20)}`;
+  return 'model';
+}
+
+/** The `held: <reason>` line goes into the draft's frontmatter (or a new one). Pure. */
+function withHeldFrontmatter(text, reason) {
+  const t = String(text || '');
+  const line = `held: ${JSON.stringify(reason)}`;
+  if (/^---\r?\n/.test(t)) return t.replace(/^---\r?\n/, `---\n${line}\n`);
+  return `---\n${line}\n---\n\n${t}`;
+}
+
+/**
+ * Writes the held copy of a draft: ~/.shelly/agents/held/<today>/<basename of
+ * the output folder>/<the draft's own file name> (the layout the v66 history
+ * guard already reads, collectPreviouslyCoveredTitles). No link anywhere on the
+ * way (each folder made 0700 or checked with lstat), a new file only (O_EXCL,
+ * O_NOFOLLOW; a name taken today gets -2 … -9). Returns the path or ''. Throws nothing.
+ */
+function writeArticleHeldDraft(paths, plan, config, text, reason, today) {
+  try {
+    const outputDir = String((plan.output && plan.output.outputDir) || '');
+    const folder = path.basename(articleFolderKey(outputDir) || path.resolve(outputDir || '.'));
+    if (!folder || folder === '.' || folder === '/' || !/^[^\u0000-\u001f/\\]{1,200}$/.test(folder)) return '';
+    const agentsDir = path.join(paths.home, '.shelly', 'agents');
+    const agentsStat = fs.lstatSync(agentsDir);
+    if (!agentsStat.isDirectory() || agentsStat.isSymbolicLink()) return '';
+    let dir = agentsDir;
+    for (const part of ['held', today, folder]) {
+      dir = path.join(dir, part);
+      let st = fs.lstatSync(dir, { throwIfNoEntry: false });
+      if (!st) {
+        fs.mkdirSync(dir, { mode: 0o700 });
+        st = fs.lstatSync(dir);
+      }
+      if (st.isSymbolicLink() || !st.isDirectory()) return '';
+    }
+    const name = path.basename(resolveDraftDestination(paths, plan, config).dest);
+    const ext = path.extname(name) || '.md';
+    const stem = name.slice(0, name.length - path.extname(name).length) || plan.agent.id;
+    const body = Buffer.from(withHeldFrontmatter(text, reason), 'utf8');
+    const c = fs.constants;
+    for (let n = 1; n <= 9; n += 1) {
+      const file = path.join(dir, n === 1 ? `${stem}${ext}` : `${stem}-${n}${ext}`);
+      let fd;
+      try {
+        fd = fs.openSync(file, c.O_WRONLY | c.O_CREAT | c.O_EXCL | (c.O_NOFOLLOW || 0), 0o600);
+      } catch (error) {
+        if (error && error.code === 'EEXIST') continue;
+        return '';
+      }
+      try {
+        if (fs.writeSync(fd, body) !== body.length) return '';
+      } finally {
+        fs.closeSync(fd);
+      }
+      return file;
+    }
+    return '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/** The article-pipelines.json id of this plan's pipeline, or null. Throws nothing. */
+function articleHeldPipelineId(home, plan) {
+  try {
+    const entry = articlePipelineEntryFor(plan, readArticlePipelineFileForAudit(home, fs));
+    return entry && typeof entry.id === 'string' && ARTICLE_HELD_PIPELINE_ID_RE.test(entry.id) ? entry.id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** The note strings of a held line: printable, capped, the reason first. Pure. */
+function articleHeldNote(reason, extra) {
+  const out = [];
+  for (const raw of [reason].concat(Array.isArray(extra) ? extra : [])) {
+    if (typeof raw !== 'string') continue;
+    const line = recoveryFeedbackLines(raw).join(' ').slice(0, ARTICLE_HELD_NOTE_MAX_CHARS);
+    if (line && out.indexOf(line) === -1) out.push(line);
+    if (out.length >= ARTICLE_HELD_NOTE_MAX) break;
+  }
+  return out;
+}
+
+// This run's plan identity for the held line (run() sets it), or null.
+let activePlanIdentity = null;
+
+/**
+ * The held feedback line (S5-0 §3 + note), recorded the S5 way: content in the
+ * audit, the shared line, then the marker. Best effort; throws nothing.
+ * `landing`: {reason, note, stepIndex, stepStartedAt, heldPath}.
+ */
+function recordArticleHeldFeedback(paths, plan, landing, startedAt) {
+  try {
+    const runId = activeProgress && activeProgress.runId ? activeProgress.runId : `${plan.agent.id}-${startedAt}-unrecorded`;
+    const iso = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null);
+    const feedback = {
+      runId,
+      agentId: plan.agent.id,
+      pipelineId: articleHeldPipelineId(paths.home, plan),
+      planId: activePlanIdentity && activePlanIdentity.planId ? activePlanIdentity.planId : null,
+      // The executor is not told the scheduled time; the S5 launch record holds it.
+      scheduledAt: null,
+      startedAt: iso(startedAt),
+      terminatedAt: new Date().toISOString(),
+      reason: 'held',
+      lastStep: Number.isInteger(landing.stepIndex) && landing.stepIndex >= 0
+        ? { index: landing.stepIndex, kind: articleStepKind(plan, landing.stepIndex), startedAt: iso(landing.stepStartedAt) }
+        : null,
+      artifacts: { draft: !!landing.heldPath, paths: landing.heldPath ? [landing.heldPath] : [] },
+      delivery: { delivered: false, channel: String((plan.action && plan.action.type) || 'unknown').slice(0, 40) },
+      refire: { eligible: false, refired: false, refireRunId: null },
+      note: articleHeldNote(landing.reason, landing.note),
+    };
+    appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.recovery', event: 'recovery_feedback', feedback });
+    if (appendHomeJsonlLine(paths.home, RECOVERY_FEEDBACK_JSONL_FILE, feedback)) {
+      appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.recovery', event: 'recovery_feedback_shared', agentId: plan.agent.id, runId, reason: 'held' });
+    }
+  } catch (_) {}
+}
+
+/**
+ * Lands an article run as held (see the section comment): the held copy of
+ * `text` (none on an ingress-tainted run or when there is no text), the audit
+ * line, the feedback line and the notification. Returns
+ * {status:'skipped', preview, errorMessage, held:{reason, heldPath}}; the
+ * caller adds `steps`. Throws nothing.
+ */
+function landArticleHeld(paths, plan, config, landing, startedAt) {
+  const reason = ARTICLE_HELD_REASONS.has(landing.reason) ? landing.reason : 'web-search-refused';
+  let heldPath = '';
+  if (typeof landing.text === 'string' && landing.text.trim() && !ingressTainted()) {
+    heldPath = writeArticleHeldDraft(paths, plan, config, landing.text, reason, localIsoDate(new Date()));
+  }
+  const full = Object.assign({}, landing, { reason, heldPath });
+  try {
+    appendJsonl(paths.planAuditFile, Object.assign({
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'article_held',
+      agentId: plan.agent.id,
+      reason,
+      stepIndex: Number.isInteger(landing.stepIndex) ? landing.stepIndex : null,
+      draftKept: !!heldPath,
+    }, landing.text && !heldPath ? { heldWriteFailed: !ingressTainted(), ...(ingressTainted() ? { ingress: true } : {}) } : {}));
+  } catch (_) {}
+  recordArticleHeldFeedback(paths, plan, full, startedAt);
+  const preview = articleHeldMessage(reason, heldPath);
+  // An MCP-ingress run posts nothing (refusals are read later, never pushed).
+  if (!ingressTainted()) {
+    try {
+      writeNotification(paths, plan, 'skipped', preview);
+    } catch (_) {}
+  }
+  return { status: 'skipped', preview, errorMessage: preview, held: { reason, heldPath } };
 }
 
 // The one receipt line and the one audit line, when queue-pop takes the held
@@ -9624,7 +9961,7 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
         // approval the moment it's enabled. Dormant: SIGNED_APPROVAL_ENABLED is
         // false today, so this branch never executes in production.
         if (!reply || !reply.sigAlg || !reply.signature || !reply.keySha256 || !reply.nonce) {
-          throw new ActionSkipped(`${actionType} action declined`);
+          throw new ActionApprovalNotGranted(`${actionType} action declined`, 'approval-declined');
         }
         ensureSignedApprovalVerifierKey(config, (event, fields) => appendJsonl(paths.planAuditFile, {
           ts: new Date().toISOString(),
@@ -9641,7 +9978,7 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
           nonceStore,
         });
         if (result.ok && reply.decision === 'accept') return;
-        throw new ActionSkipped(`${actionType} action declined`);
+        throw new ActionApprovalNotGranted(`${actionType} action declined`, 'approval-declined');
       }
 
       // Naive equality check — reached ONLY when SIGNED_APPROVAL_ENABLED is
@@ -9675,11 +10012,11 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
             actionType,
             reason: verdict.reason,
           });
-          throw new ActionSkipped(`${actionType} action approval reply signature could not be verified`);
+          throw new ActionApprovalNotGranted(`${actionType} action approval reply signature could not be verified`, 'approval-unverified');
         }
       }
       if (reply.decision === 'accept') return;
-      throw new ActionSkipped(`${actionType} action declined`);
+      throw new ActionApprovalNotGranted(`${actionType} action declined`, 'approval-declined');
     }
     // STOP-ALL: this sync wait blocks the event loop, so the SIGTERM handler
     // cannot run until it returns; poll the sentinel here instead.
@@ -9694,7 +10031,7 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
   try {
     fs.unlinkSync(requestFile);
   } catch (_) {}
-  throw new ActionSkipped(`${actionType} action approval timed out`);
+  throw new ActionApprovalNotGranted(`${actionType} action approval timed out`, 'approval-timeout');
 }
 
 // Project owner directive 2026-07-14: wraps requestActionApproval so
@@ -12091,9 +12428,24 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
   // notification-triggered (tainted) run never starts it, as it never fetches
   // source text (runSourceTexts) or resolves redirects.
   const webSearch = isResearchWebSearchCliStep(plan, stepIndex);
-  if (webSearch && ((opts && opts.tainted) || ingressTainted())) {
-    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: ingressTainted() ? `web search on an ingress-tainted run (${ingressTaintReason()})` : 'web search on a tainted run' });
-    throw new PlanFailure(CLI_WEB_SEARCH_TAINTED_MESSAGE, { exitCode: EXIT.TOOL_DENY });
+  // v68: an article run lands a refused search as held (articleHeldLanding).
+  const webSearchRefusal = webSearch ? webSearchStartRefusal(opts) : '';
+  if (webSearchRefusal) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: webSearchRefusal });
+    throw new PlanFailure(CLI_WEB_SEARCH_TAINTED_MESSAGE, { exitCode: EXIT.TOOL_DENY, heldReason: 'web-search-refused' });
+  }
+  // v68 (search parity): a notification-triggered run of a pipeline the owner
+  // opted in starts the search, with the per-turn caps (driver
+  // --web-search-max-queries / --web-search-max-query-chars, every query audited).
+  const webSearchOptedIn = webSearch && !!(opts && opts.tainted) && activeWebSearchOptIn === 'on';
+  if (webSearchOptedIn) {
+    cliStepAudit(paths, plan, 'web_search_opt_in_applied', {
+      stepIndex,
+      engine,
+      definitionSha256: activePlanIdentity && activePlanIdentity.definitionSha256 ? activePlanIdentity.definitionSha256.slice(0, 16) : null,
+      maxQueries: WEB_SEARCH_OPT_IN_MAX_QUERIES,
+      maxQueryChars: WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS,
+    });
   }
   const driver = opts.agentDriver || path.join(paths.home, '.shelly-agent-driver.js');
   if (!fs.existsSync(driver)) {
@@ -12139,6 +12491,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     // app-server token usage notifications, tokens only).
     '--usage-file', usageFile,
     ...(textOnly ? ['--text-only', ...(webSearch ? ['--web-search'] : []), ...(step.tool.model ? ['--text-only-model', step.tool.model] : [])] : []),
+    ...(webSearchOptedIn ? ['--web-search-max-queries', String(WEB_SEARCH_OPT_IN_MAX_QUERIES), '--web-search-max-query-chars', String(WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS)] : []),
     // v59 (MCP ingress taint Inc 5): a run of an agent marked by MCP ingress
     // (native exports SHELLY_INGRESS_TAINTED=1) declines every write / exec /
     // network send in the driver's gate, attended too, with no escalation or
@@ -12311,7 +12664,10 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       // A text-only stop ends in audit lines; the reason is the driver's own line.
       const stated = textOnly ? tailLines.filter((l) => /^(?:CODEX|CLAUDE)_ERROR /.test(l)).slice(-1)[0] : undefined;
       const lastLine = stated || tailLines.slice(-1)[0] || '';
-      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step failed (exit ${outcome.status == null ? outcome.signal || 'unknown' : outcome.status})${lastLine ? `: ${redact(lastLine).slice(0, 300)}` : ''}`);
+      // v68: the driver stopped the research turn for its web search (a cap, a
+      // secret in a query, a search on a tainted run): an article run lands held.
+      const searchStopped = webSearch && !!stated && /^CODEX_ERROR (?:Web search|A web search)\b/.test(stated);
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step failed (exit ${outcome.status == null ? outcome.signal || 'unknown' : outcome.status})${lastLine ? `: ${redact(lastLine).slice(0, 300)}` : ''}`, searchStopped ? { heldReason: 'web-search-stopped' } : undefined);
     }
     const resultText = redact(answer).trim();
     if (!resultText) throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned no answer`);
@@ -12531,6 +12887,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   let queuePopped = null;
   let chainStopMessage = '';
   let abortMessage = '';
+  // v68: an article run that cannot publish lands held (landArticleHeld):
+  // {reason, note, stepIndex, stepStartedAt, text?, landed?}.
+  const articleHeldRun = longform && !isDigestPlan(plan);
+  let heldLanding = null;
+  // v68: when each step first started (the held line's lastStep.startedAt).
+  const stepStartedAtMs = new Map();
   // v30: the review and revise steps whose prompt had to cut a carried text.
   const promptCutSteps = new Set();
   // v31: why the review cannot stand (assemble's review_note), the review loop
@@ -13884,6 +14246,16 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
           handoffStopped: true,
         };
       }
+      // v68: a refused or stopped web search of an article's research step
+      // lands the run held before the write step (the loop picks heldReason up).
+      if (articleHeldRun && error.heldReason) {
+        return {
+          record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: previewText(`${articleHeldMessage(error.heldReason)} ${redact(error.message)}`) },
+          failed: true,
+          heldReason: error.heldReason,
+          heldDetail: redact(error.message).slice(0, 300),
+        };
+      }
       // Sourced briefings: a summarize/write step whose model call failed
       // outright (every ladder candidate exhausted / refused / local LLM
       // down) still has real, sourced research to restate — emit the
@@ -14048,6 +14420,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const progress = activeProgress;
     const step = plan.steps.list[i];
     if (progress && parallelPlan.group[i] === undefined) progress.currentStep = i;
+    if (!stepStartedAtMs.has(i)) stepStartedAtMs.set(i, Date.now());
     progressState(progress, i, 'RUNNING');
     if (step.apiCall && i !== plan.steps.list.length - 1) {
       progressStepEvent(progress, i, 'tool', { tool: 'api-call', provider: { kind: 'API', name: String(step.apiCall.host || '').slice(0, 80) } });
@@ -14130,7 +14503,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
 
     const halted = () => haltedChain || isHalted(paths);
     const retrySkipReason = () => {
-      if ((opts.tainted || ingressTainted()) && isResearchWebSearchCliStep(plan, i)) return 'tainted';
+      if (isResearchWebSearchCliStep(plan, i) && webSearchStartRefusal(opts)) return 'tainted';
       if (halted()) return 'halted';
       if (longformDeadlineMs - Date.now() - (Number(outcome.record && outcome.record.durationMs) || 0) < researchHistoryRetryReserveMs()) return 'time';
       return '';
@@ -14390,6 +14763,24 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // Sourced briefings: the research ran but found nothing citable — stop
     // HERE (before any summarize/write step can invent content) with an
     // explicit failure instead of saving an unsourced briefing.
+    // v68: an article plan with a web research step never writes from the
+    // owner's materials alone: no web source after its research lands held
+    // here, before the write step (materials-only is right only for a plan with
+    // no web research step, where sourcingActive is false).
+    if (articleHeldRun && sourcingActive && researchStepsDone > 0 && evidence.sources.length === 0 && !stepIsResearch(i)) {
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'plan.executor',
+        event: 'sourcing_no_web_sources',
+        agentId: plan.agent.id,
+        stepIndex: i,
+        materials: materialsState ? materialsState.entries.length : 0,
+      });
+      const lastResearch = records.filter((r) => stepIsResearch(r.index)).slice(-1)[0];
+      const heldAt = lastResearch ? lastResearch.index : i;
+      heldLanding = { reason: 'no-web-sources', note: [], stepIndex: heldAt, stepStartedAt: stepStartedAtMs.get(heldAt) || null };
+      break;
+    }
     // v44: on an article chain the owner's own materials are sources too.
     const ownSources = longform && materialsState ? materialsState.entries.length : 0;
     if (sourcingActive && researchStepsDone > 0 && evidence.sources.length === 0 && ownSources === 0 && !stepIsResearch(i)) {
@@ -14544,6 +14935,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         // Declared order, so a group's sources get stable chain-wide ids.
         if (publish) absorbOutcome(outcome);
         records.push(outcome.record);
+        if (outcome.heldReason && !heldLanding) {
+          heldLanding = { reason: outcome.heldReason, note: outcome.heldDetail ? [outcome.heldDetail] : [], stepIndex: i + offset, stepStartedAt: stepStartedAtMs.get(i + offset) || null };
+          break;
+        }
         if (outcome.abortRun) {
           abortMessage = outcome.abortRun;
           break;
@@ -14557,7 +14952,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         }
         if (outcome.failed) priorFailed = true;
       }
-      if (abortMessage || haltedChain) break;
+      if (abortMessage || haltedChain || heldLanding) break;
       if (rejected) throw rejected.reason;
       i = runEnd;
       continue;
@@ -14599,6 +14994,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // v47: the first sources' text, once, after a longform research step.
     if (outcome.research && !outcome.failed) await runSourceTexts(i);
     records.push(outcome.record);
+    if (outcome.heldReason) {
+      heldLanding = { reason: outcome.heldReason, note: outcome.heldDetail ? [outcome.heldDetail] : [], stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null };
+      break;
+    }
     if (outcome.abortRun) {
       abortMessage = outcome.abortRun;
       break;
@@ -14634,6 +15033,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     });
     // User-initiated: no notification (mirrors the native kill-switch gate).
     return { status: 'skipped', halted: true, preview: haltMessage(paths), errorMessage: haltMessage(paths), steps: records };
+  }
+  // v68: the held landing (search refused / stopped / no web source before the
+  // write step; text lint or an approval that did not come at the final step).
+  if (heldLanding) {
+    const landed = heldLanding.landed || landArticleHeld(paths, plan, config, heldLanding, startedAt);
+    return Object.assign({}, landed, { steps: records });
   }
   // An empty queue is not a failure and sends no notification: the digest
   // names the stream as having no draft today.
@@ -14684,7 +15089,9 @@ function finishSkipped(paths, plan, startedAt, message) {
 }
 
 async function run(args) {
-  let plan = loadPlan(args['plan-file']);
+  const loaded = loadPlanWithIdentity(args['plan-file']);
+  let plan = loaded.plan;
+  activePlanIdentity = loaded.identity;
   const expectedAgentId = String(args['agent-id'] || '').trim();
   if (expectedAgentId && expectedAgentId !== plan.agent.id) {
     throw new PlanFailure(`plan agent id mismatch: expected ${expectedAgentId}`, { exitCode: EXIT.PLAN_DENY });
@@ -14745,6 +15152,25 @@ async function run(args) {
     actionType: plan.action.type,
     unattended: argTruthy(args.unattended),
   });
+  // v68: the owner's web-search opt-in for a notification-triggered run, bound
+  // to this plan's definition (webSearchOptInState). Audited whenever native
+  // passed one, and on every tainted / ingress run of a plan whose research
+  // step searches the web (so a refused search always shows its opt-in state).
+  activeWebSearchOptIn = webSearchOptInState(activePlanIdentity.definitionSha256, process.env, ingressTainted());
+  const webSearchPlan = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.some((_s, k) => isResearchWebSearchCliStep(plan, k)));
+  if (process.env[WEB_SEARCH_OPT_IN_ENV] || (webSearchPlan && (opts.tainted || ingressTainted()))) {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'web_search_opt_in',
+      agentId: plan.agent.id,
+      state: activeWebSearchOptIn,
+      tainted: opts.tainted,
+      ingress: ingressTainted(),
+      webSearchStep: webSearchPlan,
+      definitionSha256: activePlanIdentity.definitionSha256.slice(0, 16),
+    });
+  }
 
   // Global kill-switch (STOP ALL). haltAllAgents drops a `.halted` sentinel and
   // uninstalls schedules; this is the native/executor-side defense in depth so a
@@ -15531,6 +15957,11 @@ async function main() {
   try {
     if (process.argv[2] === '--sourcing-op') process.exit(runSourcingCli(process.argv.slice(2)));
     if (process.argv[2] === '--continuous-op') process.exit(runContinuousCli(process.argv.slice(2)));
+    // v68: the definition hash Shelly's opt-in UI binds the web-search consent to.
+    if (process.argv[2] === '--web-search-definition-hash') {
+      process.stdout.write(`${loadPlanWithIdentity(process.argv[3]).identity.definitionSha256}\n`);
+      process.exit(EXIT.OK);
+    }
     process.exit(await run(parseArgs(process.argv.slice(2))));
   } catch (e) {
     process.stderr.write(redact(e && e.stack ? e.stack : e && e.message ? e.message : String(e)) + '\n');
@@ -15803,6 +16234,18 @@ module.exports = {
   reviewRoundCapped,
   recoveryFeedbackFor,
   recoveryFeedbackBlock,
+  // v68 search parity — host unit tests only.
+  WEB_SEARCH_OPT_IN_ENV,
+  WEB_SEARCH_OPT_IN_MAX_QUERIES,
+  WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS,
+  canonicalJson,
+  planDefinitionSha256,
+  webSearchOptInState,
+  ARTICLE_HELD_REASONS,
+  articleHeldMessage,
+  articleStepKind,
+  withHeldFrontmatter,
+  articleHeldNote,
   recoveryTopicBlock,
   appendRecoveryReceipt,
   RECOVERY_FEEDBACK_HEADING,
