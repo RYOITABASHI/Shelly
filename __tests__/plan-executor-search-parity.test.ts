@@ -449,6 +449,81 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
   }, 60000);
 
+  it('3a: work talk with no fact is cut once and the draft is saved (review unresolved), not held', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, `${ARTICLE} The search results said nothing more.`, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    const status = await runExecutor(planFile, home, driver, recordDir);
+    expect(status).toBe(0);
+    expect(readRunLog(home).status).toBe('success');
+    const [name] = fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md'));
+    const saved = fs.readFileSync(path.join(home, 'agent-output', name), 'utf8');
+    expect(saved).not.toContain('search results');
+    expect(saved).toContain('The body says 42% [1] and 120 people [2].');
+    expect(saved).toContain(`${executor.ARTICLE_SELF_TALK_CUT_FLAG}: 1`);
+    // No review read the cut text.
+    expect(saved).toContain('review: unresolved');
+    expect(saved).toContain(executor.ARTICLE_SELF_TALK_CUT_NOTE);
+    expect(readFeedback(home)).toEqual([]);
+    expect(readAudit(home).some((e) => e.event === 'article_held')).toBe(false);
+  }, 60000);
+
+  it('3b: a passed draft whose work talk holds a fact lands held (text-lint) with the lint in the note', async () => {
+    const home = makeHome();
+    writePipelines(home);
+    const kept = 'The search results put it at 7 of 10 [1].';
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, `${ARTICLE} ${kept}`, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    const status = await runExecutor(planFile, home, driver, recordDir);
+    expect(status).toBe(0);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toMatch(/^Held \(text-lint\): /);
+    expect(fs.existsSync(path.join(home, 'agent-output')) ? fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md')) : []).toEqual([]);
+    const heldRoot = path.join(home, '.shelly/agents/held');
+    const [day] = fs.readdirSync(heldRoot);
+    const heldDir = path.join(heldRoot, day, 'agent-output');
+    const [name] = fs.readdirSync(heldDir);
+    const held = fs.readFileSync(path.join(heldDir, name), 'utf8');
+    expect(held.startsWith('---\nheld: "text-lint"\n')).toBe(true);
+    expect(held).toContain(kept);
+    expect(held).toContain('review: pass');
+
+    const lines = readFeedback(home);
+    expect(lines).toHaveLength(1);
+    const [line] = lines;
+    expect(Object.keys(line).sort()).toEqual(FEEDBACK_KEYS);
+    expect(line).toMatchObject({
+      reason: 'held',
+      pipelineId: 'example-a',
+      lastStep: { kind: 'assemble' },
+      artifacts: { draft: true, paths: [path.join(heldDir, name)] },
+      delivery: { delivered: false, channel: 'draft' },
+      refire: { eligible: false, refired: false, refireRunId: null },
+    });
+    expect(line.note).toEqual(['text-lint', `${executor.ARTICLE_SELF_TALK_LEFT_FLAG}: search results`]);
+    const audit = readAudit(home);
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'text-lint', draftKept: true });
+    expect(audit.filter((e) => e.kind === 'plan.recovery').map((e) => e.event)).toEqual(['recovery_feedback', 'recovery_feedback_shared']);
+    // Never dispatched: no save, no approval request.
+    expect(audit.some((e) => e.event === 'action_article_draft_allow')).toBe(false);
+  }, 60000);
+
+  it('3b: a draft the review did not pass is saved with its flags as before (not held)', async () => {
+    const home = makeHome();
+    const draft = `${ARTICLE} The search results put it at 7 of 10 [1].`;
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, draft, 'VERDICT: REVISE\nfix it', draft, 'VERDICT: REVISE\nstill', draft]);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir);
+    expect(readRunLog(home).status).toBe('success');
+    const [name] = fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md'));
+    const saved = fs.readFileSync(path.join(home, 'agent-output', name), 'utf8');
+    expect(saved).toContain('review: unresolved');
+    expect(saved).toContain(executor.ARTICLE_SELF_TALK_LEFT_FLAG);
+    expect(readAudit(home).some((e) => e.event === 'article_held')).toBe(false);
+    expect(readFeedback(home)).toEqual([]);
+  }, 60000);
+
   it('any other research failure still fails the run as before (not held)', async () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver([null, ARTICLE, 'VERDICT: PASS']);

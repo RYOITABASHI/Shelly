@@ -474,7 +474,11 @@ describe('shelly-plan-executor.js longform chain', () => {
     replies = ['調査メモ（URLなし）'];
     await runExecutor(writePlan(home, port, articleChain()), home);
     expect(prompts).toHaveLength(1);
-    expect(readRunLog(home).status).toBe('error');
+    // v68 (search parity 2): an article run with no web source after its
+    // research lands held before the write step, not a bare error.
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toMatch(/^Held \(no-web-sources\): /);
   }, 20000);
 
   it('an invalid local config fails the step without calling a model', async () => {
@@ -902,15 +906,34 @@ describe('assembleArticle', () => {
       expect(out).toContain(body);
     });
 
-    it.each(['検索結果からは取得できなかった', '調査メモにはない', 'The search results did not say', 'Our Research Notes show'])('flags self-talk in %s, and rewrites nothing', (line) => {
-      const body = `# 記事\n\n${line}`;
-      const out = withQuality({ selfTalk: true }, body);
-      expect(lintOf(out)[0]).toContain('作業の話が本文に残っている');
-      expect(out).toContain(body);
+    // v68 (3a): a self-talk sentence with no figure and no marker is cut once
+    // (cutArticleSelfTalk) and the draft says so; one that holds a fact stays
+    // and is flagged, as before.
+    it.each(['検索結果からは取得できなかった', '調査メモにはない', 'The search results did not say', 'Our Research Notes show'])('cuts self-talk in %s and says so', (line) => {
+      const out = withQuality({ selfTalk: true }, `# 記事\n\n本文です。\n\n${line}`);
+      expect(out).not.toContain(line);
+      expect(out).toContain('# 記事\n\n本文です。\n');
+      expect(lintOf(out)).toEqual([`${executor.ARTICLE_SELF_TALK_CUT_FLAG}: 1`]);
     });
 
-    it.each(['この指針は（出典不明）です', '効果量は（具体的数値は未確認）です', '（要確認）', 'Source unknown', 'citation needed'])('flags a bracketed review note in %s', (line) => {
-      expect(lintOf(withQuality({ selfTalk: true }, `# 記事\n\n${line}`))[0]).toContain('作業の話が本文に残っている');
+    it.each(['検索結果では 42% だった', '調査メモの [1] による'])('keeps and flags self-talk that holds a fact: %s', (line) => {
+      const body = `# 記事\n\n${line}`;
+      const out = withQuality({ selfTalk: true }, body);
+      expect(out).toContain(body);
+      expect(lintOf(out)[0]).toContain('作業の話が本文に残っている');
+    });
+
+    it.each(['この指針は（出典不明）です', '効果量は（具体的数値は未確認）です', '（要確認）', 'Source unknown', 'citation needed'])('cuts the whole sentence holding a bracketed review note: %s', (line) => {
+      const out = withQuality({ selfTalk: true }, `# 記事\n\n前の文。${line}`);
+      expect(out).toContain('# 記事\n\n前の文。\n');
+      expect(out).not.toContain(line);
+      expect(lintOf(out)).toEqual([`${executor.ARTICLE_SELF_TALK_CUT_FLAG}: 1`]);
+    });
+
+    it('flags a bracketed review note that holds a figure, and keeps it', () => {
+      const out = withQuality({ selfTalk: true }, '# 記事\n\n効果量は 0.4（未確認）です');
+      expect(out).toContain('効果量は 0.4（未確認）です');
+      expect(lintOf(out)[0]).toContain('作業の話が本文に残っている');
     });
 
     it('leaves an honest limit in a known-limits section alone', () => {

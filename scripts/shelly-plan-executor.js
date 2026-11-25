@@ -282,6 +282,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // search, or a research with no web source, lands the run held before the
 // write step (landArticleHeld): run log skipped "Held (<reason>): …", audit
 // article_held, one reason "held" line in ~/.shelly/agents/recovery-feedback.jsonl.
+// (3) assemble cuts fact-free work-talk sentences once (cutArticleSelfTalk;
+// the cut draft is review: unresolved); a draft the review and the editor
+// passed whose text lint is still there lands held (text-lint) instead of
+// being saved. (5) An article draft's save no longer waits for a tap on an
+// attended run unless the agent pins one or POLICY-001 asks; a tap that does
+// not come lands the draft held (approval-timeout / -declined / -unverified).
 const EXECUTOR_SCRIPT_VERSION = 68;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
@@ -1100,7 +1106,9 @@ const LONGFORM_RETRY_WAITS_MS = [15000, 45000, 90000];
 const LONGFORM_RETRY_WAIT_MS = LONGFORM_RETRY_WAITS_MS[0];
 const LONGFORM_RETRY_WINDOW_MS = 8 * 60 * 1000;
 const LONGFORM_OUT_OF_TIME_MESSAGE = 'Not enough run time left before the 30-minute run limit.';
-// Flagged, never rewritten: a draft writing about its own sources of work.
+// Flagged: a draft writing about its own sources of work. v68 (3a) cuts the
+// sentences that carry no figure and no marker once (cutArticleSelfTalk); the
+// rest stay flagged and the draft is held.
 const ARTICLE_SELF_TALK_TERMS = ['検索結果', '調査メモ', '出典不明', '出典なし', '要出典', 'search results', 'research notes', 'source unknown', 'source not found', 'citation needed'];
 // A bracketed note a reviser left in the prose. Bare 未確認 stays legal: a dev
 // post's known-limits section says it honestly.
@@ -2852,6 +2860,169 @@ function articleHasMetaNote(body) {
   return found;
 }
 
+// ── Text lint: one bounded fix, then held (v68, search parity 3a) ─────────────
+// The text lint is the work-talk flag (quality.selfTalk) and the editor's-note
+// flag. Before a draft is held for it, assemble makes one bounded fix, the
+// same kind of cut v42 makes of notes to an editor: deletion only, no model,
+// nothing rewritten. Outside code fences, headings and table rows, a sentence
+// holding a work-talk term (ARTICLE_SELF_TALK_TERMS, matched as
+// articleQualityFlags matches them) or a bracketed reviser's note
+// (ARTICLE_BRACKET_NOTE_RE) goes whole, only when it holds no figure and no
+// source marker (RESCUE_TOKEN_RE), so no fact a review read is lost. The
+// whole sentence, not the bracket alone: "効果量は（未確認）です" without its
+// bracket is no sentence. A list item or quote left with nothing but its
+// markup goes with it. Sentences end at 。！？ (or . ! ? before a space)
+// outside any bracket or quote, and take the closing marks after them; a
+// piece whose brackets, quotes or emphasis marks do not pair up is never cut
+// (cutting it would leave a stray mark), nor is a line holding `|` (a table
+// row, with or without its outer pipes) or a setext heading's title line.
+// What is left (a term in a heading, a code block, a table, an unpaired piece,
+// or a sentence with a figure or a marker) stays flagged, and the run lands
+// held (text-lint). The draft says what was cut (ARTICLE_SELF_TALK_CUT_FLAG),
+// and since no review read the cut text, its review is unresolved
+// (ARTICLE_SELF_TALK_CUT_NOTE), as for the editor's rescue revision: a cut
+// sentence may have been the hedge of the one before it.
+const ARTICLE_SELF_TALK_LEFT_FLAG = '作業の話が本文に残っている';
+const ARTICLE_SELF_TALK_CUT_FLAG = '作業の話を本文から削除';
+const ARTICLE_SELF_TALK_CUT_NOTE = '作業の話を削った版は査読を通していない';
+// List and quote markers only (a `*` / `-` / `+` bullet needs its space), so
+// a line's leading `**` stays with its sentence.
+const ARTICLE_TEXT_LINT_LEAD_RE = /^[ \t]*(?:(?:>|※|[-*+•・](?=[ \t]))[ \t]*)*(?:\d{1,3}[.)][ \t]+)?/;
+const ARTICLE_TEXT_LINT_OPEN = '「『（(【[〔“‘';
+const ARTICLE_TEXT_LINT_CLOSE = '」』）)】]〕”’';
+const ARTICLE_TEXT_LINT_TRAIL = `${ARTICLE_TEXT_LINT_CLOSE}*_\`"'`;
+
+function articleHasFactToken(text) {
+  return new RegExp(RESCUE_TOKEN_RE.source, 'u').test(String(text));
+}
+
+/** The sentences of one line of prose, joined back they are the line. Pure. */
+function splitArticleSentences(text) {
+  const chars = Array.from(text);
+  const pieces = [];
+  let start = 0;
+  let depth = 0;
+  for (let k = 0; k < chars.length; k += 1) {
+    const ch = chars[k];
+    if (ch === '’' && /\p{L}/u.test(chars[k - 1] || '') && /\p{L}/u.test(chars[k + 1] || '')) continue;
+    if (ARTICLE_TEXT_LINT_OPEN.includes(ch)) depth += 1;
+    else if (ARTICLE_TEXT_LINT_CLOSE.includes(ch)) depth = Math.max(0, depth - 1);
+    const ja = '。！？'.includes(ch);
+    if (depth || !(ja || '.!?'.includes(ch))) continue;
+    let end = k + 1;
+    // Closing marks after the terminator end the same sentence; an emphasis
+    // run only when it closes one this sentence opened.
+    for (let moved = true; moved && end < chars.length;) {
+      moved = false;
+      const ch2 = chars[end];
+      if (ARTICLE_TEXT_LINT_TRAIL.includes(ch2) && !'*_`'.includes(ch2)) {
+        end += 1;
+        moved = true;
+      } else if ('*_`'.includes(ch2)) {
+        const runs = chars.slice(start, end).join('').split(new RegExp(`\\${ch2}+`)).length - 1;
+        if (runs % 2) {
+          while (end < chars.length && chars[end] === ch2) end += 1;
+          moved = true;
+        }
+      }
+    }
+    if (!ja && end < chars.length && !/\s/.test(chars[end])) continue;
+    pieces.push(chars.slice(start, end).join(''));
+    start = end;
+    k = end - 1;
+  }
+  if (start < chars.length) pieces.push(chars.slice(start).join(''));
+  return pieces;
+}
+
+/** True when the piece's brackets, quotes and emphasis marks pair up. Pure. */
+function articleTextLintBalanced(piece) {
+  const stack = [];
+  // ’ between letters is an apostrophe (didn’t), not a closing quote.
+  for (const ch of Array.from(String(piece).replace(/(?<=\p{L})’(?=\p{L})/gu, "'"))) {
+    const open = ARTICLE_TEXT_LINT_OPEN.indexOf(ch);
+    if (open !== -1) {
+      stack.push(ARTICLE_TEXT_LINT_CLOSE[open]);
+      continue;
+    }
+    if (ARTICLE_TEXT_LINT_CLOSE.includes(ch) && stack.pop() !== ch) return false;
+  }
+  if (stack.length) return false;
+  // Emphasis and code marks pair up as runs (`**` opens, `**` closes).
+  if (((piece.match(/\*+/g) || []).length % 2) || ((piece.match(/`+/g) || []).length % 2) || ((piece.split('"').length - 1) % 2)) return false;
+  // `_` as emphasis (at a word edge), not inside snake_case.
+  return (piece.match(/(?:^|[\s(（])_+|_+(?=$|[\s.,。、!?！？)）])/g) || []).length % 2 === 0;
+}
+
+/** { text, cut }: `body` without the work talk it can lose (see above). Pure. */
+function cutArticleSelfTalk(body) {
+  const lines = [];
+  forEachProseLine(body, (line) => lines.push({ line, prose: true }), (line) => lines.push({ line, prose: false }));
+  let cut = 0;
+  const out = [];
+  const bracketRe = new RegExp(ARTICLE_BRACKET_NOTE_RE.source, 'i');
+  lines.forEach(({ line: raw, prose }, n) => {
+    const cr = raw.endsWith('\r') ? '\r' : '';
+    const line = cr ? raw.slice(0, -1) : raw;
+    const next = lines[n + 1] && lines[n + 1].prose ? lines[n + 1].line : '';
+    if (!prose || /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line) || line.includes('|') || (line.trim() && /^ {0,3}(?:=+|-+)[ \t]*\r?$/.test(next))) {
+      out.push(raw);
+      return;
+    }
+    const lead = ARTICLE_TEXT_LINT_LEAD_RE.exec(line)[0];
+    const pieces = splitArticleSentences(line.slice(lead.length));
+    let lineCut = 0;
+    let lastCut = false;
+    const kept = [];
+    for (const piece of pieces) {
+      const lower = piece.toLowerCase();
+      const talk = ARTICLE_SELF_TALK_TERMS.some((term) => lower.includes(term)) || bracketRe.test(piece);
+      lastCut = talk && !articleHasFactToken(piece) && articleTextLintBalanced(piece);
+      if (lastCut) lineCut += 1;
+      else kept.push(piece);
+    }
+    if (!lineCut) {
+      out.push(raw);
+      return;
+    }
+    cut += lineCut;
+    let text = kept.join('').replace(/^[ \t]+/, '');
+    if (lastCut) text = text.replace(/[ \t]+$/, '');
+    if (text.trim()) out.push(`${lead}${text}${cr}`);
+  });
+  if (!cut) return { text: String(body == null ? '' : body), cut: 0 };
+  return { text: out.join('\n').replace(/(?:\r?\n){3,}/g, (m) => (m.includes('\r') ? '\r\n\r\n' : '\n\n')), cut };
+}
+
+/** The text-lint flags among a draft's lint list. Pure. */
+function articleTextLintFlags(lint) {
+  return (Array.isArray(lint) ? lint : []).filter((f) => typeof f === 'string'
+    && (f === ARTICLE_META_NOTE_LEFT_FLAG || f === ARTICLE_SELF_TALK_LEFT_FLAG || f.startsWith(`${ARTICLE_SELF_TALK_LEFT_FLAG}:`)));
+}
+
+/**
+ * The text-lint flags of an assembled draft that held passes otherwise
+ * (`review: pass`, and `quality: pass` when an editor scored it), or []. A
+ * draft the review or the editor did not pass is saved as before, with its
+ * flags: that path already reaches the owner. A draft that is unresolved
+ * only because of the 3a cut (its sole review note is
+ * ARTICLE_SELF_TALK_CUT_NOTE) counts as passed here: the review passed it,
+ * and the cut could not clear its flag. Reads assemble's own frontmatter
+ * (first `lint:` / `review_note:` line). Pure.
+ */
+function articleHeldTextLint(text) {
+  const block = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(text == null ? '' : text));
+  if (!block) return [];
+  const fm = parseDraftFrontmatter(text);
+  const noteLine = /^review_note:[ \t]*(.*)$/m.exec(block[1]);
+  const onlyCut = fm.review === 'unresolved' && !!noteLine && parseJsonValue(noteLine[1].trim()) === ARTICLE_SELF_TALK_CUT_NOTE;
+  if (fm.review !== 'pass' && !onlyCut) return [];
+  if (/^quality:/m.test(block[1]) && fm.quality !== 'pass') return [];
+  const line = /^lint:[ \t]*(.*)$/m.exec(block[1]);
+  const lint = line ? parseJsonValue(line[1].trim()) : null;
+  return articleTextLintFlags(lint);
+}
+
 // The first "# " heading outside a code fence: a shell comment is not a title.
 function articleTitleLine(text) {
   let fence = '';
@@ -3209,7 +3380,7 @@ function articleQualityFlags(quality, body, sources, materialCount) {
     const hits = ARTICLE_SELF_TALK_TERMS.filter((term) => lower.includes(term));
     const note = ARTICLE_BRACKET_NOTE_RE.exec(body);
     if (note && hits.every((term) => !note[0].includes(term))) hits.push(note[0]);
-    if (hits.length) flags.push(`作業の話が本文に残っている: ${hits.join(', ')}`);
+    if (hits.length) flags.push(`${ARTICLE_SELF_TALK_LEFT_FLAG}: ${hits.join(', ')}`);
   }
   return flags;
 }
@@ -3295,6 +3466,11 @@ function assembleArticle(local, ctx) {
   // v42: a note left for an editor is cut, and the draft says so.
   const metaNotes = stripArticleMetaNotes(body);
   body = metaNotes.text;
+  // v68 (3a): the one bounded fix of the work-talk lint (cutArticleSelfTalk).
+  // Here, so the final review, the editor and the facts checks all read the
+  // same fixed text the save writes.
+  const selfTalk = local.quality && local.quality.selfTalk ? cutArticleSelfTalk(body) : { text: body, cut: 0 };
+  body = selfTalk.text;
 
   let review = 'unresolved';
   let reviewRan = false;
@@ -3351,6 +3527,12 @@ function assembleArticle(local, ctx) {
   // not been reviewed at all, whatever else also holds.
   const reviewNotes = rescued ? [ARTICLE_EDITOR_RESCUE_NOTE] : reviewRan && review !== 'pass' ? [ARTICLE_LAST_REVIEW_NOTE] : [];
   if (!rescued && review === 'pass' && !reviewedAdopted) reviewNotes.push(ARTICLE_UNREVIEWED_NOTE);
+  // v68 (3a): no review read the text the cut left (it may have dropped the
+  // hedge of a claim), so it is not `review: pass`.
+  // A final review that passed this very version read the cut text (it reads
+  // assembleArticle's tailOnly output), so then no note. Only on a passed
+  // draft: articleHeldTextLint reads a lone cut note as "the review passed it".
+  if (selfTalk.cut && review === 'pass' && !(finalReview && finalReview.verdict === 'PASS')) reviewNotes.push(ARTICLE_SELF_TALK_CUT_NOTE);
   reviewNotes.push(...(ctx.reviewNotes || []));
   if (reviewNotes.length) review = 'unresolved';
   // v38: the ghostwritten section replaces the one marker only when this run's
@@ -3393,6 +3575,7 @@ function assembleArticle(local, ctx) {
   const title = String(heading || ctx.fallbackTitle).replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, ARTICLE_TITLE_MAX_CHARS);
   const titleFlags = !local.quality ? [] : recoveredTitle ? ['タイトルは修正前の版から復元'] : heading ? [] : ['本文に見出しが無い（タイトルは仮）'];
   if (metaNotes.cut) titleFlags.push(`${ARTICLE_META_NOTE_CUT_FLAG}: ${metaNotes.cut}`);
+  if (selfTalk.cut) titleFlags.push(`${ARTICLE_SELF_TALK_CUT_FLAG}: ${selfTalk.cut}`);
   const lintText = local.lintSources ? [body].concat(ctx.sources.map((s) => `${s.title || ''} ${s.url}`)).join('\n') : body;
   // v44: the owner's own materials read this run are sources too, listed by
   // their path under the root, never as links.
@@ -14410,6 +14593,26 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: haltMessage(paths) },
       };
     }
+    // v68 (3b): a draft the review (and the editor) passed whose work-talk or
+    // editor's-note lint is still there after assemble's one bounded fix
+    // (cutArticleSelfTalk) is not saved to the output folder. It lands held
+    // (text-lint) with the lint messages in the feedback line's note, so the
+    // same-day retry can pick it up; the draft is kept in held/ and the
+    // popped queue item is ticked, as for 5a below.
+    if (isFinal && articleHeldRun && step.local !== undefined && plan.action && plan.action.type === 'draft') {
+      const textLint = articleHeldTextLint(resultText);
+      if (textLint.length) {
+        dispatchedFinal = true;
+        heldLanding = { reason: 'text-lint', note: textLint, stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: resultText };
+        heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
+        if (queuePopped && heldLanding.landed.held.heldPath) await tickPoppedQueueItem();
+        return {
+          record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: heldLanding.landed.preview },
+          failed: true,
+          resultFileText,
+        };
+      }
+    }
     let action;
     try {
       action = isFinal
@@ -16253,6 +16456,14 @@ module.exports = {
   articleHasMetaNote,
   ARTICLE_META_NOTE_CUT_FLAG,
   ARTICLE_META_NOTE_LEFT_FLAG,
+  cutArticleSelfTalk,
+  splitArticleSentences,
+  articleTextLintBalanced,
+  ARTICLE_SELF_TALK_CUT_NOTE,
+  articleTextLintFlags,
+  articleHeldTextLint,
+  ARTICLE_SELF_TALK_CUT_FLAG,
+  ARTICLE_SELF_TALK_LEFT_FLAG,
   longformHandoffInstruction,
   LONGFORM_REVIEW_RULES,
   LONGFORM_REVISE_RULES,
