@@ -164,7 +164,9 @@ describe('assembleArticle with the work-talk lint (3a)', () => {
   const assemble = (body: string, quality: object = local.quality) =>
     executor.assembleArticle({ ...local, quality }, { steps, results: ['r', body, 'VERDICT: PASS'], skipped: [], sources: [], today: '2026-11-25', fallbackTitle: 'F' });
 
-  it('a cut draft is review: unresolved (no review read the cut text) and is not held', () => {
+  // The chain holds a cut draft by its cut count (articleSelfTalkCutCount,
+  // fix round 1 item 5), not by articleHeldTextLint.
+  it('a cut draft is review: unresolved (no review read the cut text) and carries no left-in flag', () => {
     const out = assemble('# 記事\n\n本文です。検索結果からは取得できなかった。');
     expect(out).toContain('review: unresolved');
     expect(out).toContain(`review_note: ${JSON.stringify(executor.ARTICLE_SELF_TALK_CUT_NOTE)}`);

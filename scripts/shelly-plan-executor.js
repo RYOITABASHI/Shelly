@@ -283,9 +283,10 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // write step (landArticleHeld): run log skipped "Held (<reason>): …", audit
 // article_held, one reason "held" line in ~/.shelly/agents/recovery-feedback.jsonl.
 // (3) assemble cuts fact-free work-talk sentences once (cutArticleSelfTalk;
-// the cut draft is review: unresolved); a draft the review and the editor
-// passed whose text lint is still there lands held (text-lint) instead of
-// being saved. (5) An article draft's save no longer waits for a tap on an
+// never one carrying a figure, a marker, a link, a URL or a citation
+// bracket); a draft the cut touched, and a draft the review and the editor
+// passed whose text lint is still there, lands held (text-lint) instead of
+// being saved, with the uncut draft in held/. (5) An article draft's save no longer waits for a tap on an
 // attended run unless the agent pins one or POLICY-001 asks; a tap that does
 // not come lands the draft held (approval-timeout / -declined / -unverified).
 const EXECUTOR_SCRIPT_VERSION = 68;
@@ -6275,7 +6276,9 @@ function webSearchStartRefusal(opts) {
 //                        with a web research step never writes from the
 //                        owner's materials alone
 //   text-lint            work talk / an editor's note is still in the draft
-//                        after one bounded fix (articleTextLintFlags)
+//                        after one bounded fix (articleTextLintFlags), or the
+//                        fix cut anything at all (fix round 1, item 5); the
+//                        held copy is the draft before the cut
 //   approval-timeout / approval-declined / approval-unverified
 //                        the draft's save approval did not come
 // The first three land before the write step (no draft). An MCP-ingress run
@@ -6295,7 +6298,7 @@ const ARTICLE_HELD_MESSAGES = {
   'web-search-refused': 'the research step may not search the web on this run, so no article was written',
   'web-search-stopped': 'the research step\'s web search was stopped, so no article was written',
   'no-web-sources': 'the research found no web source, so no article was written from the materials alone',
-  'text-lint': 'work talk or an editor\'s note is still in the draft after one fix; the draft is in held/',
+  'text-lint': 'work talk or an editor\'s note was in the draft (a cut text is never saved unreviewed); the draft is in held/ as written',
   'approval-timeout': 'the draft\'s save approval timed out; the draft is in held/',
   'approval-declined': 'the draft\'s save was declined; the draft is in held/',
   'approval-unverified': 'the draft\'s save approval could not be verified; the draft is in held/',
@@ -14740,10 +14743,21 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // (text-lint) with the lint messages in the feedback line's note, so the
     // same-day retry can pick it up; the draft is kept in held/ and the
     // popped queue item is ticked, as for 5a below.
+    // Fix round 1 (item 5, bridge decision): a draft the cut touched lands held
+    // too, even when the cut cleared every flag and whatever its review says:
+    // the text published must be the text a review passed, and no review read
+    // the cut one. Its note is the lint of the draft before the cut (the
+    // original messages); the same-day retry gets a line either way.
     if (isFinal && articleHeldRun && step.local !== undefined && plan.action && plan.action.type === 'draft') {
-      const textLint = articleHeldTextLint(resultText);
-      if (textLint.length) {
+      const cutCount = articleSelfTalkCutCount(resultText);
+      const textLint = cutCount > 0
+        ? articleTextLintFlags(articleFrontmatterLint(articleDraftBeforeCut || ''))
+        : articleHeldTextLint(resultText);
+      if (cutCount > 0 || textLint.length) {
         dispatchedFinal = true;
+        if (cutCount > 0) {
+          appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_self_talk_cut', agentId: plan.agent.id, stepIndex: i, cut: cutCount, beforeCutKept: !!articleDraftBeforeCut });
+        }
         // Fix round 1 (item 4): held/ keeps the draft as written, before the cut.
         heldLanding = { reason: 'text-lint', note: textLint, stepIndex: i, stepStartedAt: stepStartedAtMs.get(i) || null, text: articleDraftBeforeCut || resultText };
         heldLanding.landed = landArticleHeld(paths, plan, config, heldLanding, startedAt);
