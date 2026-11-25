@@ -364,7 +364,11 @@ describe('the executor with a queue or a digest', () => {
     const dir = queueIn(vault, text);
     replies = ['出典のないメモ'];
     await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
-    expect(readRunLog(home).status).toBe('error');
+    // v68 (search parity 2): no web source lands held before the write step
+    // (no draft, so nothing to keep and the item is not ticked).
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toMatch(/^Held \(no-web-sources\): /);
     expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe(text);
   }, 20000);
 
