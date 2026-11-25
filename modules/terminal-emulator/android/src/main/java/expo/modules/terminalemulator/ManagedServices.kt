@@ -86,13 +86,24 @@ object ManagedServices {
 
     fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
+    /** The system linker every app-data binary is started through (W^X: never exec'd directly). */
+    const val LINKER64 = "/system/bin/linker64"
+
     /**
      * The `bash -c` body. Output goes to [logPath] (appended), stdin is
      * /dev/null, and `exec` keeps the spawned pid as the service's pid.
+     *
+     * node is started as `/system/bin/linker64 <libPath>/node …`, the same form
+     * as AgentRuntime's executor launch, never as `exec node`: the bundled node
+     * lives in the app's data dir (termux-libs), and exec'ing it directly fails
+     * with EACCES on the device (W^X; measured 2026-11-25, exit 126,
+     * "termux-libs/node: Permission denied"). linker64 is a system binary, so
+     * the kernel exec succeeds, and it maps node with mmap, not execve.
      */
     fun hostCommand(launch: Launch, homePath: String, libPath: String, logPath: String): String {
         val script = "$homePath/${launch.script}"
         val dir = script.substringBeforeLast('/')
+        val node = "$libPath/node"
         val sb = StringBuilder()
         sb.append("exec >>").append(shQuote(logPath)).append(" 2>&1 </dev/null\n")
         if (launch.env.sourceBashrc) {
@@ -104,12 +115,12 @@ object ManagedServices {
             LibraryPath.UNSET -> sb.append("unset LD_LIBRARY_PATH\n")
         }
         sb.append("cd ").append(shQuote(dir)).append(" || exit 126\n")
-        sb.append("command -v node >/dev/null 2>&1 || exit 127\n")
+        sb.append("[ -f ").append(shQuote(node)).append(" ] || exit 127\n")
         sb.append("printf '%s service start\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n")
         // STOP-ALL, checked again as the very last statement before exec: `[`
         // is a builtin, so no external command runs between the check and exec.
         sb.append("[ -e ").append(shQuote("$homePath/$HALT_SENTINEL")).append(" ] && exit 125\n")
-        sb.append("exec node ").append(shQuote(script))
+        sb.append("exec ").append(LINKER64).append(' ').append(shQuote(node)).append(' ').append(shQuote(script))
         for (a in launch.args) sb.append(' ').append(shQuote(a))
         sb.append('\n')
         return sb.toString()

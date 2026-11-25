@@ -245,7 +245,7 @@ object ManagedServiceSupervisor {
             return "launch_failed"
         }
         // STOP-ALL raised while it was being spawned: the script also checks
-        // right before `exec node`; this closes the gap on this side.
+        // right before it execs node; this closes the gap on this side.
         if (StopAllSwitches.halted(context)) {
             r.stopping = true
             updateRecord(context, spec.id, pid, start) { it.copy(stoppedAt = System.currentTimeMillis()) }
