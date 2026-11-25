@@ -16,13 +16,14 @@ jest.mock('react-native', () => require('./helpers/mcp-typed-ops-harness').react
 jest.mock('@/lib/i18n', () => ({ t: (k: string, p?: Record<string, string>) => (p ? `${k}:${p.action}:${p.service}` : k), tFor: (_l: string, k: string) => k }));
 
 import {
-  __setMCPRequestSha256ForTests, revokePendingMCPRequests, setMCPBridgeKey,
+  __setMCPApprovalTimeoutForTests, __setMCPRequestSha256ForTests, revokePendingMCPRequests, setMCPBridgeKey,
   startMCPPoller, stopMCPPoller,
 } from '@/lib/mcp-server-bridge';
+import { serviceControlRuleBind } from '@/lib/mcp-service-control';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 import { nodeSha256, TEST_BRIDGE_KEY, TEST_PRINCIPAL } from './helpers/mcp-signed-request';
-import { callTool, h, resetHarness, waitFor } from './helpers/mcp-typed-ops-harness';
+import { callTool, h, OTHER_PRINCIPAL, resetHarness, waitFor } from './helpers/mcp-typed-ops-harness';
 
 const tool = 'service_control';
 const current = () => useMcpApprovalStore.getState().current;
@@ -58,12 +59,12 @@ function audits() {
   });
 }
 
-async function approve(args: Record<string, unknown>, decision: 'once' | 'deny' = 'once') {
+async function approve(args: Record<string, unknown>, decision: 'once' | 'deny' | 'always' = 'once') {
   const pending = callTool(tool, args);
   await waitFor(() => current() !== null);
   expect(current()).toMatchObject({ kind: tool, summary: 'mcp.approval_service_control' });
   expect(current()?.detail).toBe(`mcp.approval_service_control_detail:${args.action}:${args.serviceId}`);
-  expect(current()?.alwaysAllowable).toBeUndefined();
+  expect(current()?.alwaysAllowable).toEqual({ op: 'service_control', targetLabel: `${args.action} ${args.serviceId}` });
   expect(mockServiceControl).not.toHaveBeenCalled();
   useMcpApprovalStore.getState().respond(current()!.id, decision);
   return pending;
@@ -178,4 +179,252 @@ it('refuses a malformed native answer', async () => {
 it('maps a native exception to native_error', async () => {
   mockServiceControl.mockRejectedValueOnce(new Error('boom'));
   expect(await approve({ action: 'stop', serviceId: 'article-delivery' })).toMatchObject({ ok: false, code: 'native_error' });
+});
+
+// ── S2: the approval ladder (rule → switch → not_attended → dialog) ─────────
+
+const START = { action: 'start', serviceId: 'article-delivery' } as const;
+const START_TARGET = 'service:article-delivery:start';
+
+type Args = { action: 'start' | 'status' | 'stop'; serviceId: 'article-delivery' | 'council-facade' };
+const bindFor = (args: Args) => serviceControlRuleBind(args, nodeSha256);
+
+async function addRule(over: Record<string, unknown> = {}) {
+  const rule = {
+    id: 'r_00000000000000a1', principal: TEST_PRINCIPAL, op: 'service_control', target: START_TARGET,
+    bind: await bindFor(START), label: 'start article-delivery', createdAt: 1, ...over,
+  };
+  h.rules.push(rule as never);
+  return rule;
+}
+
+const started = () => nativeStatus({ code: 'started', state: 'starting', lastHeartbeatAt: null });
+
+describe('approval ladder', () => {
+  it('a matching always-allow rule runs without a dialog', async () => {
+    await addRule();
+    mockServiceControl.mockResolvedValueOnce(started());
+    expect(await callTool(tool, START)).toMatchObject({ ok: true, data: { code: 'started' } });
+    expect(current()).toBeNull();
+    expect(mockServiceControl).toHaveBeenCalledWith('start', 'article-delivery', TEST_PRINCIPAL);
+    expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery']]);
+    expect(h.logs.some((l) => l.includes(`always-allow rule r_00000000000000a1 matched service_control ${START_TARGET}`))).toBe(true);
+  });
+
+  it('a rule works in the background too (nobody needs to tap)', async () => {
+    await addRule();
+    h.appState.currentState = 'background';
+    mockServiceControl.mockResolvedValueOnce(started());
+    expect(await callTool(tool, START)).toMatchObject({ ok: true });
+    expect(current()).toBeNull();
+  });
+
+  it('a rule names one service and one action: a status rule never covers start', async () => {
+    await addRule({ target: 'service:article-delivery:status', bind: await bindFor({ action: 'status', serviceId: 'article-delivery' }) });
+    const pending = callTool(tool, START);
+    await waitFor(() => current() !== null);
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    useMcpApprovalStore.getState().respond(current()!.id, 'deny');
+    expect(await pending).toMatchObject({ ok: false, code: 'denied' });
+  });
+
+  it('a rule of another client or with another binding does not match', async () => {
+    await addRule({ principal: OTHER_PRINCIPAL });
+    await addRule({ id: 'r_00000000000000a2', bind: 'f'.repeat(64) });
+    const pending = callTool(tool, START);
+    await waitFor(() => current() !== null);
+    useMcpApprovalStore.getState().respond(current()!.id, 'deny');
+    expect(await pending).toMatchObject({ ok: false, code: 'denied' });
+    expect(mockServiceControl).not.toHaveBeenCalled();
+  });
+
+  it('a rule removed between the match and the native call does not run the action', async () => {
+    await addRule();
+    // The 2nd native match is the execution-time re-check: the rule is revoked
+    // right then (the match itself still answers true; the listing then fails).
+    let n = 0;
+    h.onMatch = () => {
+      n += 1;
+      if (n === 2) h.rules = [];
+    };
+    expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'target_changed' });
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery'], ['target_changed', 'start', 'article-delivery']]);
+  });
+
+  it('approveAllWithoutAsking answers once without a dialog and writes no rule', async () => {
+    h.settings.approveAllWithoutAsking = true;
+    h.appState.currentState = 'background';
+    mockServiceControl.mockResolvedValueOnce(nativeStatus());
+    expect(await callTool(tool, { action: 'status', serviceId: 'article-delivery' })).toMatchObject({ ok: true, data: { code: 'status' } });
+    expect(current()).toBeNull();
+    expect(h.rules).toEqual([]);
+    expect(h.addCalls).toBe(0);
+    expect(audits()).toEqual([['auto_approved', 'status', 'article-delivery'], ['status', 'status', 'article-delivery']]);
+    expect(h.logs.some((l) => l.includes('auto-approved once (approveAllWithoutAsking'))).toBe(true);
+  });
+
+  it('in the background with no rule and the switch off: not_attended at once, no dialog queued', async () => {
+    h.appState.currentState = 'background';
+    expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'not_attended' });
+    expect(current()).toBeNull();
+    expect(useMcpApprovalStore.getState().queue).toEqual([]);
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    expect(audits()).toEqual([['not_attended', 'start', 'article-delivery']]);
+  });
+
+  it('"always allow" on the dialog saves a rule; the next call runs without a dialog', async () => {
+    mockServiceControl.mockResolvedValue(started());
+    expect(await approve(START, 'always')).toMatchObject({ ok: true, data: { code: 'started' } });
+    expect(h.rules).toHaveLength(1);
+    expect(h.rules[0]).toMatchObject({
+      principal: TEST_PRINCIPAL, op: 'service_control', target: START_TARGET, bind: await bindFor(START), label: 'start article-delivery',
+    });
+    expect(h.rules[0].actionPolicyPin).toBeUndefined();
+    expect(audits()).toEqual([['approval_requested', 'start', 'article-delivery'], ['always_allow_saved', 'start', 'article-delivery']]);
+
+    h.audits = [];
+    expect(await callTool(tool, START)).toMatchObject({ ok: true });
+    expect(current()).toBeNull();
+    expect(mockServiceControl).toHaveBeenCalledTimes(2);
+    expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery']]);
+  });
+
+  it('a rule that cannot be saved runs once and shows a toast', async () => {
+    h.addAnswer = { ok: false, code: 'full' };
+    mockServiceControl.mockResolvedValueOnce(nativeStatus({ code: 'stopped', state: 'stopped', pid: null, supervised: false }));
+    expect(await approve({ action: 'stop', serviceId: 'article-delivery' }, 'always')).toMatchObject({ ok: true, data: { code: 'stopped' } });
+    expect(h.rules).toEqual([]);
+    expect(h.toasts).toEqual(['mcp.always_allow_not_saved_service']);
+    expect(audits()).toEqual([['approval_requested', 'stop', 'article-delivery'], ['always_allow_not_saved', 'stop', 'article-delivery']]);
+  });
+
+  it('a dialog timeout keeps the existing denied code and wording', async () => {
+    __setMCPApprovalTimeoutForTests(30);
+    try {
+      expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'denied', error: 'denied by user (or timed out waiting for a response)' });
+      expect(mockServiceControl).not.toHaveBeenCalled();
+    } finally {
+      __setMCPApprovalTimeoutForTests(null);
+    }
+  });
+
+  it('STOP-ALL refuses a start even with a matching rule and the switch on', async () => {
+    await addRule();
+    h.settings.approveAllWithoutAsking = true;
+    h.halted = true;
+    expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'halted' });
+    expect(current()).toBeNull();
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    expect(audits()).toEqual([['halted', 'start', 'article-delivery']]);
+  });
+
+  it('STOP-ALL turned on after the rule matched still refuses before the native call', async () => {
+    await addRule();
+    h.onMatch = () => {
+      h.halted = true;
+    };
+    expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'halted' });
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery'], ['halted', 'start', 'article-delivery']]);
+  });
+
+  it('STOP-ALL turned on while the switch answers still refuses before the native call', async () => {
+    h.settings.approveAllWithoutAsking = true;
+    const getSwitch = jest.spyOn(require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default, 'getApproveAllWithoutAsking')
+      .mockImplementation(async () => {
+        h.halted = true;
+        return true;
+      });
+    try {
+      expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'halted' });
+      expect(mockServiceControl).not.toHaveBeenCalled();
+      expect(audits()).toEqual([['auto_approved', 'start', 'article-delivery'], ['halted', 'start', 'article-delivery']]);
+    } finally {
+      getSwitch.mockRestore();
+    }
+  });
+
+  // The execution-time rule re-check awaits native twice (match, then list):
+  // STOP-ALL / the exec setting flipped during either await must still stop
+  // the call, so both re-checks sit after the re-match, right before native.
+  it.each(['match', 'list'] as const)('STOP-ALL turned on during the execution-time rule re-check (%s) refuses before the native call', async (during) => {
+    await addRule();
+    const native = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+    let matches = 0;
+    let lists = 0;
+    h.onMatch = () => {
+      matches += 1;
+      if (during === 'match' && matches === 2) h.halted = true;
+    };
+    const realList = native.mcpAlwaysAllowList;
+    const list = jest.spyOn(native, 'mcpAlwaysAllowList').mockImplementation(async () => {
+      lists += 1;
+      const out = await realList();
+      if (during === 'list' && lists === 2) h.halted = true;
+      return out;
+    });
+    try {
+      expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'halted' });
+      expect(matches).toBe(2);
+      expect(lists).toBe(2);
+      expect(mockServiceControl).not.toHaveBeenCalled();
+      expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery'], ['halted', 'start', 'article-delivery']]);
+    } finally {
+      list.mockRestore();
+    }
+  });
+
+  it.each(['match', 'list'] as const)('exec turned off during the execution-time rule re-check (%s) is refused as disabled', async (during) => {
+    await addRule();
+    const native = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+    let matches = 0;
+    let lists = 0;
+    h.onMatch = () => {
+      matches += 1;
+      if (during === 'match' && matches === 2) h.settings.mcpExecEnabled = false;
+    };
+    const realList = native.mcpAlwaysAllowList;
+    const list = jest.spyOn(native, 'mcpAlwaysAllowList').mockImplementation(async () => {
+      lists += 1;
+      const out = await realList();
+      if (during === 'list' && lists === 2) h.settings.mcpExecEnabled = false;
+      return out;
+    });
+    try {
+      expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'disabled' });
+      expect(mockServiceControl).not.toHaveBeenCalled();
+      expect(audits()).toEqual([['always_allowed', 'start', 'article-delivery'], ['disabled', 'start', 'article-delivery']]);
+    } finally {
+      list.mockRestore();
+    }
+  });
+
+  it('Shelly going to the background while the approval request is audited: not_attended, no dialog queued', async () => {
+    const native = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+    const realAudit = native.appendMcpIngressAudit;
+    const audit = jest.spyOn(native, 'appendMcpIngressAudit').mockImplementation(async (agentId: unknown, json: unknown) => {
+      const ok = await realAudit(agentId, json);
+      if (JSON.parse(json as string).code === 'approval_requested') h.appState.currentState = 'background';
+      return ok;
+    });
+    try {
+      expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'not_attended' });
+      expect(current()).toBeNull();
+      expect(useMcpApprovalStore.getState().queue).toEqual([]);
+      expect(mockServiceControl).not.toHaveBeenCalled();
+      expect(audits()).toEqual([['approval_requested', 'start', 'article-delivery'], ['not_attended', 'start', 'article-delivery']]);
+    } finally {
+      audit.mockRestore();
+    }
+  });
+
+  it('the refusal classes come first: exec off is refused even with a rule and the switch on', async () => {
+    await addRule();
+    h.settings.approveAllWithoutAsking = true;
+    h.settings.mcpExecEnabled = false;
+    expect(await callTool(tool, START)).toMatchObject({ ok: false, code: 'disabled' });
+    expect(mockServiceControl).not.toHaveBeenCalled();
+    expect(audits()).toEqual([['disabled', 'start', 'article-delivery']]);
+  });
 });

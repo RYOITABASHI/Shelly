@@ -112,6 +112,16 @@
 - (P2) 配信ループ側の reviveLoop（ハートビート stale でループを復活させる）が supervisor の stop 状態を読まないため、service_control で止めてもループが蘇る可能性がある。S2（autostart）が stop 状態に依存する前に、ブリッジ側と調整して解消すること。
 - 実機のインストール状態の検証はペイロード鮮度の A5 と同一便で行う（2026-11-24 時点で端末は build 3061、更新チャンネルの最新は 3068 だった＝未インストール分があった）。
 
+### service_control の承認ラダー（S2）— 実装済み（2026-11-25、ブランチ `feat/service-control-ladder`）、残件を登録
+
+service_control を run_agent と同じ承認ラダー（always-allow ルール照合 → 「すべての承認を省略」で once 自動承認 → 非フォアグラウンドなら not_attended 即拒否 → ダイアログ）に載せた。バインド値は版付き定数ドメインのハッシュ（`SERVICE_CONTROL_BIND_DOMAIN` v1、target のみを束縛）。残件：
+- (P2) **council-facade の起動仕様を配線するとき**、bind を v2 に上げるかネイティブの仕様ダイジェストに切り替えること。未設定の時期に作られた `service:council-facade:start` の規則が、後から置かれた仕様の起動を無言で承認してしまうのを防ぐため。`~/.shelly/services/` の policy-write 保護追加と同じ受け入れ条件に入れる。
+- (P3) MCP サーバーのツール説明（`scripts/shelly-mcp-server.js` ＋ asset コピー）の service_control の description が「on-device approval for each call」のまま。run_agent と同じく「always-allow を設定していなければタップが要る」趣旨に直す。
+- (P3) Settings の規則一覧で service_control の規則にも「Launch dialog only (actions not preapproved)」と出る（actionPolicyPin が無いため）。誤りではないが op にそぐわない文言。
+- (P3) ロールバック注意：この変更より古い APK に戻すと、ネイティブの decode が `service_control` の規則を拒否し規則ストア全体が unreadable になる（＝規則なし扱い、run_agent の規則も含めて無効、fail closed）。戻した後は規則の付け直しが要る。
+- (P3) approveAll の読み取りは run_agent 8b と同じ非原子的方式（読んでから実行）。読み取り直後に OFF にされた1件は実行されうる（STOP-ALL は実行直前に再確認するので越えない）。エスカレーション側の approveAllToken 方式に寄せるかは run_agent と合わせて判断する。
+- 実機確認（build 着地後）：(a) スイッチ ON でダイアログなし、(b) バックグラウンドで即 not_attended、(c) 「常に許可」で Settings に規則が出て次回ダイアログなし、(d) STOP-ALL 中の start が拒否、の4点と、S1 実サイクル（start/status/stop＋監督下移行）。
+
 ### ペイロード鮮度 — 状況更新と workflow フォローアップ（2026-11-25、P2）
 
 PR #206 で main 着地、ブランチ CI（run 45540550674）で Gradle ビルド＋全ユニットテスト通過を検証済み（下の 2026-11-24 の項目の「Gradle 未検証」は解消）。残件：(1) A5 実機検証（下の項目の列挙どおり）。(2) build-android.yml の「Embed JS bundle fingerprint」ステップは hayato-ops トークンに Workflows スコープが無いため同梱できなかった。workflows 権限のある経路で別途入稿すること。それまでは A3 の fingerprint は source "dev" を報告する（劣化であって故障ではない）。(3) `PayloadHygieneTest.kt` の CI 配線（`testDebugUnitTest`）は未実施。
