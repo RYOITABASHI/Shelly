@@ -141,6 +141,7 @@ service_control を run_agent と同じ承認ラダー（always-allow ルール�
 - (P3) `launch-spec.json` は検証のために一度 Kotlin の文字列として読む（JSON を読まずに検証はできない）。メモリ上だけで、ログ・監査には出さない。無効なファイルは digest も監査に書かない。
 - 秘密の読み込み: `.bashrc` がトレースを有効にしていても値が output.log に出ないよう、生成スクリプトは秘密を読む直前に `set +o xtrace +o verbose` と `trap - DEBUG` を行い、`$(cat …)` ではなく `IFS= builtin read -r <名前> < <パス>` で読んで `builtin export <名前>` する。悪意ある `.bashrc`（関数で builtin を差し替える等）は脅威モデル外（その時点で端末の全権を持つ）。
 - `script` は `dist/http/server.js` 固定（それ以外の .js は `bad_script`）。
+- 実機（3087）で判明・修正（ブランチ `fix/facade-canonical-home`）: facade の `server.js` は ESM で、`import.meta.url === pathToFileURL(resolve(process.argv[1]))` のときだけ `main()` を呼ぶ。node はメインモジュールを実パス（`/data/user/0` → `/data/data`）に解決するため、`/data/user/0` 表記で起動すると listen せずに exit 0 になっていた。`workDir` 付きの起動（facade）だけ正規パスでコマンドを組む（`ManagedServices.commandHome`）。article-delivery は不変。
 - (P2) `FromFile` の秘密参照は `COUNCIL_HTTP_TOKEN` 専用の固定ファイル名（`$COUNCIL_HOME/.http-token`）に限定した設計（汎用パス参照は traversal/symlink 検証が増えるため今回は実装していない）。他の secret-from-file が今後必要になれば汎用化を検討。
 - (P3) MCP サーバーのツール説明・Settings の規則一覧表示（既存の run_agent 由来の文言差分）は上の service_control 承認ラダー項目のまま未対応。
 - (P3) CLAUDE.md の巨大な Architecture Decisions 表には今回の変更を反映していない（既存記述が長大なため、オーナー/ハヤトのゲート時にまとめて追記する想定）。

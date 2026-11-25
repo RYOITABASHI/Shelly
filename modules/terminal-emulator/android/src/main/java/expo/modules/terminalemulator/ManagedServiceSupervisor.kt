@@ -382,7 +382,11 @@ object ManagedServiceSupervisor {
         val lib = libDir.absolutePath
         val pb = ProcessBuilder(
             "/system/bin/linker64", bashPath, "-c",
-            ManagedServices.hostCommand(launch, home.absolutePath, lib, log.absolutePath),
+            ManagedServices.hostCommand(
+                launch,
+                ManagedServices.commandHome(launch, home.absolutePath, runCatching { home.canonicalPath }.getOrNull()),
+                lib, log.absolutePath,
+            ),
         )
         pb.directory(home)
         pb.redirectErrorStream(true)
