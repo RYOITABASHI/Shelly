@@ -553,9 +553,20 @@ object ManagedServiceSupervisor {
             if (haltWatcher?.isAlive == true) return
             haltWatcher = Thread({
                 while (true) {
-                    val ids = synchronized(lock) { running.keys.toList() }
-                    val orphan = runCatching { persistedOrphan(context) }.getOrNull()
-                    if (ids.isEmpty() && orphan == null) break
+                    // The emptiness check and clearing haltWatcher are one step
+                    // under [lock]: a start registers in [running] under the same
+                    // lock before it calls ensureHaltWatcher, so it either is
+                    // seen here or finds haltWatcher already null and starts a
+                    // new watcher (never an exiting one that skips it).
+                    var orphan: ManagedServices.Spec? = null
+                    val ids = synchronized(lock) {
+                        val ids = running.keys.toList()
+                        orphan = runCatching { persistedOrphan(context) }.getOrNull()
+                        if (ids.isEmpty() && orphan == null) {
+                            haltWatcher = null
+                            null
+                        } else ids
+                    } ?: break
                     if (StopAllSwitches.halted(context)) {
                         for (id in ids) {
                             val base = ManagedServices.spec(id) ?: continue
@@ -569,7 +580,6 @@ object ManagedServiceSupervisor {
                     }
                     runCatching { Thread.sleep(HALT_POLL_MS) }
                 }
-                synchronized(lock) { haltWatcher = null }
             }, "ShellySvcHalt").apply { isDaemon = true; start() }
         }
     }
