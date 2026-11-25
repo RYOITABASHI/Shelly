@@ -851,13 +851,13 @@ describe('one run per occurrence (Codex review round 1)', () => {
     expect(call).toContain('AgentAlarmScheduler.markOccurrenceStarted(applicationContext, agentId, occ)');
     expect(worker.slice(0, worker.indexOf('runResult = AgentRuntime.runAgent('))).not.toContain('AgentAlarmScheduler.markOccurrenceStarted(');
     const rt = fsx.readFileSync(pathx.join(KTDIR, 'AgentRuntime.kt'), 'utf8');
-    expect(rt).toContain('runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved, startHook)');
+    expect(rt).toContain('runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin, ingressRunReason, mcpActionsPreapproved, startHook, scheduledAtMs, refireOf, recoveryLaunchId)');
     // The start hook marks `launched` before calling the caller's hook.
     expect(rt).toMatch(/val startHook: \(\(\) -> Unit\)\? = if \(onExecutionStart == null && onRefusedBeforeLaunch == null\) null else \{\s*\{\s*launched = true\s*onExecutionStart\?\.invoke\(\)/);
     // Fired by each executor path immediately before its execSubprocess
     // launch: after the final enabled check, extraction, stale-lock cleanup
     // and (PlanSpec) the local-LLM preflight.
-    expect(rt).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart)');
+    expect(rt).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin, ingressReason, mcpActionsPreapproved, onExecutionStart, scheduledAtMs, refireOf, recoveryLaunchId)');
     // The helper must exist exactly once (Codex round 6 caught it deleted).
     expect(rt.match(/private fun fireExecutionStart\(agentId: String, onExecutionStart: \(\(\) -> Unit\)\?\)/g)).toHaveLength(1);
     const fires = [...rt.matchAll(/fireExecutionStart\(agentId, onExecutionStart\)/g)].map((m) => m.index!);
