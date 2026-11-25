@@ -2916,7 +2916,12 @@ function articleHasFactToken(text) {
 // itself, whole, is a reviser's note and no link target follows it, so
 // `([unverified](notice.md))` is a link and stays. A `mailto:` link (autolinked
 // or not) and an e-mail address are sources too.
-const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|\bwww\.[^\s.]|\bmailto:|<[^<>\s]+@[^<>\s]+>|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|\]\s*[([]|［[^］\n]*］|【[^】\n]*】/iu;
+//
+// Fix round 3 (gate 3, finding 3): a URI autolink of any scheme is a source
+// (CommonMark: `<`, a scheme of 2-32 characters, a letter then letters, digits,
+// `+`, `.` or `-`, then `:` and no space, `<` or `>` up to `>`), so
+// `<ftp://example.org/notice>` and `<urn:isbn:…>` keep their sentence.
+const ARTICLE_TEXT_LINT_SOURCE_RE = /https?:\/\/|<https?:|<[a-z][a-z0-9+.-]{1,31}:[^<>\s]*>|\bwww\.[^\s.]|\bmailto:|<[^<>\s]+@[^<>\s]+>|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|\]\s*[([]|［[^］\n]*］|【[^】\n]*】/iu;
 const ARTICLE_TEXT_LINT_CITATION_BRACKET_RE = /\[[^\]\n]+\]/g;
 function articleCarriesSource(piece) {
   const text = String(piece);

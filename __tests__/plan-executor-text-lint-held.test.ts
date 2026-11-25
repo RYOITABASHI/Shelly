@@ -125,6 +125,28 @@ describe('cutArticleSelfTalk', () => {
     expect(cut(`# Title\n\n${line}`)).toEqual({ text: `# Title\n\n${line}`, cut: 0 });
   });
 
+  // Fix round 3 (gate 3, finding 3): a URI autolink of any scheme is a source,
+  // not only http(s) and mailto:. The gate's repro first, as it was run.
+  it.each([
+    ['an ftp: autolink (gate 3 repro)', 'The search results confirm the notice <ftp://example.org/notice>.'],
+    ['a urn: autolink', 'The search results confirm the notice <urn:isbn:example>.'],
+    ['a doi: autolink', 'The research notes cite <doi:10.1000/182>.'],
+    ['a tel: autolink', 'The search results list the desk <tel:+81-3-0000-0000>.'],
+    ['a file: autolink', 'The research notes point to <file:///srv/notice.txt>.'],
+    ['a scheme with + . -', 'The research notes point to <git+ssh://example.org/repo.git>.'],
+    ['an upper-case scheme', 'The search results confirm the notice <FTP://example.org/notice>.'],
+  ])('never cuts a sentence with %s', (_name, line) => {
+    expect(cut(line)).toEqual({ text: line, cut: 0 });
+    expect(cut(`# Title\n\n${line}`)).toEqual({ text: `# Title\n\n${line}`, cut: 0 });
+  });
+
+  it('angle brackets that are not a URI autolink are not a source', () => {
+    for (const notLink of ['<b>', '<x: y>', '<-ab:c>', '<:x>', '<a:b>']) {
+      const line = `Fine. The search results say so ${notLink}. Done.`;
+      expect(cut(line).cut).toBe(1);
+    }
+  });
+
   it('never cuts a sentence with a link whose label is a note, a mailto: link or an e-mail address', () => {
     for (const line of [
       'The research notes say so [unverified][ref].',
