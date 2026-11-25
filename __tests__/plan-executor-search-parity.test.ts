@@ -419,6 +419,27 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(readAudit(home).find((e) => e.event === 'article_held').detail).toContain('Web search limit reached');
   }, 60000);
 
+  // Fix round 3 (B3, addendum 3 (iv)): an over-long query, found when its
+  // search completes, stops the turn; the run lands held, the research is not
+  // retried, and a launch that left no final count spends the whole budget.
+  it.each([
+    ['an over-long query', 'CODEX_ERROR Web search query over 200 characters; stopped.'],
+    ['the reserve stop', 'CODEX_ERROR Web search limit reached (20 queries); stopped.'],
+  ])('fix 3: %s lands held, with no retry and the budget spent', async (_name, line) => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([{ fail: line }, RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir)).toHaveLength(1);
+    expect(readRunLog(home).outputPreview).toMatch(/^Held \(web-search-stopped\): /);
+    const audit = readAudit(home);
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'web-search-stopped' });
+    expect(audit.find((e) => e.event === 'article_held').detail).toContain(line.replace(/^CODEX_ERROR /, ''));
+    expect(audit.find((e) => e.event === 'web_search_budget')).toMatchObject({ used: null, countState: 'unreadable', runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES });
+    expect(readFeedback(home)[0]).toMatchObject({ reason: 'held' });
+    expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
+  }, 60000);
+
   /** An attended run's .env: the global default asks for the tap, and the wait is 1 s. */
   function attendedEnv(home: string) {
     fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='1'\nSHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS='1'\n`);
@@ -824,6 +845,38 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(read('{"count": 3, "fin')).toBeNull();
     fs.rmSync(file);
     expect(executor.readWebSearchCount(file)).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Fix round 3 (gate 3, finding 2): the driver stopped with searches still
+  // open; their queries are unknown, so its count is an estimate, never final.
+  it('fix 3: an estimated count (searches open at the stop) spends the rest of the budget, and the audit says so', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([{ answer: THIN_RESEARCH, countRecord: { count: 4, estimated: true, unsettled: 1 } }, RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    await runExecutor(planFile, home, driver, recordDir, { SHELLY_CAP_TAINTED: '1', SHELLY_WEB_SEARCH_OPT_IN_SHA256: definitionHash(planFile) });
+    expect(readCalls(recordDir).filter((c) => c.argv.includes('--web-search'))).toHaveLength(1);
+    expect(readAudit(home).find((e) => e.event === 'web_search_budget')).toMatchObject({
+      used: null, countState: 'estimated', estimate: 4, unsettled: 1, runUsed: executor.WEB_SEARCH_OPT_IN_MAX_QUERIES,
+    });
+  }, 60000);
+
+  it('fix 3: readWebSearchCountRecord tells a final count from an estimate and an unreadable record', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-search-count-read-'));
+    const file = path.join(dir, 'c.json');
+    const read = (v: unknown) => {
+      fs.writeFileSync(file, JSON.stringify(v));
+      return executor.readWebSearchCountRecord(file);
+    };
+    expect(read({ count: 3, final: true })).toEqual({ used: 3, state: 'final' });
+    expect(read({ count: 20, estimated: true, unsettled: 4 })).toEqual({ used: null, state: 'estimated', estimate: 20, unsettled: 4 });
+    expect(executor.readWebSearchCount(file)).toBeNull();
+    for (const v of [
+      { count: 20, estimated: true, unsettled: 0 },
+      { count: 20, estimated: true },
+      { count: 20, estimated: true, unsettled: 1, final: true },
+      { count: 20, estimated: 'yes', unsettled: 1 },
+    ]) expect(read(v)).toEqual({ used: null, state: 'unreadable' });
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

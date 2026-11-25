@@ -1504,6 +1504,10 @@ function codexWebSearchUnits(item) {
 }
 
 const CODEX_WEB_SEARCH_AUDIT_MAX_QUERIES = 50;
+// Fix round 3 (gate 3, finding 2): how long a stopped turn waits for searches
+// still open to complete, so their queries are counted and audited, before the
+// count is written as an estimate (read as the whole budget spent).
+const WEB_SEARCH_DRAIN_MS = 5000;
 
 function codexWebSearchAudit(item, secrets, maxChars = null) {
   const action = item && item.action && typeof item.action === 'object' ? item.action : {};
@@ -1536,13 +1540,19 @@ function codexWebSearchAudit(item, secrets, maxChars = null) {
  * round 2): nothing is there before, so a write that fails leaves no count a
  * caller could take as valid. A new file in its place, never a partial one;
  * on any error the temp file and `file` are removed. False on any error.
+ *
+ * Fix round 3 (gate 3, finding 2): when searches were still open at the end
+ * (`unsettled` > 0), their queries are unknown and the count is an estimate.
+ * It is written as {"count": n, "estimated": true, "unsettled": k}, never
+ * marked final, so a caller reads it as the whole budget spent.
  */
-function writeWebSearchCountFile(file, count) {
+function writeWebSearchCountFile(file, count, unsettled = 0) {
   if (!file) return false;
   const tmpPath = `${file}.${process.pid}.tmp`;
   unlinkQuietSync(tmpPath);
+  const record = unsettled > 0 ? { count, estimated: true, unsettled } : { count, final: true };
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify({ count, final: true }), { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(tmpPath, JSON.stringify(record), { mode: 0o600, flag: 'wx' });
     fs.renameSync(tmpPath, file);
     return true;
   } catch (_) {
@@ -3772,14 +3782,51 @@ async function runDriver(config) {
     return id;
   };
 
+  // Fix round 3 (gate 3, finding 2): a turn stopped with searches still open
+  // answers nothing more, but keeps reading until those searches complete, so
+  // every query they sent is counted and audited and the count written is the
+  // real one. Searches that do not complete (the turn ends, Codex exits, or
+  // WEB_SEARCH_DRAIN_MS passes) leave an estimated count, never a final one.
+  let turnEnded = false;
+  let interruptSent = false;
+  let draining = false;
+  let drainTimer = null;
+  let finishedAs = null;
   const finish = (reason, exitCode) => {
     if (completed) return;
     completed = true;
     completedOk = exitCode === 0;
     clearTimeout(timeout);
+    finishedAs = { reason, exitCode };
+    if (config.webSearch && openWebSearches.size > 0 && !turnEnded && child.exitCode === null && child.signalCode === null) {
+      draining = true;
+      audit('web_search_drain_start', { reason, open: openWebSearches.size, count: completedWebSearches });
+      if (!interruptSent && threadId && activeTurnId) {
+        interruptSent = true;
+        try {
+          request('turnInterrupt', 'turn/interrupt', { threadId, turnId: activeTurnId });
+        } catch {}
+      }
+      drainTimer = setTimeout(() => endDrain('deadline'), WEB_SEARCH_DRAIN_MS);
+      return;
+    }
+    finalize();
+  };
+
+  const endDrain = (why) => {
+    if (!draining) return;
+    draining = false;
+    clearTimeout(drainTimer);
+    audit('web_search_drain_end', { why, unsettled: openWebSearches.size, count: completedWebSearches });
+    finalize();
+  };
+
+  const finalize = () => {
+    const { reason, exitCode } = finishedAs;
     if (config.webSearch && config.webSearchCountFile) {
       const count = webSearchCommitted();
-      if (!writeWebSearchCountFile(config.webSearchCountFile, count)) audit('web_search_count_unwritten', { count });
+      const unsettled = openWebSearches.size;
+      if (!writeWebSearchCountFile(config.webSearchCountFile, count, unsettled)) audit('web_search_count_unwritten', { count, unsettled });
     }
     audit('driver_finish', { reason, exitCode, threadId });
     if (child.exitCode === null && child.signalCode === null) {
@@ -3847,6 +3894,7 @@ async function runDriver(config) {
       reason,
     });
     if (threadId && turnId) {
+      interruptSent = true;
       try {
         request('turnInterrupt', 'turn/interrupt', { threadId, turnId });
       } catch {}
@@ -4461,10 +4509,64 @@ async function runDriver(config) {
     );
   };
 
+  // One completed webSearch item: off the open list, its queries counted and
+  // audited (a string carrying a secret is withheld there). Before any check
+  // that may stop the turn: a stopped search was still sent.
+  const recordCompletedWebSearch = (params, extra) => {
+    const doneKey = typeof params.item.id === 'string' && params.item.id ? `id:${params.item.id}` : null;
+    if (doneKey) openWebSearches.delete(doneKey);
+    else {
+      const unnamed = [...openWebSearches].find((key) => key.startsWith('unnamed:'));
+      if (unnamed) openWebSearches.delete(unnamed);
+    }
+    completedWebSearches += codexWebSearchUnits(params.item);
+    audit('codex_web_search', {
+      threadId: params.threadId,
+      turnId: params.turnId,
+      ...codexWebSearchAudit(params.item, leakSecrets, config.webSearchMaxQueryChars),
+      ...(extra || {}),
+    });
+  };
+
+  const webSearchLongestQuery = (item) => codexWebSearchQueryTexts(item).reduce((m, t) => Math.max(m, Array.from(t).length), 0);
+
+  // Fix round 3 (gate 3, finding 2): after a stop, only searches are read, and
+  // only to count and audit them; nothing is answered and no answer is kept.
+  const handleDrainMessage = (message) => {
+    const params = message.params || {};
+    const item = params.item;
+    if (message.method === 'item/started' && item && item.type === 'webSearch') {
+      // Started despite the stop: it holds back a batch until it completes too.
+      openWebSearches.add(webSearchItemKey(item));
+      audit('codex_web_search_started_after_stop', { threadId: params.threadId, turnId: params.turnId, itemId: typeof item.id === 'string' ? item.id.slice(0, 120) : null, open: openWebSearches.size });
+      return;
+    }
+    if (message.method === 'item/completed' && item && item.type === 'webSearch') {
+      recordCompletedWebSearch(params, { afterStop: true });
+      const ids = { threadId: params.threadId, turnId: params.turnId, itemId: typeof item.id === 'string' ? item.id.slice(0, 120) : null, phase: 'after-stop' };
+      const leak = codexWebSearchLeakCheck(item, leakSecrets);
+      if (leak) audit('codex_web_search_leak_blocked', { ...ids, detector: leak.detector });
+      if (Number.isInteger(config.webSearchMaxQueries) && completedWebSearches > config.webSearchMaxQueries) {
+        audit('codex_web_search_limit', { ...ids, limit: 'count', count: completedWebSearches, max: config.webSearchMaxQueries });
+      }
+      if (Number.isInteger(config.webSearchMaxQueryChars)) {
+        const chars = webSearchLongestQuery(item);
+        if (chars > config.webSearchMaxQueryChars) audit('codex_web_search_limit', { ...ids, limit: 'length', chars, max: config.webSearchMaxQueryChars });
+      }
+      if (openWebSearches.size === 0) endDrain('settled');
+      return;
+    }
+    if (message.method === 'turn/completed') endDrain('turn-ended');
+  };
+
   const handleMessage = async (message) => {
     // After finish() (e.g. a blocked MCP call) nothing more is answered or
     // written — in particular no answer file from a late turn/completed.
-    if (completed) return;
+    // Searches still open are read to the end (handleDrainMessage).
+    if (completed) {
+      if (draining) handleDrainMessage(message);
+      return;
+    }
     if (isClientResponse(message)) {
       handleClientResponse(message);
       return;
@@ -4554,20 +4656,8 @@ async function runDriver(config) {
     if (message.method === 'item/completed') {
       if (blockUngatedItem('completed', message.params)) return;
       if (message.params.item.type === 'webSearch') {
-        // Counted first: a search stopped below (a secret, a cap) was still sent.
-        const doneKey = typeof message.params.item.id === 'string' && message.params.item.id ? `id:${message.params.item.id}` : null;
-        if (doneKey) openWebSearches.delete(doneKey);
-        else {
-          const unnamed = [...openWebSearches].find((key) => key.startsWith('unnamed:'));
-          if (unnamed) openWebSearches.delete(unnamed);
-        }
-        completedWebSearches += codexWebSearchUnits(message.params.item);
-        // Audited first too (a string carrying a secret is withheld there).
-        audit('codex_web_search', {
-          threadId: message.params.threadId,
-          turnId: message.params.turnId,
-          ...codexWebSearchAudit(message.params.item, leakSecrets, config.webSearchMaxQueryChars),
-        });
+        // Counted and audited first: a search stopped below (a secret, a cap) was still sent.
+        recordCompletedWebSearch(message.params);
         const leak = codexWebSearchLeakCheck(message.params.item, leakSecrets);
         if (leak) {
           process.stdout.write(`CODEX_ERROR A web search carried a secret (${leak.detector}); stopped.\n`);
@@ -4592,7 +4682,7 @@ async function runDriver(config) {
           return;
         }
         if (Number.isInteger(config.webSearchMaxQueryChars)) {
-          const chars = codexWebSearchQueryTexts(message.params.item).reduce((m, t) => Math.max(m, Array.from(t).length), 0);
+          const chars = webSearchLongestQuery(message.params.item);
           if (chars > config.webSearchMaxQueryChars) {
             process.stdout.write(`CODEX_ERROR Web search query over ${config.webSearchMaxQueryChars} characters; stopped.\n`);
             stopUngatedActivity('codex_web_search_limit', {
@@ -4626,6 +4716,8 @@ async function runDriver(config) {
     if (codexUsage.observe(message)) return;
 
     if (message.method === 'turn/completed') {
+      // Searches still open now will not complete: their count is an estimate.
+      turnEnded = true;
       // A turn cut short leaves part of an answer, which is not a result.
       const turnStatus = message.params && message.params.turn ? message.params.turn.status : null;
       if (config.textOnly && turnStatus !== 'completed') {
@@ -4722,7 +4814,11 @@ async function runDriver(config) {
   });
 
   child.on('exit', (code, signal) => {
-    if (completed) return;
+    if (completed) {
+      // Searches still open will not complete now.
+      endDrain('codex-exit');
+      return;
+    }
     const exitCode = turnStarted && code === 0 ? 0 : 1;
     audit('codex_exit', { code, signal, turnStarted });
     finish('codex_exit', exitCode);

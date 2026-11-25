@@ -13017,9 +13017,16 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     if (webSearchOptedIn) {
       // What this launch used; an unreadable count (the driver never wrote it,
       // or wrote nonsense) spends the rest of the budget: fail closed.
-      const used = readWebSearchCount(webSearchCountFile);
+      // Fix round 3: an estimate (searches still open at the stop) is not a
+      // count either; the audit says which it was.
+      const record = readWebSearchCountRecord(webSearchCountFile);
+      const used = record.used;
       webSearchRunQueriesUsed += used === null ? webSearchRemaining : used;
-      cliStepAudit(paths, plan, 'web_search_budget', { stepIndex, engine, used, runUsed: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES });
+      cliStepAudit(paths, plan, 'web_search_budget', {
+        stepIndex, engine, used, countState: record.state,
+        ...(record.state === 'estimated' ? { estimate: record.estimate, unsettled: record.unsettled } : {}),
+        runUsed: webSearchRunQueriesUsed, max: WEB_SEARCH_OPT_IN_MAX_QUERIES,
+      });
     }
     cliStepAudit(paths, plan, 'cli_branch_end', {
       stepIndex,
@@ -13077,15 +13084,32 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
  * the rest of the run's budget. Throws nothing.
  */
 function readWebSearchCount(file) {
+  return readWebSearchCountRecord(file).used;
+}
+
+/**
+ * Fix round 3 (gate 3, finding 2): the count record and what it is. `final`
+ * gives the queries used; `estimated` (the driver's {"count", "estimated":
+ * true, "unsettled": k}: searches still open when it stopped, their queries
+ * unknown) and `unreadable` (missing, partial, any other shape) give null,
+ * which spends the rest of the run's budget. Throws nothing.
+ */
+function readWebSearchCountRecord(file) {
+  let parsed;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if (Object.keys(parsed).sort().join(',') !== 'count,final' || parsed.final !== true) return null;
-    const n = parsed.count;
-    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (_) {
-    return null;
+    return { used: null, state: 'unreadable' };
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { used: null, state: 'unreadable' };
+  const keys = Object.keys(parsed).sort().join(',');
+  const n = parsed.count;
+  const count = Number.isSafeInteger(n) && n >= 0 ? n : null;
+  if (keys === 'count,final' && parsed.final === true && count !== null) return { used: count, state: 'final' };
+  if (keys === 'count,estimated,unsettled' && parsed.estimated === true && count !== null && Number.isSafeInteger(parsed.unsettled) && parsed.unsettled > 0) {
+    return { used: null, state: 'estimated', estimate: count, unsettled: parsed.unsettled };
+  }
+  return { used: null, state: 'unreadable' };
 }
 
 async function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
@@ -16755,6 +16779,7 @@ module.exports = {
   WEB_SEARCH_OPT_IN_MAX_QUERY_CHARS,
   WEB_SEARCH_OPT_IN_BATCH_RESERVE,
   readWebSearchCount,
+  readWebSearchCountRecord,
   canonicalJson,
   planDefinitionSha256,
   webSearchOptInState,
