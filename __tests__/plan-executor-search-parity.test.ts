@@ -140,9 +140,9 @@ function writePipelines(home: string) {
   }));
 }
 
-function runExecutor(planFile: string, home: string, driver: string, recordDir: string, env: Record<string, string> = {}, attended = false): Promise<number | null> {
+function runExecutor(planFile: string, home: string, driver: string, recordDir: string, env: Record<string, string> = {}, attended = false, extraArgs: string[] = []): Promise<number | null> {
   return new Promise((resolve) => {
-    const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver, ...(attended ? [] : ['--unattended', '1'])];
+    const args = [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker, '--agent-driver', driver, ...(attended ? [] : ['--unattended', '1']), ...extraArgs];
     const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, FAKE_DRIVER_RECORD_DIR: recordDir, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10', ...env };
     delete childEnv.SHELLY_RUN_ORIGIN;
     for (const key of ['SHELLY_CAP_TAINTED', 'SHELLY_INGRESS_TAINTED', 'SHELLY_INGRESS_TAINTED_REASON', 'SHELLY_WEB_SEARCH_OPT_IN_SHA256', 'SHELLY_NOTIFICATION_TEXT']) {
@@ -664,6 +664,51 @@ describe('a run with the Codex web-search research step (v68)', () => {
     expect(result.draftApprovalFailure).toBeInstanceOf(Error);
     expect(result.draftApprovalFailure.reason).toBe('approval-timeout');
     expect(result.actionResults.map((r: any) => [r.actionType, r.status])).toEqual([['draft', 'skipped'], ['notify', 'skipped']]);
+  }, 60000);
+
+  // Fix round 1 (item 8): native's trust arguments used to save the draft
+  // (action_trusted_allow) past the agent's own requireActionApproval: true.
+  const TRUST_ARGS = ['--trusted-autonomous-agent-id', AGENT_ID, '--trusted-autonomous-action', 'draft', '--trusted-tool-type', 'local'];
+
+  it('item 8: an explicit approval pin wins over the native-trust shortcut for the draft save', async () => {
+    const home = makeHome();
+    writePipelines(home);
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const plan = basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE));
+    plan.agent.requireActionApproval = true;
+    const planFile = writePlan(home, port, plan);
+    attendedEnv(home);
+    await runExecutor(planFile, home, driver, recordDir, {}, true, TRUST_ARGS);
+    const audit = readAudit(home);
+    expect(audit.some((e) => e.event === 'action_trusted_allow')).toBe(false);
+    // The tap was asked for and did not come: held, the draft kept.
+    expect(readRunLog(home).outputPreview).toMatch(/^Held \(approval-timeout\): /);
+    expect(audit.find((e) => e.event === 'article_held')).toMatchObject({ reason: 'approval-timeout', approval: 'timeout', draftKept: true });
+    expect(fs.existsSync(path.join(home, 'agent-output')) ? fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md')) : []).toEqual([]);
+  }, 60000);
+
+  it('item 8: without the pin the native-trust shortcut still saves the draft', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver([RESEARCH_ANSWER, ARTICLE, 'VERDICT: PASS']);
+    const planFile = writePlan(home, port, basePlan(home, chain(RESEARCH_WS, CODEX, CLAUDE)));
+    attendedEnv(home);
+    await runExecutor(planFile, home, driver, recordDir, {}, true, TRUST_ARGS);
+    expect(readRunLog(home).status).toBe('success');
+    expect(readAudit(home).some((e) => e.event === 'action_trusted_allow')).toBe(true);
+    expect(fs.readdirSync(path.join(home, 'agent-output')).filter((n) => n.endsWith('.md'))).toHaveLength(1);
+  }, 60000);
+
+  it('item 8: the pin wins over the shortcut on a plain (non-article) draft agent too', async () => {
+    const home = makeHome();
+    const rtPaths = executor.runtimePaths(home, AGENT_ID);
+    fs.mkdirSync(rtPaths.logDir, { recursive: true });
+    const plan = basePlan(home, [{ instruction: 'x' }], { steps: undefined });
+    plan.agent.requireActionApproval = true;
+    const args = { 'trusted-autonomous-agent-id': AGENT_ID, 'trusted-autonomous-action': 'draft', 'trusted-tool-type': 'local' };
+    await expect(executor.dispatchActionTrusted(rtPaths, {}, plan, { SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS: '1' }, [home], 'A finished body with real content in it.', args))
+      .rejects.toMatchObject({ reason: 'approval-timeout' });
+    const audit = fs.existsSync(rtPaths.planAuditFile) ? fs.readFileSync(rtPaths.planAuditFile, 'utf8') : '';
+    expect(audit).not.toContain('action_trusted_allow');
   }, 60000);
 
   // Fix round 1 (item 4): a cut never leaves the original text nowhere.

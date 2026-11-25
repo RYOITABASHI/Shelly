@@ -11403,7 +11403,12 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   // draft/notify): its case below performs the ACTUAL dispatch — trusting
   // the shortcut would report "success" without anything ever having been
   // posted.
-  if (actionType !== 'social-post' && !policyForcedApproval && trustedNativeLowRiskAction(args, plan, actionType)) {
+  // Fix round 1 (item 8): an agent's explicit requireActionApproval: true pin
+  // wins over the native-trust shortcut for a draft save (it used to skip the
+  // tap the owner pinned). POLICY-001 ask and the MCP ingress refusal above
+  // still come first.
+  const draftPinnedTap = actionType === 'draft' && !!plan.agent && plan.agent.requireActionApproval === true;
+  if (actionType !== 'social-post' && !policyForcedApproval && !draftPinnedTap && trustedNativeLowRiskAction(args, plan, actionType)) {
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
