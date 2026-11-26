@@ -1,11 +1,7 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
-import java.io.File
-import java.io.FileInputStream
 
 /**
  * The I/O half of launcher ingress Phase 2 (pure half: LauncherSubmissionCore).
@@ -26,8 +22,6 @@ import java.io.FileInputStream
  */
 object LauncherSubmissions {
     private const val TAG = "LauncherSubmissions"
-    /** How much of the audit file's tail the inbox reads for synchronous refusals. */
-    private const val AUDIT_TAIL_BYTES = 256 * 1024
 
     // ── The owner's decision (C6) ─────────────────────────────────────────
 
@@ -122,14 +116,18 @@ object LauncherSubmissions {
         }
     }
 
-    /** The inbox JSON (LauncherSubmissionCore.inboxJson), or null when the records can't be read. Never throws. */
+    /**
+     * The inbox JSON (LauncherSubmissionCore.inboxJson): the submission
+     * records and the denial records kept next to them (McpRunTickets.Denial),
+     * or null when either can't be read. Never throws.
+     */
     fun inboxJson(context: Context): String? = try {
         val subs = McpRunTickets.allSubmissionsCurrent(context)
-        if (subs == null) {
+        val denials = McpRunTickets.allDenialsCurrent(context)
+        if (subs == null || denials == null) {
             null
         } else {
-            val denied = readAuditTail(context).mapNotNull { LauncherSubmissionCore.deniedFromAuditLine(it) }
-            LauncherSubmissionCore.inboxJson(subs, denied, System.currentTimeMillis(), StopAllSwitches.halted(context))
+            LauncherSubmissionCore.inboxJson(subs, denials, System.currentTimeMillis(), StopAllSwitches.halted(context))
         }
     } catch (e: Exception) {
         Log.w(TAG, "inbox read failed type=${e.javaClass.simpleName}")
@@ -145,38 +143,6 @@ object LauncherSubmissions {
         null
     }
 
-    /** The complete lines of the last [AUDIT_TAIL_BYTES] of `audits/mcp-ingress-audit.jsonl`; empty when unreadable. */
-    private fun readAuditTail(context: Context): List<String> = try {
-        val f = File(HomeInitializer.getHomeDir(context), ".shelly/agents/audits/${IngressAuditWriter.MCP_AGENTLESS_FILE}")
-        val st = try { Os.lstat(f.path) } catch (e: Exception) { null }
-        if (st == null || !OsConstants.S_ISREG(st.st_mode)) {
-            emptyList()
-        } else {
-            val fd = Os.open(f.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC or OsConstants.O_NONBLOCK, 0)
-            try {
-                // A stream over a FileDescriptor does not own it on Android: the fd is closed below.
-                val input = FileInputStream(fd)
-                val size = Os.fstat(fd).st_size
-                val skip = if (size > AUDIT_TAIL_BYTES) size - AUDIT_TAIL_BYTES else 0L
-                if (skip > 0L) input.channel.position(skip)
-                val buf = ByteArray(AUDIT_TAIL_BYTES)
-                var n = 0
-                while (n < buf.size) {
-                    val r = input.read(buf, n, buf.size - n)
-                    if (r < 0) break
-                    n += r
-                }
-                val lines = String(buf, 0, n, Charsets.UTF_8).split('\n')
-                // A tail that starts mid-file starts mid-line: drop that first piece.
-                (if (skip > 0L) lines.drop(1) else lines).filter { it.isNotBlank() }
-            } finally {
-                runCatching { Os.close(fd) }
-            }
-        }
-    } catch (e: Exception) {
-        emptyList()
-    }
-
     // ── The D2 reader (McpTypedOpConsumer) ────────────────────────────────
 
     private class Reply(val code: String, val json: String, val audited: Boolean = false)
@@ -187,15 +153,20 @@ object LauncherSubmissions {
         is LauncherSubmissionCore.ReaderArgs.Consume -> "launcher_submission_consume"
     }
 
-    /** A refusal's audit line (best effort; the answer is the refusal either way). */
-    fun auditRefusal(context: Context, tool: String, principal: String?, code: String) {
+    /**
+     * A refusal's audit line (best effort; the answer is the refusal either
+     * way). [submissionId]: the id of a get / consume whose arguments were
+     * valid (null when they were not, and for list).
+     */
+    fun auditRefusal(context: Context, tool: String, principal: String?, submissionId: String?, code: String) {
         val kind = when (tool) {
             LauncherSubmissionCore.OP_GET -> "launcher_submission_get"
             LauncherSubmissionCore.OP_LIST -> "launcher_submission_list"
             LauncherSubmissionCore.OP_CONSUME -> "launcher_submission_consume"
             else -> return
         }
-        if (!IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, null, code, null)) {
+        val id = if (tool == LauncherSubmissionCore.OP_LIST || !McpRunTickets.isSubmissionId(submissionId)) null else submissionId
+        if (!IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)) {
             Log.w(TAG, "reader audit line not written ($kind $code)")
         }
     }
@@ -230,10 +201,11 @@ object LauncherSubmissions {
                         refuse(r)
                     } else {
                         val subs = McpRunTickets.allSubmissionsCurrent(context)
-                        if (subs == null) {
+                        val denials = McpRunTickets.allDenialsCurrent(context)
+                        if (subs == null || denials == null) {
                             refuse(LauncherSubmissionCore.STORE_FAILED)
                         } else {
-                            val data = LauncherSubmissionCore.listData(subs, System.currentTimeMillis(), args.limit)
+                            val data = LauncherSubmissionCore.listData(subs, denials, System.currentTimeMillis(), args.limit)
                             val count = data.optInt("count", 0)
                             if (!line("ok", count)) {
                                 Reply("audit_failed", LauncherSubmissionCore.errorResult(LauncherSubmissionCore.AUDIT_FAILED), audited = true)
@@ -243,7 +215,11 @@ object LauncherSubmissions {
                         }
                     }
                 }
-                is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.submissionUpdate<Reply>(
+                // A denial record (synchronous refusal): state denied and its reason, never text.
+                is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.readDenial(context, args.id)?.let { d ->
+                    val r = recheck()
+                    if (r != null) refuse(r) else Reply("ok", LauncherSubmissionCore.okResult(LauncherSubmissionCore.deniedReaderItem(d)))
+                } ?: McpRunTickets.submissionUpdate<Reply>(
                     context, args.id,
                     body = { cur, text, now ->
                         val r = recheck()
@@ -266,7 +242,10 @@ object LauncherSubmissions {
                     },
                     onResult = { answer, _ -> answer },
                 ) ?: refuse(LauncherSubmissionCore.STORE_FAILED)
-                is LauncherSubmissionCore.ReaderArgs.Consume -> {
+                is LauncherSubmissionCore.ReaderArgs.Consume -> if (McpRunTickets.readDenial(context, args.id) != null) {
+                    // A denial record was never approved: it can't be consumed.
+                    recheck()?.let { refuse(it) } ?: refuse(LauncherSubmissionCore.NOT_APPROVED)
+                } else {
                     McpRunTickets.submissionUpdate<Reply>(
                         context, args.id,
                         body = { cur, _, now ->

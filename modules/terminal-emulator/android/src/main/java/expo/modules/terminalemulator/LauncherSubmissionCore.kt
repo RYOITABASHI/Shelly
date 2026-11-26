@@ -25,12 +25,10 @@ object LauncherSubmissionCore {
 
     /** Derived, never stored: approved and not consumed within [LauncherIngressLimits.STALE_AFTER_MS]. */
     const val STATE_STALE = "stale"
-    /** Inbox only: a synchronous refusal (read back from the audit log; there is no record). */
+    /** A synchronous refusal of a verified caller (a text-free denial record, McpRunTickets.Denial). */
     const val STATE_DENIED = "denied"
 
     private val SUBMISSION_ID_RE = Regex("^ls_[0-9a-f]{32}$")
-    private val LAUNCHER_PRINCIPAL_RE = Regex("^launcher:[0-9a-f]{32}$")
-    private val CODE_RE = Regex("^[a-z_]{1,32}$")
 
     // ── States ────────────────────────────────────────────────────────────
 
@@ -134,64 +132,47 @@ object LauncherSubmissionCore {
 
     // ── The inbox (§2, read-only presentation) ────────────────────────────
 
-    /** A synchronous refusal of a verified caller, read back from its audit line. */
-    data class DeniedEntry(val at: Long, val code: String, val submissionId: String?, val correlationRef: String?)
-
-    /**
-     * One `launcher_submit_denied` audit line of a VERIFIED caller (it has a
-     * launcher principal; unverified callers are not the owner and are not
-     * shown), or null. Display only: nothing is decided from it.
-     */
-    fun deniedFromAuditLine(line: String): DeniedEntry? = try {
-        val o = JSONObject(line)
-        val principal = o.opt("principal") as? String
-        val code = o.opt("code") as? String
-        val ts = (o.opt("ts") as? String)?.let { McpTypedOpDecision.parseIsoMs(it) }
-        val id = o.opt("submission_id") as? String
-        val corr = o.opt("correlation_ref") as? String
-        if (o.opt("kind") != "launcher_submit_denied" || o.opt("event") != IngressAuditWriter.LAUNCHER_EVENT_SUBMIT ||
-            principal == null || !LAUNCHER_PRINCIPAL_RE.matches(principal) || code == null || !CODE_RE.matches(code) || ts == null
-        ) {
-            null
-        } else {
-            DeniedEntry(
-                ts, code,
-                if (id != null && SUBMISSION_ID_RE.matches(id)) id else null,
-                if (corr != null && IngressAuditWriter.CORRELATION_REF_RE.matches(corr)) corr else null,
-            )
-        }
-    } catch (e: Exception) {
-        null
+    /** A denial record as the inbox and the reader see it: state [STATE_DENIED], its reason区分 and code, never any text. */
+    fun deniedJson(d: McpRunTickets.Denial): JSONObject {
+        val o = JSONObject().put("kind", "denied").put("id", d.id).put("state", STATE_DENIED).put("at", d.at)
+            .put("code", d.code).put("reason", d.reason)
+        if (d.correlationRef != null) o.put("correlationRef", d.correlationRef)
+        if (d.ref != null) o.put("ref", d.ref)
+        return o
     }
 
-    /** The launcher reason区分 (fact sheet §1.3) of a denial audit code. */
-    fun reasonForDeniedCode(code: String): String = when {
-        code == "halted" -> LauncherIngressCore.Reason.STOP_ALL_ACTIVE.name
-        code == "disabled" -> LauncherIngressCore.Reason.DISABLED.name
-        code == "busy" -> LauncherIngressCore.Reason.BUSY.name
-        code.endsWith("_too_large") -> LauncherIngressCore.Reason.PAYLOAD_TOO_LARGE.name
-        code == "verify_changed" -> LauncherIngressCore.Reason.VERIFY_FAILED.name
-        code == "rule_changed" || code == "duplicate_closed" -> LauncherIngressCore.Reason.GATE_DENIED.name
-        code == "internal_error" || code == "rate_history_failed" -> LauncherIngressCore.Reason.INTERNAL_ERROR.name
-        code.startsWith("text_") || code.startsWith("correlation_") || code.startsWith("nonce_") || code.startsWith("payload_") ->
-            LauncherIngressCore.Reason.INVALID_PAYLOAD.name
-        else -> LauncherIngressCore.Reason.GATE_DENIED.name
+    /** One inbox row before the cap: its time, a tie-break key, whether it is still decidable, and its JSON. */
+    class InboxRow(val at: Long, val key: String, val pending: Boolean, val json: JSONObject)
+
+    /**
+     * The inbox retention (P2-B3, "the shorter of the newest 50 and 7 days")
+     * over the COMBINED rows (records + denials): nothing older than
+     * [LauncherIngressLimits.INBOX_MAX_AGE_MS] unless still pending, then at
+     * most [LauncherIngressLimits.INBOX_MAX_RECORDS] in total, dropping the
+     * oldest non-pending rows first. Pending rows (at most MAX_PENDING per
+     * principal, fewer than the cap) are kept while decidable; if there were
+     * ever more pending rows than the cap, the newest of them are kept. The
+     * result never exceeds the cap. Newest first.
+     */
+    fun capInbox(rows: List<InboxRow>, now: Long): List<InboxRow> {
+        val cap = LauncherIngressLimits.INBOX_MAX_RECORDS
+        val byNewest = compareByDescending<InboxRow> { it.at }.thenByDescending { it.key }
+        val live = rows.filter { it.pending || now - it.at <= LauncherIngressLimits.INBOX_MAX_AGE_MS }
+        val pending = live.filter { it.pending }.sortedWith(byNewest).take(cap)
+        val others = live.filter { !it.pending }.sortedWith(byNewest).take(cap - pending.size)
+        return (pending + others).sortedWith(byNewest)
     }
 
     /**
-     * The inbox (P2-B3): records and synchronous refusals, newest first,
-     * retention the shorter of the newest [LauncherIngressLimits.INBOX_MAX_RECORDS]
-     * and [LauncherIngressLimits.INBOX_MAX_AGE_MS] (a pending one is always
-     * listed while it can still be decided). No text: the prompt asks for it
-     * separately ([promptJson]).
+     * The inbox (P2-B3): submission records and denial records, newest first,
+     * capped by [capInbox]. No text: the prompt asks for it separately
+     * ([promptJson]).
      */
-    fun inboxJson(subs: List<McpRunTickets.Submission>, denied: List<DeniedEntry>, now: Long, halted: Boolean): String {
-        class Row(val at: Long, val key: String, val pending: Boolean, val json: JSONObject)
-        val rows = ArrayList<Row>()
+    fun inboxJson(subs: List<McpRunTickets.Submission>, denials: List<McpRunTickets.Denial>, now: Long, halted: Boolean): String {
+        val rows = ArrayList<InboxRow>()
         for (s in subs) {
             val state = viewState(s, now)
             val pending = state == McpRunTickets.SUB_PENDING
-            if (!pending && now - s.acceptedAt > LauncherIngressLimits.INBOX_MAX_AGE_MS) continue
             val cur = McpRunTickets.applySubmissionExpiry(s, now)
             val o = JSONObject().put("kind", "record").put("id", s.id).put("state", state).put("at", s.acceptedAt)
                 .put("untrusted", s.untrusted).put("codePoints", s.textCodePoints)
@@ -201,21 +182,11 @@ object LauncherSubmissionCore {
             if (cur.correlationRef != null) o.put("correlationRef", cur.correlationRef)
             if (pending) o.put("expiresAt", expiresAt(s))
             if (state != McpRunTickets.SUB_APPROVED) o.put("reason", reasonFor(state))
-            rows.add(Row(s.acceptedAt, s.id, pending, o))
+            rows.add(InboxRow(s.acceptedAt, s.id, pending, o))
         }
-        for ((i, d) in denied.withIndex()) {
-            if (now - d.at > LauncherIngressLimits.INBOX_MAX_AGE_MS) continue
-            val o = JSONObject().put("kind", "denied").put("state", STATE_DENIED).put("at", d.at)
-                .put("code", d.code).put("reason", reasonForDeniedCode(d.code))
-            if (d.submissionId != null) o.put("id", d.submissionId)
-            if (d.correlationRef != null) o.put("correlationRef", d.correlationRef)
-            rows.add(Row(d.at, "d%08d".format(i), false, o))
-        }
-        val sorted = rows.sortedWith(compareByDescending<Row> { it.at }.thenByDescending { it.key })
-        val kept = ArrayList<Row>()
-        for (r in sorted) if (r.pending || kept.count { !it.pending } < LauncherIngressLimits.INBOX_MAX_RECORDS) kept.add(r)
+        for (d in denials) rows.add(InboxRow(d.at, d.id, false, deniedJson(d)))
         val items = JSONArray()
-        for (r in kept) items.put(r.json)
+        for (r in capInbox(rows, now)) items.put(r.json)
         return JSONObject().put("v", 1).put("now", now).put("halted", halted).put("items", items).toString()
     }
 
@@ -289,6 +260,14 @@ object LauncherSubmissionCore {
         }
     }
 
+    /** The submission id a valid get / consume names; null for list (and before the arguments were checked). */
+    fun idOf(args: ReaderArgs?): String? = when (args) {
+        is ReaderArgs.Get -> args.id
+        is ReaderArgs.Consume -> args.id
+        is ReaderArgs.ListAll -> null
+        null -> null
+    }
+
     /** The facts, read lazily and in order. Implementations must not throw (fail closed inside). */
     interface ReaderSteps {
         fun typedOpsOn(): Boolean
@@ -298,7 +277,8 @@ object LauncherSubmissionCore {
     }
 
     sealed class ReaderOutcome {
-        data class Refuse(val refusal: McpTypedOpDecision.Refusal) : ReaderOutcome()
+        /** [id]: the submission id once the arguments were valid (get / consume), for the audit line; null before that and for list. */
+        data class Refuse(val refusal: McpTypedOpDecision.Refusal, val id: String? = null) : ReaderOutcome()
         data class Proceed(val args: ReaderArgs) : ReaderOutcome()
     }
 
@@ -321,8 +301,8 @@ object LauncherSubmissionCore {
                     else -> ReaderOutcome.Refuse(bad("invalid arguments"))
                 }
             },
-            IngressDecision.Stage.EPOCH to { if (!s.epochCurrent()) ReaderOutcome.Refuse(REVOKED) else null },
-            IngressDecision.Stage.STOP_ALL to { if (s.halted()) ReaderOutcome.Refuse(HALTED) else null },
+            IngressDecision.Stage.EPOCH to { if (!s.epochCurrent()) ReaderOutcome.Refuse(REVOKED, idOf(args)) else null },
+            IngressDecision.Stage.STOP_ALL to { if (s.halted()) ReaderOutcome.Refuse(HALTED, idOf(args)) else null },
         )
         val refused = IngressDecision.evaluate(req.tool, hooks)
         if (refused != null) return refused
@@ -355,13 +335,19 @@ object LauncherSubmissionCore {
 
     fun errorResult(r: McpTypedOpDecision.Refusal): String = JSONObject().put("ok", false).put("error", r.message).put("code", r.code).toString()
 
-    /** list_launcher_submissions: newest first, inside the inbox retention, at most [limit]; never any text. */
-    fun listData(subs: List<McpRunTickets.Submission>, now: Long, limit: Int): JSONObject {
+    /** A denial record as the reader sees it: state `denied`, its time and reason, never text (nothing to approve or consume). */
+    fun deniedReaderItem(d: McpRunTickets.Denial): JSONObject =
+        JSONObject().put("submission_id", d.id).put("state", STATE_DENIED).put("denied_at", d.at).put("reason", d.reason)
+
+    /**
+     * list_launcher_submissions: submissions and denial records, newest first,
+     * inside the inbox retention ([capInbox]), at most [limit]; never any text.
+     */
+    fun listData(subs: List<McpRunTickets.Submission>, denials: List<McpRunTickets.Denial>, now: Long, limit: Int): JSONObject {
+        val rows = subs.map { InboxRow(it.acceptedAt, it.id, viewState(it, now) == McpRunTickets.SUB_PENDING, readerItem(it, now, null)) } +
+            denials.map { InboxRow(it.at, it.id, false, deniedReaderItem(it)) }
         val arr = JSONArray()
-        val shown = subs.filter { now - it.acceptedAt <= LauncherIngressLimits.INBOX_MAX_AGE_MS }
-            .sortedWith(compareByDescending<McpRunTickets.Submission> { it.acceptedAt }.thenByDescending { it.id })
-            .take(limit.coerceIn(1, LauncherIngressLimits.READER_LIST_MAX))
-        for (s in shown) arr.put(readerItem(s, now, null))
+        for (r in capInbox(rows, now).take(limit.coerceIn(1, LauncherIngressLimits.READER_LIST_MAX))) arr.put(r.json)
         return JSONObject().put("submissions", arr).put("count", arr.length())
     }
 

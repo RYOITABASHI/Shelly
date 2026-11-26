@@ -1198,26 +1198,104 @@ object McpRunTickets {
         subs.filter { it.principal == principal }.map { it.acceptedAt }.sortedDescending()
 
     /**
-     * Ids to delete before a new one is written (Phase 2 inbox retention, the
-     * shorter of the two): older than [LauncherIngressLimits.INBOX_MAX_AGE_MS],
-     * then the oldest decided ones beyond [LauncherIngressLimits.INBOX_MAX_RECORDS]
-     * across every principal, counting the incoming one (a pending one is
-     * never dropped by the count; expiry ends it first). The run tickets' 24 h
-     * [RETENTION_MS] does not apply: an approved submission must outlive its
-     * 24 h `stale` mark (no deletion then, phase 2 fact sheet §3).
+     * Ids to delete before a new record (a submission or a denial) is written:
+     * Phase 2 inbox retention, the shorter of the two, over the COMBINED
+     * population (submissions + denial records, every principal): older than
+     * [LauncherIngressLimits.INBOX_MAX_AGE_MS], then the oldest non-pending
+     * ones until the total, counting the incoming one, is at most
+     * [LauncherIngressLimits.INBOX_MAX_RECORDS]. A pending (still decidable)
+     * submission is never dropped; there are at most
+     * [LauncherIngressLimits.MAX_PENDING] per principal (< the cap), so the
+     * total stays within the cap. The run tickets' 24 h [RETENTION_MS] does
+     * not apply: an approved submission must outlive its 24 h `stale` mark
+     * (no deletion then, phase 2 fact sheet §3).
      */
-    fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> {
+    fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long): Set<String> {
+        class Row(val id: String, val at: Long, val pending: Boolean)
         val out = HashSet<String>()
-        val kept = ArrayList<Submission>()
-        for (s in subs) if (now - s.acceptedAt > LauncherIngressLimits.INBOX_MAX_AGE_MS) out.add(s.id) else kept.add(s)
+        val kept = ArrayList<Row>()
+        val rows = subs.map { Row(it.id, it.acceptedAt, applySubmissionExpiry(it, now).state == SUB_PENDING) } +
+            denials.map { Row(it.id, it.at, false) }
+        for (r in rows) if (!r.pending && now - r.at > LauncherIngressLimits.INBOX_MAX_AGE_MS) out.add(r.id) else kept.add(r)
         var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS
-        for (s in kept.sortedWith(compareBy<Submission>({ it.acceptedAt }, { it.id }))) {
+        for (r in kept.sortedWith(compareBy<Row>({ it.at }, { it.id }))) {
             if (excess <= 0) break
-            if (applySubmissionExpiry(s, now).state == SUB_PENDING) continue
-            out.add(s.id)
+            if (r.pending) continue
+            out.add(r.id)
             excess--
         }
         return out
+    }
+
+    /** [submissionsToPrune] with no denial records. */
+    fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> = submissionsToPrune(subs, emptyList(), now)
+
+    // ── Denial records (phase 2, gate round 1: inbox rows for synchronous refusals) ──
+    //
+    // A synchronous refusal of a VERIFIED launcher caller (STOP-ALL, disabled,
+    // payload, BUSY, a closed duplicate, ...) leaves one small, text-free
+    // record next to the submissions: `runs/ls_<32 hex>.json` with kind
+    // `denial`. It is never a Submission (decodeSubmission refuses its kind),
+    // so it never counts as pending / BUSY, never feeds the rate brake
+    // (acceptedTimes and LauncherRateHistory see accepted submissions only),
+    // has no text file and can never be approved or consumed. Callers that
+    // fail verification (VERIFY_FAILED) never get one.
+
+    const val DENIAL_VERSION = 1
+    private val DENIAL_KEYS = setOf("v", "kind", "id", "principal", "op", "target", "at", "code", "reason", "correlationRef", "ref")
+    private val DENIAL_CODE_RE = Regex("^[a-z_]{1,32}$")
+
+    /** One synchronous refusal. [ref]: the existing submission a refused retry pointed at (closed duplicate). */
+    data class Denial(
+        val id: String,
+        val principal: String,
+        val at: Long,
+        val code: String,
+        /** LauncherIngressCore.Reason name, never VERIFY_FAILED. */
+        val reason: String,
+        val correlationRef: String?,
+        val ref: String?,
+    )
+
+    fun isValidDenial(d: Denial): Boolean =
+        isSubmissionId(d.id) && LAUNCHER_PRINCIPAL_RE.matches(d.principal) && d.at >= 0 &&
+            DENIAL_CODE_RE.matches(d.code) &&
+            d.reason in LauncherIngressCore.Reason.values().map { it.name } &&
+            d.reason != LauncherIngressCore.Reason.VERIFY_FAILED.name &&
+            (d.correlationRef == null || IngressAuditWriter.CORRELATION_REF_RE.matches(d.correlationRef)) &&
+            (d.ref == null || (isSubmissionId(d.ref) && d.ref != d.id))
+
+    fun encodeDenial(d: Denial): String {
+        val o = JSONObject()
+            .put("v", DENIAL_VERSION).put("kind", "denial").put("id", d.id).put("principal", d.principal)
+            .put("op", IngressDecision.OP_SUBMIT_INSTRUCTION).put("target", "hayato")
+            .put("at", d.at).put("code", d.code).put("reason", d.reason)
+        if (d.correlationRef != null) o.put("correlationRef", d.correlationRef)
+        if (d.ref != null) o.put("ref", d.ref)
+        return o.toString()
+    }
+
+    /** Null when anything is off (unknown key or kind, a malformed field). */
+    fun decodeDenial(text: String): Denial? {
+        try {
+            if (text.length > MAX_TICKET_CHARS) return null
+            val o = JSONObject(text)
+            if (!DENIAL_KEYS.containsAll(keysOf(o))) return null
+            if (o.opt("v") != DENIAL_VERSION || o.opt("kind") != "denial") return null
+            if (o.opt("op") != IngressDecision.OP_SUBMIT_INSTRUCTION || o.opt("target") != "hayato") return null
+            val d = Denial(
+                id = optStringStrict(o, "id") ?: return null,
+                principal = optStringStrict(o, "principal") ?: return null,
+                at = optLongStrict(o, "at") ?: return null,
+                code = optStringStrict(o, "code") ?: return null,
+                reason = optStringStrict(o, "reason") ?: return null,
+                correlationRef = optStringStrict(o, "correlationRef"),
+                ref = optStringStrict(o, "ref"),
+            )
+            return if (isValidDenial(d)) d else null
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     // I/O (device only)
@@ -1245,6 +1323,28 @@ object McpRunTickets {
             val id = name.removeSuffix(".json")
             if (!isSubmissionId(id)) continue
             readSubmissionFile(dir, id)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    private fun readDenialFile(dir: File, id: String): Denial? {
+        val bytes = readCapped(submissionFile(dir, id), MAX_TICKET_CHARS + 1) ?: return null
+        if (bytes.size > MAX_TICKET_CHARS) return null
+        val d = decodeDenial(String(bytes, Charsets.UTF_8)) ?: return null
+        return if (d.id == id) d else null
+    }
+
+    /** Every denial record in [dir] (the `ls_` files whose kind is `denial`). */
+    private fun allDenials(dir: File): List<Denial> {
+        if (!lexists(dir)) return emptyList()
+        val files = dir.listFiles() ?: throw java.io.IOException("runs not listable")
+        val out = ArrayList<Denial>()
+        for (f in files) {
+            val name = f.name
+            if (!name.endsWith(".json")) continue
+            val id = name.removeSuffix(".json")
+            if (!isSubmissionId(id)) continue
+            readDenialFile(dir, id)?.let { out.add(it) }
         }
         return out
     }
@@ -1287,7 +1387,7 @@ object McpRunTickets {
             val outDir = ensureRunsDir(context)
             if (lexists(submissionFile(outDir, s.id))) return onResult(answer, SubmissionWriteResult.FAILED)
             runCatching {
-                for (id in submissionsToPrune(all, now)) {
+                for (id in submissionsToPrune(all, allDenials(dir), now)) {
                     submissionFile(outDir, id).delete()
                     submissionTextFile(context, id).delete()
                 }
@@ -1478,6 +1578,51 @@ object McpRunTickets {
         }
     } catch (e: Exception) {
         Log.w(TAG, "submission list failed type=${e.javaClass.simpleName}")
+        null
+    }
+
+    /**
+     * Keeps one synchronous refusal of a verified caller (see "Denial
+     * records"): one small atomic write after the same combined retention
+     * prune as a new submission. Called from the launcher Provider's Binder
+     * thread after the answer is decided; false (logged by type only) never
+     * changes that answer. Never throws.
+     */
+    @Synchronized
+    fun recordDenial(context: Context, d: Denial): Boolean {
+        return try {
+            if (!isValidDenial(d)) return false
+            val dir = ensureRunsDir(context)
+            if (lexists(submissionFile(dir, d.id))) return false
+            val now = System.currentTimeMillis()
+            runCatching {
+                for (id in submissionsToPrune(allSubmissions(dir), allDenials(dir), now)) {
+                    submissionFile(dir, id).delete()
+                    submissionTextFile(context, id).delete()
+                }
+            }.onFailure { Log.w(TAG, "denial prune failed type=${it.javaClass.simpleName}") }
+            ClosePawRunResults.writePrivateAtomic(submissionFile(dir, d.id), encodeDenial(d))
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "denial record not written type=${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /** Every denial record, for the inbox and the reader's list. Null on failure. */
+    @Synchronized
+    fun allDenialsCurrent(context: Context): List<Denial>? = try {
+        allDenials(runsDir(context))
+    } catch (e: Exception) {
+        Log.w(TAG, "denial list failed type=${e.javaClass.simpleName}")
+        null
+    }
+
+    /** The denial record [id], or null (none, or not a denial). Never throws. */
+    @Synchronized
+    fun readDenial(context: Context, id: String): Denial? = try {
+        if (!isSubmissionId(id)) null else readDenialFile(runsDir(context), id)
+    } catch (e: Exception) {
         null
     }
 

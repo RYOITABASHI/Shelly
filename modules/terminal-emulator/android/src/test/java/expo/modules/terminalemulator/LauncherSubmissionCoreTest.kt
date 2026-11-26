@@ -113,7 +113,7 @@ class LauncherSubmissionCoreTest {
         assertEquals("stale", stale.getString("state"))
         assertFalse(stale.has("instruction_text"))
         // A list never carries text.
-        val list = LauncherSubmissionCore.listData(listOf(approved, sub(id = "ls_" + "2".repeat(32))), now + 1, 50)
+        val list = LauncherSubmissionCore.listData(listOf(approved, sub(id = "ls_" + "2".repeat(32))), emptyList(), now + 1, 50)
         assertFalse(list.toString().contains(secret))
         assertEquals(2, list.getInt("count"))
     }
@@ -170,24 +170,94 @@ class LauncherSubmissionCoreTest {
         assertTrue(expired.contains("\"textSha256\""))
     }
 
+    private fun denial(i: Int, at: Long, reason: String = "STOP_ALL_ACTIVE", code: String = "halted") = McpRunTickets.Denial(
+        id = "ls_" + "%032x".format(1000 + i), principal = lp, at = at, code = code, reason = reason, correlationRef = "task:7", ref = null,
+    )
+
     @Test
-    fun inboxKeepsTheShorterRetentionAndNeverTheText() {
+    fun inboxCapsTheCombinedPopulationAtFiftyAndNeverShowsText() {
         val old = sub(id = "ls_" + "e".repeat(32), state = McpRunTickets.SUB_DENIED_BY_USER, acceptedAt = now - LauncherIngressLimits.INBOX_MAX_AGE_MS - 1, decidedAt = now)
-        val many = (0 until 60).map { i ->
-            sub(id = "ls_" + "%032x".format(i), state = McpRunTickets.SUB_APPROVED, acceptedAt = now - 60_000L * (i + 1), decidedAt = now - 60_000L * (i + 1), via = "user")
+        val many = (0 until 40).map { i ->
+            sub(id = "ls_" + "%032x".format(i), state = McpRunTickets.SUB_APPROVED, acceptedAt = now - 5_000L * (i + 1), decidedAt = now - 5_000L * (i + 1), via = "user")
         }
-        val pending = sub(id = "ls_" + "f".repeat(32), acceptedAt = now - 1000)
-        val line = """{"ts":"2025-11-15T12:00:00.000Z","kind":"launcher_submit_denied","event":"launcher_submit_instruction","origin":"launcher","code":"halted","principal":"$lp","op":"submit_instruction"}"""
-        val unverified = """{"ts":"2025-11-15T12:00:00.000Z","kind":"launcher_submit_denied","event":"launcher_submit_instruction","code":"package_mismatch"}"""
-        val denied = listOfNotNull(LauncherSubmissionCore.deniedFromAuditLine(line), LauncherSubmissionCore.deniedFromAuditLine(unverified))
-        assertEquals(1, denied.size)
-        assertEquals("STOP_ALL_ACTIVE", LauncherSubmissionCore.reasonForDeniedCode("halted"))
-        val o = JSONObject(LauncherSubmissionCore.inboxJson(many + old + pending, denied, now, halted = false))
+        val denials = (0 until 30).map { i -> denial(i, now - 3_000L * (i + 1)) }
+        val pendings = (0 until LauncherIngressLimits.MAX_PENDING).map { i ->
+            sub(id = "ls_" + "%032x".format(500 + i), acceptedAt = now - 500_000L + i)
+        }
+        val o = JSONObject(LauncherSubmissionCore.inboxJson(many + old + pendings, denials, now, halted = false))
         val items = o.getJSONArray("items")
-        assertEquals(LauncherIngressLimits.INBOX_MAX_RECORDS + 1, items.length())
-        assertEquals("pending_approval", items.getJSONObject(0).getString("state"))
-        assertNotNull(items.getJSONObject(0).optLong("expiresAt"))
+        // The shorter of the newest 50 and 7 days, over records AND denials together.
+        assertEquals(LauncherIngressLimits.INBOX_MAX_RECORDS, items.length())
+        // Every pending (decidable) one survives the cap even though they are the oldest rows here.
+        val states = (0 until items.length()).map { items.getJSONObject(it).getString("state") }
+        assertEquals(LauncherIngressLimits.MAX_PENDING, states.count { it == "pending_approval" })
+        assertTrue(states.contains("denied"))
         assertFalse(o.toString().contains(old.id))
         assertFalse(o.toString().contains("instruction"))
+        // A denial row carries its reason, never text.
+        val d = (0 until items.length()).map { items.getJSONObject(it) }.first { it.getString("state") == "denied" }
+        assertEquals("STOP_ALL_ACTIVE", d.getString("reason"))
+        assertFalse(d.has("text"))
+    }
+
+    @Test
+    fun capInboxNeverExceedsFiftyEvenWithManyPending() {
+        assertTrue(LauncherIngressLimits.MAX_PENDING <= LauncherIngressLimits.INBOX_MAX_RECORDS)
+        val rows = (0 until 80).map { i -> LauncherSubmissionCore.InboxRow(now - i, "k$i", i % 2 == 0, JSONObject()) }
+        val kept = LauncherSubmissionCore.capInbox(rows, now)
+        assertEquals(LauncherIngressLimits.INBOX_MAX_RECORDS, kept.size)
+        // 40 pending all kept, then the newest 10 others.
+        assertEquals(40, kept.count { it.pending })
+    }
+
+    @Test
+    fun pruneCountsDenialsAndKeepsPendingWithinTheCap() {
+        val subs = (0 until 30).map { i ->
+            sub(id = "ls_" + "%032x".format(i), state = McpRunTickets.SUB_APPROVED, acceptedAt = now - 60_000L * (i + 1), decidedAt = now, via = "user")
+        } + (0 until LauncherIngressLimits.MAX_PENDING).map { i -> sub(id = "ls_" + "%032x".format(500 + i), acceptedAt = now - 100_000L + i) }
+        val denials = (0 until 30).map { i -> denial(i, now - 1000L * (i + 1)) }
+        val drop = McpRunTickets.submissionsToPrune(subs, denials, now)
+        // 68 + the incoming one = 69 → 19 dropped, none pending.
+        assertEquals(30 + LauncherIngressLimits.MAX_PENDING + 30 + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS, drop.size)
+        assertTrue(drop.none { it.startsWith("ls_") && it.substring(3).toLong(16) in 500L..507L })
+        val left = subs.size + denials.size - drop.size + 1
+        assertTrue(left <= LauncherIngressLimits.INBOX_MAX_RECORDS)
+        // Older than 7 days goes regardless of the count.
+        val old = denial(99, now - LauncherIngressLimits.INBOX_MAX_AGE_MS - 1)
+        assertTrue(old.id in McpRunTickets.submissionsToPrune(emptyList(), listOf(old), now))
+    }
+
+    @Test
+    fun denialRecordsAreClosedTextFreeAndNeverSubmissions() {
+        val d = denial(1, now)
+        val json = McpRunTickets.encodeDenial(d)
+        assertEquals(d, McpRunTickets.decodeDenial(json))
+        assertNull(McpRunTickets.decodeSubmission(json))
+        assertNull(McpRunTickets.decodeDenial(McpRunTickets.encodeSubmission(sub())))
+        assertNull(McpRunTickets.decodeDenial(JSONObject(json).put("text", "x").toString()))
+        assertFalse(McpRunTickets.isValidDenial(d.copy(reason = "VERIFY_FAILED")))
+        assertFalse(McpRunTickets.isValidDenial(d.copy(principal = mcp)))
+        assertFalse(McpRunTickets.isValidDenial(d.copy(code = "Bad Code")))
+        val item = LauncherSubmissionCore.deniedReaderItem(d)
+        assertEquals("denied", item.getString("state"))
+        assertFalse(item.has("instruction_text"))
+        // The reader's list shows it as denied, no text.
+        val list = LauncherSubmissionCore.listData(emptyList(), listOf(d), now, 10)
+        assertEquals("denied", list.getJSONArray("submissions").getJSONObject(0).getString("state"))
+    }
+
+    @Test
+    fun readerRefusalsKeepTheValidatedIdForTheAuditLine() {
+        val id = "ls_" + "a".repeat(32)
+        val halted = LauncherSubmissionCore.decideReader(req(LauncherSubmissionCore.OP_CONSUME, """{"submissionId":"$id"}"""), Steps(halted = true))
+        assertEquals(id, (halted as LauncherSubmissionCore.ReaderOutcome.Refuse).id)
+        val revoked = LauncherSubmissionCore.decideReader(req(LauncherSubmissionCore.OP_GET, """{"submissionId":"$id"}"""), Steps(epoch = false))
+        assertEquals(id, (revoked as LauncherSubmissionCore.ReaderOutcome.Refuse).id)
+        val badArgs = LauncherSubmissionCore.decideReader(req(LauncherSubmissionCore.OP_GET, """{"submissionId":"nope"}"""), Steps())
+        assertNull((badArgs as LauncherSubmissionCore.ReaderOutcome.Refuse).id)
+        val disabled = LauncherSubmissionCore.decideReader(req(LauncherSubmissionCore.OP_GET, """{"submissionId":"$id"}"""), Steps(on = false))
+        assertNull((disabled as LauncherSubmissionCore.ReaderOutcome.Refuse).id)
+        val list = LauncherSubmissionCore.decideReader(req(LauncherSubmissionCore.OP_LIST, "{}"), Steps(halted = true))
+        assertNull((list as LauncherSubmissionCore.ReaderOutcome.Refuse).id)
     }
 }

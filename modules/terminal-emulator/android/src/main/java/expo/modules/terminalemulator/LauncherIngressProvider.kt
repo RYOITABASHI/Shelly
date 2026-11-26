@@ -229,6 +229,17 @@ class LauncherIngressProvider : ContentProvider() {
             ) ?: Answer.AuditFailed
         }
 
+        // Phase 2 (gate round 1): a synchronous refusal of this VERIFIED caller leaves
+        // one small, text-free denial record for the approval inbox and the reader
+        // (McpRunTickets.Denial). Never for VERIFY_FAILED (unverified callers are
+        // never recorded: the exported Provider's flood protection stays the audit
+        // throttle). A failed write is logged by type inside and never changes the answer.
+        fun keepDenial(reason: LauncherIngressCore.Reason, code: String, c: String?, ref: String?) {
+            if (reason == LauncherIngressCore.Reason.VERIFY_FAILED) return
+            val d = McpRunTickets.Denial(newSubmissionId(), principal.wire, System.currentTimeMillis(), code, reason.name, c, ref)
+            if (!McpRunTickets.recordDenial(ctx, d)) Log.w(TAG, "denial record not kept")
+        }
+
         // The registry lock is held from the decision to the record, so withdrawing
         // the exemption, changing the pins or disabling / removing the launcher in
         // Settings (TrustedCallerStore's @Synchronized writers) cannot fall between
@@ -270,6 +281,7 @@ class LauncherIngressProvider : ContentProvider() {
                         if (!IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", "duplicate_closed", s, duplicate = true))) {
                             return internalError(s.correlationRef)
                         }
+                        keepDenial(LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", s.correlationRef, s.id)
                         val m = LinkedHashMap(LauncherIngressCore.denied(LauncherIngressCore.Reason.GATE_DENIED, "launcher_submit_denied", s.correlationRef))
                         m["submission_id"] = s.id
                         m["duplicate"] = true
@@ -278,6 +290,8 @@ class LauncherIngressProvider : ContentProvider() {
                 }
                 is Answer.Deny -> {
                     val audited = IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", answer.code))
+                    // Only a refusal that is answered as itself (its line written) is kept for the inbox.
+                    if (audited) keepDenial(answer.reason, answer.code, corr, null)
                     // §8 R8: a denial whose audit line could not be written is INTERNAL_ERROR,
                     // except VERIFY_FAILED (the registration changed at commit), which stays
                     // VERIFY_FAILED with no detail and no echo.

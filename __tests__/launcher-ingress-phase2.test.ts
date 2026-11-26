@@ -315,18 +315,20 @@ describe('the D2 reader (§4)', () => {
     const item = core.slice(core.indexOf('fun readerItem('), core.indexOf('fun okResult('));
     expect(item).toMatch(/if \(state == McpRunTickets\.SUB_APPROVED\) \{[\s\S]*if \(text != null\) o\.put\("instruction_text", text\)[\s\S]*\} else \{\s+o\.put\("reason", reasonFor\(state\)\)/);
     expect((core.match(/"instruction_text"/g) ?? []).length).toBe(1);
-    const get = io.slice(io.indexOf('is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.submissionUpdate'), io.indexOf('is LauncherSubmissionCore.ReaderArgs.Consume -> {'));
+    const get = io.slice(io.indexOf('is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.readDenial'), io.indexOf('is LauncherSubmissionCore.ReaderArgs.Consume -> if (McpRunTickets.readDenial'));
     expect(get.indexOf('!line("ok_text")')).toBeLessThan(get.indexOf('readerItem(cur, now, t)'));
     // Any other state is answered with null text.
     expect(get).toContain('readerItem(cur, now, null)');
     // A list never carries text.
     const list = core.slice(core.indexOf('fun listData('), core.indexOf('fun consumeData('));
-    expect(list).toContain('readerItem(s, now, null)');
+    expect(list).toContain('readerItem(it, now, null)');
+    expect(list).toContain('deniedReaderItem(it)');
+    expect(list).not.toMatch(/readerItem\([^)]*, (?!null)\w+\)/);
     expect(core.slice(core.indexOf('fun consumeData('))).toContain('readerItem(s, now, null)');
   });
 
   it('consumed is idempotent per id and never returns the text', () => {
-    const consume = io.slice(io.indexOf('is LauncherSubmissionCore.ReaderArgs.Consume -> {'), io.indexOf('} catch (e: Exception) {\n            Log.w(TAG, "reader failed'));
+    const consume = io.slice(io.indexOf('is LauncherSubmissionCore.ReaderArgs.Consume -> if (McpRunTickets.readDenial'), io.indexOf('} catch (e: Exception) {\n            Log.w(TAG, "reader failed'));
     expect(consume).toMatch(/cur\.state == McpRunTickets\.SUB_CONSUMED ->\s+Pair\(Reply\("already_consumed"/);
     expect(consume).not.toMatch(/text\(\)/);
   });
@@ -338,5 +340,70 @@ describe('the D2 reader (§4)', () => {
     const b = writer.slice(writer.indexOf('fun buildSubmissionReaderLine('), writer.indexOf('fun appendSubmissionReaderLine('));
     expect(b).toContain('fun buildSubmissionReaderLine(ts: Long, kind: String, principal: String?, submissionId: String?, code: String, count: Int?)');
     expect(b).not.toMatch(/text|correlation/i);
+  });
+});
+
+describe('gate round 1 fixes', () => {
+  const tickets = kt('McpRunTickets.kt');
+  const core = kt('LauncherSubmissionCore.kt');
+  const io = kt('LauncherSubmissions.kt');
+  const provider = kt('LauncherIngressProvider.kt');
+  const consumer = kt('McpTypedOpConsumer.kt');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { LAUNCHER_INGRESS_LIMITS } = require('@/lib/launcher-ingress');
+
+  it('1: the 50 cap covers the combined inbox (records + denials, pending included) and never exceeds 50', () => {
+    expect(LAUNCHER_INGRESS_LIMITS.MAX_PENDING).toBeLessThanOrEqual(LAUNCHER_INGRESS_LIMITS.INBOX_MAX_RECORDS);
+    const cap = core.slice(core.indexOf('fun capInbox('), core.indexOf('fun inboxJson('));
+    expect(cap).toContain('val pending = live.filter { it.pending }.sortedWith(byNewest).take(cap)');
+    expect(cap).toContain('val others = live.filter { !it.pending }.sortedWith(byNewest).take(cap - pending.size)');
+    const inbox = core.slice(core.indexOf('fun inboxJson('), core.indexOf('fun pendingJson('));
+    expect(inbox).toContain('for (r in capInbox(rows, now)) items.put(r.json)');
+    expect(inbox).toContain('for (d in denials) rows.add(InboxRow(d.at, d.id, false, deniedJson(d)))');
+    const prune = tickets.slice(tickets.indexOf('fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long)'), tickets.indexOf('/** [submissionsToPrune] with no denial records. */'));
+    expect(prune).toContain('var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS');
+    expect(prune).toContain('denials.map { Row(it.id, it.at, false) }');
+    expect(tickets).toContain('for (id in submissionsToPrune(all, allDenials(dir), now)) {');
+  });
+
+  it('2: synchronous denials are text-free records next to the submissions, verified callers only; no audit read-back', () => {
+    expect(io).not.toMatch(/readAuditTail|AUDIT_TAIL|mcp-ingress-audit|MCP_AGENTLESS_FILE/);
+    expect(core).not.toMatch(/deniedFromAuditLine|reasonForDeniedCode/);
+    // Never for VERIFY_FAILED; only after the refusal's own audit line; never changes the answer.
+    expect(provider).toContain('if (reason == LauncherIngressCore.Reason.VERIFY_FAILED) return');
+    expect(provider).toContain('if (audited) keepDenial(answer.reason, answer.code, corr, null)');
+    expect(provider).toContain('keepDenial(LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", s.correlationRef, s.id)');
+    expect(provider).toContain('if (!McpRunTickets.recordDenial(ctx, d)) Log.w(TAG, "denial record not kept")');
+    // The unverified path returns before any denial record.
+    const unverified = provider.slice(provider.indexOf('if (v !is LauncherCallerVerifierCore.Result.Verified) {'), provider.indexOf('val principal = v.principal'));
+    expect(unverified).not.toContain('recordDenial');
+    expect(unverified).not.toContain('keepDenial');
+    // Closed record: own kind, no text key; never a Submission (so never pending / BUSY / rate brake).
+    const keys = /private val DENIAL_KEYS = setOf\(([^)]*)\)/.exec(tickets);
+    expect(keys![1]).not.toMatch(/text|instruction/i);
+    expect(tickets).toContain('if (o.opt("v") != DENIAL_VERSION || o.opt("kind") != "denial") return null');
+    expect(tickets).toContain('if (o.opt("v") != SUBMISSION_VERSION || o.opt("kind") != "submission") return null');
+    expect(tickets).toContain('fun acceptedTimes(subs: List<Submission>, principal: String)');
+    expect(tickets).toContain('d.reason != LauncherIngressCore.Reason.VERIFY_FAILED.name');
+    // One atomic write (after the shared retention prune), no new directory.
+    const rec = tickets.slice(tickets.indexOf('fun recordDenial('), tickets.indexOf('fun allDenialsCurrent('));
+    expect((rec.match(/writePrivateAtomic\(/g) ?? []).length).toBe(1);
+    expect(rec).toContain('submissionsToPrune(allSubmissions(dir), allDenials(dir), now)');
+    expect(rec).toContain('val dir = ensureRunsDir(context)');
+    // The reader: a denial is gettable as `denied` without text, never consumable, listed without text.
+    expect(io).toContain('is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.readDenial(context, args.id)?.let { d ->');
+    expect(io).toContain('recheck()?.let { refuse(it) } ?: refuse(LauncherSubmissionCore.NOT_APPROVED)');
+    expect(core).toContain('JSONObject().put("submission_id", d.id).put("state", STATE_DENIED).put("denied_at", d.at).put("reason", d.reason)');
+    expect(io).toContain('LauncherSubmissionCore.listData(subs, denials, System.currentTimeMillis(), args.limit)');
+  });
+
+  it('3: reader refusals after valid arguments audit the submission id (not for list or bad arguments)', () => {
+    expect(core).toContain('data class Refuse(val refusal: McpTypedOpDecision.Refusal, val id: String? = null) : ReaderOutcome()');
+    expect(core).toContain('IngressDecision.Stage.EPOCH to { if (!s.epochCurrent()) ReaderOutcome.Refuse(REVOKED, idOf(args)) else null }');
+    expect(core).toContain('IngressDecision.Stage.STOP_ALL to { if (s.halted()) ReaderOutcome.Refuse(HALTED, idOf(args)) else null }');
+    expect(core).toMatch(/is ReaderArgs\.ListAll -> null/);
+    expect(consumer).toContain('LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)');
+    expect(io).toContain('val id = if (tool == LauncherSubmissionCore.OP_LIST || !McpRunTickets.isSubmissionId(submissionId)) null else submissionId');
+    expect(io).toContain('IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)');
   });
 });

@@ -667,7 +667,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         val result = synchronized(commitLock) {
             when (val outcome = LauncherSubmissionCore.decideReader(request, readerSteps)) {
                 is LauncherSubmissionCore.ReaderOutcome.Refuse -> {
-                    LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.refusal.code)
+                    LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)
                     LauncherSubmissionCore.errorResult(outcome.refusal)
                 }
                 is LauncherSubmissionCore.ReaderOutcome.Proceed -> LauncherSubmissions.answerReader(app, request.principal, outcome.args) {

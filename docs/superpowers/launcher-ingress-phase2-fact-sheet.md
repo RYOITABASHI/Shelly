@@ -96,7 +96,8 @@ Phase 2 で追加する終端側の状態：
 ### 返すフィールド（P2-C2）
 - `approved`：`submission_id`、`state`、`accepted_at`、`decided_at`、`correlation_ref`（あれば）、`instruction_text`（`get_launcher_submission` のみ）。
 - それ以外（`pending_approval`・`denied_by_user`・`expired`・`consumed`・`stale`）：`submission_id`、`state`、時刻（`accepted_at`・`decided_at`・`consumed_at`）、`reason`（`awaiting_approval`／`denied_by_user`／`expired`／`consumed`／`stale`）。本文・`correlation_ref` は返さない。`submission_id` は問い合わせのキーなので全状態で返す（解釈）。
-- `list_launcher_submissions` は状態を問わず本文を一切返さない（本文は `get` で 1 件ずつ、監査行つきで読む）。
+- `list_launcher_submissions` は状態を問わず本文を一切返さない（本文は `get` で 1 件ずつ、監査行つきで読む）。拒否レコード（下記「即時拒否」）も `state: denied`・`denied_at`・`reason` で一覧に載る。
+- 拒否レコードの id を `get_launcher_submission` に渡すと `state: denied`・`reason` だけを返す（本文なし）。`mark_launcher_submission_consumed` は `not_approved` で拒否する。
 - 本文は承認時点の SHA-256（レコードの `textSha256`）と一致するときだけ返す。一致しない・読めないときは `text_unavailable`。
 
 ### 消費（P2-C3）
@@ -109,7 +110,7 @@ Phase 2 で追加する終端側の状態：
 
 ### 監査（P2-A2・C4、§6-6）
 - 判断：既存の `launcher_submit_approved`（code `approved_user`／`approved_always`）、`launcher_submit_user_denied`（`denied_user`）。失効：`launcher_submit_expired`（`expired`、Phase 1 は失効時に行を書いていなかった）。いずれも Phase 1 の LauncherLine の固定フィールド（principal・cert digest・submission_id・correlation_ref・taint・テキストのハッシュと長さ）のみ。
-- reader：新しい閉じた kind `launcher_submission_get`／`launcher_submission_list`／`launcher_submission_consume`（kind == event、`origin: mcp`、`principal`（32 hex）、`submission_id`、`code`、list は `count`）。本文・correlation_ref は書かない。行を書けない応答は返さない（`audit_failed`）。
+- reader：新しい閉じた kind `launcher_submission_get`／`launcher_submission_list`／`launcher_submission_consume`（kind == event、`origin: mcp`、`principal`（32 hex）、`submission_id`、`code`、list は `count`）。本文・correlation_ref は書かない。行を書けない応答は返さない（`audit_failed`）。get／consume の拒否行は、引数の検査を通った後なら `submission_id` を含む（引数が不正なとき・list のときは含まない）。
 
 ### `stale` の扱い（§3）
 - 派生状態で保存しない：`approved` かつ承認時刻（無ければ受理時刻）から 24 時間（`LauncherIngressLimits.STALE_AFTER_MS`）を超えたもの。自動削除はしない（保持期間で剪定されるまで残る）。
@@ -117,8 +118,8 @@ Phase 2 で追加する終端側の状態：
 - run チケットの stale 規則・live run の数え方・同時実行上限は変更なし（投入は引き続き `ls_` で、run の読み手はすべて `mr_` だけを見る）。
 
 ### インボックスの保持（P2-B3）
-- 直近 50 件（`INBOX_MAX_RECORDS`）と 7 日（`INBOX_MAX_AGE_MS`）の短い方を、全 principal 合計で適用。新しい投入の書き込み時に剪定（判断待ちは件数では落とさない）、表示時にも同じ規則で絞る。Phase 1 の「24 時間・principal あたり 100 件」は投入レコードには適用しない（24 時間の `stale` 表示より前に消えないように）。
-- 「即時拒否」（STOP-ALL・無効・上限超過・BUSY など、同期 `denied`）は Phase 1 どおり投入レコードを作らないので、監査ファイル末尾 256 KiB の `launcher_submit_denied` 行（検証済み＝launcher principal 付きのもののみ）から理由区分つきで表示する。
+- 直近 50 件（`INBOX_MAX_RECORDS`）と 7 日（`INBOX_MAX_AGE_MS`）の短い方を、投入レコードと拒否レコードを合わせた全体（全 principal 合計、判断待ちも含む）に適用し、合計が 50 件を超えることはない。50 件を超えるときは判断待ちでない古いものから落とす。判断待ちは principal あたり最大 `MAX_PENDING`（8）件で 50 件より少ないので、判断できる間は落ちない（万一 50 件を超える判断待ちがあれば新しい 50 件だけを表示）。剪定は新しい投入・拒否レコードの書き込み時（`McpRunTickets.submissionsToPrune`）、表示と reader の一覧でも同じ規則（`LauncherSubmissionCore.capInbox`）。Phase 1 の「24 時間・principal あたり 100 件」は投入レコードには適用しない（24 時間の `stale` 表示より前に消えないように）。
+- 「即時拒否」（STOP-ALL・無効・上限超過・BUSY・閉じた投入への再送など、同期 `denied`）は、検証済みの呼び出し元（launcher principal あり）に限り、拒否の監査行を書いた直後に本文なしの拒否レコード（`runs/ls_<32hex>.json`、`kind: denial`：id・principal・時刻・code・理由区分・correlation_ref・関連する投入 id）を 1 件書く（同じディレクトリ、新しいディレクトリなし）。`VERIFY_FAILED`（未検証の呼び出し元を含む）は記録しない。書けなくても同期応答は変えない（例外の型だけをログ）。拒否レコードは投入（Submission）として読まれないので、判断待ち・BUSY・レートブレーキの数には入らない。監査ファイルの読み直しはしない。
 - 本文は判断待ちのプロンプトにだけ渡す（インボックスには出さない）。却下・失効・消費の時点で本文ファイルは削除する。
 
 ### 前面承認面（P2-A1・B1〜B5、§5 D8）
