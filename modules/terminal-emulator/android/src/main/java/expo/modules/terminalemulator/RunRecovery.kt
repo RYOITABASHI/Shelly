@@ -361,6 +361,8 @@ object RunRecovery {
                 val homeDir = HomeInitializer.getHomeDir(app)
                 runCatching { McpRunTickets.reconcileAfterRestart(app) }
                     .onFailure { Log.w(TAG, "ticket reconcile failed type=${it.javaClass.simpleName}") }
+                runCatching { McpRunTickets.expireSubmissions(app) }
+                    .onFailure { Log.w(TAG, "submission expiry failed type=${it.javaClass.simpleName}") }
                 val r = runOp(app, homeDir, listOf("--op", "sweep"))
                 Log.i(TAG, "sweep ($reason) ok=${r.ok} refires=${r.refires.size}")
                 dispatchRefires(app, r.refires)

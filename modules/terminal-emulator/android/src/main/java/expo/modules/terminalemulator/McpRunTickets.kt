@@ -1152,6 +1152,10 @@ object McpRunTickets {
         else cur.copy(state = SUB_DENIED_BY_USER, decidedAt = now)
     }
 
+    /** The pending submissions past their approval window, as their `expired` records (what to persist). */
+    fun submissionsToExpire(subs: List<Submission>, now: Long): List<Submission> =
+        subs.mapNotNull { s -> applySubmissionExpiry(s, now).takeIf { it != s } }
+
     /** [principal]'s submission with [nonce] inside the nonce window (not more than a minute ahead), newest first. */
     fun findByNonce(subs: List<Submission>, principal: String, nonce: String, now: Long): Submission? =
         subs.filter {
@@ -1246,6 +1250,7 @@ object McpRunTickets {
             val now = System.currentTimeMillis()
             val dir = runsDir(context)
             val all = allSubmissions(dir)
+            writeExpired(dir, all, now)
             val mine = all.filter { it.principal == principal }.map { applySubmissionExpiry(it, now) }
             val (answer, write) = body(mine, now)
             if (write !is SubmissionWrite.Write) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
@@ -1277,6 +1282,31 @@ object McpRunTickets {
             Log.w(TAG, "submission transaction failed type=${e.javaClass.simpleName}")
             null
         }
+    }
+
+    /** Rewrite each pending submission past its window as `expired` on disk. Returns how many were written. */
+    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): Int {
+        var n = 0
+        for (cur in submissionsToExpire(subs, now)) {
+            runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(dir, cur.id), encodeSubmission(cur)) }
+                .onSuccess { n++ }
+                .onFailure { Log.w(TAG, "submission expiry write failed type=${it.javaClass.simpleName}") }
+        }
+        return n
+    }
+
+    /**
+     * Phase 1's expiry on disk: every pending submission past its approval
+     * window becomes `expired` (also done at the start of each
+     * [submissionTransaction]). Called from the schedule sweep. -1 on failure. Never throws.
+     */
+    @Synchronized
+    fun expireSubmissions(context: Context): Int = try {
+        val dir = runsDir(context)
+        if (!lexists(dir)) 0 else writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+    } catch (e: Exception) {
+        Log.w(TAG, "submission expiry sweep failed type=${e.javaClass.simpleName}")
+        -1
     }
 
     /** The record JSON with expiry applied (and persisted), or null. Never returns the text. Never throws. */

@@ -37,6 +37,19 @@ describe('submission records stay out of the run readers', () => {
     expect(expiry).not.toContain('ACCEPTED_STALE_MS');
   });
 
+  it('Phase 1 persists expiry on disk: each transaction and the schedule sweep rewrite pending ones past the window', () => {
+    const tx = tickets.slice(tickets.indexOf('fun <T> submissionTransaction('), tickets.indexOf('fun readSubmissionJson('));
+    expect(tx.indexOf('writeExpired(dir, all, now)')).toBeGreaterThan(-1);
+    expect(tx.indexOf('writeExpired(dir, all, now)')).toBeLessThan(tx.indexOf('body(mine, now)'));
+    const sweep = tickets.slice(tickets.indexOf('fun expireSubmissions('), tickets.indexOf('fun readSubmissionJson('));
+    expect(sweep).toContain('writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())');
+    const toExpire = tickets.slice(tickets.indexOf('fun submissionsToExpire('), tickets.indexOf('fun findByNonce('));
+    expect(toExpire).toContain('applySubmissionExpiry(s, now)');
+    const recovery = fs.readFileSync(path.join(KT, 'RunRecovery.kt'), 'utf8');
+    const sweepFn = recovery.slice(recovery.indexOf('fun sweepInBackground('));
+    expect(sweepFn).toContain('McpRunTickets.expireSubmissions(app)');
+  });
+
   it('the record never carries the instruction text; the text lives in no-backup app storage, not $HOME', () => {
     const keys = /private val SUBMISSION_KEYS = setOf\(([\s\S]*?)\)/.exec(tickets);
     expect(keys).not.toBeNull();

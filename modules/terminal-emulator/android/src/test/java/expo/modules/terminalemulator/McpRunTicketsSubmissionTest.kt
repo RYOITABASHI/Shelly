@@ -81,6 +81,19 @@ class McpRunTicketsSubmissionTest {
     }
 
     @Test
+    fun onlyPendingOnesPastTheWindowAreRewrittenAsExpired() {
+        val late = now + LauncherIngressLimits.APPROVAL_WINDOW_MS + 1
+        val old = sub(id = "ls_" + "2".repeat(32))
+        val fresh = sub(id = "ls_" + "3".repeat(32), acceptedAt = late)
+        val decided = sub(id = "ls_" + "4".repeat(32), state = McpRunTickets.SUB_APPROVED, via = "rule", ruleId = "r1")
+        val out = McpRunTickets.submissionsToExpire(listOf(old, fresh, decided), late)
+        assertEquals(listOf(old.id), out.map { it.id })
+        assertEquals(McpRunTickets.SUB_EXPIRED, out[0].state)
+        assertEquals(late, out[0].decidedAt)
+        assertEquals(emptyList<Submission>(), McpRunTickets.submissionsToExpire(out, late + 1))
+    }
+
+    @Test
     fun nonceDedupesInsideTheWindowAndPendingCountsForBusy() {
         val a = sub(id = "ls_" + "a".repeat(32), acceptedAt = now - 1000)
         val b = sub(id = "ls_" + "b".repeat(32), acceptedAt = now - LauncherIngressLimits.NONCE_WINDOW_MS - 1, nonce = "nonce-0002")

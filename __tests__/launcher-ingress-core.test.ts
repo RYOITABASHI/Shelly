@@ -88,6 +88,28 @@ describe('caller verification (fact sheet §2, F2/F3)', () => {
     expect(provider).toMatch(/denied\(LauncherIngressCore\.Reason\.VERIFY_FAILED, if \(audited\) "launcher_submit_denied" else null, null\)/);
   });
 
+  it('A3 (failed caller + forged identity keys): VERIFY_FAILED is decided before extras are read, with no origin, principal or echo', () => {
+    // The verifier cannot see the payload at all: its only inputs are the
+    // Binder UID, the owner-registered entry and the PackageManager facts.
+    expect(verifier).toMatch(/fun verify\(uid: Int, entry: TrustedCallerStore\.Entry\?, f: Facts\): Result/);
+    const verifyBody = verifier.slice(verifier.indexOf('fun verify('));
+    expect(verifyBody).not.toMatch(/Bundle|extras|instruction_text|origin"|"approved"|package_name|app_name/);
+    // In submit(), the failed branch returns before `extras` is touched, so a
+    // "correct" self-declared identity (package / origin / approval keys) in
+    // extras cannot change the answer, the audit classification or issue an origin.
+    const submit = provider.slice(provider.indexOf('private fun submit('));
+    const failed = submit.slice(submit.indexOf('if (v !is LauncherCallerVerifierCore.Result.Verified)'), submit.indexOf('val principal = v.principal'));
+    expect(failed).toContain('return toBundle(LauncherIngressCore.denied(LauncherIngressCore.Reason.VERIFY_FAILED');
+    expect(failed).not.toMatch(/extras|principal|origin|corr/);
+    // The failed audit line is the bare LauncherLine (kind, event, check code): no principal, no echo.
+    expect(failed).toMatch(/IngressAuditWriter\.LauncherLine\("launcher_submit_denied", IngressAuditWriter\.LAUNCHER_EVENT_SUBMIT, code\)/);
+    const afterSignature = submit.slice(submit.indexOf('{'));
+    expect(afterSignature.indexOf('extras')).toBeGreaterThan(afterSignature.indexOf('val principal = v.principal'));
+    // get_stream_feed never receives extras at all.
+    expect(provider).toContain('private fun getFeed(ctx: Context): Bundle');
+    expect(provider).toContain('private fun feedAnswer(ctx: Context): Bundle');
+  });
+
   it('D6: no owner value is shipped (package, certificate pin, owner domain)', () => {
     // The repository must not even carry fingerprints of the owner values (a
     // hash of a package name is enough to confirm it). So the check here is
