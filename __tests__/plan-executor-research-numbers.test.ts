@@ -1109,11 +1109,13 @@ it('names only the latest matching memo in the history retry', () => {
   expect(result.drafts[0]).toContain(draft);
 });
 
-it('a URL-less sufficient replacement after a numbers-only retry lands held: no web source, materials alone are not enough (v68)', () => {
+it('drafts from a URL-less sufficient replacement after a numbers-only retry', () => {
   const replacement = memo('B', true).replace(` ${url('B')}`, '');
-  // Owner material used to satisfy the sourcing gate while the replacement stayed
-  // URL-less (a materials-only draft). v68: a plan with a web research step whose
-  // research ends with no web source lands held before the write step instead.
+  // Owner material satisfies the existing sourcing gate while the replacement stays URL-less.
+  // v68 fix round 1: the no-web-sources hold is only for a plan with a Codex
+  // web-search research step (fact sheet: item 2 is limited to articles with a
+  // search step). This plan researches over HTTP, so it drafts from the
+  // materials as before; the held landing is covered in plan-executor-search-parity.
   const materialRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-research-material-')));
   const result = run([memo('A', false), replacement], true, ['X'], undefined, {}, { materialRoot });
   expect(result.events).toEqual([
@@ -1121,12 +1123,13 @@ it('a URL-less sufficient replacement after a numbers-only retry lands held: no 
     expect.objectContaining({ event: 'research_numbers_retry', attempt: 2, excluded: 1 }),
   ]);
   expect(result.audit.filter(({ event }) => /^research_(?:history_|topic_exhausted$)/.test(event))).toEqual([]);
-  expect(result.prompts).toHaveLength(2);
+  expect(result.prompts).toHaveLength(3);
   expect(result.prompts[0]).toContain('Search the web and write research notes.');
   expect(result.prompts[1]).toContain(numbersHeader);
-  expect(result.audit).toContainEqual(expect.objectContaining({ event: 'sourcing_no_web_sources', materials: 1 }));
-  expect(result.audit).toContainEqual(expect.objectContaining({ event: 'article_held', reason: 'no-web-sources' }));
-  expect(result.drafts).toEqual([]);
+  expect(result.prompts[2]).toContain(writeInstruction);
+  expect(result.prompts[2]).toContain(replacement);
+  expect(result.audit.filter(({ event }) => event === 'article_held')).toEqual([]);
+  expect(result.drafts[0]).toContain(draft.replace('[1]', '[M1]'));
 });
 
 it('keeps the base prompt on an isolated history-only retry', () => {

@@ -364,11 +364,11 @@ describe('the executor with a queue or a digest', () => {
     const dir = queueIn(vault, text);
     replies = ['出典のないメモ'];
     await runExecutor(writePlan(home, port, vault, dir, devChain()), home);
-    // v68 (search parity 2): no web source lands held before the write step
-    // (no draft, so nothing to keep and the item is not ticked).
+    // v68 fix round 1: the no-web-sources hold is only for a plan with a Codex
+    // web-search research step; this chain researches over HTTP, so a memo
+    // with no source fails the chain as before (no draft, item not ticked).
     const log = readRunLog(home);
-    expect(log.status).toBe('skipped');
-    expect(log.outputPreview).toMatch(/^Held \(no-web-sources\): /);
+    expect(log.status).toBe('error');
     expect(fs.readFileSync(path.join(dir, '_queue.md'), 'utf8')).toBe(text);
   }, 20000);
 
