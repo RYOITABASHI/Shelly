@@ -17,7 +17,7 @@ export type McpApprovalDecision = 'deny' | 'once' | 'always';
 
 export interface McpApprovalRequest {
   id: string;
-  kind: 'run_command' | 'write_file' | 'stage_install' | 'update_delivery_script' | 'update_pipeline_config' | 'run_agent' | 'service_control' | 'request_pipeline_refire';
+  kind: 'run_command' | 'write_file' | 'stage_install' | 'update_delivery_script' | 'update_pipeline_config' | 'run_agent' | 'service_control' | 'request_pipeline_refire' | 'put_stream_feed';
   /** Short one-line description shown as the modal title. */
   summary: string;
   /** Full command / path+content preview shown in the modal body. */

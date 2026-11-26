@@ -244,49 +244,86 @@ object McpTypedOpDecision {
         data class Handoff(val agentId: String?) : Outcome()
     }
 
+    /**
+     * run_agent's decision, through the shared stage order
+     * (IngressDecision.evaluate, op run_agent). The stages and what each
+     * returns are unchanged from before the generalisation.
+     */
     fun decide(req: Request, s: Steps, nowMs: Long): Outcome {
         val ageMs = nowMs - req.receivedAtMs
         fun noMatch(agentId: String): Outcome =
             if (ageMs <= HANDOFF_MAX_AGE_MS && s.rnLive()) Outcome.Handoff(agentId) else Outcome.Refuse(NOT_ATTENDED, agentId)
 
-        // 1. setting
-        if (!s.typedOpsOn()) return Outcome.Refuse(DISABLED, null)
-        // 2. arguments (strict). The script routes only run_agent here.
-        if (req.tool != "run_agent") return Outcome.Refuse(Refusal("invalid_params", "unknown tool: ${req.tool.take(40)}"), null)
-        val parsed = validateArgs(req.args)
-        if (parsed is Refusal) return Outcome.Refuse(parsed, null)
-        val args = parsed as RunAgentArgs
-        val agentId = args.agentId
-        // 3. epoch
-        if (!s.epochCurrent()) return Outcome.Refuse(REVOKED, agentId)
-        // 4. target
-        val agent = s.resolveAgent(agentId) ?: return Outcome.Refuse(UNKNOWN_AGENT, agentId)
-        // 5. STOP-ALL
-        if (s.halted()) return Outcome.Refuse(HALTED, agentId)
-        // 6. taint (audited as ingress_tainted_refused)
-        if (s.tainted(agentId)) return Outcome.Refuse(TAINTED, agentId, taint = true)
-        // RN already evaluated this exact binding against this exact sealed policy.
-        // STOP-ALL and definition taint still precede every kind of consent.
-        val target = "agent:$agentId"
-        val bind = try { McpAgentBinding.bindingHash(agent) } catch (e: Exception) { return noMatch(agentId) }
-        val actionRuleId = s.actionRule(req.principal, target, bind)
-        if (actionRuleId != null) {
-            if (args.requestId != null) s.existingTicket(req.principal, args.requestId)?.let { return Outcome.Existing(agentId, it) }
-            return Outcome.Execute(agentId, args.requestId, actionRuleId, target, bind)
-        }
-        // 7. Legacy dialog-only rule: conservative native evaluation.
-        when (s.step7(agent)) {
-            McpTypedOpPolicy.Decision.POLICY_DENIED -> return Outcome.Refuse(POLICY_DENIED, agentId)
-            McpTypedOpPolicy.Decision.UNDECIDABLE -> return noMatch(agentId)
-            McpTypedOpPolicy.Decision.CLEARABLE -> Unit
-        }
-        // A repeated requestId returns the existing run (RN does the same before the rule).
-        if (args.requestId != null) {
-            s.existingTicket(req.principal, args.requestId)?.let { return Outcome.Existing(agentId, it) }
-        }
-        // 8. always-allow rule — only now, after every deny class.
-        val ruleId = s.matchRule(req.principal, target, bind) ?: return noMatch(agentId)
-        return Outcome.Execute(agentId, args.requestId, ruleId, target, bind)
+        // Filled in by the stages, in order; a later stage runs only after the one that sets it.
+        var args: RunAgentArgs? = null
+        var agent: JSONObject? = null
+        var bind: String? = null
+        fun agentId(): String = args!!.agentId
+        fun target(): String = "agent:${agentId()}"
+
+        val hooks: Map<IngressDecision.Stage, () -> Outcome?> = mapOf(
+            // 1. setting
+            IngressDecision.Stage.SETTING to { if (!s.typedOpsOn()) Outcome.Refuse(DISABLED, null) else null },
+            // 2. arguments (strict). The script routes only run_agent here.
+            IngressDecision.Stage.ARGS to {
+                if (req.tool != "run_agent") {
+                    Outcome.Refuse(Refusal("invalid_params", "unknown tool: ${req.tool.take(40)}"), null)
+                } else {
+                    val parsed = validateArgs(req.args)
+                    if (parsed is Refusal) Outcome.Refuse(parsed, null) else { args = parsed as RunAgentArgs; null }
+                }
+            },
+            // 3. epoch
+            IngressDecision.Stage.EPOCH to { if (!s.epochCurrent()) Outcome.Refuse(REVOKED, agentId()) else null },
+            // 4. target
+            IngressDecision.Stage.TARGET to {
+                val a = s.resolveAgent(agentId())
+                if (a == null) Outcome.Refuse(UNKNOWN_AGENT, agentId()) else { agent = a; null }
+            },
+            // 5. STOP-ALL
+            IngressDecision.Stage.STOP_ALL to { if (s.halted()) Outcome.Refuse(HALTED, agentId()) else null },
+            // 6. taint (audited as ingress_tainted_refused)
+            IngressDecision.Stage.TAINT to { if (s.tainted(agentId())) Outcome.Refuse(TAINTED, agentId(), taint = true) else null },
+            // RN already evaluated this exact binding against this exact sealed policy.
+            // STOP-ALL and definition taint still precede every kind of consent.
+            IngressDecision.Stage.ACTION_CONSENT to {
+                val b = try { McpAgentBinding.bindingHash(agent!!) } catch (e: Exception) { null }
+                if (b == null) {
+                    noMatch(agentId())
+                } else {
+                    bind = b
+                    val actionRuleId = s.actionRule(req.principal, target(), b)
+                    if (actionRuleId == null) {
+                        null
+                    } else {
+                        val requestId = args!!.requestId
+                        val existing = if (requestId != null) s.existingTicket(req.principal, requestId) else null
+                        if (existing != null) Outcome.Existing(agentId(), existing) else Outcome.Execute(agentId(), requestId, actionRuleId, target(), b)
+                    }
+                }
+            },
+            // 7. Legacy dialog-only rule: conservative native evaluation.
+            IngressDecision.Stage.STEP7 to {
+                when (s.step7(agent!!)) {
+                    McpTypedOpPolicy.Decision.POLICY_DENIED -> Outcome.Refuse(POLICY_DENIED, agentId())
+                    McpTypedOpPolicy.Decision.UNDECIDABLE -> noMatch(agentId())
+                    McpTypedOpPolicy.Decision.CLEARABLE -> null
+                }
+            },
+            // A repeated requestId returns the existing run (RN does the same before the rule).
+            IngressDecision.Stage.IDEMPOTENT to {
+                val requestId = args!!.requestId
+                val existing = if (requestId != null) s.existingTicket(req.principal, requestId) else null
+                if (existing != null) Outcome.Existing(agentId(), existing) else null
+            },
+            // 8. always-allow rule — only now, after every deny class.
+            IngressDecision.Stage.ALWAYS_ALLOW to {
+                val ruleId = s.matchRule(req.principal, target(), bind!!)
+                if (ruleId == null) noMatch(agentId()) else Outcome.Execute(agentId(), args!!.requestId, ruleId, target(), bind!!)
+            },
+        )
+        // ALWAYS_ALLOW always answers, so null never reaches here; fail closed if it did.
+        return IngressDecision.evaluate(IngressDecision.OP_RUN_AGENT, hooks) ?: Outcome.Refuse(NOT_ATTENDED, args?.agentId)
     }
 
     // ── Result files (exactly the RN bridge's JSON.stringify(ToolResult)) ──

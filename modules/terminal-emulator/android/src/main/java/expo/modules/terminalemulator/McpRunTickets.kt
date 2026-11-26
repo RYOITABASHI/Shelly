@@ -1014,6 +1014,322 @@ object McpRunTickets {
         }
     }
 
+    // ── Launcher submissions (fact sheet §5, C4) ─────────────────────────────
+    //
+    // A submission from the verified launcher (submit_instruction) is a record,
+    // not a run: `runs/ls_<32 hex>.json` next to the run tickets. Every run
+    // reader (get_run_result, liveCount / busy, the stale rule, MONITOR, the
+    // restart reconcile, the token cancel) only takes `mr_` handles, so a
+    // submission is never counted as a live run, never goes `lost` after 2
+    // minutes and is never cancelled by an MCP token change. Its own states:
+    //
+    //   pending_approval -> approved | denied_by_user | expired
+    //   approved (at once: a rule or the approve-all switch; or after the tap)
+    //
+    // `approved` is where Phase 1 stops: forwarding to Hayato is D2. The text
+    // is kept apart from the record, in app-private no-backup storage
+    // ([submissionTextFile]); the record holds only its SHA-256 and length.
+
+    const val SUBMISSION_VERSION = 1
+    const val SUB_PENDING = "pending_approval"
+    const val SUB_APPROVED = "approved"
+    const val SUB_DENIED_BY_USER = "denied_by_user"
+    const val SUB_EXPIRED = "expired"
+    val SUBMISSION_STATES: Set<String> = setOf(SUB_PENDING, SUB_APPROVED, SUB_DENIED_BY_USER, SUB_EXPIRED)
+    /** How an approved submission was approved. */
+    val APPROVED_VIA: Set<String> = setOf("rule", "approve_all", "user")
+
+    private val SUBMISSION_ID_RE = Regex("^ls_[0-9a-f]{32}$")
+    private val LAUNCHER_PRINCIPAL_RE = Regex("^launcher:[0-9a-f]{32}$")
+    private val SHA256_RE = Regex("^[0-9a-f]{64}$")
+    private val NONCE_RE = Regex("^[A-Za-z0-9_-]{8,64}$")
+    private val RULE_ID_RE = Regex("^r_[0-9a-f]{16}$")
+    private val SUBMISSION_KEYS = setOf(
+        "v", "kind", "id", "principal", "op", "target", "state", "acceptedAt", "decidedAt", "nonce", "correlationRef",
+        "untrusted", "exemptApplied", "textSha256", "textCodePoints", "certDigest", "schemaVersion", "approvedVia", "ruleId",
+    )
+
+    fun isSubmissionId(id: String?): Boolean = id != null && SUBMISSION_ID_RE.matches(id)
+
+    data class Submission(
+        val id: String,
+        val principal: String,
+        val state: String,
+        val acceptedAt: Long,
+        val decidedAt: Long?,
+        val nonce: String?,
+        val correlationRef: String?,
+        /** The submission is tainted (IngressOrigin.taintFor); echoed as `untrusted` like run_agent's answers. */
+        val untrusted: Boolean,
+        val exemptApplied: Boolean,
+        val textSha256: String,
+        val textCodePoints: Int,
+        val certDigest: String,
+        val schemaVersion: Int,
+        val approvedVia: String?,
+        val ruleId: String?,
+    )
+
+    fun isValidSubmission(s: Submission): Boolean =
+        isSubmissionId(s.id) && LAUNCHER_PRINCIPAL_RE.matches(s.principal) && s.state in SUBMISSION_STATES &&
+            s.acceptedAt >= 0 && (s.decidedAt == null || s.decidedAt >= 0) &&
+            (s.nonce == null || NONCE_RE.matches(s.nonce)) &&
+            (s.correlationRef == null || IngressAuditWriter.CORRELATION_REF_RE.matches(s.correlationRef)) &&
+            !(s.exemptApplied && s.untrusted) &&
+            SHA256_RE.matches(s.textSha256) && s.textCodePoints in 1..LauncherIngressLimits.MAX_TEXT_CODE_POINTS &&
+            SHA256_RE.matches(s.certDigest) && s.schemaVersion in 1..99 &&
+            (s.approvedVia == null || s.approvedVia in APPROVED_VIA) &&
+            ((s.state == SUB_APPROVED) == (s.approvedVia != null)) &&
+            (s.ruleId == null || (s.approvedVia == "rule" && RULE_ID_RE.matches(s.ruleId))) &&
+            // Nothing tainted is approved without a person (tainted never gets unattended approval).
+            !(s.untrusted && s.approvedVia != null && s.approvedVia != "user")
+
+    fun encodeSubmission(s: Submission): String {
+        val o = JSONObject()
+            .put("v", SUBMISSION_VERSION).put("kind", "submission").put("id", s.id).put("principal", s.principal)
+            .put("op", IngressDecision.OP_SUBMIT_INSTRUCTION).put("target", "hayato").put("state", s.state)
+            .put("acceptedAt", s.acceptedAt).put("untrusted", s.untrusted).put("exemptApplied", s.exemptApplied)
+            .put("textSha256", s.textSha256).put("textCodePoints", s.textCodePoints).put("certDigest", s.certDigest)
+            .put("schemaVersion", s.schemaVersion)
+        if (s.decidedAt != null) o.put("decidedAt", s.decidedAt)
+        if (s.nonce != null) o.put("nonce", s.nonce)
+        if (s.correlationRef != null) o.put("correlationRef", s.correlationRef)
+        if (s.approvedVia != null) o.put("approvedVia", s.approvedVia)
+        if (s.ruleId != null) o.put("ruleId", s.ruleId)
+        return o.toString()
+    }
+
+    /** Null when anything is off (unknown key or version, a malformed field, an impossible state). */
+    fun decodeSubmission(text: String): Submission? {
+        try {
+            if (text.length > MAX_TICKET_CHARS) return null
+            val o = JSONObject(text)
+            if (!SUBMISSION_KEYS.containsAll(keysOf(o))) return null
+            if (o.opt("v") != SUBMISSION_VERSION || o.opt("kind") != "submission") return null
+            if (o.opt("op") != IngressDecision.OP_SUBMIT_INSTRUCTION || o.opt("target") != "hayato") return null
+            val untrusted = o.opt("untrusted") as? Boolean ?: return null
+            val exempt = o.opt("exemptApplied") as? Boolean ?: return null
+            val cp = optLongStrict(o, "textCodePoints") ?: return null
+            val sv = optLongStrict(o, "schemaVersion") ?: return null
+            if (cp > Int.MAX_VALUE || sv > Int.MAX_VALUE) return null
+            val s = Submission(
+                id = optStringStrict(o, "id") ?: return null,
+                principal = optStringStrict(o, "principal") ?: return null,
+                state = optStringStrict(o, "state") ?: return null,
+                acceptedAt = optLongStrict(o, "acceptedAt") ?: return null,
+                decidedAt = optLongStrict(o, "decidedAt"),
+                nonce = optStringStrict(o, "nonce"),
+                correlationRef = optStringStrict(o, "correlationRef"),
+                untrusted = untrusted,
+                exemptApplied = exempt,
+                textSha256 = optStringStrict(o, "textSha256") ?: return null,
+                textCodePoints = cp.toInt(),
+                certDigest = optStringStrict(o, "certDigest") ?: return null,
+                schemaVersion = sv.toInt(),
+                approvedVia = optStringStrict(o, "approvedVia"),
+                ruleId = optStringStrict(o, "ruleId"),
+            )
+            return if (isValidSubmission(s)) s else null
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    /** A pending submission past [LauncherIngressLimits.APPROVAL_WINDOW_MS] is `expired`; nothing else changes. */
+    fun applySubmissionExpiry(s: Submission, now: Long): Submission =
+        if (s.state == SUB_PENDING && now - s.acceptedAt > LauncherIngressLimits.APPROVAL_WINDOW_MS) {
+            s.copy(state = SUB_EXPIRED, decidedAt = now)
+        } else s
+
+    /**
+     * A person's decision on a pending, not expired submission (Phase 2's
+     * asynchronous approval, C6): approve or deny. Null when it is not pending.
+     */
+    fun withUserDecision(s: Submission, approve: Boolean, now: Long): Submission? {
+        val cur = applySubmissionExpiry(s, now)
+        if (cur.state != SUB_PENDING) return null
+        return if (approve) cur.copy(state = SUB_APPROVED, decidedAt = now, approvedVia = "user")
+        else cur.copy(state = SUB_DENIED_BY_USER, decidedAt = now)
+    }
+
+    /** The pending submissions past their approval window, as their `expired` records (what to persist). */
+    fun submissionsToExpire(subs: List<Submission>, now: Long): List<Submission> =
+        subs.mapNotNull { s -> applySubmissionExpiry(s, now).takeIf { it != s } }
+
+    /** [principal]'s submission with [nonce] inside the nonce window (not more than a minute ahead), newest first. */
+    fun findByNonce(subs: List<Submission>, principal: String, nonce: String, now: Long): Submission? =
+        subs.filter {
+            it.principal == principal && it.nonce == nonce &&
+                now - it.acceptedAt <= LauncherIngressLimits.NONCE_WINDOW_MS && it.acceptedAt - now <= 60_000L
+        }.maxByOrNull { it.acceptedAt }
+
+    /** Undecided submissions of [principal] (expiry applied): the BUSY count. */
+    fun pendingCount(subs: List<Submission>, principal: String, now: Long): Int =
+        subs.count { it.principal == principal && applySubmissionExpiry(it, now).state == SUB_PENDING }
+
+    /** [principal]'s acceptance times, newest first (the rate brake's input). */
+    fun acceptedTimes(subs: List<Submission>, principal: String): List<Long> =
+        subs.filter { it.principal == principal }.map { it.acceptedAt }.sortedDescending()
+
+    /**
+     * Ids to delete before a new one is written: past [RETENTION_MS], then the
+     * oldest decided ones beyond [MAX_PER_PRINCIPAL] (a pending one is never
+     * dropped by the count; expiry ends it first).
+     */
+    fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> {
+        val out = HashSet<String>()
+        val kept = ArrayList<Submission>()
+        for (s in subs) if (now - s.acceptedAt > RETENTION_MS) out.add(s.id) else kept.add(s)
+        for ((_, group) in kept.groupBy { it.principal }) {
+            var excess = group.size + 1 - MAX_PER_PRINCIPAL
+            for (s in group.sortedWith(compareBy<Submission>({ it.acceptedAt }, { it.id }))) {
+                if (excess <= 0) break
+                if (applySubmissionExpiry(s, now).state == SUB_PENDING) continue
+                out.add(s.id)
+                excess--
+            }
+        }
+        return out
+    }
+
+    // I/O (device only)
+
+    /** The instruction text of a submission: app-private, excluded from backup, never under $HOME. */
+    fun submissionTextFile(context: Context, id: String): File =
+        File(File(context.noBackupFilesDir, "launcher-ingress/text"), "$id.txt")
+
+    private fun submissionFile(dir: File, id: String): File = File(dir, "$id.json")
+
+    private fun readSubmissionFile(dir: File, id: String): Submission? {
+        val bytes = readCapped(submissionFile(dir, id), MAX_TICKET_CHARS + 1) ?: return null
+        if (bytes.size > MAX_TICKET_CHARS) return null
+        val s = decodeSubmission(String(bytes, Charsets.UTF_8)) ?: return null
+        return if (s.id == id) s else null
+    }
+
+    private fun allSubmissions(dir: File): List<Submission> {
+        if (!lexists(dir)) return emptyList()
+        val files = dir.listFiles() ?: throw java.io.IOException("runs not listable")
+        val out = ArrayList<Submission>()
+        for (f in files) {
+            val name = f.name
+            if (!name.endsWith(".json")) continue
+            val id = name.removeSuffix(".json")
+            if (!isSubmissionId(id)) continue
+            readSubmissionFile(dir, id)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    /** What a [submissionTransaction] body asks for. */
+    sealed class SubmissionWrite {
+        /** Write [submission] (and its [text]) after [beforeWrite] (the audit line) said yes. */
+        class Write(val submission: Submission, val text: String, val beforeWrite: () -> Boolean) : SubmissionWrite()
+        object None : SubmissionWrite()
+    }
+
+    enum class SubmissionWriteResult { WRITTEN, NOT_WRITTEN, REFUSED_BY_AUDIT, FAILED }
+
+    /**
+     * The launcher's decision runs here, under this object's lock, so the nonce
+     * lookup, the BUSY count, the rate brake and the write are one step:
+     * [body] sees every submission of [principal] (expiry applied) and returns
+     * what to write. The text is written first (owner-only, atomic), then the
+     * record; a failed record write removes the text. Never throws: any I/O
+     * failure is FAILED (the caller answers INTERNAL_ERROR).
+     */
+    @Synchronized
+    fun <T> submissionTransaction(
+        context: Context,
+        principal: String,
+        body: (mine: List<Submission>, now: Long) -> Pair<T, SubmissionWrite>,
+        onResult: (T, SubmissionWriteResult) -> T,
+    ): T? {
+        return try {
+            if (!LAUNCHER_PRINCIPAL_RE.matches(principal)) return null
+            val now = System.currentTimeMillis()
+            val dir = runsDir(context)
+            val all = allSubmissions(dir)
+            writeExpired(dir, all, now)
+            val mine = all.filter { it.principal == principal }.map { applySubmissionExpiry(it, now) }
+            val (answer, write) = body(mine, now)
+            if (write !is SubmissionWrite.Write) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
+            val s = write.submission
+            if (!isValidSubmission(s) || s.principal != principal) return onResult(answer, SubmissionWriteResult.FAILED)
+            val outDir = ensureRunsDir(context)
+            if (lexists(submissionFile(outDir, s.id))) return onResult(answer, SubmissionWriteResult.FAILED)
+            runCatching {
+                for (id in submissionsToPrune(all, now)) {
+                    submissionFile(outDir, id).delete()
+                    submissionTextFile(context, id).delete()
+                }
+            }.onFailure { Log.w(TAG, "submission prune failed type=${it.javaClass.simpleName}") }
+            if (!write.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
+            val textFile = submissionTextFile(context, s.id)
+            try {
+                val parent = textFile.parentFile ?: throw java.io.IOException("no parent")
+                if (!parent.isDirectory && !parent.mkdirs()) throw java.io.IOException("text dir")
+                ClosePawRunResults.writePrivateAtomic(textFile, write.text)
+                ClosePawRunResults.writePrivateAtomic(submissionFile(outDir, s.id), encodeSubmission(s))
+            } catch (e: Exception) {
+                Log.w(TAG, "submission write failed type=${e.javaClass.simpleName}")
+                runCatching { textFile.delete() }
+                runCatching { submissionFile(outDir, s.id).delete() }
+                return onResult(answer, SubmissionWriteResult.FAILED)
+            }
+            onResult(answer, SubmissionWriteResult.WRITTEN)
+        } catch (e: Exception) {
+            Log.w(TAG, "submission transaction failed type=${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /** Rewrite each pending submission past its window as `expired` on disk. Returns how many were written. */
+    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): Int {
+        var n = 0
+        for (cur in submissionsToExpire(subs, now)) {
+            runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(dir, cur.id), encodeSubmission(cur)) }
+                .onSuccess { n++ }
+                .onFailure { Log.w(TAG, "submission expiry write failed type=${it.javaClass.simpleName}") }
+        }
+        return n
+    }
+
+    /**
+     * Phase 1's expiry on disk: every pending submission past its approval
+     * window becomes `expired` (also done at the start of each
+     * [submissionTransaction]). Called from the schedule sweep. -1 on failure. Never throws.
+     */
+    @Synchronized
+    fun expireSubmissions(context: Context): Int = try {
+        val dir = runsDir(context)
+        if (!lexists(dir)) 0 else writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+    } catch (e: Exception) {
+        Log.w(TAG, "submission expiry sweep failed type=${e.javaClass.simpleName}")
+        -1
+    }
+
+    /** The record JSON with expiry applied (and persisted), or null. Never returns the text. Never throws. */
+    @Synchronized
+    fun readSubmissionJson(context: Context, id: String): String? = try {
+        if (!isSubmissionId(id)) {
+            null
+        } else {
+            val dir = runsDir(context)
+            val s = readSubmissionFile(dir, id)
+            if (s == null) {
+                null
+            } else {
+                val cur = applySubmissionExpiry(s, System.currentTimeMillis())
+                if (cur != s) runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(cur)) }
+                encodeSubmission(cur)
+            }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "submission read failed type=${e.javaClass.simpleName}")
+        null
+    }
+
     /** The output snapshot, cut to [maxBytes] (at most [MAX_OUTPUT_BYTES]) on a UTF-8 boundary, or null. */
     fun readOutput(context: Context, handle: String, maxBytes: Int): String? = try {
         if (!isValidHandle(handle)) {

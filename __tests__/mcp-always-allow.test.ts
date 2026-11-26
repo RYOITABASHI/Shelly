@@ -8,6 +8,7 @@ jest.mock('@/lib/debug-logger', () => ({ logInfo: () => {}, logWarn: () => {}, l
 
 import {
   MAX_RULES,
+  OP_ORIGINS,
   TYPED_OPS,
   addMcpAlwaysAllowRule,
   clientIdLabel,
@@ -23,8 +24,11 @@ import {
   purgeMcpAlwaysAllowRulesForNewToken,
   removeMcpAlwaysAllowRules,
   ruleKey,
+  ruleOrigin,
   type AlwaysAllowRule,
 } from '@/lib/mcp-always-allow';
+import { readFileSync } from 'fs';
+import { join as joinPath } from 'path';
 import { MCP_PRINCIPAL_RE } from '@/lib/mcp-request-auth';
 import { nodeSha256 } from './helpers/mcp-signed-request';
 
@@ -92,7 +96,7 @@ afterEach(() => clearNative());
 
 describe('pure helpers', () => {
   it('the typed-op set is closed and excludes raw ops', () => {
-    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'request_pipeline_refire']);
+    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'request_pipeline_refire', 'submit_instruction', 'put_stream_feed']);
     expect(isTypedOp('run_agent')).toBe(true);
     expect(isTypedOp('service_control')).toBe(true);
     for (const op of ['run_command', 'write_file', 'list_agents', 'RUN_AGENT', '', null, undefined, 1, {}]) {
@@ -337,5 +341,54 @@ describe('principal parity with scripts/shelly-mcp-server.js', () => {
       expect(principal).toMatch(MCP_PRINCIPAL_RE);
       expect(await mcpPrincipalForToken(token, nodeSha256)).toBe(principal);
     }
+  });
+});
+
+// C3: one launcher row — principal(origin=launcher) × submit_instruction × hayato.
+describe('launcher rules (C3)', () => {
+  const LP = `launcher:${P1}`;
+  const launcherRule = (over: Partial<AlwaysAllowRule> = {}): AlwaysAllowRule => {
+    const r: AlwaysAllowRule = { id: 'r_00000000000000a1', principal: LP, op: 'submit_instruction', target: 'hayato', label: 'Launcher', createdAt: 1731650000000 };
+    return { ...r, ...over };
+  };
+
+  it("parses, and the origin of the principal must be the op's origin", () => {
+    const parsed = parseAlwaysAllowStatus(status([rule(), launcherRule()]));
+    expect(parsed.status).toBe('ok');
+    expect(parsed.rules).toHaveLength(2);
+    expect(OP_ORIGINS).toEqual({ run_agent: 'mcp', service_control: 'mcp', request_pipeline_refire: 'mcp', submit_instruction: 'launcher', put_stream_feed: 'mcp' });
+    for (const bad of [
+      launcherRule({ principal: P1 }),
+      launcherRule({ principal: `mcp:${P1}` }),
+      launcherRule({ target: 'agent:daily' }),
+      rule({ principal: LP }),
+    ]) {
+      expect(parseAlwaysAllowStatus(status([bad])).status).toBe('unreadable');
+    }
+  });
+
+  it('the same id hex under two origins never collides in a match', () => {
+    const rules = [rule(), launcherRule()];
+    expect(findAlwaysAllowMatch(rules, LP, 'submit_instruction', 'hayato', null)?.id).toBe('r_00000000000000a1');
+    expect(findAlwaysAllowMatch(rules, P1, 'submit_instruction', 'hayato', null)).toBeNull();
+    expect(findAlwaysAllowMatch(rules, LP, 'run_agent', 'agent:daily', BIND_A)).toBeNull();
+  });
+
+  it('Settings labels: the id without its origin prefix, and the origin', () => {
+    expect(clientIdLabel(LP)).toBe(P1.slice(0, 8));
+    expect(clientIdLabel(P1)).toBe(P1.slice(0, 8));
+    expect(ruleOrigin(LP)).toBe('launcher');
+    expect(ruleOrigin(P1)).toBe('mcp');
+  });
+
+  it('the Kotlin store has the same op → origin table and launcher target', () => {
+    const storeKt = readFileSync(
+      joinPath(__dirname, '..', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/McpAlwaysAllowStore.kt'),
+      'utf8',
+    );
+    expect(storeKt).toMatch(/"run_agent" to IngressOrigin\.MCP,\s*"service_control" to IngressOrigin\.MCP,\s*"request_pipeline_refire" to IngressOrigin\.MCP,\s*IngressDecision\.OP_SUBMIT_INSTRUCTION to IngressOrigin\.LAUNCHER,/);
+    expect(storeKt).toContain('IngressDecision.OP_SUBMIT_INSTRUCTION to Regex("^hayato$")');
+    // The MCP token cascade keeps the launcher's rules (they do not depend on the token).
+    expect(storeKt).toMatch(/rules\.filter \{ isNonMcpPrincipal\(it\.principal\) \|\| \(principal != null && it\.principal == principal\) \}/);
   });
 });

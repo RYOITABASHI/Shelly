@@ -465,7 +465,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **音声入力** | コマンドや AI プロンプトを話しかけられます。Groq キーがあれば Groq Whisper が文字起こしを担当し、無ければ Android の端末内音声認識（キー不要、API 31 以上）にフォールバックします（Settings → Voice Input で端末内に固定すれば、音声はネットワークに出ません）。そのテキストを VoiceChain がキーボードと同じ入力ルーターに流します。 |
 | **リアルタイム音声（Gemini Live）** | オプトインの全二重音声モード。録音 → 文字起こし → 送信を繰り返すターン制ではなく、話しかけると音声で返答が返り、割り込みはサーバー側で処理されます。通常の音声入力とは別のトグルです（Settings → Realtime Voice、既定 OFF）。テキストと違い、Gemini Live API 経由の音声は無料枠のキーでもトークン課金される点に注意してください。 |
 | **A2A サーバー（Agent2Agent）** | オプトインのローカル HTTP サーバー（Settings → A2A Server、既定 OFF）。標準の [A2A プロトコル](https://a2a-protocol.org/) の Agent Card と `list_agents` スキルを公開し、同じネットワーク上の A2A 対応エージェント / ツールから Shelly に登録済みのものが見えるようにします。現時点では読み取り専用で、実行や書き込みのスキルは公開していません。 |
-| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。読み取り専用ツール――`device_status`・`list_agents`・`list_repos`・`git_status`・`read_agent_audit`・`read_article_history`・`list_drafts`・`read_draft`、さらにそれぞれ専用のスイッチの背後にある `read_terminal_output`・`read_logs`・`get_settings`――で、任意の MCP クライアントからスマホ上で動いているものを覗けます。型付き操作 `run_agent` / `get_run_result`（Settings → Agents →「MCP: Allow typed operations (run agents)」）は、Shelly の同意ルールの下で登録済みエージェントを起動します。`run_command` と `write_file` は「MCP: Allow exec/write」をオンにしない限り無効で、オンにしても呼び出しのたびにスマホでの承認タップが必要です（Settings の持ち主専用スイッチ 2 つのどちらかを入れた場合を除く。[外部エージェントと MCP](#外部エージェントと-mcp) 参照）。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。詳細: [外部エージェントと MCP](#外部エージェントと-mcp)。 |
+| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。読み取り専用ツール――`device_status`・`list_agents`・`list_repos`・`git_status`・`read_agent_audit`・`read_article_history`・`list_drafts`・`read_draft`・`read_chat_requests`、さらにそれぞれ専用のスイッチの背後にある `read_terminal_output`・`read_logs`・`get_settings`――で、任意の MCP クライアントからスマホ上で動いているものを覗けます。型付き操作 `run_agent` / `get_run_result` / `put_stream_feed`（Settings → Agents →「MCP: Allow typed operations (run agents)」）は、Shelly の同意ルールの下で登録済みエージェントを起動します。`run_command` と `write_file` は「MCP: Allow exec/write」をオンにしない限り無効で、オンにしても呼び出しのたびにスマホでの承認タップが必要です（Settings の持ち主専用スイッチ 2 つのどちらかを入れた場合を除く。[外部エージェントと MCP](#外部エージェントと-mcp) 参照）。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。詳細: [外部エージェントと MCP](#外部エージェントと-mcp)。 |
 | **エージェントの安全ルール（ベータ、既定 OFF）** | POLICY-001: 普通の言葉でルールを伝えられます（「お金が絡む操作は必ず聞いて」「Xへの投稿は下書きまで」）。復唱されたうえで、あなたが確認したときだけ保存され、一覧表示や取り消しも同じく言葉で行えます。あなたが起動したのではない実行（スケジュール・ウィジェット・通知・起動時）は読み取り / 下書き / 通知に限定され、同じ種類のアクションを何度も問題なく承認すると、以後は聞かずに実行するかを提案することがあります（支払い・投稿・ネットワーク送信・高リスクのコマンドには決して提案しません）。既定 OFF（Settings → Agent Safety Rules (beta)）。 |
 | **実行中の常駐通知** | スケジュールまたは手動で起動したエージェントは、実行結果の通知だけでなく、実行中ずっと「▶ 実行中」の常駐通知を出します。実行中の状態が、終わってから初めて分かるのではなく通知シェードから見えます。 |
 
@@ -506,10 +506,10 @@ Shelly は、スマホの上で動くローカルファーストの実行と同�
 
 | グループ | ツール | スイッチ |
 |---|---|---|
-| 読み取り専用 | `device_status`、`list_agents`、`list_repos`、`git_status`、`read_agent_audit`、`read_article_history`、`list_drafts`、`read_draft` | サーバー自体のほかに無し |
+| 読み取り専用 | `device_status`、`list_agents`、`list_repos`、`git_status`、`read_agent_audit`、`read_article_history`、`list_drafts`、`read_draft`、`read_chat_requests` | サーバー自体のほかに無し |
 | 読み取り専用 | `read_terminal_output` | "MCP: Allow reading terminal output" |
 | 読み取り専用 | `read_logs`、`get_settings`（秘密情報は返しません） | "MCP: Allow diagnostics (logs, settings)" |
-| 型付き操作 | `run_agent`、`get_run_result` | "MCP: Allow typed operations (run agents)" |
+| 型付き操作 | `run_agent`、`get_run_result`、`put_stream_feed` | "MCP: Allow typed operations (run agents)" |
 | 生 | `run_command`、`write_file` | "MCP: Allow exec/write (dangerous)" |
 
 `run_agent` は登録済みエージェントの実行を 1 回開始し、実行ハンドルを即座に返します。`get_run_result` はその状態と出力をポーリングします。生のツールは性質が違います: `run_command` / `write_file` の呼び出しは毎回スマホでの承認タップが必要で、ルール（常に許可）による事前承認は決してできません。唯一の例外は、後述の持ち主が入れる 2 つのスイッチです。
@@ -531,6 +531,8 @@ Shelly は、スマホの上で動くローカルファーストの実行と同�
 
 どちらのスイッチでも、拒否されるもの・確認されるものは変わりません: 安全ゲートが拒否するもの（CRITICAL コマンド、エージェント定義や安全設定ファイルの変更、持ち主自身の deny / draft-only ルール）、秘密を読むコマンドや Shelly 自身の設定・鍵を指すコマンド、MCP 越しに作成・変更されたエージェント、Web ページ・URL・通知・画面・DM を読むエージェント（プロンプトインジェクション対策）、無人実行の中での承認（通知起点・スケジュールなど）は自動許可されることはありません、`shelly agent add` の依頼、ClosePaw・DM・ブラウザ操作、古くなった依頼。STOP-ALL は両方のスイッチを OFF にし、STOP-ALL を解除しても再びオンにはなりません（入れ直しは Settings での操作です）。MCP トークンを再生成した場合も OFF になります。ネイティブ経路でも入口の印（ingress taint）は変わりません: 同じゲートのコードが判定し、MCP 由来の制限は下流でそのまま効きます。生のツールに「常に許可」ルールが付くことはありません。
 
+**stream feed（`put_stream_feed`、実機未検証）。** ランチャーアプリに不透明な「stream feed」（v1）を渡す型付き操作です。MCP クライアントが feed 文書とその SHA-256・バイト数を送り、Shelly はランチャー専用として保存します（`$HOME` の外のアプリ専用領域。エージェント・プロンプト・ログ・チャットには一切流しません）。上限は 48 KiB で、超過や形式不正は切り詰めずに拒否し、直近の正常な feed を残します。内容は外部（メールや SNS）由来なので常に信頼できない入力として扱い、**「すべての承認を省略」の対象外**です。無人での更新は、この操作専用のクライアント別の常に許可ルールだけで行えます（最初の承認ダイアログで **Always allow** をタップして作成し、**MCP: always allowed** から取り消せます）。
+
 **入口の印（ingress taint）。** MCP 越しに届いた実行は、外部由来として印が付きます。印の付いた実行は制限されます: 書き込み・宣言済みアクション・外部送信は、一致するルールが実行権限を担っていない限り拒否され、印の付いた実行が無人の一括承認を受けることは決してありません。**STOP-ALL はすべての事前承認の仕組みに優先します**――ルール、下記の ClosePaw スイッチ、下書きの事前承認もです。
 
 **可用性。** MCP サーバーが ON のときは、再起動のあと自動で起動します。先にアプリを開く必要はありません。
@@ -543,6 +545,18 @@ Shelly は、スマホの上で動くローカルファーストの実行と同�
 **下書きの事前承認。** 下書きだけの宛先（note、Substack）については、持ち主が Shelly の AI ペインで指示を打つことで、宛先ごとに事前承認を ON にできます――例えば "save drafts to note and Substack without approval"。ON になった宛先のキュー済み下書きは、宛先ごとの確認と 1 日の上限（既定 5 件）のもとで、タップなしに保存されます。"stop saving drafts without approval" か設定のトグルで OFF になります。
 
 **接続性ガーディアン。** オプトインの設定自動化（**Wi-Fi-linked autopilot**、既定 OFF）が、この連携への到達可能性を保つのを助けます。Wi-Fi が接続するとワイヤレスデバッグを ON にし、Tailscale が切れていて事前承認がオンなら接続します。Wi-Fi が切れて約 45 秒たつと、Tailscale は接続したままワイヤレスデバッグを OFF にするので、MCP サーバーにはモバイルデータでも届き続けます。初回だけ `WRITE_SECURE_SETTINGS` の付与が必要です。
+
+### ランチャー連携（Launcher ingress）
+
+*実機未検証。* インストールした 1 つのランチャーアプリから、入力した指示を Shelly に送り、上記の stream feed を読めるようにする任意の機能です。
+
+- **プロバイダ。** Shelly は authority `<applicationId>.ingress` の ContentProvider を公開し、メソッドは `submit_instruction` と `get_stream_feed` の 2 つです。Android の権限は要求せず、呼び出し元は Shelly 自身が確認します。
+- **呼び出し元の確認。** 呼び出し元は Binder UID から取り、ちょうど 1 つのパッケージで、そのパッケージ名と署名証明書の SHA-256 ピンが Settings → **ランチャー連携** であなたが入力した内容と一致する必要があります。既定では何も同梱されず、ランチャーを登録するまで呼び出しはすべて拒否されます。
+- **受け付けた指示は記録するだけ。** 受理した指示は提出記録（受理済み、または通常の承認ルールの下で承認待ち）として保存されます。この段階では転送も実行もしません。
+- **任意の免除。**「ランチャーの入力を自分の入力として扱う」（既定オフ）をオンにすると、ランチャーで入力した指示の本文だけは自分の入力として扱われ、「常に許可」ルールでタップなしに通せます。免除は現在のピン集合に束縛され（パッケージやピンを変えるとオフに戻ります）、対象は指示の本文のみ、しかも人が打つ速度のときだけです。追加フィールドや短時間の連続送信は信頼できない入力のままで、承認が必要です。
+- **`hayato://chat/<slug>` リンク**（端末上で入力した表にある slug のみ）は、エージェントが読み取り専用ツール `read_chat_requests` で読めるようキューに積むだけです。リンクを理由に Shelly が何かを実行・承認・開くことはありません。
+
+止め方: [docs/revoke-access.ja.md](docs/revoke-access.ja.md)。
 
 ### エージェントのロール
 

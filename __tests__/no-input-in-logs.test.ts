@@ -87,3 +87,36 @@ describe('no input in JS logs', () => {
     expect(source).not.toMatch(/log(?:Info|Error)\([^;]*command\.slice/);
   });
 });
+
+describe('no stream feed content in logs (put_stream_feed, launcher ingress C7)', () => {
+  /** Each JS log call, joined across lines, up to its closing `);`. */
+  function jsLogCalls(source: string, re: RegExp): string[] {
+    const out: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source))) {
+      const end = source.indexOf(');', m.index);
+      out.push(source.slice(m.index, end + 2));
+    }
+    return out;
+  }
+
+  it.each([
+    ['lib/mcp-server-bridge.ts', /\blog(?:Info|Error|Warn)\(/g],
+    ['lib/mcp-stream-feed.ts', /\blog(?:Info|Error|Warn)\(/g],
+    ['scripts/shelly-mcp-server.js', /\blog\(/g],
+  ])('%s never logs the feed', (rel, re) => {
+    const calls = jsLogCalls(read(rel), re);
+    expect(calls.filter((c) => /feedJson|\bdoc\b|valid\.args\b/.test(c))).toEqual([]);
+  });
+
+  it('lib/mcp-stream-feed.ts logs nothing at all', () => {
+    expect(read('lib/mcp-stream-feed.ts')).not.toMatch(/debug-logger|console\./);
+  });
+
+  it('the RN bridge sends the feed to native streamFeedPut and nowhere else', () => {
+    const bridge = read('lib/mcp-server-bridge.ts');
+    const uses = bridge.split('\n').filter((l) => /\bfeedJson\b/.test(l));
+    expect(uses.every((l) => /const \{ feedJson, expectedSha256, expectedBytes \} = valid\.args|streamFeedPut!\(feedJson,/.test(l))).toBe(true);
+    expect(uses).toHaveLength(2);
+  });
+});

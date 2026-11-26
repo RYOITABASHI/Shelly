@@ -367,6 +367,8 @@ object RunRecovery {
                 val homeDir = HomeInitializer.getHomeDir(app)
                 runCatching { McpRunTickets.reconcileAfterRestart(app) }
                     .onFailure { Log.w(TAG, "ticket reconcile failed type=${it.javaClass.simpleName}") }
+                runCatching { McpRunTickets.expireSubmissions(app) }
+                    .onFailure { Log.w(TAG, "submission expiry failed type=${it.javaClass.simpleName}") }
                 // Search parity item 4: an MCP re-fire request is taken only
                 // while its pipeline's opt-in is still the one it was accepted under.
                 // A snapshot that could not be taken leaves such requests waiting.

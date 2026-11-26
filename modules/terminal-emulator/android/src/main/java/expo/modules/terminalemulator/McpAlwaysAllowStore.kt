@@ -65,7 +65,21 @@ object McpAlwaysAllowStore {
      * (run_command, write_file) are deliberately absent and never added here.
      * Keep in step with TYPED_OPS in lib/mcp-always-allow.ts.
      */
-    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", "request_pipeline_refire")
+    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", "request_pipeline_refire", IngressDecision.OP_SUBMIT_INSTRUCTION, IngressDecision.OP_PUT_STREAM_FEED)
+
+    /**
+     * The one origin whose principals may hold a rule for each op (fact sheet
+     * §3.1, C3): MCP clients for the MCP ops, the verified launcher for
+     * submit_instruction. A rule whose principal is of another origin is invalid.
+     */
+    val OP_ORIGINS: Map<String, String> = mapOf(
+        "run_agent" to IngressOrigin.MCP,
+        "service_control" to IngressOrigin.MCP,
+        "request_pipeline_refire" to IngressOrigin.MCP,
+        IngressDecision.OP_SUBMIT_INSTRUCTION to IngressOrigin.LAUNCHER,
+        // The stream feed is pushed by an MCP client (fact sheet §6.2 P5, D9).
+        IngressDecision.OP_PUT_STREAM_FEED to IngressOrigin.MCP,
+    )
 
     private val PRINCIPAL_RE = Regex("^[0-9a-f]{32}$")
     private val BIND_RE = Regex("^[0-9a-f]{64}$")
@@ -76,6 +90,10 @@ object McpAlwaysAllowStore {
         "service_control" to Regex("^service:(article-delivery|council-facade):(start|status|stop)$"),
         // Same as PIPELINE_REFIRE_TARGET_RE in lib/mcp-pipeline-refire.ts.
         "request_pipeline_refire" to Regex("^pipeline:[a-z0-9-]{1,32}$"),
+        // The launcher ingress has one target (fact sheet §1, C3).
+        IngressDecision.OP_SUBMIT_INSTRUCTION to Regex("^hayato$"),
+        // One fixed sink (StreamFeedCore.TARGET); a rule never names anything else.
+        IngressDecision.OP_PUT_STREAM_FEED to Regex("^stream-feed$"),
     )
     private val RULE_KEYS = setOf("id", "principal", "op", "target", "bind", "label", "createdAt", "actionPolicyPin")
     private val ROOT_KEYS = setOf("version", "rules")
@@ -102,7 +120,20 @@ object McpAlwaysAllowStore {
 
     fun isTypedOp(op: String?): Boolean = op != null && op in TYPED_OPS
 
+    /** An MCP principal (bare 32 hex): the token cascade and the MCP paths. */
     fun isValidPrincipal(p: String?): Boolean = p != null && PRINCIPAL_RE.matches(p)
+
+    /** [p] is a principal of the origin [op] belongs to ([OP_ORIGINS]). */
+    fun isValidPrincipalFor(op: String?, p: String?): Boolean {
+        val origin = op?.let { OP_ORIGINS[it] } ?: return false
+        return IngressDecision.Principal.parse(p)?.origin == origin
+    }
+
+    /** True for a principal that is not an MCP client (kept by the MCP token cascade). */
+    fun isNonMcpPrincipal(p: String?): Boolean {
+        val parsed = IngressDecision.Principal.parse(p) ?: return false
+        return parsed.origin != IngressOrigin.MCP
+    }
 
     fun isValidBind(b: String?): Boolean = b == null || BIND_RE.matches(b)
 
@@ -130,7 +161,7 @@ object McpAlwaysAllowStore {
     fun ruleKey(r: Rule): String = ruleKey(r.principal, r.op, r.target)
 
     fun isValidRule(r: Rule): Boolean =
-        ID_RE.matches(r.id) && isValidPrincipal(r.principal) && isTypedOp(r.op) && isValidTarget(r.op, r.target) &&
+        ID_RE.matches(r.id) && isValidPrincipalFor(r.op, r.principal) && isTypedOp(r.op) && isValidTarget(r.op, r.target) &&
             isValidBind(r.bind) && isValidLabel(r.label) && r.createdAt >= 0 &&
             (r.actionPolicyPin == null || (r.bind != null && isValidPolicyPin(r.actionPolicyPin)))
 
@@ -220,7 +251,7 @@ object McpAlwaysAllowStore {
      * Invalid inputs (a raw op, a malformed principal / target / bind) match nothing.
      */
     fun findMatch(rules: List<Rule>, principal: String?, op: String?, target: String?, bind: String?): Rule? {
-        if (!isValidPrincipal(principal) || !isTypedOp(op) || !isValidTarget(op, target) || !isValidBind(bind)) return null
+        if (!isTypedOp(op) || !isValidPrincipalFor(op, principal) || !isValidTarget(op, target) || !isValidBind(bind)) return null
         return rules.firstOrNull {
             it.principal == principal && it.op == op && it.target == target && (it.bind == null || it.bind == bind)
         }
@@ -262,9 +293,21 @@ object McpAlwaysAllowStore {
 
     fun withRemoved(rules: List<Rule>, ids: Collection<String>): List<Rule> = rules.filter { it.id !in ids }
 
-    /** Pure: only [principal]'s rules; null keeps none (token revoked). */
+    /**
+     * Pure, the MCP token cascade: of the MCP clients' rules only [principal]'s
+     * stay; null keeps none (token revoked). Rules of other origins (the
+     * launcher) do not depend on the MCP token and are kept.
+     */
     fun purgedExcept(rules: List<Rule>, principal: String?): List<Rule> =
-        if (principal == null) emptyList() else rules.filter { it.principal == principal }
+        rules.filter { isNonMcpPrincipal(it.principal) || (principal != null && it.principal == principal) }
+
+    /**
+     * Pure: of [origin]'s rules only [principal]'s stay (null keeps none of
+     * that origin); other origins' rules are untouched. Used when the trusted
+     * caller registry changes (a new certificate set is a new principal).
+     */
+    fun purgedOriginExcept(rules: List<Rule>, origin: String, principal: String?): List<Rule> =
+        rules.filter { IngressDecision.Principal.parse(it.principal)?.origin != origin || (principal != null && it.principal == principal) }
 
     private val random = SecureRandom()
 
@@ -428,6 +471,15 @@ object McpAlwaysAllowStore {
      * Token cascade: keeps only [principal]'s rules; null removes everything. True
      * only when confirmed (callers fail closed on false).
      */
+    /** [purgedOriginExcept], written. Never for MCP (that is [purgeExcept]). True only when confirmed. */
+    @Synchronized
+    fun purgeOriginExcept(context: Context, origin: String, principal: String?): Boolean {
+        if (origin == IngressOrigin.MCP) return false
+        val ok = writeNarrowing(context, purgedOriginExcept(read(context).rules, origin, principal))
+        Log.i(TAG, "always-allow purge origin=$origin ok=$ok")
+        return ok
+    }
+
     @Synchronized
     fun purgeExcept(context: Context, principal: String?): Boolean {
         if (principal != null && !isValidPrincipal(principal)) return writeNarrowing(context, emptyList())

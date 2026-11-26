@@ -43,6 +43,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import { isHayatoSchemeUrl, resolveHayatoChatLink } from '@/lib/hayato-chat-link';
+import { hayatoChatRequestQueue } from '@/lib/hayato-chat-requests';
 import { createOpenGuard, openGuardKey } from '@/lib/deep-link-open-guard';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -1508,8 +1510,30 @@ export default function RootLayout() {
       }
     };
 
+    const handleHayatoChatLink = async (url: string) => {
+      const res = resolveHayatoChatLink(url, useSettingsStore.getState().settings.hayatoChatSlugs);
+      if (res.kind === 'ignore') return;
+      if (res.kind === 'unresolved') {
+        ToastAndroid.show(t('hayato_chat.unresolved'), ToastAndroid.SHORT);
+        return;
+      }
+      try {
+        const queued = await hayatoChatRequestQueue.enqueue(res.slug);
+        if (queued) ToastAndroid.show(t('hayato_chat.queued', { slug: res.slug }), ToastAndroid.SHORT);
+      } catch {
+        logError('DeepLink', 'chat request enqueue failed');
+      }
+    };
+
     const handleDeepLink = async (url: string) => {
       try {
+        // hayato://chat/<slug>: display + enqueue only (lib/hayato-chat-link.ts).
+        // Handled before the generic shelly:// target logic below, which would
+        // read the slug as the target. Never logs the URI or slug.
+        if (isHayatoSchemeUrl(url)) {
+          await handleHayatoChatLink(url);
+          return;
+        }
         const parsed = Linking.parse(url);
         const target = normalizeDeepLinkTarget(parsed);
         // `shelly agent add` notification Approve/Reject: handled BEFORE the

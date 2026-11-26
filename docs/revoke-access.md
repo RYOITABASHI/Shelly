@@ -64,6 +64,7 @@ What it is: an HTTP server on the phone, port 8767. MCP clients such as Claude C
 - Settings > Agents > **MCP Server**: turn it off. The server is stopped when this is off. It is off by default.
 - Settings > Agents > **MCP: Allow exec/write (dangerous)**: turn it off. It is off by default. It adds the `run_command` and `write_file` tools. Each call still needs an approval popup on the phone, and CRITICAL-risk commands are refused.
 - Settings > Agents > **MCP: Allow typed operations (run agents)**: turn it off. It is off by default. It adds the `run_agent` and `get_run_result` tools. Turning it off refuses both at once, even for agents with an always-allow rule (the rules stay until revoked).
+- Settings > Agents > **MCP: Allow typed operations (run agents)** also gates `put_stream_feed` (the launcher stream feed). Turning it off refuses it even with an always-allow rule.
 
 ### Token
 
@@ -77,12 +78,22 @@ What it is: an HTTP server on the phone, port 8767. MCP clients such as Claude C
 - An "always allow" rule lets one MCP client run one kind of request on one target (for example, running one agent) without the approval popup. Rules can never cover `run_command` or `write_file`. A rule is created only when you tap **Always allow** on the `run_agent` approval popup. It covers that agent as it was defined then: editing the agent's prompt, tool, actions or other run settings brings the popup back. A rule never lets a run start while all agents are stopped, for an agent created or changed over MCP, or against your own deny rules, and legacy rules remain ingress-tainted. New consent also preapproves the declared actions, bound to the verified policy snapshot; policy edits require fresh consent. See [action consent and migration](mcp-agent-action-consent.md).
 - Settings > **MCP: always allowed** lists every rule: what it allows, the target, the client (the first 8 characters of its ID), and when it was added. **Revoke** removes one rule; **Revoke all** removes them all. A rule cannot be added from Settings.
 - **Regenerating the MCP token removes every rule**, before the new token is saved. If Shelly cannot confirm that, the token is not changed and the server is left off. After the new token is saved, Shelly removes any rule that is not for the new token once more; if that second pass cannot be confirmed, a running server is left off. A stopped server stays off and the new token is kept, because a rule made for the old token never applies to the new one.
+- The stream feed rule: tapping **Always allow** on the first `put_stream_feed` approval creates a rule for that client and that operation (target `stream-feed`). It is listed in **MCP: always allowed** like the others; revoke it there. **Skip all approvals** never covers `put_stream_feed`, so without this rule each update needs a tap. The stored feed itself stays until the next one replaces it.
 - Turning the MCP server off does not remove rules.
 - Regenerating the token also marks every run that MCP started and that is still queued or running as `cancelled`; a queued one never starts. A run that already started keeps running to its end.
 
 ### Check it is off
 
 With the toggle off, a connection to port 8767 from another device on the same network should be refused.
+
+## 3b. Launcher ingress
+
+What it is: an optional ContentProvider that one launcher app, which you registered by package name and certificate pin, can call to submit instructions and read the stream feed. It is off until you register a launcher.
+
+- Settings > **Launcher ingress**: turn **Enabled** off to refuse all calls at once, or **Remove** to delete the registered package and pins (its exemption and always-allow rules then stop applying).
+- **Count launcher text as written by me**: turn it off to treat launcher instructions as untrusted input again. Changing the package or any pin also turns it off.
+- Always-allow rules for the launcher's `submit_instruction` and for `put_stream_feed` are removed in Settings > **MCP: always allowed** (**Revoke** / **Revoke all**).
+- `hayato://chat/<slug>` links only queue requests for an agent to read; remove the slugs from the chat-link slug table in Settings (empty by default) to stop queuing them.
 
 ## 4. Scheduled and autonomous agents, and stored keys
 

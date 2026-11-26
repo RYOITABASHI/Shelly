@@ -285,4 +285,45 @@ class McpAlwaysAllowStoreTest {
         assertEquals("agent:daily", r.getString("target"))
         assertEquals("unreadable", JSONObject(McpAlwaysAllowStore.statusJson(McpAlwaysAllowStore.Classified(Status.UNREADABLE, emptyList()))).getString("status"))
     }
+
+    // ── Launcher rules (C3): principal(origin=launcher) × submit_instruction × hayato ──
+
+    private val lp = "launcher:$p1"
+    private fun launcherRule(id: String = "r_00000000000000a1", principal: String = lp) =
+        rule(id = id, principal = principal, op = "submit_instruction", target = "hayato", bind = null, label = "Launcher")
+
+    @Test
+    fun aLauncherRuleIsOneRowBoundToTheLauncherOrigin() {
+        assertTrue(McpAlwaysAllowStore.isValidRule(launcherRule()))
+        assertTrue(McpAlwaysAllowStore.isTypedOp("submit_instruction"))
+        assertTrue(McpAlwaysAllowStore.isValidTarget("submit_instruction", "hayato"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("submit_instruction", "agent:daily"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("submit_instruction", "hayato2"))
+        // Origins can't cross: an MCP principal can't hold the launcher op, a launcher principal can't hold an MCP op.
+        assertFalse(McpAlwaysAllowStore.isValidRule(launcherRule(principal = p1)))
+        assertFalse(McpAlwaysAllowStore.isValidRule(rule(principal = lp)))
+        assertFalse(McpAlwaysAllowStore.isValidRule(rule(principal = lp, op = "service_control", target = "service:article-delivery:start", bind = null)))
+        assertFalse(McpAlwaysAllowStore.isValidRule(launcherRule(principal = "mcp:$p1")))
+        // Same id hex under two origins is two different principals (no collision).
+        val mcpRule = rule()
+        val both = listOf(mcpRule, launcherRule())
+        assertEquals(launcherRule(), McpAlwaysAllowStore.findMatch(both, lp, "submit_instruction", "hayato", null))
+        assertNull(McpAlwaysAllowStore.findMatch(both, p1, "submit_instruction", "hayato", null))
+        assertNull(McpAlwaysAllowStore.findMatch(both, lp, "run_agent", "agent:daily", bindA))
+        // It round-trips through the sealed state codec.
+        assertEquals(both, McpAlwaysAllowStore.decode(McpAlwaysAllowStore.encode(both)))
+    }
+
+    @Test
+    fun theMcpTokenCascadeKeepsLauncherRulesAndTheRegistryPurgeKeepsMcpRules() {
+        val a = rule(id = "r_0000000000000001", principal = p1)
+        val b = rule(id = "r_0000000000000002", principal = p2, target = "agent:other")
+        val l = launcherRule()
+        val lOld = launcherRule(id = "r_00000000000000a2", principal = "launcher:$p2")
+        val all = listOf(a, b, l, lOld)
+        assertEquals(listOf(a, l, lOld), McpAlwaysAllowStore.purgedExcept(all, p1))
+        assertEquals(listOf(l, lOld), McpAlwaysAllowStore.purgedExcept(all, null))
+        assertEquals(listOf(a, b, l), McpAlwaysAllowStore.purgedOriginExcept(all, IngressOrigin.LAUNCHER, lp))
+        assertEquals(listOf(a, b), McpAlwaysAllowStore.purgedOriginExcept(all, IngressOrigin.LAUNCHER, null))
+    }
 }
