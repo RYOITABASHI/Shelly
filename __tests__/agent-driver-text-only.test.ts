@@ -801,8 +801,12 @@ describe('Codex text-only turn', () => {
         expect(auditOf(r.audit, 'web_search_drain_end')).toMatchObject({ why: 'settled', unsettled: 0, count: 22 });
         expect(auditAll(r.audit, 'codex_web_search_limit').find((e: any) => e.phase === 'after-stop')).toMatchObject({ limit: 'count', count: 22, max: 20 });
         expect(JSON.parse(fs.readFileSync(countFile, 'utf8'))).toEqual({ count: 22, final: true });
-        // The interrupt went out once, and nothing was answered after the stop.
-        expect(r.seen.filter((m: any) => m.method === 'turn/interrupt')).toHaveLength(1);
+        // The interrupt went out once, from the driver's own wire log (C->S
+        // lines): the driver stops the fake right after sending it, so on Linux
+        // the fake can be gone before it reads it and `seen` misses it (main
+        // build 45749113741, as with srv-1 above).
+        const sent = r.out.split('\n').filter((l: string) => l.startsWith('C->S ')).map((l: string) => JSON.parse(l.slice(5)));
+        expect(sent.filter((m: any) => m.method === 'turn/interrupt')).toHaveLength(1);
         fs.rmSync(dir, { recursive: true, force: true });
       }, 60_000);
 
