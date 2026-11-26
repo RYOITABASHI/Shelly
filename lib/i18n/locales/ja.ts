@@ -406,6 +406,8 @@ const ja: Record<string, string> = {
   'mcp_always_allow.op.run_agent': 'エージェント実行',
   'mcp_always_allow.op.service_control': 'サービス操作',
   'mcp_always_allow.op.request_pipeline_refire': '記事パイプラインの再実行',
+  'mcp_always_allow.op.submit_instruction': 'ランチャーからの指示',
+  'mcp_always_allow.op.put_stream_feed': 'ストリームフィードの保存',
   'mcp_always_allow.row_title': '{{op}}: {{label}}',
   'mcp_always_allow.row_meta': '{{target}} · クライアント {{client}} · {{date}} 追加',
   'mcp_always_allow.revoke': '取り消す',
