@@ -129,8 +129,21 @@ function run(replies: string[], setup: Setup = {}, extraEnv: Record<string, stri
     const historyFile = path.join(agents, 'logs', 'article-history-pool.json');
     const history = fs.existsSync(historyFile) ? JSON.parse(fs.readFileSync(historyFile, 'utf8')).entries : [];
     const poolAfter = fs.existsSync(poolFile) ? fs.readFileSync(poolFile) : null;
+    const feedback = readLines(path.join(home, '.shelly/agents/recovery-feedback.jsonl'));
+    const heldRoot = path.join(agents, 'held');
+    const held: string[] = [];
+    if (fs.existsSync(heldRoot)) {
+      for (const day of fs.readdirSync(heldRoot)) {
+        const dir = path.join(heldRoot, day, 'Drafts');
+        if (!fs.existsSync(dir)) continue;
+        for (const name of fs.readdirSync(dir)) {
+          if ((setup.heldDrafts || []).some((d) => d.day === day && d.name === name)) continue;
+          held.push(fs.readFileSync(path.join(dir, name), 'utf8'));
+        }
+      }
+    }
     return {
-      status: result.status, stderr: result.stderr, prompts, audit, drafts, history,
+      status: result.status, stderr: result.stderr, prompts, audit, drafts, history, feedback, held,
       poolUnchanged: poolBefore === null ? poolAfter === null : !!poolAfter && poolBefore.equals(poolAfter),
       events: (prefix: string) => audit.filter((e) => typeof e.event === 'string' && e.event.startsWith(prefix)),
     };
@@ -170,16 +183,19 @@ describe('v69 candidate pool: composite research (AC1)', () => {
     expect(r.poolUnchanged).toBe(true);
   });
 
-  it('records the adopted candidate in the frontmatter of a held draft too', () => {
+  it('lands held before the write step when the fingerprint of the adopted candidate stays invalid (v70)', () => {
     const pool = { version: 1, candidates: [candidate('c1')] };
     const bad = ['population: aliens', ...FP_LINES.slice(1)];
     const r = run([memo('c1', bad), 'population: martians', draft], { pool });
     expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(r.events('pool_selection')).toEqual([expect.objectContaining({ mode: 'pool', candidateId: 'c1' })]);
     expect(r.events('research_fingerprint_failed')).toHaveLength(1);
-    expect(r.drafts).toHaveLength(1);
-    const fm = frontmatterOf(r.drafts[0]);
-    expect(fm).toContain('review: unresolved');
-    expect(fm).toContain('poolCandidateId: "c1"');
+    expect(r.events('article_held')).toEqual([expect.objectContaining({ reason: 'fingerprint-invalid', stepIndex: 0, draftKept: false })]);
+    expect(r.prompts).toHaveLength(2);
+    expect(r.prompts.some((p) => p.includes(writeInstruction))).toBe(false);
+    expect(r.drafts).toEqual([]);
+    expect(r.held).toEqual([]);
+    expect(r.history).toEqual([]);
     expect(r.poolUnchanged).toBe(true);
   });
 
@@ -394,9 +410,11 @@ describe('v69 main-study fingerprint (brief 3)', () => {
     const r = run([memo('fresh', FP_LINES.slice(0, 4)), draft], { entry: { pool: false } }, { SHELLY_PLAN_EXECUTOR_RUN_CEILING_MS: String(100_000) });
     expect(r.events('research_fingerprint_retry')).toEqual([]);
     expect(r.events('research_fingerprint_failed')).toEqual([expect.objectContaining({ reason: 'time' })]);
+    expect(r.events('article_held')).toEqual([expect.objectContaining({ reason: 'fingerprint-invalid' })]);
+    expect(r.drafts).toEqual([]);
   });
 
-  it('holds the draft with the reason when the re-output is still invalid', () => {
+  it('lands held (fingerprint-invalid) before the write step when the re-output is still invalid (v70)', () => {
     const bad = ['population: aliens', ...FP_LINES.slice(1)];
     const r = run([memo('fresh', bad), 'population: martians\nintervention: chat tutor', draft], { entry: { pool: false } });
     expect(r.events('research_fingerprint_invalid').map((e) => [e.attempt, e.problems])).toEqual([
@@ -404,11 +422,15 @@ describe('v69 main-study fingerprint (brief 3)', () => {
       [2, ['population: not allowed', 'outcome: missing', 'direction: missing', 'question: missing']],
     ]);
     expect(r.events('research_fingerprint_failed')).toEqual([expect.objectContaining({ reason: 'still-invalid' })]);
-    expect(r.prompts).toHaveLength(3);
-    expect(r.drafts).toHaveLength(1);
-    const fm = frontmatterOf(r.drafts[0]);
-    expect(fm).toContain('review: unresolved');
-    expect(noteOf(r.drafts[0])).toContain('主研究の指紋が不正（population: 語彙外、outcome: 欠落、direction: 欠落、question: 欠落）');
+    expect(r.prompts).toHaveLength(2);
+    expect(r.prompts.some((p) => p.includes(writeInstruction))).toBe(false);
+    expect(r.drafts).toEqual([]);
+    expect(r.held).toEqual([]);
+    const held = r.events('article_held');
+    expect(held).toEqual([expect.objectContaining({ reason: 'fingerprint-invalid', stepIndex: 0, draftKept: false })]);
+    expect(held[0].detail).toContain('still-invalid');
+    expect(r.feedback).toEqual([expect.objectContaining({ reason: 'held', agentId, artifacts: { draft: false, paths: [] }, lastStep: expect.objectContaining({ index: 0, kind: 'research' }) })]);
+    expect(r.feedback[0].note).toBeUndefined();
   });
 
   it('treats two different values for one field as invalid', () => {
@@ -417,10 +439,12 @@ describe('v69 main-study fingerprint (brief 3)', () => {
     expect(r.events('research_fingerprint')).toContainEqual(expect.objectContaining({ event: 'research_fingerprint', retried: true }));
   });
 
-  it('holds the draft when the fingerprint lists themselves are malformed', () => {
+  it('lands held before the write step when the fingerprint lists themselves are malformed (v70)', () => {
     const r = run([memo('fresh'), draft], { entry: { pool: false, fingerprint: { population: ['pupils'] } } });
     expect(r.events('research_fingerprint_config_invalid')).toHaveLength(1);
-    expect(noteOf(r.drafts[0])).toContain('主研究の指紋が不正（設定が不正）');
+    expect(r.events('article_held')).toEqual([expect.objectContaining({ reason: 'fingerprint-invalid', detail: 'config-invalid' })]);
+    expect(r.prompts).toHaveLength(1);
+    expect(r.drafts).toEqual([]);
   });
 
   it('changes nothing for a pipeline without fingerprint lists or pool', () => {

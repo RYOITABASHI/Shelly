@@ -307,7 +307,9 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // recent article's; the write, revise and review steps get the choice, the
 // draft's frontmatter and the history record it (frame / opening / closing).
 // A malformed structure is off for the run (article_structure_config_invalid).
-// See normalizeStructureConfig.
+// See normalizeStructureConfig. Also v70: a main-study fingerprint still
+// invalid after its one re-output (or a failed / unaffordable re-output, or
+// malformed lists) lands the run held before the write step (fingerprint-invalid).
 const EXECUTOR_SCRIPT_VERSION = 70;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
@@ -5308,8 +5310,12 @@ function studyKeyHost(key) {
 //    step must end its notes with one `<field>: <value>` line per field, each
 //    value copied from its list. Missing, conflicting or unlisted values get one
 //    re-output request (the same notes, classified again by an HTTP engine); a
-//    second invalid answer holds the draft (`review: unresolved`, review_note
-//    FINGERPRINT_INVALID_NOTE_PREFIX + the fields). The research is never rerun
+//    second invalid answer (or a failed / unaffordable re-output, or malformed
+//    lists) lands the run held before the write step since v70 (held reason
+//    fingerprint-invalid, landArticleHeld; the problems are in the audit). A
+//    draft whose research was never checked (not a step the guard settles) is
+//    still saved with `review: unresolved` and review_note
+//    FINGERPRINT_INVALID_NOTE_PREFIX + （未確認） / （設定が不正）. The research is never rerun
 //    for it, so the main study stays the one the history and numbers checks saw.
 //  - `pool: true` (queue-less pipelines, with `fingerprint`): the research step
 //    first gets `<outputFolder>/_pool.json` as data (the bridge writes it; the
@@ -7128,7 +7134,10 @@ function webSearchStartRefusal(opts) {
 //   no-web-sources       the research ran and returned no web source: a plan
 //                        with a web research step never writes from the
 //                        owner's materials alone
-//   text-lint            work talk / an editor's note is still in the draft
+//   fingerprint-invalid  v70: the main-study fingerprint is still invalid
+//                        after the one re-output (or the re-output failed,
+//                        could not fit, or the owner's lists are malformed)
+//   text-lint           work talk / an editor's note is still in the draft
 //                        after one bounded fix (articleTextLintFlags), or the
 //                        fix cut anything at all (fix round 1, item 5); the
 //                        held copy is the draft before the cut
@@ -7137,7 +7146,7 @@ function webSearchStartRefusal(opts) {
 //                        one reason; the audit's `approval` says which), on a
 //                        single draft action or on the draft entry of a
 //                        multi-action plan, whatever the other actions did
-// The first three land before the write step (no draft). An MCP-ingress run
+// The first four land before the write step (no draft). An MCP-ingress run
 // writes no held file (its writes are refused); its line still goes out.
 // The JSONL line is the S5-0 §3 shape with reason "held" and, only on a held
 // line with lint messages (text-lint), `note`: the lint messages and nothing
@@ -7151,7 +7160,7 @@ const RECOVERY_FEEDBACK_JSONL_FILE = '.shelly/agents/recovery-feedback.jsonl';
 // Fix round 1 (item 7): a draft save's approval that timed out, was declined
 // or could not be verified is one held reason, approval-timeout; which of the
 // three it was is the article_held audit line's `approval`.
-const ARTICLE_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout']);
+const ARTICLE_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'fingerprint-invalid', 'text-lint', 'approval-timeout']);
 const ARTICLE_HELD_APPROVAL_OUTCOMES = { 'approval-timeout': 'timeout', 'approval-declined': 'declined', 'approval-unverified': 'unverified' };
 const ARTICLE_HELD_NOTE_MAX = 20;
 const ARTICLE_HELD_NOTE_MAX_CHARS = 500;
@@ -7160,6 +7169,7 @@ const ARTICLE_HELD_MESSAGES = {
   'web-search-refused': 'the research step may not search the web on this run, so no article was written',
   'web-search-stopped': 'the research step\'s web search was stopped, so no article was written',
   'no-web-sources': 'the research found no web source, so no article was written from the materials alone',
+  'fingerprint-invalid': 'the research gave no valid main-study fingerprint (after one re-output), so no article was written',
   'text-lint': 'work talk or an editor\'s note was in the draft (a cut text is never saved unreviewed); the draft is in held/ as written',
   'approval-timeout': 'the draft\'s save approval did not come (timed out, declined or not verifiable); the draft is in held/',
 };
@@ -14451,9 +14461,20 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const stats = researchMainNumbers(fullResultText(outcome.research.text));
     return { urls, title: stats ? stats.title : '' };
   }
-  const FINGERPRINT_PROBLEM_JA = { missing: '欠落', 'not allowed': '語彙外', conflicting: '矛盾' };
-  function fingerprintNote(problems) {
-    return `${FINGERPRINT_INVALID_NOTE_PREFIX}（${problems.map((p) => p.replace(/: (.+)$/, (_m, kind) => `: ${FINGERPRINT_PROBLEM_JA[kind] || kind}`)).join('、')}）`;
+  /**
+   * v70: the research outcome that lands the run held (fingerprint-invalid)
+   * before the write step, like a refused web search does: the research
+   * record settles skipped and the loop picks heldReason up.
+   */
+  function fingerprintHeldOutcome(i, outcome, detail) {
+    const step = plan.steps.list[i];
+    const record = Object.assign({}, outcome.record, {
+      index: i,
+      instruction: step.instruction,
+      status: 'skipped',
+      outputPreview: previewText(articleHeldMessage('fingerprint-invalid')),
+    });
+    return Object.assign({}, outcome, { record, failed: true, heldReason: 'fingerprint-invalid', heldDetail: String(detail || '').slice(0, 300) });
   }
   /** One re-output request for the fingerprint of the same notes. The answer text, or throws. */
   async function requestFingerprintReoutput(i, notes, lists, problems) {
@@ -14497,6 +14518,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       if (matchPoolCandidate(identity.urls, identity.title, poolState.unverified)) reviewNotes.add(POOL_UNVERIFIED_MAIN_NOTE);
     }
     const lists = settings.fingerprint;
+    // v70: the owner asked for a fingerprint the lists of which cannot be used:
+    // nothing can be checked, so the run lands held before the write step.
+    if (lists === null) return fingerprintHeldOutcome(i, outcome, 'config-invalid');
     if (!lists) return outcome;
     fingerprintChecked = true;
     const notes = fullResultText(outcome.research.text);
@@ -14528,10 +14552,15 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         }
       }
       if (!fp.ok) {
-        reviewNotes.add(fingerprintNote(fp.problems));
         poolAudit(i, 'research_fingerprint_failed', { reason, problems: fp.problems });
-        progressStepEvent(activeProgress, i, 'tail', { tail: progressTail('Research: no valid main-study fingerprint; the draft will be held.') });
-        return outcome;
+        if (reason === 'halted') {
+          // STOP-ALL wins over a held landing; the loop stops at its next check.
+          haltedChain = true;
+          return outcome;
+        }
+        progressStepEvent(activeProgress, i, 'tail', { tail: progressTail('Research: no valid main-study fingerprint; the run is held before the write step.') });
+        // v70: fail closed before any draft is written (held, fingerprint-invalid).
+        return fingerprintHeldOutcome(i, outcome, `${reason}: ${fp.problems.join(', ')}`);
       }
     }
     poolAudit(i, 'research_fingerprint', { values: fp.values, retried });

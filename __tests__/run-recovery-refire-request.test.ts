@@ -130,7 +130,7 @@ describe('refire-request: acceptance (refireRequestDecision)', () => {
     expect(recoveryLines(home, 'plan_refire_requested')).toHaveLength(1);
   });
 
-  it.each(['web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout'])('accepts a run held for %s', (reason) => {
+  it.each(['web-search-stopped', 'no-web-sources', 'fingerprint-invalid', 'text-lint', 'approval-timeout'])('accepts a run held for %s', (reason) => {
     const home = makeHome();
     heldRun(home, NOON - 30 * MIN, reason);
     expect(request(home, NOON).code).toBe('accepted');

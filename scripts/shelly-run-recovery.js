@@ -2004,7 +2004,7 @@ function opHangCancel(opts) {
 // fails, the request waits (nothing is re-fired that could not be checked).
 
 /** Held reasons (the executor's ARTICLE_HELD_REASONS) a re-run can recover from. */
-const REFIRE_REQUEST_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout']);
+const REFIRE_REQUEST_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'fingerprint-invalid', 'text-lint', 'approval-timeout']);
 /** Accepted requests per pipeline (one agent) per local day. */
 const REFIRE_REQUEST_DAILY_MAX = 2;
 const PRINCIPAL_RE = /^[0-9a-f]{32}$/;
