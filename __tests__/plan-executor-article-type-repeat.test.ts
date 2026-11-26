@@ -207,6 +207,22 @@ describe('v71 history fingerprint and matching (pure)', () => {
     expect(ex.localDateAgeDays('2026-02-28', '2026-03-01')).toBe(1);
     expect(ex.localDateAgeDays('2026-11-26', '2026-11-26')).toBe(0);
     expect(Number.isNaN(ex.localDateAgeDays('', '2026-11-26'))).toBe(true);
+    // gate P3-1: a day that does not exist is not rolled into the next month.
+    expect(Number.isNaN(ex.localDateAgeDays('2026-11-31', '2026-12-01'))).toBe(true);
+    expect(Number.isNaN(ex.localDateAgeDays('2026-02-29', '2026-03-01'))).toBe(true);
+    expect(Number.isNaN(ex.localDateAgeDays('2026-13-01', '2026-12-01'))).toBe(true);
+    expect(ex.localDateAgeDays('2028-02-29', '2028-03-01')).toBe(1);
+  });
+
+  it('ignores a history entry with a calendar-invalid date and compares values exactly (gate P3-1)', () => {
+    const today = '2026-12-01';
+    expect(ex.typeRepeatMatch(FP_A, [{ title: 'x', url: url('x'), date: '2026-11-31', fingerprint: fourAxes(FP_A) }], today, TYPE_REPEAT))
+      .toEqual({ matchedAxes: 0, repeat: false });
+    // A full-width variant of a value is a different value: no NFKC folding.
+    const wide = (s: string) => Array.from(s).map((ch) => (/[!-~]/.test(ch) ? String.fromCharCode(ch.charCodeAt(0) + 0xfee0) : ch)).join('');
+    const widened = { population: wide(FP_A.population), intervention: wide(FP_A.intervention), outcome: wide(FP_A.outcome), direction: wide(FP_A.direction) };
+    expect(ex.typeRepeatMatch(FP_A, [{ title: 'x', url: url('x'), date: today, fingerprint: widened }], today, TYPE_REPEAT))
+      .toEqual({ matchedAxes: 0, repeat: false });
   });
 
   it('includes an entry exactly windowDays old and excludes an older or future one', () => {

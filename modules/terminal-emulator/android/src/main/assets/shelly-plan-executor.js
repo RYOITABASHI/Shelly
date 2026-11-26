@@ -5468,11 +5468,21 @@ function typeRepeatFingerprintOf(raw) {
   return out;
 }
 
-/** Whole local days from `date` to `today` (both YYYY-MM-DD), or NaN. Pure. */
+/**
+ * Whole local days from `date` to `today` (both YYYY-MM-DD), or NaN. A date
+ * that is not a real calendar day (`2026-11-31`) is NaN, never rolled over
+ * into the next month (gate P3-1). Pure.
+ */
 function localDateAgeDays(date, today) {
   const parse = (s) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
-    return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
+    if (!m) return NaN;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    const t = Date.UTC(y, mo - 1, d);
+    const back = new Date(t);
+    return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d ? t : NaN;
   };
   return Math.round((parse(today) - parse(date)) / 86400000);
 }
@@ -5492,7 +5502,9 @@ function typeRepeatMatch(fingerprint, entries, today, config) {
       if (!other) continue;
       const age = localDateAgeDays(e.date, today);
       if (!Number.isFinite(age) || age < 0 || age > config.windowDays) continue;
-      const n = TYPE_REPEAT_AXES.filter((axis) => fingerprintValueKey(fp[axis]) === fingerprintValueKey(other[axis])).length;
+      // Exact equality: both sides are already trimmed (typeRepeatFingerprintOf);
+      // no NFKC or width folding (gate P3-1).
+      const n = TYPE_REPEAT_AXES.filter((axis) => fp[axis] === other[axis]).length;
       if (n > matchedAxes) matchedAxes = n;
     }
   }
