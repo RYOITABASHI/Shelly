@@ -120,3 +120,40 @@ describe('no stream feed content in logs (put_stream_feed, launcher ingress C7)'
     expect(uses).toHaveLength(2);
   });
 });
+
+describe('no launcher instruction text in logs or audit lines (launcher ingress Phase 2)', () => {
+  const KT = 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator';
+  const PHASE2_KT = ['LauncherSubmissions.kt', 'LauncherSubmissionCore.kt', 'LauncherApprovalNotifier.kt', 'McpTypedOpConsumer.kt', 'McpRunTickets.kt'];
+
+  it.each(PHASE2_KT)('%s logs no text, prompt or reply body', (file) => {
+    // Kotlin has no `;`: every Log call in these files is one line, checked whole.
+    const logs = read(`${KT}/${file}`).split('\n').filter((l) => /\bLog\.[dviwe]\(/.test(l));
+    // The pure core logs nothing at all; the I/O files do log (and are checked).
+    if (file === 'LauncherSubmissionCore.kt') expect(logs).toEqual([]);
+    else expect(logs.length).toBeGreaterThan(0);
+    // Only string templates of fixed names: no text / prompt / JSON value is interpolated.
+    const interpolated = logs.flatMap((l) => [...l.matchAll(/\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_.]*)/g)].map((m) => m[1] ?? m[2]));
+    expect(interpolated.filter((v) => /\btext\b|prompt|detail|json|instruction|answer|reply|added/i.test(v))).toEqual([]);
+  });
+
+  it('the decision / expiry / reader audit lines carry fixed fields only (no text parameter exists)', () => {
+    const core = read(`${KT}/LauncherSubmissionCore.kt`);
+    const recordLine = core.slice(core.indexOf('fun recordLine('), core.indexOf('// ── The owner'));
+    expect(recordLine).not.toMatch(/\btext\s*=/);
+    expect(recordLine).toContain('textSha256 = s.textSha256');
+    const writer = read(`${KT}/IngressAuditWriter.kt`);
+    const reader = writer.slice(writer.indexOf('fun buildSubmissionReaderLine('), writer.indexOf('fun appendSubmissionReaderLine('));
+    expect(reader).not.toMatch(/\btext\b/);
+  });
+
+  it('lib/launcher-approval.ts never logs the prompt text', () => {
+    const source = read('lib/launcher-approval.ts');
+    const calls: string[] = [];
+    const re = /\blog(?:Info|Warn|Error)\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source))) calls.push(source.slice(m.index, source.indexOf(');', m.index) + 2));
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.filter((c) => /\.text\b|\bdetail\b|prompt\)/.test(c))).toEqual([]);
+    expect(source).not.toMatch(/console\./);
+  });
+});
