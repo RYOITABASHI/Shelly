@@ -352,6 +352,13 @@ object ManagedServices {
         /** Set when the restart limit was reached in that window (audited once). */
         val gaveUpAt: Long? = null,
         /**
+         * When the restart charged for this run is due (exit time + backoff).
+         * Persisted so a restart that was waiting when the app process died is
+         * not started early by the next reconcile. Cleared by the next start
+         * (a new record).
+         */
+        val restartAt: Long? = null,
+        /**
          * [stoppedAt] was written by STOP-ALL (not by a stop on request or the
          * notification's Exit): reconcileAction brings the service back once
          * STOP-ALL is lifted. Still `stopped` for status.
@@ -373,6 +380,7 @@ object ManagedServices {
         if (r.restarts in 1..RESTART_COUNT_MAX) o.put("restarts", r.restarts)
         r.restartWindowAt?.takeIf { it >= 0 }?.let { o.put("restartWindowAt", it) }
         r.gaveUpAt?.takeIf { it >= 0 }?.let { o.put("gaveUpAt", it) }
+        r.restartAt?.takeIf { it >= 0 }?.let { o.put("restartAt", it) }
         if (r.haltStop && r.stoppedAt != null) o.put("haltStop", true)
         return o.toString()
     }
@@ -400,6 +408,7 @@ object ManagedServices {
                 restarts = (o.opt("restarts") as? Int)?.takeIf { it in 0..RESTART_COUNT_MAX } ?: 0,
                 restartWindowAt = longField(o, "restartWindowAt"),
                 gaveUpAt = longField(o, "gaveUpAt"),
+                restartAt = longField(o, "restartAt"),
                 haltStop = o.opt("haltStop") == true && o.has("stoppedAt"),
             )
         }
@@ -451,10 +460,20 @@ object ManagedServices {
             count = 0; windowAt = now; gaveUpAt = null
         }
         if (count >= RESTART_MAX) {
-            return RestartPlan(null, rec.copy(restarts = count, restartWindowAt = windowAt, gaveUpAt = gaveUpAt ?: now))
+            return RestartPlan(null, rec.copy(restarts = count, restartWindowAt = windowAt, gaveUpAt = gaveUpAt ?: now, restartAt = null))
         }
         val delay = RESTART_BACKOFF_MS[minOf(count, RESTART_BACKOFF_MS.size - 1)]
-        return RestartPlan(delay, rec.copy(restarts = count + 1, restartWindowAt = windowAt, gaveUpAt = null))
+        return RestartPlan(delay, rec.copy(restarts = count + 1, restartWindowAt = windowAt, gaveUpAt = null, restartAt = now + delay))
+    }
+
+    /**
+     * How long a reconcile waits before a restart already charged in [rec]
+     * ([Record.restartAt]): 0 = due now. Never longer than the longest backoff
+     * (a clock moved back cannot hold a service down for longer).
+     */
+    fun restartWaitMs(rec: Record, now: Long): Long {
+        val at = rec.restartAt ?: return 0L
+        return (at - now).coerceIn(0L, RESTART_BACKOFF_MS.last())
     }
 
     /** What a reconcile pass does with one registered service. */

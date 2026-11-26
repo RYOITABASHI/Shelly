@@ -561,15 +561,20 @@ object ManagedServiceSupervisor {
             Log.w(TAG, "${spec.id}: restart limit reached (${plan.record.restarts} in the window); staying dead")
             return
         }
-        val token = PendingRestart(r.pid, r.startTime)
-        synchronized(lock) {
-            pending.remove(spec.id)?.future?.cancel(false)
-            pending[spec.id] = token
-        }
+        schedulePending(context, spec.id, r.pid, r.startTime, delay)
         audit(context, null, "start", spec, "restart_scheduled")
         Log.i(TAG, "${spec.id}: restart ${plan.record.restarts} scheduled in ${delay}ms")
+    }
+
+    /** Registers the restart of the run [pid] / [startTime] of [id] in [delayMs]. */
+    private fun schedulePending(context: Context, id: String, pid: Int, startTime: String, delayMs: Long) {
+        val token = PendingRestart(pid, startTime)
+        synchronized(lock) {
+            pending.remove(id)?.future?.cancel(false)
+            pending[id] = token
+        }
         val app = context.applicationContext
-        token.future = restartExecutor.schedule({ fireRestart(app, spec.id, token) }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+        token.future = restartExecutor.schedule({ fireRestart(app, id, token) }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     private fun fireRestart(context: Context, id: String, token: PendingRestart) {
@@ -667,6 +672,18 @@ object ManagedServiceSupervisor {
             }
             ManagedServices.ReconcileAction.START -> {
                 val now = System.currentTimeMillis()
+                if (record.restartAt != null) {
+                    // A restart was already charged and waiting when this app
+                    // process went away: keep its backoff (D3/D4), not a new charge.
+                    val wait = ManagedServices.restartWaitMs(record, now)
+                    if (wait > 0) {
+                        schedulePending(context, spec.id, record.pid, record.startTime, wait)
+                        audit(context, null, "start", spec, "reconcile_restart_scheduled")
+                        return
+                    }
+                    start(context, spec, null, Auto("reconcile", record))
+                    return
+                }
                 val ranMs = (record.exitedAt ?: record.stoppedAt ?: now) - record.startedAt
                 val plan = ManagedServices.nextRestart(record, ranMs, now)
                 if (plan.delayMs == null) {

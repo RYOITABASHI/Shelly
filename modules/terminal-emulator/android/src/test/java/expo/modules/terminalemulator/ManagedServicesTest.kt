@@ -506,4 +506,18 @@ class ManagedServicesTest {
             assertTrue(c, re.matches(c))
         }
     }
+
+    @Test
+    fun restartDueTimeIsPersistedAndBounded() {
+        val p = ManagedServices.nextRestart(rec(), 1_000L, now)
+        assertEquals(now + 30_000L, p.record.restartAt)
+        assertEquals(p.record, ManagedServices.parseRecord(ManagedServices.encodeRecord(p.record)))
+        // A reconcile after the app died waits out the rest, never more than the longest backoff.
+        assertEquals(20_000L, ManagedServices.restartWaitMs(p.record, now + 10_000L))
+        assertEquals(0L, ManagedServices.restartWaitMs(p.record, now + 60_000L))
+        assertEquals(ManagedServices.RESTART_BACKOFF_MS.last(), ManagedServices.restartWaitMs(p.record.copy(restartAt = now + 86_400_000L), now))
+        assertEquals(0L, ManagedServices.restartWaitMs(rec(), now))
+        // The limit clears it.
+        assertNull(ManagedServices.nextRestart(rec(restarts = 5, windowAt = now), 1_000L, now).record.restartAt)
+    }
 }
