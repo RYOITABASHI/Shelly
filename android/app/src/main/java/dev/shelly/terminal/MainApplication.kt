@@ -13,6 +13,8 @@ import com.facebook.react.ReactHost
 import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.facebook.react.defaults.DefaultReactNativeHost
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlags
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsDefaults
 
 import com.horcrux.svg.SvgPackage
 import com.reactnativecommunity.asyncstorage.AsyncStoragePackage
@@ -71,6 +73,14 @@ class MainApplication : Application(), ReactApplication {
     } catch (e: IllegalArgumentException) {
       ReleaseLevel.STABLE
     }
+    // bug fold-layout: refresh RN's DisplayMetricsHolder on every
+    // onConfigurationChanged (not just Activity recreation), so dp->px
+    // scaling stays correct when the Z Fold6 cover/main displays swap
+    // density without recreating the Activity. Must be set before
+    // loadReactNative() builds the ReactHost.
+    ReactNativeFeatureFlags.override(object : ReactNativeFeatureFlagsDefaults() {
+      override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
+    })
     loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }
