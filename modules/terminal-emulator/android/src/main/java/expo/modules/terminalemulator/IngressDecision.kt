@@ -51,6 +51,10 @@ object IngressDecision {
     const val OP_RUN_AGENT = "run_agent"
     const val OP_SUBMIT_INSTRUCTION = "submit_instruction"
     const val OP_PUT_STREAM_FEED = "put_stream_feed"
+    // Phase 2 D2: the reader of launcher submissions (LauncherSubmissionCore).
+    const val OP_GET_LAUNCHER_SUBMISSION = "get_launcher_submission"
+    const val OP_LIST_LAUNCHER_SUBMISSIONS = "list_launcher_submissions"
+    const val OP_MARK_LAUNCHER_SUBMISSION_CONSUMED = "mark_launcher_submission_consumed"
 
     /**
      * The stages each op runs, in [ORDER]. run_agent's APPROVE_ALL (the RN
@@ -77,6 +81,14 @@ object IngressDecision {
         OP_PUT_STREAM_FEED to setOf(
             Stage.SETTING, Stage.ARGS, Stage.EPOCH, Stage.STOP_ALL, Stage.ALWAYS_ALLOW,
         ),
+        // The launcher submission reader (phase 2 fact sheet §4, D2). No
+        // always-allow and no approval: the owner already decided on what an
+        // approved submission says, and its text goes only to its intended
+        // recipient. STOP-ALL refuses reads and consumption alike. No TAINT
+        // (they start nothing), no TARGET / action consent / step 7.
+        OP_GET_LAUNCHER_SUBMISSION to setOf(Stage.SETTING, Stage.ARGS, Stage.EPOCH, Stage.STOP_ALL),
+        OP_LIST_LAUNCHER_SUBMISSIONS to setOf(Stage.SETTING, Stage.ARGS, Stage.EPOCH, Stage.STOP_ALL),
+        OP_MARK_LAUNCHER_SUBMISSION_CONSUMED to setOf(Stage.SETTING, Stage.ARGS, Stage.EPOCH, Stage.STOP_ALL),
     )
 
     /**

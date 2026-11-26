@@ -109,16 +109,36 @@ class McpRunTicketsSubmissionTest {
 
     @Test
     fun pruningNeverDropsAPendingOneByCount() {
-        val many = (0 until McpRunTickets.MAX_PER_PRINCIPAL).map { i ->
+        // Phase 2 retention: the newest INBOX_MAX_RECORDS (50) across principals, none older than 7 days.
+        val many = (0 until LauncherIngressLimits.INBOX_MAX_RECORDS).map { i ->
             sub(id = "ls_" + "%032x".format(i), acceptedAt = now - 1000L * (i + 1), state = McpRunTickets.SUB_APPROVED, via = "user", nonce = null)
         }
         // The oldest of the group, still inside the approval window: pending.
         val pending = sub(id = "ls_" + "f".repeat(32), acceptedAt = now - 500_000L)
-        val old = sub(id = "ls_" + "e".repeat(32), acceptedAt = now - McpRunTickets.RETENTION_MS - 1)
+        val old = sub(id = "ls_" + "e".repeat(32), acceptedAt = now - LauncherIngressLimits.INBOX_MAX_AGE_MS - 1)
         val drop = McpRunTickets.submissionsToPrune(many + pending + old, now)
         assertTrue(old.id in drop)
         assertFalse(pending.id in drop)
-        // `old` by age; then 101 kept + the new one = 2 over the cap: the two oldest DECIDED ones.
-        assertEquals(setOf(old.id, many[99].id, many[98].id), drop)
+        // `old` by age; then 51 kept + the new one = 2 over the cap: the two oldest DECIDED ones.
+        assertEquals(setOf(old.id, many[49].id, many[48].id), drop)
+        // An approved one past the 24 h stale mark but inside 7 days is kept (no deletion at stale).
+        val staleOne = sub(id = "ls_" + "d".repeat(32), acceptedAt = now - LauncherIngressLimits.STALE_AFTER_MS - 60_000L, state = McpRunTickets.SUB_APPROVED, via = "user", nonce = null)
+        assertFalse(staleOne.id in McpRunTickets.submissionsToPrune(listOf(staleOne), now))
+    }
+
+    @Test
+    fun consumedRecordsRoundTripAndNeedAnApproval() {
+        val approved = sub(state = McpRunTickets.SUB_APPROVED, via = "user")
+        val consumed = McpRunTickets.withConsumed(approved, now + 1)!!
+        assertEquals(McpRunTickets.SUB_CONSUMED, consumed.state)
+        assertEquals(now + 1, consumed.consumedAt)
+        assertEquals(consumed, McpRunTickets.decodeSubmission(McpRunTickets.encodeSubmission(consumed)))
+        // Only approved, not stale, can be consumed; consumed needs approvedVia and consumedAt.
+        assertNull(McpRunTickets.withConsumed(sub(), now))
+        assertNull(McpRunTickets.withConsumed(consumed, now + 2))
+        assertNull(McpRunTickets.withConsumed(approved, now + LauncherIngressLimits.STALE_AFTER_MS + 1))
+        assertFalse(McpRunTickets.isValidSubmission(consumed.copy(approvedVia = null)))
+        assertFalse(McpRunTickets.isValidSubmission(consumed.copy(consumedAt = null)))
+        assertFalse(McpRunTickets.isValidSubmission(approved.copy(consumedAt = now)))
     }
 }

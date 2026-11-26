@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="launcher_review_channel_name">確認が必要なランチャーからの指示</string>
+  <string name="launcher_review_channel_description">ランチャーから送った指示が Shelly で判断待ちです</string>
+  <string name="launcher_review_notification_title">Shelly: ランチャーからの指示を確認してください</string>
+  <string name="launcher_review_notification_body">タップして Shelly を開き、許可するか判断してください。許可するまで何も渡されません。送信から 10 分で失効します。</string>
+  <string name="launcher_review_rule_label">ランチャーからの指示</string>
+</resources>

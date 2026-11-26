@@ -1025,17 +1025,25 @@ object McpRunTickets {
     //
     //   pending_approval -> approved | denied_by_user | expired
     //   approved (at once: a rule or the approve-all switch; or after the tap)
+    //   approved -> consumed (Phase 2, D2: Hayato's reader marked it taken)
     //
-    // `approved` is where Phase 1 stops: forwarding to Hayato is D2. The text
-    // is kept apart from the record, in app-private no-backup storage
-    // ([submissionTextFile]); the record holds only its SHA-256 and length.
+    // `stale` (approved, not consumed within LauncherIngressLimits.STALE_AFTER_MS)
+    // is derived for display and the reader (LauncherSubmissionCore.viewState),
+    // never written: nothing is deleted at that point. The text is kept apart
+    // from the record, in app-private no-backup storage ([submissionTextFile]);
+    // the record holds only its SHA-256 and length. The text is deleted as soon
+    // as nobody may read it any more (denied, expired, consumed) and with the
+    // record when it is pruned (inbox retention: the newest INBOX_MAX_RECORDS,
+    // none older than INBOX_MAX_AGE_MS).
 
     const val SUBMISSION_VERSION = 1
     const val SUB_PENDING = "pending_approval"
     const val SUB_APPROVED = "approved"
     const val SUB_DENIED_BY_USER = "denied_by_user"
     const val SUB_EXPIRED = "expired"
-    val SUBMISSION_STATES: Set<String> = setOf(SUB_PENDING, SUB_APPROVED, SUB_DENIED_BY_USER, SUB_EXPIRED)
+    /** Phase 2 (D2): an approved submission Hayato's reader marked as taken. Terminal. */
+    const val SUB_CONSUMED = "consumed"
+    val SUBMISSION_STATES: Set<String> = setOf(SUB_PENDING, SUB_APPROVED, SUB_DENIED_BY_USER, SUB_EXPIRED, SUB_CONSUMED)
     /** How an approved submission was approved. */
     val APPROVED_VIA: Set<String> = setOf("rule", "approve_all", "user")
 
@@ -1047,6 +1055,7 @@ object McpRunTickets {
     private val SUBMISSION_KEYS = setOf(
         "v", "kind", "id", "principal", "op", "target", "state", "acceptedAt", "decidedAt", "nonce", "correlationRef",
         "untrusted", "exemptApplied", "textSha256", "textCodePoints", "certDigest", "schemaVersion", "approvedVia", "ruleId",
+        "consumedAt",
     )
 
     fun isSubmissionId(id: String?): Boolean = id != null && SUBMISSION_ID_RE.matches(id)
@@ -1068,6 +1077,8 @@ object McpRunTickets {
         val schemaVersion: Int,
         val approvedVia: String?,
         val ruleId: String?,
+        /** When the reader marked it consumed (state [SUB_CONSUMED] only). */
+        val consumedAt: Long? = null,
     )
 
     fun isValidSubmission(s: Submission): Boolean =
@@ -1079,7 +1090,10 @@ object McpRunTickets {
             SHA256_RE.matches(s.textSha256) && s.textCodePoints in 1..LauncherIngressLimits.MAX_TEXT_CODE_POINTS &&
             SHA256_RE.matches(s.certDigest) && s.schemaVersion in 1..99 &&
             (s.approvedVia == null || s.approvedVia in APPROVED_VIA) &&
-            ((s.state == SUB_APPROVED) == (s.approvedVia != null)) &&
+            // Approved, or approved and then consumed: both carry how it was approved.
+            ((s.state == SUB_APPROVED || s.state == SUB_CONSUMED) == (s.approvedVia != null)) &&
+            ((s.state == SUB_CONSUMED) == (s.consumedAt != null)) &&
+            (s.consumedAt == null || s.consumedAt >= 0) &&
             (s.ruleId == null || (s.approvedVia == "rule" && RULE_ID_RE.matches(s.ruleId))) &&
             // Nothing tainted is approved without a person (tainted never gets unattended approval).
             !(s.untrusted && s.approvedVia != null && s.approvedVia != "user")
@@ -1096,6 +1110,7 @@ object McpRunTickets {
         if (s.correlationRef != null) o.put("correlationRef", s.correlationRef)
         if (s.approvedVia != null) o.put("approvedVia", s.approvedVia)
         if (s.ruleId != null) o.put("ruleId", s.ruleId)
+        if (s.consumedAt != null) o.put("consumedAt", s.consumedAt)
         return o.toString()
     }
 
@@ -1128,6 +1143,7 @@ object McpRunTickets {
                 schemaVersion = sv.toInt(),
                 approvedVia = optStringStrict(o, "approvedVia"),
                 ruleId = optStringStrict(o, "ruleId"),
+                consumedAt = optLongStrict(o, "consumedAt"),
             )
             return if (isValidSubmission(s)) s else null
         } catch (e: Exception) {
@@ -1152,6 +1168,16 @@ object McpRunTickets {
         else cur.copy(state = SUB_DENIED_BY_USER, decidedAt = now)
     }
 
+    /**
+     * Phase 2 (D2): the reader takes an approved, not stale submission. Null
+     * when it is anything else (already consumed included: the caller answers
+     * that idempotently from the record, LauncherSubmissionCore).
+     */
+    fun withConsumed(s: Submission, now: Long): Submission? {
+        if (LauncherSubmissionCore.viewState(s, now) != SUB_APPROVED) return null
+        return s.copy(state = SUB_CONSUMED, consumedAt = now)
+    }
+
     /** The pending submissions past their approval window, as their `expired` records (what to persist). */
     fun submissionsToExpire(subs: List<Submission>, now: Long): List<Submission> =
         subs.mapNotNull { s -> applySubmissionExpiry(s, now).takeIf { it != s } }
@@ -1172,22 +1198,24 @@ object McpRunTickets {
         subs.filter { it.principal == principal }.map { it.acceptedAt }.sortedDescending()
 
     /**
-     * Ids to delete before a new one is written: past [RETENTION_MS], then the
-     * oldest decided ones beyond [MAX_PER_PRINCIPAL] (a pending one is never
-     * dropped by the count; expiry ends it first).
+     * Ids to delete before a new one is written (Phase 2 inbox retention, the
+     * shorter of the two): older than [LauncherIngressLimits.INBOX_MAX_AGE_MS],
+     * then the oldest decided ones beyond [LauncherIngressLimits.INBOX_MAX_RECORDS]
+     * across every principal, counting the incoming one (a pending one is
+     * never dropped by the count; expiry ends it first). The run tickets' 24 h
+     * [RETENTION_MS] does not apply: an approved submission must outlive its
+     * 24 h `stale` mark (no deletion then, phase 2 fact sheet §3).
      */
     fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> {
         val out = HashSet<String>()
         val kept = ArrayList<Submission>()
-        for (s in subs) if (now - s.acceptedAt > RETENTION_MS) out.add(s.id) else kept.add(s)
-        for ((_, group) in kept.groupBy { it.principal }) {
-            var excess = group.size + 1 - MAX_PER_PRINCIPAL
-            for (s in group.sortedWith(compareBy<Submission>({ it.acceptedAt }, { it.id }))) {
-                if (excess <= 0) break
-                if (applySubmissionExpiry(s, now).state == SUB_PENDING) continue
-                out.add(s.id)
-                excess--
-            }
+        for (s in subs) if (now - s.acceptedAt > LauncherIngressLimits.INBOX_MAX_AGE_MS) out.add(s.id) else kept.add(s)
+        var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS
+        for (s in kept.sortedWith(compareBy<Submission>({ it.acceptedAt }, { it.id }))) {
+            if (excess <= 0) break
+            if (applySubmissionExpiry(s, now).state == SUB_PENDING) continue
+            out.add(s.id)
+            excess--
         }
         return out
     }
@@ -1250,7 +1278,7 @@ object McpRunTickets {
             val now = System.currentTimeMillis()
             val dir = runsDir(context)
             val all = allSubmissions(dir)
-            writeExpired(dir, all, now)
+            afterExpired(context, writeExpired(dir, all, now))
             val mine = all.filter { it.principal == principal }.map { applySubmissionExpiry(it, now) }
             val (answer, write) = body(mine, now)
             if (write !is SubmissionWrite.Write) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
@@ -1284,15 +1312,31 @@ object McpRunTickets {
         }
     }
 
-    /** Rewrite each pending submission past its window as `expired` on disk. Returns how many were written. */
-    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): Int {
-        var n = 0
+    /** Rewrite each pending submission past its window as `expired` on disk. Returns the ones written. */
+    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): List<Submission> {
+        val out = ArrayList<Submission>()
         for (cur in submissionsToExpire(subs, now)) {
             runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(dir, cur.id), encodeSubmission(cur)) }
-                .onSuccess { n++ }
+                .onSuccess { out.add(cur) }
                 .onFailure { Log.w(TAG, "submission expiry write failed type=${it.javaClass.simpleName}") }
         }
-        return n
+        return out
+    }
+
+    /**
+     * Phase 2: what follows an expiry written to disk, once per submission —
+     * its `launcher_submit_expired` audit line (fixed fields, no text), the
+     * text deleted (nobody may read it any more), and the review notification
+     * refreshed (cancelled when nothing is pending). Best effort; never throws.
+     */
+    private fun afterExpired(context: Context, expired: List<Submission>) {
+        if (expired.isEmpty()) return
+        for (s in expired) {
+            val line = LauncherSubmissionCore.recordLine("launcher_submit_expired", "expired", s)
+            if (!IngressAuditWriter.appendLauncherLine(context, line)) Log.w(TAG, "submission expiry audit line not written")
+            runCatching { submissionTextFile(context, s.id).delete() }
+        }
+        runCatching { LauncherApprovalNotifier.refreshAsync(context) }
     }
 
     /**
@@ -1303,7 +1347,13 @@ object McpRunTickets {
     @Synchronized
     fun expireSubmissions(context: Context): Int = try {
         val dir = runsDir(context)
-        if (!lexists(dir)) 0 else writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+        if (!lexists(dir)) {
+            0
+        } else {
+            val written = writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+            afterExpired(context, written)
+            written.size
+        }
     } catch (e: Exception) {
         Log.w(TAG, "submission expiry sweep failed type=${e.javaClass.simpleName}")
         -1
@@ -1321,13 +1371,124 @@ object McpRunTickets {
                 null
             } else {
                 val cur = applySubmissionExpiry(s, System.currentTimeMillis())
-                if (cur != s) runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(cur)) }
+                if (cur != s && runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(cur)) }.isSuccess) {
+                    afterExpired(context, listOf(cur))
+                }
                 encodeSubmission(cur)
             }
         }
     } catch (e: Exception) {
         Log.w(TAG, "submission read failed type=${e.javaClass.simpleName}")
         null
+    }
+
+    // ── Phase 2: decisions, the reader, the inbox (LauncherSubmissions) ──────
+
+    /** The text file's cap: 4,000 code points of at most 4 UTF-8 bytes each. */
+    private const val MAX_SUBMISSION_TEXT_BYTES = LauncherIngressLimits.MAX_TEXT_CODE_POINTS * 4
+
+    /**
+     * The text of [s], only while it is still exactly the text the record
+     * hashes (textSha256); null otherwise (missing, too long, changed). Never
+     * logged; the callers hand it only to the on-device prompt or, for an
+     * approved submission, to the D2 reader.
+     */
+    private fun readSubmissionText(context: Context, s: Submission): String? = try {
+        val bytes = readCapped(submissionTextFile(context, s.id), MAX_SUBMISSION_TEXT_BYTES + 1)
+        if (bytes == null || bytes.size > MAX_SUBMISSION_TEXT_BYTES) {
+            null
+        } else {
+            val text = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+            if (LauncherIngressCore.sha256Hex(text) == s.textSha256) text else null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** What a [submissionUpdate] body asks for. */
+    sealed class SubmissionChange {
+        object None : SubmissionChange()
+        /** Rewrite the record as [next] once [beforeWrite] (its audit line) said yes; [dropText]: then delete its text. */
+        class Rewrite(val next: Submission, val dropText: Boolean, val beforeWrite: () -> Boolean) : SubmissionChange()
+    }
+
+    /**
+     * Phase 2: one submission, under this object's lock (the lock of
+     * [submissionTransaction] too, so a decision, a read, a consume and a new
+     * submission never interleave). [body] sees the record with expiry
+     * applied (an expiry is persisted first, with its audit line), or null
+     * when there is none, plus a reader of its text ([readSubmissionText]).
+     * A rewrite keeps the id; its audit line comes first and a failed one
+     * writes nothing (fail closed). Never throws: null on any I/O failure.
+     */
+    @Synchronized
+    fun <T> submissionUpdate(
+        context: Context,
+        id: String,
+        body: (cur: Submission?, text: () -> String?, now: Long) -> Pair<T, SubmissionChange>,
+        onResult: (T, SubmissionWriteResult) -> T,
+    ): T? {
+        return try {
+            val now = System.currentTimeMillis()
+            val dir = runsDir(context)
+            val stored = if (isSubmissionId(id) && lexists(dir)) readSubmissionFile(dir, id) else null
+            val cur = if (stored == null) {
+                null
+            } else {
+                val expired = applySubmissionExpiry(stored, now)
+                if (expired != stored) afterExpired(context, writeExpired(dir, listOf(stored), now))
+                expired
+            }
+            val (answer, change) = body(cur, { if (cur == null) null else readSubmissionText(context, cur) }, now)
+            if (change !is SubmissionChange.Rewrite) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
+            val next = change.next
+            if (cur == null || next.id != cur.id || next.principal != cur.principal || !isValidSubmission(next)) {
+                return onResult(answer, SubmissionWriteResult.FAILED)
+            }
+            if (!change.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
+            try {
+                ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(next))
+            } catch (e: Exception) {
+                Log.w(TAG, "submission update failed type=${e.javaClass.simpleName}")
+                return onResult(answer, SubmissionWriteResult.FAILED)
+            }
+            if (change.dropText) runCatching { submissionTextFile(context, id).delete() }
+            onResult(answer, SubmissionWriteResult.WRITTEN)
+        } catch (e: Exception) {
+            Log.w(TAG, "submission update transaction failed type=${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /** Every submission (expiry applied and persisted, with its audit line), for the inbox and the reader's list. Null on failure. */
+    @Synchronized
+    fun allSubmissionsCurrent(context: Context): List<Submission>? = try {
+        val dir = runsDir(context)
+        if (!lexists(dir)) {
+            emptyList()
+        } else {
+            val now = System.currentTimeMillis()
+            val all = allSubmissions(dir)
+            afterExpired(context, writeExpired(dir, all, now))
+            all.map { applySubmissionExpiry(it, now) }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "submission list failed type=${e.javaClass.simpleName}")
+        null
+    }
+
+    /** How many submissions are still pending (the review notification's question). 0 on failure. Never persists. */
+    @Synchronized
+    fun pendingTotal(context: Context): Int = try {
+        val dir = runsDir(context)
+        val now = System.currentTimeMillis()
+        if (!lexists(dir)) 0 else allSubmissions(dir).count { applySubmissionExpiry(it, now).state == SUB_PENDING }
+    } catch (e: Exception) {
+        0
     }
 
     /** The output snapshot, cut to [maxBytes] (at most [MAX_OUTPUT_BYTES]) on a UTF-8 boundary, or null. */
