@@ -318,7 +318,10 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // entry of the last windowDays days on at least minAxes axes is offered after
 // the others (cut first by the cap, marked in its block line, audit
 // pool_type_repeat), never excluded; research_type_repeat records the accepted
-// main study's closest match. See normalizeTypeRepeatConfig.
+// main study's closest match. See normalizeTypeRepeatConfig. Also v71: a
+// guarded research attempt whose notes have no main-study card (nothing for
+// the numbers lint to check) gets an audit line research_numbers_unchecked
+// { reason: 'no-main-card' }; observability only, behaviour unchanged.
 const EXECUTOR_SCRIPT_VERSION = 71;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
@@ -16381,8 +16384,14 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (!outcome || !outcome.research || outcome.failed) return outcome;
     const mainNumbers = (candidate) => researchMainNumbers(fullResultText(candidate.research.text));
     const initialNumbers = mainNumbers(outcome);
-    if (parallel && !initialNumbers) return outcome;
     const audit = (event, extra) => appendJsonl(paths.planAuditFile, Object.assign({ ts: new Date().toISOString(), kind: 'plan.executor', event, agentId: plan.agent.id, stepIndex: i }, extra));
+    // v71 (observability only): an attempt whose notes have no main-study card
+    // gives the numbers lint nothing to check; behaviour is unchanged.
+    const numbersUnchecked = (stats) => {
+      if (stats === null) audit('research_numbers_unchecked', { reason: 'no-main-card' });
+    };
+    numbersUnchecked(initialNumbers);
+    if (parallel && !initialNumbers) return outcome;
     let history = null;
     if (withHistory) {
       try {
@@ -16610,6 +16619,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       }
       current = retry;
       const stats = mainNumbers(current);
+      numbersUnchecked(stats);
       hFail = historyVerdict(current, urls);
       nFail = numbersVerdict(current, stats) || poolVerdict(current);
       if (launchedForHistory && noSources) {
