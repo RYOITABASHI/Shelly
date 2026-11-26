@@ -540,6 +540,44 @@ object IngressAuditWriter {
         return append(context, null, MCP_AGENTLESS_FILE, line)
     }
 
+    // ---- Launcher submission reader lines (phase 2 D2: McpTypedOpConsumer; pure) ----
+
+    /**
+     * Kinds the D2 reader writes, one per op (kind == event): a read of one
+     * submission, a list, a consume. Each carries only the MCP principal that
+     * asked, the submission id (absent for a list or unchecked arguments), a
+     * short code and, for a list, the count returned. Never the text.
+     */
+    val SUBMISSION_READER_KINDS: Set<String> = setOf(
+        "launcher_submission_get", "launcher_submission_list", "launcher_submission_consume",
+    )
+
+    /** One reader line from fixed fields only; null when any is off. `origin` is `mcp` (the reader is an MCP principal). */
+    fun buildSubmissionReaderLine(ts: Long, kind: String, principal: String?, submissionId: String?, code: String, count: Int?): String? {
+        if (kind !in SUBMISSION_READER_KINDS) return null
+        if (principal != null && !PRINCIPAL_RE.matches(principal)) return null
+        if (submissionId != null && !SUBMISSION_ID_RE.matches(submissionId)) return null
+        if (!CODE_RE.matches(code)) return null
+        if (count != null && (kind != "launcher_submission_list" || count !in 0..LauncherIngressLimits.READER_LIST_MAX)) return null
+        if (kind == "launcher_submission_list" && submissionId != null) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", kind).put("event", kind)
+            if (principal != null) out.put("origin", IngressOrigin.MCP).put("principal", principal)
+            if (submissionId != null) out.put("submission_id", submissionId)
+            out.put("code", code)
+            if (count != null) out.put("count", count)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildSubmissionReaderLine] line to `audits/mcp-ingress-audit.jsonl`. False when invalid or not written. */
+    fun appendSubmissionReaderLine(context: Context, kind: String, principal: String?, submissionId: String?, code: String, count: Int?): Boolean {
+        val line = buildSubmissionReaderLine(System.currentTimeMillis(), kind, principal, submissionId, code, count) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
     // ---- Writer --------------------------------------------------------------------
 
     /**

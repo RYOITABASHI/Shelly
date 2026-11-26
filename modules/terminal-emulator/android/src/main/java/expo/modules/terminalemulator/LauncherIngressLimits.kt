@@ -18,6 +18,16 @@ object LauncherIngressLimits {
     /** A repeated submission_nonce inside this returns the existing submission (requestId window). */
     const val NONCE_WINDOW_MS = 10L * 60L * 1000L
 
+    // Phase 2 (C6 / D2, phase 2 fact sheet §2–§4).
+    /** An `approved` submission not consumed within this (from its approval) is shown as `stale`; nothing is deleted then. */
+    const val STALE_AFTER_MS = 24L * 60L * 60L * 1000L
+    /** Inbox retention: the newest INBOX_MAX_RECORDS records, none older than INBOX_MAX_AGE_MS (the shorter wins). */
+    const val INBOX_MAX_RECORDS = 50
+    const val INBOX_MAX_AGE_MS = 7L * 24L * 60L * 60L * 1000L
+    /** list_launcher_submissions: default and maximum number of records returned. */
+    const val READER_LIST_DEFAULT = 20
+    const val READER_LIST_MAX = 50
+
     /** Stream feed v1 (fact sheet §6.2, R6): inline in one MCP request, under the 64 KiB request cap. */
     const val MAX_FEED_BYTES = 48 * 1024
 

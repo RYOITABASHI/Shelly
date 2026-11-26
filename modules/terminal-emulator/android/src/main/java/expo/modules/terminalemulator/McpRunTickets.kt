@@ -1025,17 +1025,25 @@ object McpRunTickets {
     //
     //   pending_approval -> approved | denied_by_user | expired
     //   approved (at once: a rule or the approve-all switch; or after the tap)
+    //   approved -> consumed (Phase 2, D2: Hayato's reader marked it taken)
     //
-    // `approved` is where Phase 1 stops: forwarding to Hayato is D2. The text
-    // is kept apart from the record, in app-private no-backup storage
-    // ([submissionTextFile]); the record holds only its SHA-256 and length.
+    // `stale` (approved, not consumed within LauncherIngressLimits.STALE_AFTER_MS)
+    // is derived for display and the reader (LauncherSubmissionCore.viewState),
+    // never written: nothing is deleted at that point. The text is kept apart
+    // from the record, in app-private no-backup storage ([submissionTextFile]);
+    // the record holds only its SHA-256 and length. The text is deleted as soon
+    // as nobody may read it any more (denied, expired, consumed) and with the
+    // record when it is pruned (inbox retention: the newest INBOX_MAX_RECORDS,
+    // none older than INBOX_MAX_AGE_MS).
 
     const val SUBMISSION_VERSION = 1
     const val SUB_PENDING = "pending_approval"
     const val SUB_APPROVED = "approved"
     const val SUB_DENIED_BY_USER = "denied_by_user"
     const val SUB_EXPIRED = "expired"
-    val SUBMISSION_STATES: Set<String> = setOf(SUB_PENDING, SUB_APPROVED, SUB_DENIED_BY_USER, SUB_EXPIRED)
+    /** Phase 2 (D2): an approved submission Hayato's reader marked as taken. Terminal. */
+    const val SUB_CONSUMED = "consumed"
+    val SUBMISSION_STATES: Set<String> = setOf(SUB_PENDING, SUB_APPROVED, SUB_DENIED_BY_USER, SUB_EXPIRED, SUB_CONSUMED)
     /** How an approved submission was approved. */
     val APPROVED_VIA: Set<String> = setOf("rule", "approve_all", "user")
 
@@ -1047,6 +1055,7 @@ object McpRunTickets {
     private val SUBMISSION_KEYS = setOf(
         "v", "kind", "id", "principal", "op", "target", "state", "acceptedAt", "decidedAt", "nonce", "correlationRef",
         "untrusted", "exemptApplied", "textSha256", "textCodePoints", "certDigest", "schemaVersion", "approvedVia", "ruleId",
+        "consumedAt",
     )
 
     fun isSubmissionId(id: String?): Boolean = id != null && SUBMISSION_ID_RE.matches(id)
@@ -1068,6 +1077,8 @@ object McpRunTickets {
         val schemaVersion: Int,
         val approvedVia: String?,
         val ruleId: String?,
+        /** When the reader marked it consumed (state [SUB_CONSUMED] only). */
+        val consumedAt: Long? = null,
     )
 
     fun isValidSubmission(s: Submission): Boolean =
@@ -1079,7 +1090,10 @@ object McpRunTickets {
             SHA256_RE.matches(s.textSha256) && s.textCodePoints in 1..LauncherIngressLimits.MAX_TEXT_CODE_POINTS &&
             SHA256_RE.matches(s.certDigest) && s.schemaVersion in 1..99 &&
             (s.approvedVia == null || s.approvedVia in APPROVED_VIA) &&
-            ((s.state == SUB_APPROVED) == (s.approvedVia != null)) &&
+            // Approved, or approved and then consumed: both carry how it was approved.
+            ((s.state == SUB_APPROVED || s.state == SUB_CONSUMED) == (s.approvedVia != null)) &&
+            ((s.state == SUB_CONSUMED) == (s.consumedAt != null)) &&
+            (s.consumedAt == null || s.consumedAt >= 0) &&
             (s.ruleId == null || (s.approvedVia == "rule" && RULE_ID_RE.matches(s.ruleId))) &&
             // Nothing tainted is approved without a person (tainted never gets unattended approval).
             !(s.untrusted && s.approvedVia != null && s.approvedVia != "user")
@@ -1096,6 +1110,7 @@ object McpRunTickets {
         if (s.correlationRef != null) o.put("correlationRef", s.correlationRef)
         if (s.approvedVia != null) o.put("approvedVia", s.approvedVia)
         if (s.ruleId != null) o.put("ruleId", s.ruleId)
+        if (s.consumedAt != null) o.put("consumedAt", s.consumedAt)
         return o.toString()
     }
 
@@ -1128,6 +1143,7 @@ object McpRunTickets {
                 schemaVersion = sv.toInt(),
                 approvedVia = optStringStrict(o, "approvedVia"),
                 ruleId = optStringStrict(o, "ruleId"),
+                consumedAt = optLongStrict(o, "consumedAt"),
             )
             return if (isValidSubmission(s)) s else null
         } catch (e: Exception) {
@@ -1152,6 +1168,16 @@ object McpRunTickets {
         else cur.copy(state = SUB_DENIED_BY_USER, decidedAt = now)
     }
 
+    /**
+     * Phase 2 (D2): the reader takes an approved, not stale submission. Null
+     * when it is anything else (already consumed included: the caller answers
+     * that idempotently from the record, LauncherSubmissionCore).
+     */
+    fun withConsumed(s: Submission, now: Long): Submission? {
+        if (LauncherSubmissionCore.viewState(s, now) != SUB_APPROVED) return null
+        return s.copy(state = SUB_CONSUMED, consumedAt = now)
+    }
+
     /** The pending submissions past their approval window, as their `expired` records (what to persist). */
     fun submissionsToExpire(subs: List<Submission>, now: Long): List<Submission> =
         subs.mapNotNull { s -> applySubmissionExpiry(s, now).takeIf { it != s } }
@@ -1172,24 +1198,153 @@ object McpRunTickets {
         subs.filter { it.principal == principal }.map { it.acceptedAt }.sortedDescending()
 
     /**
-     * Ids to delete before a new one is written: past [RETENTION_MS], then the
-     * oldest decided ones beyond [MAX_PER_PRINCIPAL] (a pending one is never
-     * dropped by the count; expiry ends it first).
+     * Ids to delete before a new record (a submission or a denial) is written:
+     * Phase 2 inbox retention, the shorter of the two, over the COMBINED
+     * population (submissions + denial records, every principal): older than
+     * [LauncherIngressLimits.INBOX_MAX_AGE_MS], then the oldest non-pending
+     * ones until the total, counting the incoming one, is at most
+     * [LauncherIngressLimits.INBOX_MAX_RECORDS]. Pending (still decidable)
+     * submissions go last: only when the pending ones alone still exceed the
+     * cap (MAX_PENDING is per principal, and a re-pinned launcher is a new
+     * principal) are the oldest pending ones dropped too, so the total on disk
+     * never exceeds the cap; the caller ([pruneSubmissionRecords]) treats
+     * those as expired (audit line, text deleted). The run tickets' 24 h
+     * [RETENTION_MS] does not apply: an approved submission must outlive its
+     * 24 h `stale` mark (no deletion then, phase 2 fact sheet §3).
      */
-    fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> {
+    fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long): Set<String> {
+        class Row(val id: String, val at: Long, val pending: Boolean)
         val out = HashSet<String>()
-        val kept = ArrayList<Submission>()
-        for (s in subs) if (now - s.acceptedAt > RETENTION_MS) out.add(s.id) else kept.add(s)
-        for ((_, group) in kept.groupBy { it.principal }) {
-            var excess = group.size + 1 - MAX_PER_PRINCIPAL
-            for (s in group.sortedWith(compareBy<Submission>({ it.acceptedAt }, { it.id }))) {
-                if (excess <= 0) break
-                if (applySubmissionExpiry(s, now).state == SUB_PENDING) continue
-                out.add(s.id)
-                excess--
-            }
+        val kept = ArrayList<Row>()
+        val rows = subs.map { Row(it.id, it.acceptedAt, applySubmissionExpiry(it, now).state == SUB_PENDING) } +
+            denials.map { Row(it.id, it.at, false) }
+        for (r in rows) if (!r.pending && now - r.at > LauncherIngressLimits.INBOX_MAX_AGE_MS) out.add(r.id) else kept.add(r)
+        var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS
+        val oldestFirst = kept.sortedWith(compareBy<Row>({ it.at }, { it.id }))
+        for (r in oldestFirst) {
+            if (excess <= 0) break
+            if (r.pending) continue
+            out.add(r.id)
+            excess--
+        }
+        // Still over: the oldest pending ones (handled as expired by the caller).
+        for (r in oldestFirst) {
+            if (excess <= 0) break
+            if (!r.pending) continue
+            out.add(r.id)
+            excess--
         }
         return out
+    }
+
+    /** The I/O a prune needs: on device files and the audit writer, in JVM tests injected (failures included). */
+    interface PruneIo {
+        /** The `launcher_submit_expired` / `pruned` line of a pending submission dropped by the cap; false = not written. */
+        fun auditPruned(s: Submission): Boolean
+        /** Removes the record; true only when it is gone. */
+        fun deleteRecord(id: String): Boolean
+        /** Removes the text; true when it is gone (or there never was one, e.g. a denial record). */
+        fun deleteText(id: String): Boolean
+    }
+
+    /**
+     * [submissionsToPrune] carried out through [io], fail closed (gate round
+     * 3): a pending row is deleted only after its `pruned` audit line was
+     * written; a row whose line, record or text could not be removed makes
+     * the whole prune fail. True only when every chosen row is gone, i.e.
+     * the total plus the incoming record is within the cap; on false the
+     * caller writes nothing.
+     */
+    fun applyPrune(all: List<Submission>, denials: List<Denial>, now: Long, io: PruneIo): Boolean {
+        val drop = submissionsToPrune(all, denials, now)
+        if (drop.isEmpty()) return true
+        val pendingById = all.filter { it.id in drop && applySubmissionExpiry(it, now).state == SUB_PENDING }.associateBy { it.id }
+        var ok = true
+        for (id in drop.sorted()) {
+            val pending = pendingById[id]
+            // Never deleted without its line.
+            if (pending != null && !io.auditPruned(pending)) {
+                ok = false
+                continue
+            }
+            if (!io.deleteRecord(id)) {
+                ok = false
+                continue
+            }
+            if (!io.deleteText(id)) ok = false
+        }
+        return ok
+    }
+
+    /** [submissionsToPrune] with no denial records. */
+    fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> = submissionsToPrune(subs, emptyList(), now)
+
+    // ── Denial records (phase 2, gate round 1: inbox rows for synchronous refusals) ──
+    //
+    // A synchronous refusal of a VERIFIED launcher caller (STOP-ALL, disabled,
+    // payload, BUSY, a closed duplicate, ...) leaves one small, text-free
+    // record next to the submissions: `runs/ls_<32 hex>.json` with kind
+    // `denial`. It is never a Submission (decodeSubmission refuses its kind),
+    // so it never counts as pending / BUSY, never feeds the rate brake
+    // (acceptedTimes and LauncherRateHistory see accepted submissions only),
+    // has no text file and can never be approved or consumed. Callers that
+    // fail verification (VERIFY_FAILED) never get one.
+
+    const val DENIAL_VERSION = 1
+    private val DENIAL_KEYS = setOf("v", "kind", "id", "principal", "op", "target", "at", "code", "reason", "correlationRef", "ref")
+    private val DENIAL_CODE_RE = Regex("^[a-z_]{1,32}$")
+
+    /** One synchronous refusal. [ref]: the existing submission a refused retry pointed at (closed duplicate). */
+    data class Denial(
+        val id: String,
+        val principal: String,
+        val at: Long,
+        val code: String,
+        /** LauncherIngressCore.Reason name, never VERIFY_FAILED. */
+        val reason: String,
+        val correlationRef: String?,
+        val ref: String?,
+    )
+
+    fun isValidDenial(d: Denial): Boolean =
+        isSubmissionId(d.id) && LAUNCHER_PRINCIPAL_RE.matches(d.principal) && d.at >= 0 &&
+            DENIAL_CODE_RE.matches(d.code) &&
+            d.reason in LauncherIngressCore.Reason.values().map { it.name } &&
+            d.reason != LauncherIngressCore.Reason.VERIFY_FAILED.name &&
+            (d.correlationRef == null || IngressAuditWriter.CORRELATION_REF_RE.matches(d.correlationRef)) &&
+            (d.ref == null || (isSubmissionId(d.ref) && d.ref != d.id))
+
+    fun encodeDenial(d: Denial): String {
+        val o = JSONObject()
+            .put("v", DENIAL_VERSION).put("kind", "denial").put("id", d.id).put("principal", d.principal)
+            .put("op", IngressDecision.OP_SUBMIT_INSTRUCTION).put("target", "hayato")
+            .put("at", d.at).put("code", d.code).put("reason", d.reason)
+        if (d.correlationRef != null) o.put("correlationRef", d.correlationRef)
+        if (d.ref != null) o.put("ref", d.ref)
+        return o.toString()
+    }
+
+    /** Null when anything is off (unknown key or kind, a malformed field). */
+    fun decodeDenial(text: String): Denial? {
+        try {
+            if (text.length > MAX_TICKET_CHARS) return null
+            val o = JSONObject(text)
+            if (!DENIAL_KEYS.containsAll(keysOf(o))) return null
+            if (o.opt("v") != DENIAL_VERSION || o.opt("kind") != "denial") return null
+            if (o.opt("op") != IngressDecision.OP_SUBMIT_INSTRUCTION || o.opt("target") != "hayato") return null
+            val d = Denial(
+                id = optStringStrict(o, "id") ?: return null,
+                principal = optStringStrict(o, "principal") ?: return null,
+                at = optLongStrict(o, "at") ?: return null,
+                code = optStringStrict(o, "code") ?: return null,
+                reason = optStringStrict(o, "reason") ?: return null,
+                correlationRef = optStringStrict(o, "correlationRef"),
+                ref = optStringStrict(o, "ref"),
+            )
+            return if (isValidDenial(d)) d else null
+        } catch (e: Exception) {
+            return null
+        }
     }
 
     // I/O (device only)
@@ -1217,6 +1372,64 @@ object McpRunTickets {
             val id = name.removeSuffix(".json")
             if (!isSubmissionId(id)) continue
             readSubmissionFile(dir, id)?.let { out.add(it) }
+        }
+        return out
+    }
+
+    private fun readDenialFile(dir: File, id: String): Denial? {
+        val bytes = readCapped(submissionFile(dir, id), MAX_TICKET_CHARS + 1) ?: return null
+        if (bytes.size > MAX_TICKET_CHARS) return null
+        val d = decodeDenial(String(bytes, Charsets.UTF_8)) ?: return null
+        return if (d.id == id) d else null
+    }
+
+    /**
+     * [submissionsToPrune] applied on disk before a new record is written:
+     * each dropped record and its text are deleted. A submission dropped
+     * while still pending (only when pending ones alone exceed the cap) is
+     * handled as an expiry first: its `launcher_submit_expired` line (code
+     * `pruned`, fixed fields, no text, written BEFORE the deletion), then
+     * the review notification is refreshed. Fail closed ([applyPrune]):
+     * false when any chosen row could not be removed (or the prune threw);
+     * the caller then writes nothing.
+     */
+    private fun pruneSubmissionRecords(context: Context, dir: File, all: List<Submission>, denials: List<Denial>, now: Long): Boolean {
+        var pendingDropped = false
+        val ok = try {
+            applyPrune(all, denials, now, object : PruneIo {
+                override fun auditPruned(s: Submission): Boolean {
+                    pendingDropped = true
+                    return IngressAuditWriter.appendLauncherLine(context, LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s))
+                }
+                override fun deleteRecord(id: String): Boolean {
+                    val f = submissionFile(dir, id)
+                    return f.delete() || !lexists(f)
+                }
+                override fun deleteText(id: String): Boolean {
+                    val t = submissionTextFile(context, id)
+                    return t.delete() || !lexists(t)
+                }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "submission prune failed type=${e.javaClass.simpleName}")
+            false
+        }
+        if (!ok) Log.w(TAG, "submission prune incomplete; nothing written")
+        if (pendingDropped) runCatching { LauncherApprovalNotifier.refreshAsync(context) }
+        return ok
+    }
+
+    /** Every denial record in [dir] (the `ls_` files whose kind is `denial`). */
+    private fun allDenials(dir: File): List<Denial> {
+        if (!lexists(dir)) return emptyList()
+        val files = dir.listFiles() ?: throw java.io.IOException("runs not listable")
+        val out = ArrayList<Denial>()
+        for (f in files) {
+            val name = f.name
+            if (!name.endsWith(".json")) continue
+            val id = name.removeSuffix(".json")
+            if (!isSubmissionId(id)) continue
+            readDenialFile(dir, id)?.let { out.add(it) }
         }
         return out
     }
@@ -1250,7 +1463,7 @@ object McpRunTickets {
             val now = System.currentTimeMillis()
             val dir = runsDir(context)
             val all = allSubmissions(dir)
-            writeExpired(dir, all, now)
+            afterExpired(context, writeExpired(dir, all, now))
             val mine = all.filter { it.principal == principal }.map { applySubmissionExpiry(it, now) }
             val (answer, write) = body(mine, now)
             if (write !is SubmissionWrite.Write) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
@@ -1258,12 +1471,9 @@ object McpRunTickets {
             if (!isValidSubmission(s) || s.principal != principal) return onResult(answer, SubmissionWriteResult.FAILED)
             val outDir = ensureRunsDir(context)
             if (lexists(submissionFile(outDir, s.id))) return onResult(answer, SubmissionWriteResult.FAILED)
-            runCatching {
-                for (id in submissionsToPrune(all, now)) {
-                    submissionFile(outDir, id).delete()
-                    submissionTextFile(context, id).delete()
-                }
-            }.onFailure { Log.w(TAG, "submission prune failed type=${it.javaClass.simpleName}") }
+            // Retention is a precondition of the write (fail closed): if the oldest rows
+            // could not be removed, the new submission is not written (FAILED → INTERNAL_ERROR).
+            if (!pruneSubmissionRecords(context, outDir, all, allDenials(dir), now)) return onResult(answer, SubmissionWriteResult.FAILED)
             if (!write.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
             val textFile = submissionTextFile(context, s.id)
             try {
@@ -1284,15 +1494,31 @@ object McpRunTickets {
         }
     }
 
-    /** Rewrite each pending submission past its window as `expired` on disk. Returns how many were written. */
-    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): Int {
-        var n = 0
+    /** Rewrite each pending submission past its window as `expired` on disk. Returns the ones written. */
+    private fun writeExpired(dir: File, subs: List<Submission>, now: Long): List<Submission> {
+        val out = ArrayList<Submission>()
         for (cur in submissionsToExpire(subs, now)) {
             runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(dir, cur.id), encodeSubmission(cur)) }
-                .onSuccess { n++ }
+                .onSuccess { out.add(cur) }
                 .onFailure { Log.w(TAG, "submission expiry write failed type=${it.javaClass.simpleName}") }
         }
-        return n
+        return out
+    }
+
+    /**
+     * Phase 2: what follows an expiry written to disk, once per submission —
+     * its `launcher_submit_expired` audit line (fixed fields, no text), the
+     * text deleted (nobody may read it any more), and the review notification
+     * refreshed (cancelled when nothing is pending). Best effort; never throws.
+     */
+    private fun afterExpired(context: Context, expired: List<Submission>) {
+        if (expired.isEmpty()) return
+        for (s in expired) {
+            val line = LauncherSubmissionCore.recordLine("launcher_submit_expired", "expired", s)
+            if (!IngressAuditWriter.appendLauncherLine(context, line)) Log.w(TAG, "submission expiry audit line not written")
+            runCatching { submissionTextFile(context, s.id).delete() }
+        }
+        runCatching { LauncherApprovalNotifier.refreshAsync(context) }
     }
 
     /**
@@ -1303,7 +1529,13 @@ object McpRunTickets {
     @Synchronized
     fun expireSubmissions(context: Context): Int = try {
         val dir = runsDir(context)
-        if (!lexists(dir)) 0 else writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+        if (!lexists(dir)) {
+            0
+        } else {
+            val written = writeExpired(dir, allSubmissions(dir), System.currentTimeMillis())
+            afterExpired(context, written)
+            written.size
+        }
     } catch (e: Exception) {
         Log.w(TAG, "submission expiry sweep failed type=${e.javaClass.simpleName}")
         -1
@@ -1321,13 +1553,165 @@ object McpRunTickets {
                 null
             } else {
                 val cur = applySubmissionExpiry(s, System.currentTimeMillis())
-                if (cur != s) runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(cur)) }
+                if (cur != s && runCatching { ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(cur)) }.isSuccess) {
+                    afterExpired(context, listOf(cur))
+                }
                 encodeSubmission(cur)
             }
         }
     } catch (e: Exception) {
         Log.w(TAG, "submission read failed type=${e.javaClass.simpleName}")
         null
+    }
+
+    // ── Phase 2: decisions, the reader, the inbox (LauncherSubmissions) ──────
+
+    /** The text file's cap: 4,000 code points of at most 4 UTF-8 bytes each. */
+    private const val MAX_SUBMISSION_TEXT_BYTES = LauncherIngressLimits.MAX_TEXT_CODE_POINTS * 4
+
+    /**
+     * The text of [s], only while it is still exactly the text the record
+     * hashes (textSha256); null otherwise (missing, too long, changed). Never
+     * logged; the callers hand it only to the on-device prompt or, for an
+     * approved submission, to the D2 reader.
+     */
+    private fun readSubmissionText(context: Context, s: Submission): String? = try {
+        val bytes = readCapped(submissionTextFile(context, s.id), MAX_SUBMISSION_TEXT_BYTES + 1)
+        if (bytes == null || bytes.size > MAX_SUBMISSION_TEXT_BYTES) {
+            null
+        } else {
+            val text = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+            if (LauncherIngressCore.sha256Hex(text) == s.textSha256) text else null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** What a [submissionUpdate] body asks for. */
+    sealed class SubmissionChange {
+        object None : SubmissionChange()
+        /** Rewrite the record as [next] once [beforeWrite] (its audit line) said yes; [dropText]: then delete its text. */
+        class Rewrite(val next: Submission, val dropText: Boolean, val beforeWrite: () -> Boolean) : SubmissionChange()
+    }
+
+    /**
+     * Phase 2: one submission, under this object's lock (the lock of
+     * [submissionTransaction] too, so a decision, a read, a consume and a new
+     * submission never interleave). [body] sees the record with expiry
+     * applied (an expiry is persisted first, with its audit line), or null
+     * when there is none, plus a reader of its text ([readSubmissionText]).
+     * A rewrite keeps the id; its audit line comes first and a failed one
+     * writes nothing (fail closed). Never throws: null on any I/O failure.
+     */
+    @Synchronized
+    fun <T> submissionUpdate(
+        context: Context,
+        id: String,
+        body: (cur: Submission?, text: () -> String?, now: Long) -> Pair<T, SubmissionChange>,
+        onResult: (T, SubmissionWriteResult) -> T,
+    ): T? {
+        return try {
+            val now = System.currentTimeMillis()
+            val dir = runsDir(context)
+            val stored = if (isSubmissionId(id) && lexists(dir)) readSubmissionFile(dir, id) else null
+            val cur = if (stored == null) {
+                null
+            } else {
+                val expired = applySubmissionExpiry(stored, now)
+                if (expired != stored) afterExpired(context, writeExpired(dir, listOf(stored), now))
+                expired
+            }
+            val (answer, change) = body(cur, { if (cur == null) null else readSubmissionText(context, cur) }, now)
+            if (change !is SubmissionChange.Rewrite) return onResult(answer, SubmissionWriteResult.NOT_WRITTEN)
+            val next = change.next
+            if (cur == null || next.id != cur.id || next.principal != cur.principal || !isValidSubmission(next)) {
+                return onResult(answer, SubmissionWriteResult.FAILED)
+            }
+            if (!change.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
+            try {
+                ClosePawRunResults.writePrivateAtomic(submissionFile(ensureRunsDir(context), id), encodeSubmission(next))
+            } catch (e: Exception) {
+                Log.w(TAG, "submission update failed type=${e.javaClass.simpleName}")
+                return onResult(answer, SubmissionWriteResult.FAILED)
+            }
+            if (change.dropText) runCatching { submissionTextFile(context, id).delete() }
+            onResult(answer, SubmissionWriteResult.WRITTEN)
+        } catch (e: Exception) {
+            Log.w(TAG, "submission update transaction failed type=${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /** Every submission (expiry applied and persisted, with its audit line), for the inbox and the reader's list. Null on failure. */
+    @Synchronized
+    fun allSubmissionsCurrent(context: Context): List<Submission>? = try {
+        val dir = runsDir(context)
+        if (!lexists(dir)) {
+            emptyList()
+        } else {
+            val now = System.currentTimeMillis()
+            val all = allSubmissions(dir)
+            afterExpired(context, writeExpired(dir, all, now))
+            all.map { applySubmissionExpiry(it, now) }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "submission list failed type=${e.javaClass.simpleName}")
+        null
+    }
+
+    /**
+     * Keeps one synchronous refusal of a verified caller (see "Denial
+     * records"): one small atomic write after the same combined retention
+     * prune as a new submission. Called from the launcher Provider's Binder
+     * thread after the answer is decided; false (logged by type only) never
+     * changes that answer. Never throws.
+     */
+    @Synchronized
+    fun recordDenial(context: Context, d: Denial): Boolean {
+        return try {
+            if (!isValidDenial(d)) return false
+            val dir = ensureRunsDir(context)
+            if (lexists(submissionFile(dir, d.id))) return false
+            val now = System.currentTimeMillis()
+            // Same precondition: no room within the cap, no denial record (best effort; the answer is unchanged).
+            if (!pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now)) return false
+            ClosePawRunResults.writePrivateAtomic(submissionFile(dir, d.id), encodeDenial(d))
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "denial record not written type=${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /** Every denial record, for the inbox and the reader's list. Null on failure. */
+    @Synchronized
+    fun allDenialsCurrent(context: Context): List<Denial>? = try {
+        allDenials(runsDir(context))
+    } catch (e: Exception) {
+        Log.w(TAG, "denial list failed type=${e.javaClass.simpleName}")
+        null
+    }
+
+    /** The denial record [id], or null (none, or not a denial). Never throws. */
+    @Synchronized
+    fun readDenial(context: Context, id: String): Denial? = try {
+        if (!isSubmissionId(id)) null else readDenialFile(runsDir(context), id)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** How many submissions are still pending (the review notification's question). 0 on failure. Never persists. */
+    @Synchronized
+    fun pendingTotal(context: Context): Int = try {
+        val dir = runsDir(context)
+        val now = System.currentTimeMillis()
+        if (!lexists(dir)) 0 else allSubmissions(dir).count { applySubmissionExpiry(it, now).state == SUB_PENDING }
+    } catch (e: Exception) {
+        0
     }
 
     /** The output snapshot, cut to [maxBytes] (at most [MAX_OUTPUT_BYTES]) on a UTF-8 boundary, or null. */

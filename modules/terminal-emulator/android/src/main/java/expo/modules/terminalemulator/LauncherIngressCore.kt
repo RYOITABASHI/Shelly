@@ -14,7 +14,8 @@ import java.security.MessageDigest
  * `pending`) or `denied` with a fixed reason. Pending never blocks the call.
  *
  * submit_instruction starts nothing: no command, file write or agent run. An
- * approved submission waits for forwarding to Hayato (D2, not built).
+ * approved submission waits until Hayato's MCP reader takes it (phase 2 D2:
+ * LauncherSubmissionCore, get_launcher_submission / mark_launcher_submission_consumed).
  */
 object LauncherIngressCore {
     const val METHOD_SUBMIT = "submit_instruction"

@@ -51,6 +51,22 @@ describe('IngressDecision order (Kotlin) == TS mirror', () => {
     }
   });
 
+  it('phase 2 D2: the launcher submission reader ops match, with no always-allow / approval / taint stage', () => {
+    for (const [constName, op] of [
+      ['OP_GET_LAUNCHER_SUBMISSION', 'get_launcher_submission'],
+      ['OP_LIST_LAUNCHER_SUBMISSIONS', 'list_launcher_submissions'],
+      ['OP_MARK_LAUNCHER_SUBMISSION_CONSUMED', 'mark_launcher_submission_consumed'],
+    ] as const) {
+      expect(decision).toContain(`const val ${constName} = "${op}"`);
+      expect(stagesIn(listBetween(decision, `${constName} to setOf(`))).toEqual([...INGRESS_OP_STAGES[op]]);
+      expect(INGRESS_OP_STAGES[op]).toEqual(['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL']);
+    }
+    const core = kt('LauncherSubmissionCore.kt');
+    const body = core.slice(core.indexOf('fun decideReader('), core.indexOf('fun readerItem('));
+    expect(body).toMatch(/IngressDecision\.evaluate\(req\.tool, hooks\)/);
+    expect([...body.matchAll(/IngressDecision\.Stage\.([A-Z0-9_]+) to \{/g)].map((m) => m[1])).toEqual(['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL']);
+  });
+
   it('run_agent (McpTypedOpDecision.decide) is evaluated through the shared runner with exactly its stages', () => {
     const src = kt('McpTypedOpDecision.kt');
     const body = src.slice(src.indexOf('fun decide(req: Request'), src.indexOf('// ── Result files'));

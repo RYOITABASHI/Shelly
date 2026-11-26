@@ -846,7 +846,7 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
     expect(script).toContain("process.env.SHELLY_MCP_READ_TERMINAL === '1'");
     expect(script).toContain("process.env.SHELLY_MCP_DIAGNOSTICS === '1'");
     expect(script).toContain("process.env.SHELLY_MCP_TYPED_OPS === '1'");
-    expect(script).toMatch(/const TYPED_OP_TOOLS = new Set\(\['run_agent', 'get_run_result', 'request_pipeline_refire', 'put_stream_feed'\]\);/);
+    expect(script).toMatch(/const TYPED_OP_TOOLS = new Set\(\['run_agent', 'get_run_result', 'request_pipeline_refire', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed'\]\);/);
     // The script and its APK asset stay byte-identical.
     expect(fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js', ), 'utf8')).toBe(script);
     const bridge = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt'), 'utf8');
@@ -877,7 +877,7 @@ describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', (
 
   it('listed only with typedOps (exec alone does not list them; typedOps alone does not list raw exec)', async () => {
     expect(names(mcp.availableTools({ exec: true }))).toEqual([...READ_ONLY, 'run_command', 'write_file', 'stage_install', 'update_delivery_script', 'update_pipeline_config', 'service_control']);
-    expect(names(mcp.availableTools({ typedOps: true }))).toEqual([...READ_ONLY, 'run_agent', 'get_run_result', 'request_pipeline_refire', 'put_stream_feed']);
+    expect(names(mcp.availableTools({ typedOps: true }))).toEqual([...READ_ONLY, 'run_agent', 'get_run_result', 'request_pipeline_refire', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed']);
     expect(names(mcp.availableTools({ typedOps: 'yes' }))).toEqual(READ_ONLY);
     const off = makeHandler(async () => ({ ok: true, data: [] }), { typedOps: false });
     expect(names(parse(await modern(off, 1, 'tools/list')).result.tools)).not.toContain('run_agent');

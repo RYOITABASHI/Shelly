@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="launcher_review_channel_name">Launcher instructions to review</string>
+  <string name="launcher_review_channel_description">An instruction sent from your launcher is waiting for your decision in Shelly</string>
+  <string name="launcher_review_notification_title">Shelly: please review an instruction from your launcher</string>
+  <string name="launcher_review_notification_body">Tap to open Shelly and allow or deny it. Nothing is passed on until you allow it. It expires 10 minutes after it was sent.</string>
+  <string name="launcher_review_rule_label">Launcher instructions</string>
+</resources>

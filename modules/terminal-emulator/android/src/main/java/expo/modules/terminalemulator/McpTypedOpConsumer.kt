@@ -460,6 +460,11 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             processStreamFeed(request, name, claimed, now)
             return
         }
+        // The launcher submission reader (phase 2 D2) is answered here, never handed to RN.
+        if (request.tool in LauncherSubmissionCore.READER_OPS) {
+            processSubmissionReader(request, claimed)
+            return
+        }
         when (val outcome = McpTypedOpDecision.decide(request, steps, now)) {
             is McpTypedOpDecision.Outcome.Refuse -> {
                 refuse(request, claimed, outcome.refusal, outcome.agentId, outcome.taint)
@@ -646,6 +651,49 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         if (!IngressAuditWriter.appendStreamFeedLine(app, principal, code, null, null, null)) {
             Log.w(TAG, "audit line not written (${IngressAuditWriter.STREAM_FEED_KIND} $code)")
         }
+    }
+
+    // ── Launcher submission reader (LauncherSubmissionCore; phase 2 D2) ───
+
+    /**
+     * get / list / mark-consumed: the shared stage order (setting → arguments
+     * → epoch → STOP-ALL), no always-allow and no approval; then, under
+     * [commitLock] and again under the record lock, the epoch, the setting,
+     * STOP-ALL and the signed deadline once more before anything is returned
+     * or written. One result, the claimed file deleted. Never the text in a
+     * log or audit line.
+     */
+    private fun processSubmissionReader(request: McpTypedOpDecision.Request, claimed: File) {
+        val result = synchronized(commitLock) {
+            when (val outcome = LauncherSubmissionCore.decideReader(request, readerSteps)) {
+                is LauncherSubmissionCore.ReaderOutcome.Refuse ->
+                    // Every reader answer is audited; a refusal whose line could not be written is audit_failed.
+                    if (LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)) {
+                        LauncherSubmissionCore.errorResult(outcome.refusal)
+                    } else {
+                        LauncherSubmissionCore.errorResult(LauncherSubmissionCore.AUDIT_FAILED)
+                    }
+                is LauncherSubmissionCore.ReaderOutcome.Proceed -> LauncherSubmissions.answerReader(app, request.principal, outcome.args) {
+                    when {
+                        !isCurrent() -> LauncherSubmissionCore.REVOKED
+                        !readerSteps.typedOpsOn() -> LauncherSubmissionCore.DISABLED
+                        readerSteps.halted() -> LauncherSubmissionCore.HALTED
+                        McpTypedOpDecision.isExpired(request.receivedAtMs, System.currentTimeMillis()) -> LauncherSubmissionCore.EXPIRED
+                        else -> null
+                    }
+                }
+            }
+        }
+        writeResult(request.callId, result)
+        delete(claimed)
+        Log.i(TAG, "${request.tool} answered")
+    }
+
+    private val readerSteps = object : LauncherSubmissionCore.ReaderSteps {
+        override fun typedOpsOn(): Boolean = steps.typedOpsOn()
+        override fun epochCurrent(): Boolean = isCurrent()
+        // Strict (only ENOENT is "off"; any other lstat failure is STOP-ALL), as put_stream_feed.
+        override fun halted(): Boolean = StreamFeedStore.haltedStrict(app)
     }
 
     // ── Facts (each fails closed) ─────────────────────────────────────────

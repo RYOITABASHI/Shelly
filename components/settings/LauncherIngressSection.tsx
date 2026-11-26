@@ -11,6 +11,7 @@ import { useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
+import { useLauncherInboxStore } from '@/store/launcher-inbox-store';
 import {
   digestLabel,
   isValidPackageName,
@@ -183,6 +184,10 @@ export const LauncherIngressSection = React.memo(function LauncherIngressSection
                 </Text>
                 <Switch on={caller.exemptionBound} onPress={toggleExemption} disabled={busy} label={t('launcher_ingress.exemption_title')} />
               </View>
+            </View>
+            {/* Phase 2: the read-only approval inbox (pending ones reopen the prompt). */}
+            <View style={styles.actions}>
+              <Button label={t('launcher_ingress.inbox_button')} onPress={() => useLauncherInboxStore.getState().open()} />
             </View>
             {error && <Text style={[styles.hint, { color: C.warning }]}>{error}</Text>}
           </>

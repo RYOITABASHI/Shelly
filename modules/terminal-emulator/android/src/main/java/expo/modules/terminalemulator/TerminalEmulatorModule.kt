@@ -2156,6 +2156,26 @@ class TerminalEmulatorModule : Module() {
             TrustedCallerStore.removeCaller(requireReactContext(), origin)
         }
 
+        // Launcher ingress Phase 2 (C6, LauncherSubmissions.kt): the approval
+        // inbox (no text), the prompt of one pending submission (its text, for
+        // the on-device prompt only) and the owner's decision with the existing
+        // kinds deny | once | always. Nothing here logs the text.
+        AsyncFunction("launcherSubmissionInbox") {
+            LauncherSubmissions.inboxJson(requireReactContext())
+        }
+
+        AsyncFunction("launcherSubmissionPending") {
+            LauncherSubmissions.pendingJson(requireReactContext())
+        }
+
+        AsyncFunction("launcherSubmissionPrompt") { id: String ->
+            LauncherSubmissions.promptJson(requireReactContext(), id)
+        }
+
+        AsyncFunction("launcherSubmissionDecide") { id: String, decision: String ->
+            LauncherSubmissions.decide(requireReactContext(), id, decision)
+        }
+
         // Per-agent MCP ingress taint (AgentIngressTaint.kt, DEFERRED.md P1 "MCP の入口").
         // mark: MCP ingress path only. clear/reset: owner only. remove: owner's explicit delete only.
         AsyncFunction("markAgentIngress") { agentId: String, source: String, principal: String ->

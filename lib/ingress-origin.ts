@@ -115,6 +115,10 @@ export const INGRESS_OP_STAGES: Readonly<Record<string, readonly IngressStage[]>
   // Stream feed (C7): content always tainted, so no TAINT stage to pass and
   // no APPROVE_ALL; only a per-op always-allow rule or a tap stores it.
   put_stream_feed: ['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL', 'ALWAYS_ALLOW'],
+  // Phase 2 D2: the launcher submission reader. No always-allow, no approval tap.
+  get_launcher_submission: ['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL'],
+  list_launcher_submissions: ['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL'],
+  mark_launcher_submission_consumed: ['SETTING', 'ARGS', 'EPOCH', 'STOP_ALL'],
 };
 
 const PRINCIPAL_ID_RE = /^[0-9a-f]{32}$/;
