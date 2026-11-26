@@ -3182,17 +3182,17 @@ patchCodex(libDir);
             sb.appendLine("  __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_cmd\" \"\$HOME/bin/shelly\" 2>/dev/null || true")
             sb.appendLine("fi")
             // v294: $HOME/bin/codex_exec -> native launcher (jni/shelly-codex-exec.c).
-            // A missing name or a dangling link is (re)created; a link to another
-            // */shelly_codex_exec (an older lib dir spelling) is re-pointed; a
-            // live foreign link or a regular file the user placed is left alone.
-            sb.appendLine("if [ -x \"\$SHELLY_LIB_DIR/shelly_codex_exec\" ]; then")
-            sb.appendLine("  if [ -L \"\$HOME/bin/codex_exec\" ]; then")
-            sb.appendLine("    case \"\$(__shelly_readlink \"\$HOME/bin/codex_exec\" 2>/dev/null)\" in")
-            sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_codex_exec\") ;;")
-            sb.appendLine("      */shelly_codex_exec) __shelly_rm -f \"\$HOME/bin/codex_exec\" 2>/dev/null; __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_codex_exec\" \"\$HOME/bin/codex_exec\" 2>/dev/null || true ;;")
-            sb.appendLine("      *) [ -e \"\$HOME/bin/codex_exec\" ] || { __shelly_rm -f \"\$HOME/bin/codex_exec\" 2>/dev/null; __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_codex_exec\" \"\$HOME/bin/codex_exec\" 2>/dev/null || true; } ;;")
-            sb.appendLine("    esac")
-            sb.appendLine("  elif [ ! -e \"\$HOME/bin/codex_exec\" ]; then")
+            // `codex_exec` is a Shelly-owned name: council-facade's fixed
+            // COUNCIL_CODEX_COMMAND resolves it through PATH, where $HOME/bin is
+            // first, so anything else at that name (a regular file, a link to
+            // another target) would run in its place. Whatever is there that is
+            // not exactly the link to this launcher is replaced on every source
+            // of .bashrc (the supervisor sources it right before the facade
+            // starts). A directory at the name is left alone: the facade then
+            // fails to resolve codex_exec (closed), it never runs something else.
+            sb.appendLine("if [ -x \"\$SHELLY_LIB_DIR/shelly_codex_exec\" ] && [ \"\$(__shelly_readlink \"\$HOME/bin/codex_exec\" 2>/dev/null)\" != \"\$SHELLY_LIB_DIR/shelly_codex_exec\" ]; then")
+            sb.appendLine("  if [ -L \"\$HOME/bin/codex_exec\" ] || [ ! -d \"\$HOME/bin/codex_exec\" ]; then")
+            sb.appendLine("    __shelly_rm -f \"\$HOME/bin/codex_exec\" 2>/dev/null")
             sb.appendLine("    __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_codex_exec\" \"\$HOME/bin/codex_exec\" 2>/dev/null || true")
             sb.appendLine("  fi")
             sb.appendLine("fi")
