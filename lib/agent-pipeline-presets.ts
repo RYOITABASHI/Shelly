@@ -231,7 +231,25 @@ export interface ArticlePipelineConfig {
    *  `requires` the research meets and an opening and a closing, none equal to
    *  the most recent article's; frontmatter `frame` / `opening` / `closing`. */
   structure?: ArticleStructureConfig;
+  /** Executor v71: pool candidates whose main-study fingerprint matches a
+   *  history article of the last `windowDays` days on at least `minAxes` of
+   *  population / intervention / outcome / direction are offered after the
+   *  others (demoted, never excluded). Needs `fingerprint` and `pool: true`. */
+  typeRepeat?: ArticleTypeRepeatConfig;
 }
+
+/** Mirrors executor normalizeTypeRepeatConfig (v71). */
+export interface ArticleTypeRepeatConfig {
+  /** ARTICLE_TYPE_REPEAT_MIN_WINDOW_DAYS to ARTICLE_TYPE_REPEAT_MAX_WINDOW_DAYS. */
+  windowDays: number;
+  /** ARTICLE_TYPE_REPEAT_MIN_AXES to ARTICLE_TYPE_REPEAT_MAX_AXES. */
+  minAxes: number;
+}
+
+export const ARTICLE_TYPE_REPEAT_MIN_WINDOW_DAYS = 1;
+export const ARTICLE_TYPE_REPEAT_MAX_WINDOW_DAYS = 60;
+export const ARTICLE_TYPE_REPEAT_MIN_AXES = 2;
+export const ARTICLE_TYPE_REPEAT_MAX_AXES = 4;
 
 /** One frame, opening or closing (executor normalizeStructureConfig). */
 export interface ArticleStructureItem {
@@ -404,7 +422,21 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds', 'fingerprint', 'pool', 'structure'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds', 'fingerprint', 'pool', 'structure', 'typeRepeat'] as const;
+
+function articleTypeRepeatError(v: unknown, where: string): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "windowDays": ${ARTICLE_TYPE_REPEAT_MIN_WINDOW_DAYS}-${ARTICLE_TYPE_REPEAT_MAX_WINDOW_DAYS}, "minAxes": ${ARTICLE_TYPE_REPEAT_MIN_AXES}-${ARTICLE_TYPE_REPEAT_MAX_AXES} }`;
+  const keyError = unknownKeyError(v, ['windowDays', 'minAxes'], where);
+  if (keyError) return keyError;
+  const intIn = (n: unknown, lo: number, hi: number) => typeof n === 'number' && Number.isInteger(n) && n >= lo && n <= hi;
+  if (!intIn(v.windowDays, ARTICLE_TYPE_REPEAT_MIN_WINDOW_DAYS, ARTICLE_TYPE_REPEAT_MAX_WINDOW_DAYS)) {
+    return `${where}.windowDays: needs a whole number of days from ${ARTICLE_TYPE_REPEAT_MIN_WINDOW_DAYS} to ${ARTICLE_TYPE_REPEAT_MAX_WINDOW_DAYS}`;
+  }
+  if (!intIn(v.minAxes, ARTICLE_TYPE_REPEAT_MIN_AXES, ARTICLE_TYPE_REPEAT_MAX_AXES)) {
+    return `${where}.minAxes: needs a whole number from ${ARTICLE_TYPE_REPEAT_MIN_AXES} to ${ARTICLE_TYPE_REPEAT_MAX_AXES} (of population, intervention, outcome, direction)`;
+  }
+  return null;
+}
 
 // Mirrors normalizeFingerprintConfig in scripts/shelly-plan-executor.js.
 // eslint-disable-next-line no-control-regex
@@ -631,6 +663,12 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
     if (typeof raw.pool !== 'boolean') return `${where}.pool: needs true or false`;
     if (raw.pool && raw.fingerprint === undefined) return `${where}.pool: needs "fingerprint" (the candidates use its lists)`;
     if (raw.pool && raw.queue === true) return `${where}.pool: not with "queue": true (the topic comes from the queue)`;
+  }
+  if (raw.typeRepeat !== undefined) {
+    const typeRepeatError = articleTypeRepeatError(raw.typeRepeat, `${where}.typeRepeat`);
+    if (typeRepeatError) return typeRepeatError;
+    if (raw.fingerprint === undefined) return `${where}.typeRepeat: needs "fingerprint" (it compares the main-study fingerprint)`;
+    if (raw.pool !== true) return `${where}.typeRepeat: needs "pool": true (it reorders the pool's candidates)`;
   }
   if (raw.materials !== undefined) {
     if (raw.queue !== true) return `${where}.materials: needs "queue": true (the files are named under a queue item)`;
