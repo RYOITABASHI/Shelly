@@ -587,12 +587,27 @@ object ManagedServiceSupervisor {
                 val base = ManagedServices.spec(id) ?: return
                 val rec = readRecord(context, id)
                 if (rec == null || rec.pid != token.pid || rec.startTime != token.startTime || rec.stoppedAt != null) return
+                if (!consumeDue(context, base, rec, "restart")) return
                 runCatching { start(context, resolvedSpec(context, base), null, Auto("restart", rec)) }
                     .onFailure { Log.e(TAG, "$id: restart failed: ${it.javaClass.simpleName}") }
             }
         } finally {
             TerminalSessionService.instance?.onCodexRemoteChanged()
         }
+    }
+
+    /**
+     * Before the one start a charged restart allows: state.json no longer
+     * holds it as due (restartAt cleared), so a start that fails before it
+     * writes a new record is not retried for free — the next attempt goes
+     * through nextRestart and is charged. False (and no start) when the record
+     * cannot be written.
+     */
+    private fun consumeDue(context: Context, spec: ManagedServices.Spec, rec: ManagedServices.Record, prefix: String): Boolean {
+        if (rec.restartAt == null) return true
+        if (writeRecord(context, spec.id, rec.copy(restartAt = null))) return true
+        audit(context, null, "start", spec, ManagedServices.autoCode(prefix, "record_failed"))
+        return false
     }
 
     /** Drops a waiting restart of [id] (a start / stop on request, the notification's Exit). */
@@ -681,6 +696,7 @@ object ManagedServiceSupervisor {
                         audit(context, null, "start", spec, "reconcile_restart_scheduled")
                         return
                     }
+                    if (!consumeDue(context, spec, record, "reconcile")) return
                     start(context, spec, null, Auto("reconcile", record))
                     return
                 }
