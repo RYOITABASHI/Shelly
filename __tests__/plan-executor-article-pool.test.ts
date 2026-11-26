@@ -542,6 +542,92 @@ describe('v69 pure helpers', () => {
     expect(kept.sources.map((s: { url: string }) => s.url)).toContain('https://rejected.example/b');
   });
 
+  it('keeps a source a rejected fingerprint line names in another form (http, tracking parameters) when a normal line names it (gate P1-1)', () => {
+    const text = [
+      'Notes citing [1] and [2].',
+      'population: http://www.shared.example/study?utm_source=feed',
+      'See https://shared.example/study for the trial.',
+      '',
+      '## Sources',
+      '[1] Kept — https://kept.example/one',
+      '[2] Shared — https://shared.example/study',
+      'intervention: http://only-fp.example/x?utm_medium=mail',
+    ].join('\n');
+    const parsed = executorModule.extractSourcesFromText(text);
+    const out = executorModule.withoutFingerprintOnlySources(text, parsed);
+    expect(out.sources.map((s: { url: string }) => s.url)).toEqual(['https://kept.example/one', 'https://shared.example/study']);
+    expect(out.sources.map((s: { id: number }) => s.id)).toEqual([1, 2]);
+    expect(out.indexMap[1]).toBe(1);
+    expect(out.indexMap[2]).toBe(2);
+    // The address only a fingerprint line gives (http + a tracking parameter) was read as a source and is dropped.
+    expect(parsed.sources.map((s: { url: string }) => s.url).some((u: string) => u.includes('only-fp.example'))).toBe(true);
+    expect(out.sources.map((s: { url: string }) => s.url).some((u: string) => u.includes('only-fp.example'))).toBe(false);
+  });
+
+  describe('the pool file is read through the descriptor it was opened on (gate P1-1)', () => {
+    const posix = process.platform !== 'win32';
+    let vault: string;
+    let dir: string;
+    let file: string;
+    const pool = JSON.stringify({ version: 1, candidates: [] });
+    beforeEach(() => {
+      vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-pool-read-')));
+      dir = path.join(vault, 'Drafts');
+      fs.mkdirSync(dir);
+      file = path.join(dir, executorModule.POOL_FILE_NAME);
+    });
+    afterEach(() => fs.rmSync(vault, { recursive: true, force: true }));
+
+    it('reads a plain file', () => {
+      fs.writeFileSync(file, pool);
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'ok', data: { version: 1, candidates: [] } });
+    });
+
+    (posix ? it : it.skip)('refuses a symbolic link', () => {
+      const outside = path.join(vault, 'outside.json');
+      fs.writeFileSync(outside, pool);
+      fs.symlinkSync(outside, file);
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'unreadable' });
+    });
+
+    it('refuses a hard link', () => {
+      const outside = path.join(vault, 'outside.json');
+      fs.writeFileSync(outside, pool);
+      fs.linkSync(outside, file);
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'unreadable' });
+    });
+
+    it('refuses a directory', () => {
+      fs.mkdirSync(file);
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'unreadable' });
+    });
+
+    (posix ? it : it.skip)('refuses a FIFO without blocking', () => {
+      expect(spawnSync('mkfifo', [file]).status).toBe(0);
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'unreadable' });
+    });
+
+    it('refuses a file over the size limit', () => {
+      fs.writeFileSync(file, Buffer.alloc(executorModule.POOL_MAX_BYTES + 1, 0x20));
+      expect(executorModule.readPoolFile(vault, dir)).toEqual({ status: 'too-large' });
+    });
+
+    it('reads nothing when the file opened is not the one lstat saw (a swap)', () => {
+      fs.writeFileSync(file, pool);
+      const other = path.join(dir, 'other.json');
+      fs.writeFileSync(other, pool);
+      const seen = fs.lstatSync(other);
+      expect(executorModule.readPoolBytes(file, seen, dir, executorModule.POOL_MAX_BYTES, fs)).toEqual({ status: 'unreadable' });
+    });
+
+    it('reads nothing when the descriptor sits outside the output folder', () => {
+      fs.writeFileSync(file, pool);
+      const st = fs.lstatSync(file);
+      const elsewhere = { ...fs, readlinkSync: (p: string) => (String(p).startsWith('/proc/self/fd/') ? path.join(vault, 'elsewhere', '_pool.json') : fs.readlinkSync(p)), realpathSync: (p: string) => String(p) };
+      expect(executorModule.readPoolBytes(file, st, dir, executorModule.POOL_MAX_BYTES, elsewhere)).toEqual({ status: 'unreadable' });
+    });
+  });
+
   it('a pool pipeline config is validated by the TS loader too', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { articlePipelineConfigError } = require('@/lib/agent-pipeline-presets');

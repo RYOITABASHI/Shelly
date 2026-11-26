@@ -5623,6 +5623,57 @@ function matchPoolCandidate(mainUrls, mainTitle, candidates) {
 }
 
 /**
+ * The bytes of the pool file lstat saw (v69 gate P1-1), the material way: one
+ * open (O_NOFOLLOW, O_NONBLOCK so a FIFO swapped in cannot stall the run),
+ * then the descriptor must be the same file (dev + ino), still a regular file
+ * with one link and within POOL_MAX_BYTES, and where /proc/self/fd says it is
+ * (when that exists) inside the output folder. A swap between lstat and open
+ * reads nothing. { status: 'ok', bytes } or { status: 'unreadable' | 'too-large' }.
+ * Never throws.
+ */
+function readPoolBytes(file, st, realDir, maxBytes, f) {
+  let fd;
+  try {
+    fd = f.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+  } catch (_) {
+    return { status: 'unreadable' };
+  }
+  try {
+    const ft = f.fstatSync(fd);
+    // A path stat on Windows reports dev 0 (as in readMaterialBytes).
+    const sameDev = ft.dev === st.dev || (st.dev === 0 && process.platform === 'win32');
+    if (!sameDev || ft.ino !== st.ino || !ft.isFile() || ft.nlink !== 1) return { status: 'unreadable' };
+    if (ft.size > maxBytes) return { status: 'too-large' };
+    let where = null;
+    try {
+      where = f.readlinkSync(`/proc/self/fd/${fd}`);
+    } catch (_) {
+      where = null; // no /proc: dev + ino stand alone
+    }
+    if (where !== null && !pathInsideRoot(path.resolve(where), realDir)) {
+      let canon = null;
+      try { canon = (f.realpathSync || fs.realpathSync)(where); } catch (_) { canon = null; }
+      if (canon === null || !pathInsideRoot(canon, realDir)) return { status: 'unreadable' };
+    }
+    const limit = maxBytes + 1;
+    const buf = Buffer.alloc(limit);
+    let got = 0;
+    while (got < limit) {
+      const n = f.readSync(fd, buf, got, limit - got, got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return { status: 'ok', bytes: buf.subarray(0, got) };
+  } catch (_) {
+    return { status: 'unreadable' };
+  } finally {
+    try {
+      f.closeSync(fd);
+    } catch (_) {}
+  }
+}
+
+/**
  * `<outputDir>/_pool.json` inside the vault, read the queue way:
  * { status: 'ok', data } or { status: 'missing' | 'unreadable' | 'too-large' | 'not-json' }.
  * Never writes, never throws.
@@ -5641,9 +5692,12 @@ function readPoolFile(vault, outputDir, fsImpl) {
   const file = path.join(realDir, POOL_FILE_NAME);
   try {
     const st = f.lstatSync(file);
-    if (st.isSymbolicLink() || !st.isFile()) return { status: 'unreadable' };
+    // v69 gate P1-1: a link (symbolic or hard) is never read.
+    if (st.isSymbolicLink() || !st.isFile() || st.nlink !== 1) return { status: 'unreadable' };
     if (st.size > POOL_MAX_BYTES) return { status: 'too-large' };
-    const bytes = readBytesBounded(file, POOL_MAX_BYTES + 1, f);
+    const read = readPoolBytes(file, st, realDir, POOL_MAX_BYTES, f);
+    if (read.status !== 'ok') return { status: read.status };
+    const bytes = read.bytes;
     if (bytes.length > POOL_MAX_BYTES) return { status: 'too-large' };
     try {
       return { status: 'ok', data: JSON.parse(bytes.toString('utf8').replace(/^﻿/, '')) };
@@ -17384,6 +17438,7 @@ module.exports = {
   FINGERPRINT_FIELDS,
   FINGERPRINT_INVALID_NOTE_PREFIX,
   POOL_FILE_NAME,
+  POOL_MAX_BYTES,
   POOL_PROMPT_MAX_CANDIDATES,
   POOL_UNVERIFIED_MAIN_NOTE,
   normalizeFingerprintConfig,
@@ -17395,6 +17450,7 @@ module.exports = {
   fingerprintReoutputPrompt,
   poolCandidate,
   parsePool,
+  readPoolBytes,
   selectPoolCandidates,
   poolPromptBlock,
   matchPoolCandidate,
