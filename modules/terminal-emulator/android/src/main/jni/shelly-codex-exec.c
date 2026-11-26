@@ -1,17 +1,15 @@
 /*
  * shelly-codex-exec.c
  *
- * PATH-visible `codex_exec` (BASHRC_VERSION 294): a native entry point that
- * runs `codex exec "$@"` for callers that cannot use the interactive codex()
- * bash function -- above all council-facade, whose node process spawns
- * COUNCIL_CODEX_COMMAND=codex_exec directly (child_process.spawn, no shell).
- * HomeInitializer.kt symlinks `$HOME/bin/codex_exec` ->
- * `$SHELLY_LIB_DIR/shelly_codex_exec` (this binary, shipped as jniLibs
- * libshelly_codex_exec.so and extracted by LibExtractor).
- *
- * The retired name `termux-libs/codex_exec` (the separate pre-0.142.2 Codex
- * `exec` binary, PayloadHygiene.RETIRED_LIB_FILES) is a different file and
- * stays retired: since the unified layout `codex exec` is `codex_tui exec`.
+ * `codex_exec`: a native entry point that runs `codex exec "$@"` for callers
+ * that cannot use the interactive codex() bash function -- above all
+ * council-facade, whose node process spawns COUNCIL_CODEX_COMMAND=codex_exec
+ * directly (child_process.spawn, no shell). Shipped as jniLibs
+ * libshelly_codex_exec.so and extracted by LibExtractor as
+ * `$SHELLY_LIB_DIR/codex_exec` (ALWAYS_REFRESH; the supervisor puts that dir
+ * first on the facade's PATH). The name was the separate pre-0.142.2 Codex
+ * `exec` binary; the refresh overwrites any stale copy of it with this
+ * launcher, which runs the unified `codex_tui exec`.
  *
  * Which Codex: the same rule as the agent driver (scripts/shelly-agent-driver.js
  * resolveAndroidCodexTui / runtimeCodexTuiPath): the reviewed app-data runtime
@@ -35,7 +33,7 @@
  * /proc/self/exe may be linker64. The lib dir comes only from this binary's
  * own location (the wrapper's /proc/self/fd/N, else /proc/self/exe, else the
  * fixed package path), and only when its real path is an app's
- * files/termux-libs holding this launcher and codex_tui; HOME is derived as
+ * files/termux-libs holding this launcher (codex_exec) and codex_tui; HOME is derived as
  * its sibling. The caller's SHELLY_LIB_DIR / HOME are never read, so the
  * environment cannot choose codex_tui, libexec_wrapper.so or agent-current.
  * SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME=1 (as in the driver) can only fall
@@ -113,7 +111,7 @@ static int is_app_lib_dir(const char *dir) {
     }
     if (rest == pkg || strcmp(rest, "/files/termux-libs") != 0) return 0;
     char self[PATH_MAX];
-    if (snprintf(self, sizeof(self), "%s/shelly_codex_exec", dir) >= (int)sizeof(self)) return 0;
+    if (snprintf(self, sizeof(self), "%s/codex_exec", dir) >= (int)sizeof(self)) return 0;
     return is_file(self) && has_codex(dir);
 }
 

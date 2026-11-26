@@ -166,13 +166,13 @@ object LibExtractor {
         // replacing the generated #!/system/bin/sh script Knox refused to
         // exec outside the interactive shelly() bash function.
         "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd",
-        // BASHRC_VERSION 294: native `codex_exec` (jni/shelly-codex-exec.c) for
-        // callers that spawn Codex without a shell -- council-facade's node
-        // (COUNCIL_CODEX_COMMAND=codex_exec). HomeInitializer symlinks
-        // $HOME/bin/codex_exec -> $libDir/shelly_codex_exec. Not the retired
-        // termux-libs/codex_exec (PayloadHygiene.RETIRED_LIB_FILES): that name
-        // stays retired; this is a launcher for `codex_tui exec`.
-        "lib/arm64-v8a/libshelly_codex_exec.so" to "shelly_codex_exec",
+        // Native `codex_exec` launcher (jni/shelly-codex-exec.c): runs
+        // `codex_tui exec "$@"` for callers that spawn Codex without a shell --
+        // council-facade's node (COUNCIL_CODEX_COMMAND=codex_exec; the supervisor
+        // puts this lib dir first on its PATH). Extracted under the name the
+        // pre-0.142.2 separate `codex exec` binary had: ALWAYS_REFRESH below
+        // overwrites any stale copy of that old binary with this launcher.
+        "lib/arm64-v8a/libshelly_codex_exec.so" to "codex_exec",
         // Claude Code glibc (S1): ulexec-style userland loader that starts the
         // official, UNMODIFIED linux-arm64 glibc binary via its glibc ld.so.
         // Launched as `linker64 $libDir/shelly_glibc_exec <ld.so> ...`; it
@@ -209,8 +209,10 @@ object LibExtractor {
         "shelly_xdg_open",
         // BASHRC_VERSION 255: same reasoning for the native `shelly` shim.
         "shelly_cmd",
-        // BASHRC_VERSION 294: same reasoning for the native codex_exec launcher.
-        "shelly_codex_exec",
+        // The codex_exec launcher: refreshed on every extractAll (the supervisor
+        // calls it right before starting council-facade), so the file the facade
+        // resolves is always the APK's.
+        "codex_exec",
         // Claude Code glibc loader: ALWAYS_REFRESH so loader fixes ship
         // without a versionCode bump (same reasoning as the other helpers).
         "shelly_glibc_exec",
@@ -335,7 +337,8 @@ object LibExtractor {
         // Shelly extracted here that are no longer in LIBS, so no APK update
         // would ever refresh them and a stale reference would silently run a
         // months-old binary (termux-libs/codex_exec, retired by HomeInitializer
-        // setup v231). See PayloadHygiene.RETIRED_LIB_FILES. One stat per name
+        // setup v231; that name is now the codex_exec launcher, refreshed from
+        // the APK). See PayloadHygiene.RETIRED_LIB_FILES. One stat per name
         // when absent, so it runs on every call.
         PayloadHygiene.removeRetired(libDir, PayloadHygiene.RETIRED_LIB_FILES, LIBS.values.toSet()) { logHygiene(TAG, it) }
 

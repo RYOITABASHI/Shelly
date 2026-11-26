@@ -1566,13 +1566,7 @@ patchCodex(libDir);
     //      closepaw confirm|reject` writes its agentctl line with
     //      agentIngressSuffix() too, so a ClosePaw confirm issued from an MCP
     //      run_command is refused the same way a plain `shelly agent confirm` is.
-    // v294: $HOME/bin/codex_exec -> $SHELLY_LIB_DIR/shelly_codex_exec, a native
-    //      launcher (jni/shelly-codex-exec.c) that runs `codex_tui exec "$@"` with
-    //      the agent driver's Codex choice (healthy agent-current, else bundled)
-    //      and the same exec-wrapper env. For callers that spawn Codex without a
-    //      shell (council-facade: COUNCIL_CODEX_COMMAND=codex_exec); the codex()
-    //      function is unchanged. The retired termux-libs/codex_exec stays retired.
-    private const val BASHRC_VERSION = 294
+    private const val BASHRC_VERSION = 293
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -3180,21 +3174,6 @@ patchCodex(libDir);
             sb.appendLine("elif [ ! -s \"\$HOME/bin/shelly\" ] || __shelly_grep -q SHELLY_HELPER_SHIM \"\$HOME/bin/shelly\" 2>/dev/null; then")
             sb.appendLine("  __shelly_rm -f \"\$HOME/bin/shelly\" 2>/dev/null")
             sb.appendLine("  __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_cmd\" \"\$HOME/bin/shelly\" 2>/dev/null || true")
-            sb.appendLine("fi")
-            // v294: $HOME/bin/codex_exec -> native launcher (jni/shelly-codex-exec.c).
-            // `codex_exec` is a Shelly-owned name: council-facade's fixed
-            // COUNCIL_CODEX_COMMAND resolves it through PATH, where $HOME/bin is
-            // first, so anything else at that name (a regular file, a link to
-            // another target) would run in its place. Whatever is there that is
-            // not exactly the link to this launcher is replaced on every source
-            // of .bashrc (the supervisor sources it right before the facade
-            // starts). A directory at the name is left alone: the facade then
-            // fails to resolve codex_exec (closed), it never runs something else.
-            sb.appendLine("if [ -x \"\$SHELLY_LIB_DIR/shelly_codex_exec\" ] && [ \"\$(__shelly_readlink \"\$HOME/bin/codex_exec\" 2>/dev/null)\" != \"\$SHELLY_LIB_DIR/shelly_codex_exec\" ]; then")
-            sb.appendLine("  if [ -L \"\$HOME/bin/codex_exec\" ] || [ ! -d \"\$HOME/bin/codex_exec\" ]; then")
-            sb.appendLine("    __shelly_rm -f \"\$HOME/bin/codex_exec\" 2>/dev/null")
-            sb.appendLine("    __shelly_ln -s \"\$SHELLY_LIB_DIR/shelly_codex_exec\" \"\$HOME/bin/codex_exec\" 2>/dev/null || true")
-            sb.appendLine("  fi")
             sb.appendLine("fi")
             // v237: do NOT exec "$SHELL" here. $SHELL is re-pointed at the
             // $HOME/bin/bash symlink (-> app-data libbash.so) further down for

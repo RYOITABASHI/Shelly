@@ -161,13 +161,14 @@ class PayloadHygieneTest {
     // ── A1: retired payloads ─────────────────────────────────────────────
 
     @Test
-    fun `codex_exec is retired and removed, other files stay`() {
-        assertTrue("codex_exec" in PayloadHygiene.RETIRED_LIB_FILES)
+    fun `a retired name is removed, other files stay`() {
+        // codex_exec is an active name again (the codex_exec launcher), not retired.
+        assertFalse("codex_exec" in PayloadHygiene.RETIRED_LIB_FILES)
         val libDir = tmp.newFolder("termux-libs")
         File(libDir, "codex_exec").writeText("0.142.0")
         File(libDir, "codex_tui").writeText("0.167.0")
 
-        val result = PayloadHygiene.removeRetired(libDir, PayloadHygiene.RETIRED_LIB_FILES, setOf("codex_tui"), log)
+        val result = PayloadHygiene.removeRetired(libDir, listOf("codex_exec"), setOf("codex_tui"), log)
 
         assertEquals(1, result.size)
         assertTrue(result[0].removed)

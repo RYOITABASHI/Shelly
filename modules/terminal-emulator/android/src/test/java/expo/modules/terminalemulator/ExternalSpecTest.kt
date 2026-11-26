@@ -223,6 +223,9 @@ class ExternalSpecTest {
         val preload = lines.indexOf("export LD_PRELOAD='/data/lib/libexec_wrapper.so'")
         assertTrue(preload > lines.indexOfFirst { it.startsWith("printf ") })
         assertEquals(lines.size - 3, preload)
+        // ...right after the lib dir is put first on PATH, so the bare
+        // codex_exec resolves to the APK-extracted launcher.
+        assertEquals("export PATH='/data/lib':\"\$PATH\"", lines[lines.size - 4])
         assertTrue(lines[lines.size - 2].startsWith("[ -e "))
     }
 }

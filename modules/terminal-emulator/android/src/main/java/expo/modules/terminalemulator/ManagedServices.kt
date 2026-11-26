@@ -214,6 +214,11 @@ object ManagedServices {
         // After every external command above (date), before the STOP-ALL check
         // that stays the last statement: `export` is a builtin.
         if (launch.execWrapper) {
+            // The lib dir first on PATH: a command node spawns by bare name
+            // (council-facade's codex_exec) resolves to the APK-extracted file,
+            // refreshed by LibExtractor right before this start, never to
+            // whatever $HOME/bin (first on the .bashrc PATH) holds.
+            sb.append("export PATH=").append(shQuote(libPath)).append(":\"\$PATH\"\n")
             sb.append("export LD_PRELOAD=").append(shQuote("$libPath/libexec_wrapper.so")).append('\n')
         }
         // STOP-ALL, checked again as the very last statement before exec: `[`

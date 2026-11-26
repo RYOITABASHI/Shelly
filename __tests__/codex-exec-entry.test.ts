@@ -1,7 +1,8 @@
-// codex_exec native entry point (BASHRC_VERSION 294): council-facade's node
-// spawns COUNCIL_CODEX_COMMAND=codex_exec without a shell, so it must be an
-// app-data ELF on PATH ($HOME/bin/codex_exec -> $SHELLY_LIB_DIR/shelly_codex_exec)
-// that runs `codex_tui exec "$@"` with the agent driver's Codex choice.
+// codex_exec native entry point: council-facade's node spawns
+// COUNCIL_CODEX_COMMAND=codex_exec without a shell, so it must be an app-data
+// ELF that PATH resolves ($SHELLY_LIB_DIR/codex_exec, extracted from the APK
+// on every start, lib dir first on the facade's PATH) that runs
+// `codex_tui exec "$@"` with the agent driver's Codex choice.
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -40,15 +41,19 @@ describe('codex_exec native entry', () => {
     expect(c).toContain('syscall(SYS_execve, LINKER64, args, env);');
   });
 
-  it('is extracted, always refreshed, and linked from $HOME/bin without reviving the retired name', () => {
-    expect(libExtractor).toContain('"lib/arm64-v8a/libshelly_codex_exec.so" to "shelly_codex_exec"');
+  it('is extracted as termux-libs/codex_exec on every start, not retired, not taken from $HOME/bin', () => {
+    expect(libExtractor).toContain('"lib/arm64-v8a/libshelly_codex_exec.so" to "codex_exec"');
     const refresh = libExtractor.slice(libExtractor.indexOf('private val ALWAYS_REFRESH'));
-    expect(refresh.slice(0, refresh.search(/\r?\n {4}\)/))).toContain('"shelly_codex_exec"');
-    // The retired termux-libs/codex_exec stays retired and is not an extracted name.
-    expect(hygiene).toMatch(/RETIRED_LIB_FILES[^)]*"codex_exec"/);
-    expect(libExtractor).not.toMatch(/to "codex_exec"/);
-    expect(Number(home.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(294);
-    expect(home).toContain('__shelly_ln -s \\"\\$SHELLY_LIB_DIR/shelly_codex_exec\\" \\"\\$HOME/bin/codex_exec\\"');
+    expect(refresh.slice(0, refresh.search(/\r?\n {4}\)/))).toContain('"codex_exec"');
+    expect(hygiene).toMatch(/val RETIRED_LIB_FILES: List<String> = listOf\(\)/);
+    // The launcher checks its own name in the lib dir.
+    expect(c).toContain('"%s/codex_exec"');
+    // No $HOME/bin link: PATH resolution for the facade is the lib dir's.
+    expect(home).not.toContain('bin/codex_exec');
+    const ms = read(`${KT}/ManagedServices.kt`);
+    const wrap = ms.slice(ms.indexOf('if (launch.execWrapper) {'));
+    expect(wrap.indexOf('sb.append("export PATH=").append(shQuote(libPath))')).toBeGreaterThan(0);
+    expect(wrap.indexOf('sb.append("export PATH=')).toBeLessThan(wrap.indexOf('sb.append("export LD_PRELOAD='));
   });
 
   it('is built and marker-checked by both Android workflows', () => {
