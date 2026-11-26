@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-25: VM CC（`feat/launcher-ingress`、Piece A Phase 1）がランチャー ingress（ContentProvider `submit_instruction` / `get_stream_feed`）・stream feed の取り込み（MCP `put_stream_feed`）・D1 の条件付き taint 免除・`hayato://chat/<slug>` の受信を実装。Phase 2 と残余を下記「ランチャー ingress」に登録。Kotlin はこの VM でコンパイル・JVM テスト未実行（JDK なし）、実機未検証。
 - 2026-11-24: CC（`feat/service-control-p1`、P1 バッチ S1）が MCP typed op `service_control` を実装し、「配達ループの typed な起動経路と生存確保」に進捗と残り 4 件を追記。ハヤトの依頼で「executor が終端記録を残さずに死ぬ経路」を P1（バッチの次点）に登録。Gradle・実機未検証。
 - 2026-11-23: ハヤト（Shelly開発）が、ブリッジの起票依頼を受けて「配達ループの typed な起動経路と生存確保」を P1 に登録。batch5 の差し替え自体は `update_delivery_script` で完了（実機で status=updated・ハッシュ独立確認済み）。
 - 2026-11-23: Codex（`feat/pipeline-config-op`）が `update_pipeline_config` の「常に許可」を P2 に登録。v1 は毎回端末での承認を求める。
@@ -99,6 +100,21 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### ランチャー ingress（Piece A Phase 1）— 実装済み、Gradle・JVM テスト・実機未検証（2026-11-25、ブランチ `feat/launcher-ingress`、P1）
+
+Phase 1 の範囲：C1 origin→taint 表と判定順の共通化、C2 監査、C3 常時許可（`submit_instruction` × `hayato`、`put_stream_feed` × `stream-feed`）、C4 投入レコード、C5 Provider（呼び出し元検証）、D1 条件付き免除、C7 stream feed、C8 `hayato://chat/<slug>`。契約の正本は VM 側の事実シートと C7 契約メモ。
+
+残件（Phase 2 以降）:
+1. **D2：承認済みの投入を Hayato へ転送する経路が無い（P1）。** 現状は「受理＋監査＋投入レコード（`approved` で停止）」まで。Phase 1 では何も実行しない。転送を作るときは、指示文を実際に使う側でコマンド安全ゲートを通すこと（`submit_instruction` 自体はゲート段を持たない：何も起動しないため。`GATE_DENIED` は契約上の予約値で、現在は「閉じた投入への nonce 再送」にだけ使う）。`get_run_result` は MCP principal スコープなので、Hayato が投入レコードを読めるかもここで決める。
+2. **C6：承認待ちの投入の非同期承認（P1）。** Phase 1 では `pending_approval` のまま 10 分で `expired` になる（承認 UI が無い）。既存の承認ストア＋モーダル＋AgentAddHandoff 型の通知で作る案（事実シート D8）。
+3. **D4：署名ピンのローテーション手順（P2）。** 構造は最大 4 世代のピン配列。ピンの追加・変更で D1 の免除は失効する（再確認まで免除なし）。運用手順は未文書化。
+4. **未検証（P1）：** Kotlin のコンパイル（CI の APK ビルド）、JVM テスト（`StreamFeedCoreTest`・`LauncherIngressCoreTest`・`LauncherCallerVerifierCoreTest`・`TrustedCallerStoreTest` ほか、CI では走らない）、実機：HAYATO-OS からの `submit_instruction`（検証済み→accepted、署名違い→VERIFY_FAILED、STOP-ALL→即時拒否）、`put_stream_feed` 初回承認→「常に許可」→背面での無人保存、`get_stream_feed` の ok／empty、上限超過時に前回分が返り続けること、`hayato://chat/<slug>` のタップ。
+5. **残余（受容、P3）：** (a) 同一 UID のコード（Shelly の PTY シェル）はアプリ専用領域の feed ファイル（`noBackupFilesDir/stream-feed/feed-v1`）と MCP キューの平文を読み書きできる。Shelly 全体の境界と同じ（`McpAlwaysAllowStore` の注記）。改ざん防止が要るなら Keystore HMAC で封印する。(b) 判定と書き込みの間のルール取り消し・トークン更新・STOP-ALL 有効化との競合（STOP-ALL・締め切り・登録内容は書き込み直前に再確認済み、残りは数文の窓。実行ではなく記録・表示用ファイルの差し替えのみ）。
+   (c) ランチャー投入の判定〜記録は `TrustedCallerStore` のロック下で行うので、設定での免除の取り消し・ピン変更・無効化・削除は判定と記録の間に入らない。「常に許可」ルールの取り消しは記録直前に再確認するが、再確認と書き込みの間（監査 1 行＋原子的書き込み 2 回）は直列化していない（C7・run_agent と同じ残余。何も実行しない記録のため受容）。(d) D1 のレートブレーキの履歴は `$HOME` の投入レコードに加え、`noBackupFilesDir/launcher-ingress/rate-v1` とメモリにも持ち、和集合で判定する（読めないときは tainted）。ゲートを通らない同一 UID のコード（Shelly のターミナル）がこのファイルとプロセスの両方を消せば初期化できる点は、(a) と同じ境界として受容。
+6. **既存コードの問題（P2）：** (a) `McpTypedOpConsumer.writeResult/readRegular` 等が `Os.open` の fd を `FileOutputStream(fd)`／`FileInputStream(fd)` で包むが、Android ではこのストリームは fd を所有せず close しない（呼び出しごとに fd が漏れる）。新規の `StreamFeedStore` と、外部公開の Provider から到達する `IngressAuditWriter.append` はこのブランチで `Os.close` で閉じるよう修正済み（他は未修正）。「exec ブリッジの fd 増大源の特定」と関係する可能性。(b) `McpTypedOpConsumer.haltedOnDisk` は lstat の例外をすべて「無し」と扱う（STOP-ALL の判定不能が fail-open）。`put_stream_feed` は ENOENT だけを「無し」とする `StreamFeedStore.haltedStrict` を使う。run_agent 側は挙動変更になるため別件。
+7. **D3／D7：契約値の擦り合わせ（P2）。** 上限値（本文 4,000 コードポイント、correlation_ref 256、nonce 8〜64、保留 8 件、承認期限 10 分、feed 48 KiB）と補完の理由区分（`DISABLED`・`BUSY`・`INVALID_PAYLOAD`・`GATE_DENIED`・`INTERNAL_ERROR`）、`approval` フィールドは事実シートの推奨値で実装した。HAYATO-OS ライン（バッチ20／27）との統合確認で確定させる。変更は `LauncherIngressLimits.kt` と TS 写し（`lib/launcher-ingress.ts`）の 2 か所。
+8. **呼び出し元を検証できない呼び出しの監査行は間引く（記録、P3）。** exported の Provider はどのアプリからも呼べるので、検証に失敗した呼び出しの監査行は 2 メソッド合計で 60 秒に 30 行まで（`LauncherIngressCore.AuditThrottle`、プロセス内のみ）。超えた分は行を書かないだけで、応答は `VERIFY_FAILED` のまま。間引いた件数を後から集計する行は無い。検証済みの呼び出しは間引かない（保留 8 件の `BUSY` とレートブレーキが上限）。
 
 ### executor リカバリ（S5）— 出荷済み（PR #204、build 3074）、残件を登録（2026-11-25）
 
