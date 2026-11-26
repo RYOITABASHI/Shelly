@@ -261,22 +261,48 @@ object LibExtractor {
         return try {
             val expected = ZipFile(context.applicationInfo.sourceDir).use { zip ->
                 val entry = zip.getEntry(apkEntry) ?: return false
-                if (entry.size > MAX_VERIFIED_BYTES) return false
-                zip.getInputStream(entry).use { it.readBytes() }
+                zip.getInputStream(entry).use { readCapped(it, MAX_VERIFIED_BYTES) } ?: return false
             }
-            if (matchesBytes(outFile, expected)) return true
+            if (expected.isEmpty()) return false
+            if (matchesBytes(outFile, expected)) {
+                if (isExecutable(outFile)) return true
+                // Same bytes, but node's bare spawn would fail with EACCES: restore +x.
+                runCatching { android.system.Os.chmod(outFile.path, 0b111_101_101) }
+                return matchesBytes(outFile, expected) && isExecutable(outFile)
+            }
             Log.w(TAG, "$fileName differs from the APK; rewriting it")
             val tmpFile = newTempFile(libDir, fileName)
             tmpFile.outputStream().use { it.write(expected) }
             replaceExtractedFile(tmpFile, outFile, fileName)
-            matchesBytes(outFile, expected)
+            matchesBytes(outFile, expected) && isExecutable(outFile)
         } catch (e: Exception) {
             Log.e(TAG, "ensureMatchesApk($fileName) failed: ${e.javaClass.simpleName}")
             false
         }
     }
 
-    private const val MAX_VERIFIED_BYTES = 1L shl 20
+    private const val MAX_VERIFIED_BYTES = 1 shl 20
+
+    /** All of [input], or null when it holds more than [max] bytes (counts what is read, not ZipEntry.size). */
+    private fun readCapped(input: java.io.InputStream, max: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) return out.toByteArray()
+            total += n
+            if (total > max) return null
+            out.write(buf, 0, n)
+        }
+    }
+
+    /** Owner-executable per lstat (a regular file was already required by matchesBytes). */
+    private fun isExecutable(f: File): Boolean = try {
+        (android.system.Os.lstat(f.path).st_mode and android.system.OsConstants.S_IXUSR) != 0
+    } catch (e: Exception) {
+        false
+    }
 
     /** A regular file (never through a symlink) whose bytes are exactly [expected]. */
     private fun matchesBytes(f: File, expected: ByteArray): Boolean = try {

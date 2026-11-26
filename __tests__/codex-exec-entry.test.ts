@@ -64,6 +64,10 @@ describe('codex_exec native entry', () => {
     expect(spawn.slice(check, check + 300)).toContain('return "launch_failed"');
     expect(libExtractor).toContain('fun ensureMatchesApk(context: Context, fileName: String): Boolean {');
     expect(libExtractor).toContain('java.util.Arrays.equals(f.readBytes(), expected)');
+    // Executable too (node's bare spawn needs +x), and the APK read is capped by bytes read.
+    expect(libExtractor).toContain('return matchesBytes(outFile, expected) && isExecutable(outFile)');
+    expect(libExtractor).toContain('readCapped(it, MAX_VERIFIED_BYTES)');
+    expect(libExtractor).toContain('android.system.OsConstants.S_IXUSR');
   });
 
   it('is built and marker-checked by both Android workflows', () => {
