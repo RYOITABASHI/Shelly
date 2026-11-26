@@ -17,11 +17,25 @@ import java.io.File
  * TerminalSessionService, which stays in the foreground while any service
  * runs ([keepsServiceAlive]).
  *
- * S1 scope: start / stop / status on request. Not here (stage S2): bringing a
- * service back after the app process dies, an app update or a reboot, and
- * restarting a supervised process that exits by itself. A process that exits
- * by itself is recorded (`state.json` exitedAt / exitCode, never stoppedAt),
- * so `status` reports it as `dead` rather than `stopped`.
+ * S1: start / stop / status on request. A process that exits by itself is
+ * recorded (`state.json` exitedAt / exitCode, never stoppedAt), so `status`
+ * reports it as `dead` rather than `stopped`.
+ *
+ * S2 (automatic recovery, for Spec.autostart services only):
+ *  - an exit by itself (not a stop, not STOP-ALL) schedules a restart after a
+ *    backoff, within a restart budget (ManagedServices.nextRestart, counted
+ *    in state.json); past the limit the service stays dead and the audit says
+ *    restart_limit.
+ *  - [reconcile] runs from TerminalSessionService's reconcile pass (boot,
+ *    package-replaced, app start, watchdog) and from its sticky restart: a
+ *    service that was started and never stopped on purpose, or stopped only
+ *    by STOP-ALL that has since been lifted, is started again; one found alive
+ *    but unsupervised (it outlived an app restart) is stopped and started under
+ *    supervision (ManagedServices.reconcileAction).
+ *  - every automatic start goes through [start] (so its halted / already-running
+ *    / not-installed checks and the script's own STOP-ALL check apply); its
+ *    audit codes are prefixed (restart_*, reconcile_*, adopt_*, halt_*).
+ *  - all of it lives in this app process; nothing in RN or the MCP server.
  *
  * Files (all under `<home>/.shelly/services/<id>/`, written only here):
  *   state.json   ManagedServices.Record of the last start / exit / stop
@@ -65,7 +79,27 @@ object ManagedServiceSupervisor {
     private val running = HashMap<String, Running>()
     @Volatile private var haltWatcher: Thread? = null
 
-    fun keepsServiceAlive(): Boolean = synchronized(lock) { running.isNotEmpty() }
+    /**
+     * A restart scheduled after an exit by itself, keyed by service id (under
+     * [lock]). [pid] / [startTime]: the run that exited; the restart goes
+     * ahead only while state.json still describes that run, unstopped.
+     */
+    private class PendingRestart(val pid: Int, val startTime: String) {
+        @Volatile var future: java.util.concurrent.ScheduledFuture<*>? = null
+    }
+    private val pending = HashMap<String, PendingRestart>()
+    private val restartExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "ShellySvcRestart").apply { isDaemon = true }
+    }
+    /** Reconcile passes in flight: the app's service stays in the foreground meanwhile. */
+    private val reconciling = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * True while a service runs, a restart is pending (the foreground service
+     * must still be there to start it), or a reconcile pass is running.
+     */
+    fun keepsServiceAlive(): Boolean =
+        synchronized(lock) { running.isNotEmpty() || pending.isNotEmpty() } || reconciling.get() > 0
 
     private fun home(context: Context): File = HomeInitializer.getHomeDir(context)
 
@@ -84,6 +118,8 @@ object ManagedServiceSupervisor {
         synchronized(controlLock) {
             val spec = resolvedSpec(app, base)
             if (spec.stopOnly) ensureHaltWatcher(app)
+            // A start or stop on request replaces any restart still waiting.
+            if (action != "status") cancelPending(spec.id)
             return when (action) {
                 "start" -> start(app, spec, principal)
                 "stop" -> stop(app, spec, principal, reason = "request")
@@ -317,10 +353,21 @@ object ManagedServiceSupervisor {
 
     // ── Start ──────────────────────────────────────────────────────────────
 
-    private fun start(context: Context, spec: ManagedServices.Spec, principal: String?): Map<String, Any?> {
+    /**
+     * An automatic start (S2): [prefix] for its audit codes (restart, reconcile,
+     * adopt), [carry] the restart accounting its new record keeps (a start on
+     * request has none, which resets it).
+     */
+    private class Auto(val prefix: String, val carry: ManagedServices.Record)
+
+    private fun start(context: Context, spec: ManagedServices.Spec, principal: String?, auto: Auto? = null): Map<String, Any?> {
+        // Same checks, same order and the same codes for every start; an
+        // automatic one only audits them under its prefix.
+        fun auditAs(context: Context, principal: String?, action: String, spec: ManagedServices.Spec, code: String) =
+            audit(context, principal, action, spec, auto?.let { ManagedServices.autoCode(it.prefix, code) } ?: code)
         val launch = spec.launch
         if (launch == null) {
-            audit(context, principal, "start", spec, "not_configured")
+            auditAs(context, principal, "start", spec, "not_configured")
             return result("not_configured", spec, status(context, spec))
         }
         if (spec.stopOnly) {
@@ -328,14 +375,14 @@ object ManagedServiceSupervisor {
             // launch (its env would be incomplete). already_running when live.
             val s = status(context, spec)
             if (s.pid != null) {
-                audit(context, principal, "start", spec, "already_running")
+                auditAs(context, principal, "start", spec, "already_running")
                 return result("already_running", spec, s)
             }
-            audit(context, principal, "start", spec, "not_configured")
+            auditAs(context, principal, "start", spec, "not_configured")
             return result("not_configured", spec, status(context, spec))
         }
         if (StopAllSwitches.halted(context)) {
-            audit(context, principal, "start", spec, "halted")
+            auditAs(context, principal, "start", spec, "halted")
             return result("halted", spec, status(context, spec))
         }
         val before = status(context, spec)
@@ -343,7 +390,7 @@ object ManagedServiceSupervisor {
         // running (status() reports RUNNING with pid=null for that case): a
         // second spawn would only race the port the first one already holds.
         if (before.pid != null || before.state == ManagedServices.State.RUNNING) {
-            audit(context, principal, "start", spec, "already_running")
+            auditAs(context, principal, "start", spec, "already_running")
             return result("already_running", spec, before)
         }
         val home = home(context)
@@ -353,21 +400,23 @@ object ManagedServiceSupervisor {
             OsConstants.S_ISREG(st.st_mode)
         }.getOrDefault(false)
         if (!scriptOk) {
-            audit(context, principal, "start", spec, "not_installed")
+            auditAs(context, principal, "start", spec, "not_installed")
             return result("not_installed", spec, before)
         }
         val code = try {
-            spawn(context, spec, launch)
+            spawn(context, spec, launch, auto?.carry)
         } catch (e: Exception) {
             Log.e(TAG, "start ${spec.id} failed: ${e.javaClass.simpleName}")
             "launch_failed"
         }
-        audit(context, principal, "start", spec, code)
+        auditAs(context, principal, "start", spec, code)
         if (code == "started") requestForegroundService(context)
         return result(code, spec, status(context, spec))
     }
 
-    private fun spawn(context: Context, spec: ManagedServices.Spec, launch: ManagedServices.Launch): String {
+    private fun spawn(
+        context: Context, spec: ManagedServices.Spec, launch: ManagedServices.Launch, carry: ManagedServices.Record?,
+    ): String {
         HomeInitializer.initialize(context) // regenerates a stale ~/.bashrc after an update (as CodexRemoteHost)
         val libDir = LibExtractor.extractAll(context)
         // council-facade spawns the bare codex_exec, which its PATH resolves to
@@ -426,7 +475,12 @@ object ManagedServiceSupervisor {
         synchronized(lock) { running[spec.id] = r }
         val recorded = writeRecord(
             context, spec.id,
-            ManagedServices.Record(pid, start, startedAt, script = launch.script.takeIf { ManagedServices.RECORD_SCRIPT_RE.matches(it) }),
+            ManagedServices.Record(
+                pid, start, startedAt, script = launch.script.takeIf { ManagedServices.RECORD_SCRIPT_RE.matches(it) },
+                // An automatic start keeps counting against the restart budget.
+                restarts = carry?.restarts ?: 0,
+                restartWindowAt = carry?.restartWindowAt,
+            ),
         )
         Thread({ waitForExit(context, spec, r) }, "ShellySvc-${spec.id}").apply { isDaemon = true; start() }
         // Without its record a service could not be reported dead later: never
@@ -441,7 +495,7 @@ object ManagedServiceSupervisor {
         // right before it execs node; this closes the gap on this side.
         if (StopAllSwitches.halted(context)) {
             r.stopping = true
-            updateRecord(context, spec.id, pid, start) { it.copy(stoppedAt = System.currentTimeMillis()) }
+            updateRecord(context, spec.id, pid, start) { it.copy(stoppedAt = System.currentTimeMillis(), haltStop = true) }
             signalVerified(mapOf(pid to start), Process.SIGNAL_KILL)
             return "halted"
         }
@@ -464,7 +518,158 @@ object ManagedServiceSupervisor {
         // A stop writes stoppedAt itself; an exit by itself leaves it unset (= dead).
         // Only this run's record: a newer start's record is never overwritten.
         updateRecord(context, spec.id, r.pid, r.startTime) { it.copy(exitedAt = now, exitCode = code) }
+        if (!r.stopping) runCatching { scheduleRestart(context, spec, r, now) }
+            .onFailure { Log.e(TAG, "${spec.id}: restart not scheduled: ${it.javaClass.simpleName}") }
         TerminalSessionService.instance?.onCodexRemoteChanged() // re-checks whether the service may stop
+    }
+
+    // ── S2: restart after an exit by itself ────────────────────────────────
+
+    /**
+     * [r] exited by itself (no stop, no STOP-ALL): charge the restart budget in
+     * state.json first (so a crash loop stays bounded even if this process
+     * dies), then start again after the backoff. Past the limit: no restart,
+     * one `restart_limit` audit line, status stays dead.
+     */
+    private fun scheduleRestart(context: Context, spec: ManagedServices.Spec, r: Running, exitedAt: Long) {
+        if (!spec.autostart || spec.stopOnly) return
+        var limitNew = false
+        val plan = synchronized(recordLock) {
+            val rec = readRecord(context, spec.id) ?: return
+            // Only this run's record, still unstopped (a stop / newer start wins).
+            if (rec.pid != r.pid || rec.startTime != r.startTime || rec.stoppedAt != null) return
+            val p = ManagedServices.nextRestart(rec, exitedAt - r.startedAt, exitedAt)
+            limitNew = p.delayMs == null && rec.gaveUpAt == null
+            if (!writeRecord(context, spec.id, p.record)) {
+                // The budget could not be charged: no restart (it could loop unbounded).
+                audit(context, null, "start", spec, "restart_record_failed")
+                return
+            }
+            p
+        }
+        val delay = plan.delayMs
+        if (delay == null) {
+            if (limitNew) audit(context, null, "start", spec, "restart_limit")
+            Log.w(TAG, "${spec.id}: restart limit reached (${plan.record.restarts} in the window); staying dead")
+            return
+        }
+        val token = PendingRestart(r.pid, r.startTime)
+        synchronized(lock) {
+            pending.remove(spec.id)?.future?.cancel(false)
+            pending[spec.id] = token
+        }
+        audit(context, null, "start", spec, "restart_scheduled")
+        Log.i(TAG, "${spec.id}: restart ${plan.record.restarts} scheduled in ${delay}ms")
+        val app = context.applicationContext
+        token.future = restartExecutor.schedule({ fireRestart(app, spec.id, token) }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    private fun fireRestart(context: Context, id: String, token: PendingRestart) {
+        try {
+            synchronized(controlLock) {
+                val mine = synchronized(lock) {
+                    if (pending[id] === token) { pending.remove(id); true } else false
+                }
+                if (!mine) return
+                val base = ManagedServices.spec(id) ?: return
+                val rec = readRecord(context, id)
+                if (rec == null || rec.pid != token.pid || rec.startTime != token.startTime || rec.stoppedAt != null) return
+                runCatching { start(context, resolvedSpec(context, base), null, Auto("restart", rec)) }
+                    .onFailure { Log.e(TAG, "$id: restart failed: ${it.javaClass.simpleName}") }
+            }
+        } finally {
+            TerminalSessionService.instance?.onCodexRemoteChanged()
+        }
+    }
+
+    /** Drops a waiting restart of [id] (a start / stop on request, the notification's Exit). */
+    private fun cancelPending(id: String) {
+        synchronized(lock) { pending.remove(id) }?.future?.cancel(false)
+    }
+
+    // ── S2: reconcile (boot / update / app start / watchdog / sticky restart) ──
+
+    /**
+     * [reconcile] on its own thread. The caller's foreground service stays
+     * (keepsServiceAlive) until it is done, then re-checks whether to stop.
+     */
+    fun reconcileInBackground(context: Context, reason: String) {
+        val app = context.applicationContext
+        reconciling.incrementAndGet()
+        try {
+            Thread({
+                try {
+                    reconcile(app, reason)
+                } catch (e: Exception) {
+                    Log.e(TAG, "service reconcile ($reason) failed: ${e.javaClass.simpleName}")
+                } finally {
+                    reconciling.decrementAndGet()
+                    TerminalSessionService.instance?.onCodexRemoteChanged()
+                }
+            }, "ShellySvcReconcile").apply { isDaemon = true; start() }
+        } catch (e: Throwable) {
+            reconciling.decrementAndGet()
+            throw e
+        }
+    }
+
+    /** One pass over every autostart service (ManagedServices.reconcileAction). */
+    fun reconcile(context: Context, reason: String) {
+        val app = context.applicationContext
+        for (base in ManagedServices.REGISTRY.values) {
+            if (!base.autostart) continue
+            runCatching { synchronized(controlLock) { reconcileOne(app, base, reason) } }
+                .onFailure { Log.e(TAG, "reconcile ($reason) ${base.id} failed: ${it.javaClass.simpleName}") }
+        }
+    }
+
+    private fun reconcileOne(context: Context, base: ManagedServices.Spec, reason: String) {
+        // A restart is already waiting: the exit path owns this service.
+        if (synchronized(lock) { pending.containsKey(base.id) }) return
+        // Never started here, or stopped on purpose: nothing to read further
+        // (no launch-spec read, no /health poll).
+        val record = readRecord(context, base.id) ?: return
+        if (record.stoppedAt != null && !record.haltStop) return
+        val spec = resolvedSpec(context, base)
+        val s = status(context, spec)
+        val action = ManagedServices.reconcileAction(spec, record, s, StopAllSwitches.halted(context))
+        if (action != ManagedServices.ReconcileAction.NONE) Log.i(TAG, "reconcile ($reason) ${spec.id}: $action")
+        when (action) {
+            ManagedServices.ReconcileAction.NONE -> Unit
+            ManagedServices.ReconcileAction.HALTED -> audit(context, null, "start", spec, "reconcile_halted")
+            ManagedServices.ReconcileAction.HALTED_STOP -> {
+                // A survivor STOP-ALL's watcher did not know of: stopped now.
+                audit(context, null, "start", spec, "reconcile_halted")
+                stop(context, spec, null, "STOP-ALL", codePrefix = "halt")
+            }
+            ManagedServices.ReconcileAction.NOT_CONFIGURED -> audit(context, null, "start", spec, "reconcile_not_configured")
+            ManagedServices.ReconcileAction.UNVERIFIED -> audit(context, null, "start", spec, "reconcile_unverified")
+            ManagedServices.ReconcileAction.ADOPT -> {
+                // Alive but outside supervision (the halt watcher would not stop
+                // it): one short interruption, then supervised. Not a crash, so
+                // it does not charge the restart budget.
+                val stopped = stop(context, spec, null, "adopt", codePrefix = "adopt")["code"]
+                if (stopped != "stopped") {
+                    audit(context, null, "start", spec, "adopt_failed")
+                    return
+                }
+                start(context, resolvedSpec(context, base), null, Auto("adopt", record))
+            }
+            ManagedServices.ReconcileAction.START -> {
+                val now = System.currentTimeMillis()
+                val ranMs = (record.exitedAt ?: record.stoppedAt ?: now) - record.startedAt
+                val plan = ManagedServices.nextRestart(record, ranMs, now)
+                if (plan.delayMs == null) {
+                    if (record.gaveUpAt == null) {
+                        writeRecord(context, spec.id, plan.record)
+                        audit(context, null, "start", spec, "reconcile_restart_limit")
+                    }
+                    return
+                }
+                // The bring-back itself is immediate; the backoff paces restarts after exits.
+                start(context, spec, null, Auto("reconcile", plan.record))
+            }
+        }
     }
 
     private fun requestForegroundService(context: Context) {
@@ -480,20 +685,37 @@ object ManagedServiceSupervisor {
 
     // ── Stop ───────────────────────────────────────────────────────────────
 
-    private fun stop(context: Context, spec: ManagedServices.Spec, principal: String?, reason: String): Map<String, Any?> {
+    /**
+     * [reason] "STOP-ALL" and "adopt" (a reconcile taking a survivor under
+     * supervision) mark the record haltStop: stopped by the supervisor itself,
+     * so a later reconcile brings the service back (after STOP-ALL is lifted).
+     * Any other stop is on purpose and stays stopped. [codePrefix]: audit
+     * codes of a stop the supervisor made on its own (adopt_*, halt_*).
+     */
+    private fun stop(
+        context: Context, spec: ManagedServices.Spec, principal: String?, reason: String, codePrefix: String? = null,
+    ): Map<String, Any?> {
+        fun auditAs(context: Context, principal: String?, action: String, spec: ManagedServices.Spec, code: String) =
+            audit(context, principal, action, spec, codePrefix?.let { ManagedServices.autoCode(it, code) } ?: code)
+        val resumable = reason == "STOP-ALL" || reason == "adopt"
         if (spec.launch == null) {
-            audit(context, principal, "stop", spec, "not_configured")
+            auditAs(context, principal, "stop", spec, "not_configured")
             return result("not_configured", spec, status(context, spec))
         }
         val before = status(context, spec)
         val pid = before.pid
         if (pid == null) {
-            audit(context, principal, "stop", spec, "not_running")
-            return result("not_running", spec, before)
+            // Nothing to signal, but a stop on request still means "stay
+            // stopped": a dead service (a restart may have been waiting) is
+            // marked stopped, so no reconcile brings it back.
+            if (reason == "request") markStopped(context, spec.id)
+            auditAs(context, principal, "stop", spec, "not_running")
+            return result("not_running", spec, if (reason == "request") status(context, spec) else before)
         }
         val start = startOf(pid)
         if (start == null) {
-            audit(context, principal, "stop", spec, "not_running")
+            if (reason == "request") markStopped(context, spec.id)
+            auditAs(context, principal, "stop", spec, "not_running")
             return result("not_running", spec, status(context, spec))
         }
         val now = System.currentTimeMillis()
@@ -501,7 +723,7 @@ object ManagedServiceSupervisor {
         // Not spawned here: right before signalling, check again that the pid is
         // still exactly this service (it may have exec'd something else).
         if (ours == null && !isServiceProcess(context, spec.launch, pid)) {
-            audit(context, principal, "stop", spec, "not_running")
+            auditAs(context, principal, "stop", spec, "not_running")
             return result("not_running", spec, status(context, spec))
         }
         ours?.stopping = true
@@ -510,8 +732,8 @@ object ManagedServiceSupervisor {
             val rec = readRecord(context, spec.id)
             writeRecord(
                 context, spec.id,
-                if (rec != null && rec.pid == pid && rec.startTime == start) rec.copy(stoppedAt = now)
-                else ManagedServices.Record(pid, start, before.startedAt ?: now, stoppedAt = now),
+                if (rec != null && rec.pid == pid && rec.startTime == start) rec.copy(stoppedAt = now, haltStop = resumable)
+                else ManagedServices.Record(pid, start, before.startedAt ?: now, stoppedAt = now, haltStop = resumable),
             )
         }
         Log.i(TAG, "stopping ${spec.id} pid=$pid ($reason)")
@@ -525,14 +747,33 @@ object ManagedServiceSupervisor {
         var i = 0
         while (i < 10 && startOf(pid) == start) { Thread.sleep(100); i++ }
         val code = if (startOf(pid) == start) "stop_failed" else "stopped"
-        audit(context, principal, "stop", spec, code)
+        auditAs(context, principal, "stop", spec, code)
         TerminalSessionService.instance?.onCodexRemoteChanged()
         return result(code, spec, status(context, spec))
+    }
+
+    /** A stop on purpose of a service with no live process: state.json says stopped (never a resumable stop). */
+    private fun markStopped(context: Context, id: String) {
+        synchronized(recordLock) {
+            val rec = readRecord(context, id) ?: return
+            if (rec.stoppedAt == null || rec.haltStop) {
+                writeRecord(context, id, rec.copy(stoppedAt = System.currentTimeMillis(), haltStop = false))
+            }
+        }
     }
 
     /** The service notification's Exit: stop every supervised service (no MCP principal). */
     fun stopAllSupervised(context: Context, reason: String): Boolean {
         val app = context.applicationContext
+        // Exit also means "do not come back": a restart still waiting is
+        // dropped and its dead service marked stopped.
+        synchronized(controlLock) {
+            val waiting = synchronized(lock) { pending.keys.toList() }
+            for (id in waiting) {
+                cancelPending(id)
+                runCatching { markStopped(app, id) }
+            }
+        }
         // Each round takes the snapshot under controlLock, so a start that is
         // in progress finishes first and is in the snapshot (or in the next
         // round's). Only live entries count: an exited one whose waiter has
