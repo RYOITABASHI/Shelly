@@ -166,6 +166,13 @@ object LibExtractor {
         // replacing the generated #!/system/bin/sh script Knox refused to
         // exec outside the interactive shelly() bash function.
         "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd",
+        // BASHRC_VERSION 294: native `codex_exec` (jni/shelly-codex-exec.c) for
+        // callers that spawn Codex without a shell -- council-facade's node
+        // (COUNCIL_CODEX_COMMAND=codex_exec). HomeInitializer symlinks
+        // $HOME/bin/codex_exec -> $libDir/shelly_codex_exec. Not the retired
+        // termux-libs/codex_exec (PayloadHygiene.RETIRED_LIB_FILES): that name
+        // stays retired; this is a launcher for `codex_tui exec`.
+        "lib/arm64-v8a/libshelly_codex_exec.so" to "shelly_codex_exec",
         // Claude Code glibc (S1): ulexec-style userland loader that starts the
         // official, UNMODIFIED linux-arm64 glibc binary via its glibc ld.so.
         // Launched as `linker64 $libDir/shelly_glibc_exec <ld.so> ...`; it
@@ -202,6 +209,8 @@ object LibExtractor {
         "shelly_xdg_open",
         // BASHRC_VERSION 255: same reasoning for the native `shelly` shim.
         "shelly_cmd",
+        // BASHRC_VERSION 294: same reasoning for the native codex_exec launcher.
+        "shelly_codex_exec",
         // Claude Code glibc loader: ALWAYS_REFRESH so loader fixes ship
         // without a versionCode bump (same reasoning as the other helpers).
         "shelly_glibc_exec",

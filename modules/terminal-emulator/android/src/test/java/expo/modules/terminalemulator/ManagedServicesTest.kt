@@ -48,6 +48,8 @@ class ManagedServicesTest {
         assertEquals("exec /system/bin/linker64 '/data/lib/node' '/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js' 'loop'", lines.last())
         assertFalse(cmd.contains("exec node"))
         assertFalse(cmd.contains("command -v node"))
+        // article-delivery keeps no exec wrapper: node runs with LD_PRELOAD unset.
+        assertFalse(cmd.contains("export LD_PRELOAD"))
         // What that exec leaves in /proc/<pid>/cmdline is this service to cmdlineMatches.
         val paths = ManagedServices.scriptPaths(launch, listOf("/data/user/0/x/files/home"))
         val argv = listOf("/system/bin/linker64", "/data/lib/node", "/data/user/0/x/files/home/.shelly/agents/.env.article-delivery.js", "loop")
