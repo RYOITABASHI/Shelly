@@ -133,16 +133,41 @@ function run(
   }
 }
 
+const UNCHECKED = { event: 'research_numbers_unchecked', reason: 'no-main-card', stepIndex: 0 };
+
 it.each([
-  ['sufficient memo', memo('A', true), '事実: 30 students'],
-  ['memo without a main-study header', `A summary mentions 主研究: inline. ${url('A')}`, 'A summary mentions 主研究: inline.'],
-])('passes through a %s', (_label, research, carried) => {
+  ['sufficient memo', memo('A', true), '事実: 30 students', []],
+  // v71: notes without a main-study card are audited as unchecked; nothing else changes.
+  ['memo without a main-study header', `A summary mentions 主研究: inline. ${url('A')}`, 'A summary mentions 主研究: inline.', [expect.objectContaining(UNCHECKED)]],
+])('passes through a %s', (_label, research, carried, events) => {
   const result = run([research]);
-  expect(result.events).toEqual([]);
+  expect(result.events).toEqual(events);
   expect(result.prompts).toHaveLength(2);
   expect(result.prompts[1]).toContain(carried);
   expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
   expect(result.drafts[0]).toContain(draft);
+});
+
+it('audits notes without a main-study card once, with no text, and proceeds exactly as before (v71)', () => {
+  const research = `A summary without a labelled study. ${url('A')}`;
+  const result = run([research]);
+  const unchecked = result.audit.filter(({ event }) => event === 'research_numbers_unchecked');
+  expect(unchecked).toHaveLength(1);
+  expect(Object.keys(unchecked[0]).sort()).toEqual(['agentId', 'event', 'kind', 'reason', 'stepIndex', 'ts']);
+  expect(unchecked[0]).toMatchObject(UNCHECKED);
+  expect(result.events).toEqual([expect.objectContaining(UNCHECKED)]);
+  expect(result.prompts).toHaveLength(2);
+  expect(result.prompts[1]).toContain('A summary without a labelled study.');
+  expect(result.prompts[1]).not.toContain('insufficient numerical evidence');
+  expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+  expect(result.held).toEqual([]);
+  expect(result.drafts[0]).toContain(draft);
+  expect(result.drafts[0]).not.toContain('review_note');
+});
+
+it('does not audit unchecked when every attempt has a main-study card (v71)', () => {
+  const result = run([memo('A', false), memo('B', true)]);
+  expect(result.audit.filter(({ event }) => event === 'research_numbers_unchecked')).toEqual([]);
 });
 
 it('retries with a named exclusion and drafts from the sufficient replacement', () => {
@@ -775,7 +800,8 @@ it('absorbs a markerless parallel memo with a historical first source without gu
   const research = `A fictional finding [1].\n\nSources:\n[1] ${url('A')}`;
   const result = runParallelWriter([research], { history: ['A'] });
   expect(result.calls).toEqual(['research', 'writer']);
-  expect(result.audit.filter(({ event }) => /^research_(?:numbers_|history_|topic_exhausted$)/.test(event))).toEqual([]);
+  expect(result.audit.filter(({ event }) => /^research_(?:numbers_(?!unchecked$)|history_|topic_exhausted$)/.test(event))).toEqual([]);
+  expect(result.events).toEqual([expect.objectContaining(UNCHECKED)]);
   expect(result.audit).toContainEqual(expect.objectContaining({ event: 'sourcing_research', sources: 1 }));
   expect(result.status).toBe(0);
   expect(result.drafts[0]).toContain(draft);
@@ -790,7 +816,8 @@ it('retries a markerless parallel replacement that still cites the historical st
     expect.objectContaining({ event: 'research_history_match', attempt: 2 }),
     expect.objectContaining({ event: 'research_history_retry', attempt: 3 }),
   ]);
-  expect(result.events).toEqual([]);
+  // v71: only the markerless second attempt has no card to check.
+  expect(result.events).toEqual([expect.objectContaining(UNCHECKED)]);
   expect(result.calls).toEqual(['research', 'research', 'research', 'writer']);
   expect(result.writerPrompts).toHaveLength(1);
   expect([...result.writerPrompts, ...result.drafts].join('\n')).not.toMatch(/distinctive result|study\.example\/A/);
@@ -805,7 +832,8 @@ it('publishes markerless research completion before a slower non-draft sibling',
     .filter(({ kind, state }) => kind === 'branch_state' && state === 'DONE')
     .map(({ stepIndex }) => stepIndex);
   expect(completed.slice(0, 2)).toEqual([0, 1]);
-  expect(result.audit.filter(({ event }) => /^research_(?:numbers_|history_|topic_exhausted$)/.test(event))).toEqual([]);
+  expect(result.audit.filter(({ event }) => /^research_(?:numbers_(?!unchecked$)|history_|topic_exhausted$)/.test(event))).toEqual([]);
+  expect(result.events).toEqual([expect.objectContaining(UNCHECKED)]);
   expect(result.status).toBe(0);
   expect(result.drafts[0]).toContain(draft);
 });
