@@ -228,6 +228,30 @@ class LauncherSubmissionCoreTest {
     }
 
     @Test
+    fun moreThanFiftyPendingAcrossPrincipalsArePrunedOldestFirstToTheCap() {
+        // 7 principals × 8 pending = 56 (a re-pinned launcher is a new principal), plus 10 decided ones.
+        val principals = (0 until 7).map { p -> "launcher:" + "%032x".format(p + 1) }
+        val pending = principals.flatMapIndexed { p, who ->
+            (0 until LauncherIngressLimits.MAX_PENDING).map { i ->
+                sub(id = "ls_" + "%032x".format(2000 + p * 10 + i), acceptedAt = now - 300_000L + p * 1000L + i).copy(principal = who)
+            }
+        }
+        val decided = (0 until 10).map { i -> sub(id = "ls_" + "%032x".format(3000 + i), state = McpRunTickets.SUB_DENIED_BY_USER, acceptedAt = now - 1000L * i, decidedAt = now) }
+        val drop = McpRunTickets.submissionsToPrune(pending + decided, emptyList(), now)
+        // All 10 decided go first, then the oldest pending until 56 kept + 1 incoming ≤ 50.
+        assertTrue(decided.all { it.id in drop })
+        val keptPending = pending.filter { it.id !in drop }
+        assertEquals(LauncherIngressLimits.INBOX_MAX_RECORDS - 1, keptPending.size)
+        val droppedPending = pending.filter { it.id in drop }
+        assertTrue(droppedPending.maxOf { it.acceptedAt } <= keptPending.minOf { it.acceptedAt })
+        // The display cap agrees: never more than 50, the newest pending kept.
+        val o = JSONObject(LauncherSubmissionCore.inboxJson(pending + decided, emptyList(), now, halted = false))
+        val items = o.getJSONArray("items")
+        assertEquals(LauncherIngressLimits.INBOX_MAX_RECORDS, items.length())
+        assertTrue((0 until items.length()).all { items.getJSONObject(it).getString("state") == "pending_approval" })
+    }
+
+    @Test
     fun denialRecordsAreClosedTextFreeAndNeverSubmissions() {
         val d = denial(1, now)
         val json = McpRunTickets.encodeDenial(d)

@@ -154,21 +154,22 @@ object LauncherSubmissions {
     }
 
     /**
-     * A refusal's audit line (best effort; the answer is the refusal either
-     * way). [submissionId]: the id of a get / consume whose arguments were
-     * valid (null when they were not, and for list).
+     * A refusal's audit line. [submissionId]: the id of a get / consume whose
+     * arguments were valid (null when they were not, and for list). Returns
+     * whether the line was written: the caller answers `audit_failed` instead
+     * of the refusal when it was not (P2-C4, fail closed like every reader answer).
      */
-    fun auditRefusal(context: Context, tool: String, principal: String?, submissionId: String?, code: String) {
+    fun auditRefusal(context: Context, tool: String, principal: String?, submissionId: String?, code: String): Boolean {
         val kind = when (tool) {
             LauncherSubmissionCore.OP_GET -> "launcher_submission_get"
             LauncherSubmissionCore.OP_LIST -> "launcher_submission_list"
             LauncherSubmissionCore.OP_CONSUME -> "launcher_submission_consume"
-            else -> return
+            else -> return false
         }
         val id = if (tool == LauncherSubmissionCore.OP_LIST || !McpRunTickets.isSubmissionId(submissionId)) null else submissionId
-        if (!IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)) {
-            Log.w(TAG, "reader audit line not written ($kind $code)")
-        }
+        val ok = IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)
+        if (!ok) Log.w(TAG, "reader audit line not written ($kind $code)")
+        return ok
     }
 
     /**

@@ -363,7 +363,7 @@ describe('gate round 1 fixes', () => {
     const prune = tickets.slice(tickets.indexOf('fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long)'), tickets.indexOf('/** [submissionsToPrune] with no denial records. */'));
     expect(prune).toContain('var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS');
     expect(prune).toContain('denials.map { Row(it.id, it.at, false) }');
-    expect(tickets).toContain('for (id in submissionsToPrune(all, allDenials(dir), now)) {');
+    expect(tickets).toContain('runCatching { pruneSubmissionRecords(context, outDir, all, allDenials(dir), now) }');
   });
 
   it('2: synchronous denials are text-free records next to the submissions, verified callers only; no audit read-back', () => {
@@ -371,8 +371,8 @@ describe('gate round 1 fixes', () => {
     expect(core).not.toMatch(/deniedFromAuditLine|reasonForDeniedCode/);
     // Never for VERIFY_FAILED; only after the refusal's own audit line; never changes the answer.
     expect(provider).toContain('if (reason == LauncherIngressCore.Reason.VERIFY_FAILED) return');
-    expect(provider).toContain('if (audited) keepDenial(answer.reason, answer.code, corr, null)');
-    expect(provider).toContain('keepDenial(LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", s.correlationRef, s.id)');
+    expect(provider).toContain('else -> answerDenied(answer.reason, answer.code, "launcher_submit_denied", corr)');
+    expect(provider).toContain('LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", "launcher_submit_denied", s.correlationRef, s.id,');
     expect(provider).toContain('if (!McpRunTickets.recordDenial(ctx, d)) Log.w(TAG, "denial record not kept")');
     // The unverified path returns before any denial record.
     const unverified = provider.slice(provider.indexOf('if (v !is LauncherCallerVerifierCore.Result.Verified) {'), provider.indexOf('val principal = v.principal'));
@@ -388,7 +388,7 @@ describe('gate round 1 fixes', () => {
     // One atomic write (after the shared retention prune), no new directory.
     const rec = tickets.slice(tickets.indexOf('fun recordDenial('), tickets.indexOf('fun allDenialsCurrent('));
     expect((rec.match(/writePrivateAtomic\(/g) ?? []).length).toBe(1);
-    expect(rec).toContain('submissionsToPrune(allSubmissions(dir), allDenials(dir), now)');
+    expect(rec).toContain('pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now)');
     expect(rec).toContain('val dir = ensureRunsDir(context)');
     // The reader: a denial is gettable as `denied` without text, never consumable, listed without text.
     expect(io).toContain('is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.readDenial(context, args.id)?.let { d ->');
@@ -405,5 +405,58 @@ describe('gate round 1 fixes', () => {
     expect(consumer).toContain('LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)');
     expect(io).toContain('val id = if (tool == LauncherSubmissionCore.OP_LIST || !McpRunTickets.isSubmissionId(submissionId)) null else submissionId');
     expect(io).toContain('IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)');
+  });
+});
+
+describe('gate round 2 fixes', () => {
+  const tickets = kt('McpRunTickets.kt');
+  const core = kt('LauncherSubmissionCore.kt');
+  const io = kt('LauncherSubmissions.kt');
+  const provider = kt('LauncherIngressProvider.kt');
+  const consumer = kt('McpTypedOpConsumer.kt');
+
+  it('1: the physical prune drops the oldest pending ones too once pending alone exceed 50, handled as expired', () => {
+    const prune = tickets.slice(tickets.indexOf('fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long)'), tickets.indexOf('/** [submissionsToPrune] with no denial records. */'));
+    const nonPending = prune.indexOf('if (r.pending) continue');
+    const pendingPass = prune.indexOf('if (!r.pending) continue');
+    expect(nonPending).toBeGreaterThan(-1);
+    expect(pendingPass).toBeGreaterThan(nonPending);
+    const helper = tickets.slice(tickets.indexOf('private fun pruneSubmissionRecords('), tickets.indexOf('/** Every denial record in [dir]'));
+    expect(helper).toContain('LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s)');
+    expect(helper).toContain('submissionTextFile(context, id).delete()');
+    expect(helper).toContain('LauncherApprovalNotifier.refreshAsync(context)');
+    // The display cap keeps at most 50, newest pending first.
+    const cap = core.slice(core.indexOf('fun capInbox('), core.indexOf('fun inboxJson('));
+    expect(cap).toContain('.take(cap)');
+    expect(cap).toContain('.take(cap - pending.size)');
+  });
+
+  it('2: every synchronous denial answered to a verified caller reaches keepDenial (through answerDenied)', () => {
+    const fnStart = provider.indexOf('private fun submit(');
+    const verified = provider.slice(provider.indexOf('val principal = v.principal', fnStart), provider.indexOf('// ── get_stream_feed'));
+    // answerDenied records first, then builds the Bundle.
+    const ad = verified.slice(verified.indexOf('fun answerDenied('), verified.indexOf('// The registry lock is held'));
+    expect(ad.indexOf('keepDenial(reason, code, c, ref)')).toBeGreaterThan(-1);
+    expect(ad.indexOf('keepDenial(reason, code, c, ref)')).toBeLessThan(ad.indexOf('LauncherIngressCore.denied('));
+    // keepDenial skips VERIFY_FAILED only.
+    const kd = verified.slice(verified.indexOf('fun keepDenial('), verified.indexOf('fun answerDenied('));
+    expect(kd).toMatch(/if \(reason == LauncherIngressCore\.Reason\.VERIFY_FAILED\) return\s+val d = McpRunTickets\.Denial/);
+    // Outside answerDenied, nothing in the verified part answers a denial directly.
+    const rest = verified.slice(0, verified.indexOf('fun answerDenied(')) + verified.slice(verified.indexOf('// The registry lock is held'));
+    expect(rest).not.toMatch(/internalError\(|LauncherIngressCore\.denied\(/);
+    // The enumerated paths: duplicate audit failures, closed duplicate, deny (verify / unaudited / audited), record failed, audit failed.
+    const calls = [...rest.matchAll(/answerDenied\(\s*LauncherIngressCore\.Reason\.(\w+)|answerDenied\(answer\.reason/g)].map((m) => m[1] ?? 'answer.reason');
+    expect(calls).toEqual(['INTERNAL_ERROR', 'INTERNAL_ERROR', 'GATE_DENIED', 'answer.reason', 'INTERNAL_ERROR', 'answer.reason', 'INTERNAL_ERROR', 'INTERNAL_ERROR']);
+    expect(rest).toContain('IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", "internal_error", answer.s))\n                    answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "internal_error", null, corr)');
+    expect(rest).toContain('Answer.AuditFailed -> answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, corr)');
+  });
+
+  it('3: an initial reader refusal whose audit line was not written is answered audit_failed', () => {
+    expect(io).toContain('fun auditRefusal(context: Context, tool: String, principal: String?, submissionId: String?, code: String): Boolean {');
+    expect(io).toContain('val ok = IngressAuditWriter.appendSubmissionReaderLine(context, kind, principal, id, code, null)');
+    expect(consumer).toMatch(/if \(LauncherSubmissions\.auditRefusal\(app, request\.tool, request\.principal, outcome\.id, outcome\.refusal\.code\)\) \{\s+LauncherSubmissionCore\.errorResult\(outcome\.refusal\)\s+\} else \{\s+LauncherSubmissionCore\.errorResult\(LauncherSubmissionCore\.AUDIT_FAILED\)/);
+    // Every other reader answer: unaudited replies are checked at the end; audited ones answer audit_failed themselves.
+    expect(io).toContain('if (!reply.audited && !line(reply.code)) {');
+    expect((io.match(/Reply\("audit_failed", LauncherSubmissionCore\.errorResult\(LauncherSubmissionCore\.AUDIT_FAILED\), audited = true\)/g) ?? []).length).toBe(3);
   });
 });

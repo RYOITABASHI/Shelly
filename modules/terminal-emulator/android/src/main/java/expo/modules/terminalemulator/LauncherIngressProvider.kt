@@ -240,6 +240,24 @@ class LauncherIngressProvider : ContentProvider() {
             if (!McpRunTickets.recordDenial(ctx, d)) Log.w(TAG, "denial record not kept")
         }
 
+        // EVERY synchronous denial answered to this verified caller below goes
+        // through here (gate round 2): first its denial record (keepDenial; skipped
+        // only for VERIFY_FAILED), then the Bundle. [auditEvent] is the event named
+        // in the answer (null when its audit line could not be written).
+        fun answerDenied(
+            reason: LauncherIngressCore.Reason,
+            code: String,
+            auditEvent: String?,
+            c: String?,
+            ref: String? = null,
+            extra: Map<String, Any> = emptyMap(),
+        ): Bundle {
+            keepDenial(reason, code, c, ref)
+            val m = LinkedHashMap(LauncherIngressCore.denied(reason, auditEvent, c))
+            m.putAll(extra)
+            return toBundle(m)
+        }
+
         // The registry lock is held from the decision to the record, so withdrawing
         // the exemption, changing the pins or disabling / removing the launcher in
         // Settings (TrustedCallerStore's @Synchronized writers) cannot fall between
@@ -274,39 +292,38 @@ class LauncherIngressProvider : ContentProvider() {
                     val approvedNow = s.state == McpRunTickets.SUB_APPROVED || s.state == McpRunTickets.SUB_CONSUMED
                     val kind = if (approvedNow) "launcher_submit_accepted" else "launcher_submit_pending"
                     if (approvedNow || s.state == McpRunTickets.SUB_PENDING) {
-                        if (!IngressAuditWriter.appendLauncherLine(ctx, line(kind, "duplicate", s, duplicate = true))) return internalError(s.correlationRef)
+                        if (!IngressAuditWriter.appendLauncherLine(ctx, line(kind, "duplicate", s, duplicate = true))) {
+                            return answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, s.correlationRef, s.id)
+                        }
                         toBundle(LauncherIngressCore.accepted(s.id, approvedNow, s.untrusted, kind, s.correlationRef, true))
                     } else {
                         // The earlier submission was refused by a person or expired: the retry is not a new one (D7).
                         if (!IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", "duplicate_closed", s, duplicate = true))) {
-                            return internalError(s.correlationRef)
+                            return answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, s.correlationRef, s.id)
                         }
-                        keepDenial(LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", s.correlationRef, s.id)
-                        val m = LinkedHashMap(LauncherIngressCore.denied(LauncherIngressCore.Reason.GATE_DENIED, "launcher_submit_denied", s.correlationRef))
-                        m["submission_id"] = s.id
-                        m["duplicate"] = true
-                        toBundle(m)
+                        answerDenied(
+                            LauncherIngressCore.Reason.GATE_DENIED, "duplicate_closed", "launcher_submit_denied", s.correlationRef, s.id,
+                            mapOf<String, Any>("submission_id" to s.id, "duplicate" to true),
+                        )
                     }
                 }
                 is Answer.Deny -> {
                     val audited = IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", answer.code))
-                    // Only a refusal that is answered as itself (its line written) is kept for the inbox.
-                    if (audited) keepDenial(answer.reason, answer.code, corr, null)
                     // §8 R8: a denial whose audit line could not be written is INTERNAL_ERROR,
                     // except VERIFY_FAILED (the registration changed at commit), which stays
-                    // VERIFY_FAILED with no detail and no echo.
+                    // VERIFY_FAILED with no detail and no echo (and gets no denial record).
                     when {
                         answer.reason == LauncherIngressCore.Reason.VERIFY_FAILED ->
-                            toBundle(LauncherIngressCore.denied(answer.reason, if (audited) "launcher_submit_denied" else null, null))
-                        !audited -> internalError(corr)
-                        else -> toBundle(LauncherIngressCore.denied(answer.reason, "launcher_submit_denied", corr))
+                            answerDenied(answer.reason, answer.code, if (audited) "launcher_submit_denied" else null, null)
+                        !audited -> answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, corr)
+                        else -> answerDenied(answer.reason, answer.code, "launcher_submit_denied", corr)
                     }
                 }
                 is Answer.RecordFailed -> {
                     IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", "internal_error", answer.s))
-                    internalError(corr)
+                    answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "internal_error", null, corr)
                 }
-                Answer.AuditFailed -> internalError(corr)
+                Answer.AuditFailed -> answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, corr)
             }
         }
     }

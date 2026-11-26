@@ -302,7 +302,8 @@ describe('review fixes (Codex gate, 2026-11-26)', () => {
     expect(recheck).toBeLessThan(submit.indexOf('attempt(true)', lock));
     // The answer (duplicate audit lines included) is built inside the same lock.
     expect(submit.indexOf('line(kind, "duplicate", s, duplicate = true)', lock)).toBeGreaterThan(lock);
-    expect(submit.indexOf('Answer.AuditFailed -> internalError(corr)', lock)).toBeGreaterThan(lock);
+    // Phase 2 gate round 2: the INTERNAL_ERROR answer now goes through answerDenied (denial record first).
+    expect(submit.indexOf('Answer.AuditFailed -> answerDenied(LauncherIngressCore.Reason.INTERNAL_ERROR, "audit_failed", null, corr)', lock)).toBeGreaterThan(lock);
     expect(submit.slice(lock).indexOf('return when (answer)')).toBe(-1);
     // The `when` sits one level inside the synchronized block (12 spaces), not after it (8).
     expect(submit.indexOf('\n            when (answer) {')).toBeGreaterThan(lock);

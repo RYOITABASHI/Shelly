@@ -666,10 +666,13 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
     private fun processSubmissionReader(request: McpTypedOpDecision.Request, claimed: File) {
         val result = synchronized(commitLock) {
             when (val outcome = LauncherSubmissionCore.decideReader(request, readerSteps)) {
-                is LauncherSubmissionCore.ReaderOutcome.Refuse -> {
-                    LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)
-                    LauncherSubmissionCore.errorResult(outcome.refusal)
-                }
+                is LauncherSubmissionCore.ReaderOutcome.Refuse ->
+                    // Every reader answer is audited; a refusal whose line could not be written is audit_failed.
+                    if (LauncherSubmissions.auditRefusal(app, request.tool, request.principal, outcome.id, outcome.refusal.code)) {
+                        LauncherSubmissionCore.errorResult(outcome.refusal)
+                    } else {
+                        LauncherSubmissionCore.errorResult(LauncherSubmissionCore.AUDIT_FAILED)
+                    }
                 is LauncherSubmissionCore.ReaderOutcome.Proceed -> LauncherSubmissions.answerReader(app, request.principal, outcome.args) {
                     when {
                         !isCurrent() -> LauncherSubmissionCore.REVOKED

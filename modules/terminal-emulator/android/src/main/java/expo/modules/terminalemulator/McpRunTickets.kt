@@ -1203,12 +1203,14 @@ object McpRunTickets {
      * population (submissions + denial records, every principal): older than
      * [LauncherIngressLimits.INBOX_MAX_AGE_MS], then the oldest non-pending
      * ones until the total, counting the incoming one, is at most
-     * [LauncherIngressLimits.INBOX_MAX_RECORDS]. A pending (still decidable)
-     * submission is never dropped; there are at most
-     * [LauncherIngressLimits.MAX_PENDING] per principal (< the cap), so the
-     * total stays within the cap. The run tickets' 24 h [RETENTION_MS] does
-     * not apply: an approved submission must outlive its 24 h `stale` mark
-     * (no deletion then, phase 2 fact sheet §3).
+     * [LauncherIngressLimits.INBOX_MAX_RECORDS]. Pending (still decidable)
+     * submissions go last: only when the pending ones alone still exceed the
+     * cap (MAX_PENDING is per principal, and a re-pinned launcher is a new
+     * principal) are the oldest pending ones dropped too, so the total on disk
+     * never exceeds the cap; the caller ([pruneSubmissionRecords]) treats
+     * those as expired (audit line, text deleted). The run tickets' 24 h
+     * [RETENTION_MS] does not apply: an approved submission must outlive its
+     * 24 h `stale` mark (no deletion then, phase 2 fact sheet §3).
      */
     fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long): Set<String> {
         class Row(val id: String, val at: Long, val pending: Boolean)
@@ -1218,9 +1220,17 @@ object McpRunTickets {
             denials.map { Row(it.id, it.at, false) }
         for (r in rows) if (!r.pending && now - r.at > LauncherIngressLimits.INBOX_MAX_AGE_MS) out.add(r.id) else kept.add(r)
         var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS
-        for (r in kept.sortedWith(compareBy<Row>({ it.at }, { it.id }))) {
+        val oldestFirst = kept.sortedWith(compareBy<Row>({ it.at }, { it.id }))
+        for (r in oldestFirst) {
             if (excess <= 0) break
             if (r.pending) continue
+            out.add(r.id)
+            excess--
+        }
+        // Still over: the oldest pending ones (handled as expired by the caller).
+        for (r in oldestFirst) {
+            if (excess <= 0) break
+            if (!r.pending) continue
             out.add(r.id)
             excess--
         }
@@ -1334,6 +1344,31 @@ object McpRunTickets {
         return if (d.id == id) d else null
     }
 
+    /**
+     * [submissionsToPrune] applied on disk before a new record is written:
+     * each dropped record and its text are deleted. A submission dropped
+     * while still pending (only when pending ones alone exceed the cap) is
+     * handled as an expiry first: its `launcher_submit_expired` line (code
+     * `pruned`, fixed fields, no text), then the review notification is
+     * refreshed. Throws on I/O failure (callers wrap it).
+     */
+    private fun pruneSubmissionRecords(context: Context, dir: File, all: List<Submission>, denials: List<Denial>, now: Long) {
+        val drop = submissionsToPrune(all, denials, now)
+        if (drop.isEmpty()) return
+        var pendingDropped = false
+        for (s in all) {
+            if (s.id !in drop || applySubmissionExpiry(s, now).state != SUB_PENDING) continue
+            pendingDropped = true
+            val line = LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s)
+            if (!IngressAuditWriter.appendLauncherLine(context, line)) Log.w(TAG, "submission prune audit line not written")
+        }
+        for (id in drop) {
+            submissionFile(dir, id).delete()
+            submissionTextFile(context, id).delete()
+        }
+        if (pendingDropped) runCatching { LauncherApprovalNotifier.refreshAsync(context) }
+    }
+
     /** Every denial record in [dir] (the `ls_` files whose kind is `denial`). */
     private fun allDenials(dir: File): List<Denial> {
         if (!lexists(dir)) return emptyList()
@@ -1386,12 +1421,8 @@ object McpRunTickets {
             if (!isValidSubmission(s) || s.principal != principal) return onResult(answer, SubmissionWriteResult.FAILED)
             val outDir = ensureRunsDir(context)
             if (lexists(submissionFile(outDir, s.id))) return onResult(answer, SubmissionWriteResult.FAILED)
-            runCatching {
-                for (id in submissionsToPrune(all, allDenials(dir), now)) {
-                    submissionFile(outDir, id).delete()
-                    submissionTextFile(context, id).delete()
-                }
-            }.onFailure { Log.w(TAG, "submission prune failed type=${it.javaClass.simpleName}") }
+            runCatching { pruneSubmissionRecords(context, outDir, all, allDenials(dir), now) }
+                .onFailure { Log.w(TAG, "submission prune failed type=${it.javaClass.simpleName}") }
             if (!write.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
             val textFile = submissionTextFile(context, s.id)
             try {
@@ -1595,12 +1626,8 @@ object McpRunTickets {
             val dir = ensureRunsDir(context)
             if (lexists(submissionFile(dir, d.id))) return false
             val now = System.currentTimeMillis()
-            runCatching {
-                for (id in submissionsToPrune(allSubmissions(dir), allDenials(dir), now)) {
-                    submissionFile(dir, id).delete()
-                    submissionTextFile(context, id).delete()
-                }
-            }.onFailure { Log.w(TAG, "denial prune failed type=${it.javaClass.simpleName}") }
+            runCatching { pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now) }
+                .onFailure { Log.w(TAG, "denial prune failed type=${it.javaClass.simpleName}") }
             ClosePawRunResults.writePrivateAtomic(submissionFile(dir, d.id), encodeDenial(d))
             true
         } catch (e: Exception) {
