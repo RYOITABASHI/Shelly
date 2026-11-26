@@ -5923,17 +5923,34 @@ function researchStudyCards(text) {
   return out;
 }
 
-// One test per fact kind, on one card line (NFKC). Each also needs a digit on the line.
+// One test per fact kind, on one card line (NFKC). Each also needs a digit on
+// the line, and a metric counts only with its value right after it (gate P2-1):
+// a metric name alone (`η² was reported`) or a bare percentage (`95%`) is not
+// an effect size or a confidence interval.
+const STRUCTURE_NUMBER = String.raw`[-−+]?(?:\d+(?:[.,]\d+)?|[.,]\d+)`;
+const STRUCTURE_DECIMAL = String.raw`[-−+]?\d*[.,]\d+`;
+// A one-letter statistic (d, g, r) or OR needs `=` / `:` (not the start of a
+// word such as "group 2" or the word "or"); a named metric needs a decimal
+// value right after it.
+const STRUCTURE_EFFECT_SYMBOL_RE = new RegExp(String.raw`(?:^|[^A-Za-z])(?:cohen'?s\s+)?[dgr]\s*[=:]\s*${STRUCTURE_NUMBER}`, 'i');
+const STRUCTURE_EFFECT_OR_RE = new RegExp(String.raw`(?:^|[^A-Za-z])OR\s*[=:]\s*${STRUCTURE_NUMBER}`);
+const STRUCTURE_EFFECT_NAMED_RE = new RegExp(String.raw`(?:η\s*p?\s*[2²]|\b(?:partial\s+)?eta[- ]squared|\bhedges'?\s*g|\beffect sizes?|効果量)[^\d\n]{0,12}?${STRUCTURE_DECIMAL}|\bodds ratios?[^\d\n]{0,12}?${STRUCTURE_NUMBER}`, 'i');
+const STRUCTURE_EFFECT_VALUE_RE = { test: (line) => STRUCTURE_EFFECT_SYMBOL_RE.test(line) || STRUCTURE_EFFECT_OR_RE.test(line) || STRUCTURE_EFFECT_NAMED_RE.test(line) };
+const STRUCTURE_CI_BOUNDS_RE = new RegExp(String.raw`(?:\bCI\b|\bconfidence intervals?\b|信頼区間)[^\d\n\[(（]{0,12}?(?:\d+\s*%\s*(?:CI\b|confidence intervals?|信頼区間)?[^\d\n\[(（]{0,6})?[\[(（]?\s*${STRUCTURE_NUMBER}\s*(?:,|、|，|;|to|〜|~|–|—|-)\s*${STRUCTURE_NUMBER}`, 'i');
+const STRUCTURE_RELIABILITY_VALUE_RE = new RegExp(String.raw`(?:\bcronbach'?s?\s*(?:alpha|α)?|\balpha\b|α|\bICC\b|\bkappa\b|κ|\btest[- ]retest\b(?:\s+(?:reliability|correlation|r))?|\breliability(?:\s+coefficient)?|\bvalidity(?:\s+coefficient)?|信頼性(?:係数)?|妥当性(?:係数)?|信頼係数)[^\d\n]{0,12}?${STRUCTURE_NUMBER}`, 'i');
 const STRUCTURE_FACT_LINE_TESTS = {
-  'effect-size': (line) => /\b(?:cohen'?s\s+)?[dgr]\s*=\s*[-−+]?\.?\d|η\s*p?\s*[2²]|\beta[- ]squared\b|\bodds ratios?\b|\bOR\s*=\s*\d|\beffect sizes?\b|\bhedges'?\s*g\b|効果量/i.test(line),
-  'confidence-interval': (line) => /\bCI\b/.test(line) || /\bconfidence intervals?\b|信頼区間|95\s*%/i.test(line),
+  'effect-size': (line) => STRUCTURE_EFFECT_VALUE_RE.test(line),
+  // A label, then two bounds: `95% CI [0.12, 0.45]`, `CI: .1–.4`, `信頼区間 0.12〜0.45`.
+  'confidence-interval': (line) => STRUCTURE_CI_BOUNDS_RE.test(line) || new RegExp(String.raw`\d+\s*%\s*(?:CI\b|confidence intervals?|信頼区間)[^\d\n\[(（]{0,6}[\[(（]?\s*${STRUCTURE_NUMBER}\s*(?:,|、|，|;|to|〜|~|–|—|-)\s*${STRUCTURE_NUMBER}`, 'i').test(line),
   'sample-size': (line) => researchSampleLine(line),
   percentage: (line) => /\d\s*%|パーセント/.test(line),
   'implementation-detail': (line) => /\d[\d.,]*\s*(?:(?:-|–|〜|~|to)\s*\d[\d.,]*\s*)?(?:weeks?|months?|days?|hours?|hrs?|minutes?|mins?|sessions?|lessons?|classes|semesters?)\b/i.test(line)
     || /\d[\d.,]*\s*times\s+(?:a|per)\s+\w/i.test(line)
     || /\d[\d.,]*\s*(?:(?:-|–|〜|~)\s*\d[\d.,]*\s*)?(?:週間?|か月|ヶ月|カ月|ケ月|日間|分間|分(?!の)|回|時間|コマ|学期)/.test(line),
-  reliability: (line) => /\bcronbach|\balpha\b|α|\bICC\b|\bkappa\b|κ|\btest[- ]retest\b|\breliabilit|\bvalidity\b|信頼性|妥当性|信頼係数/i.test(line)
-    && /(?:^|[^\d])\.\d|\d\.\d|=\s*\d/.test(line),
+  // A reliability / validity label with its value right after it; a
+  // significance level (`α = .05`, `alpha level`) is not one.
+  reliability: (line) => STRUCTURE_RELIABILITY_VALUE_RE.test(line)
+    && !/(?:\balpha\b|α)\s*(?:level\b|[=:<]\s*0?[.,]0[15]\b)/i.test(line),
 };
 
 /** Whether a card holds a kind. `result` is the numbers lint's own test. Pure. */

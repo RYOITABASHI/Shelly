@@ -260,12 +260,13 @@ describe('v70 structure requirements', () => {
   });
 
   it.each([
-    ['effect-size', ['事実: d = 0.42', '事実: Cohen\'s d = .3', '事実: odds ratio 1.8', '事実: 効果量 0.5', '事実: η² = 0.06'], ['事実: d was large', '事実: effect size unclear']],
-    ['confidence-interval', ['事実: 95% CI [0.1, 0.5]', '事実: confidence interval 0.2 to 0.4', '事実: 信頼区間 0.1–0.3'], ['事実: CI not reported', '事実: confidence interval unclear']],
+    ['effect-size', ['事実: d = 0.42', '事実: Cohen\'s d = .3', '事実: odds ratio 1.8', '事実: 効果量 0.5', '事実: η² = 0.06'], ['事実: d was large', '事実: effect size unclear', '事実: η² was reported', '事実: 効果量は大きかった', '事実: group 2 improved', '事実: or 3 times a week', '事実: effect sizes in 2 studies', '事実: 2024年に実施']],
+    ['confidence-interval', ['事実: 95% CI [0.1, 0.5]', '事実: confidence interval 0.2 to 0.4', '事実: 信頼区間 0.1–0.3'], ['事実: CI not reported', '事実: confidence interval unclear', '事実: 回答率は95%だった', '事実: 95% of students', '事実: 2024年']],
     ['sample-size', ['事実: n = 120', '事実: 300 students', '事実: 45人'], ['事実: many students', '事実: 3 classrooms']],
     ['percentage', ['事実: 12% higher', '事実: 12 パーセント'], ['事実: a higher share']],
     ['implementation-detail', ['事実: 8 weeks', '事実: 3 sessions', '事実: 2 times per week', '事実: 週2回', '事実: 3か月', '事実: 45分'], ['事実: weekly sessions', '事実: 1/3 of the class', '事実: 3分の1']],
-    ['reliability', ['事実: Cronbach\'s α = .89', '事実: ICC 0.81', '事実: kappa = 0.7', '事実: 信頼性 0.9'], ['事実: reliable measure', '事実: validity was argued']],
+    ['reliability', ['事実: Cronbach\'s α = .89', '事実: ICC 0.81', '事実: kappa = 0.7', '事実: 信頼性 0.9'], ['事実: reliable measure', '事実: validity was argued', '事実: reliability was high', '事実: α = .05', '事実: alpha level 0.05']],
+  // gate P2-1: a metric name alone, a bare percentage, a year or an alpha level is not the value.
   ])('%s: met and unmet lines', (kind, yes, no) => {
     for (const line of yes) expect([line, ex.structureCardHasKind({ key: 'k', lines: ['主研究: x', line] }, kind)]).toEqual([line, true]);
     for (const line of no) expect([line, ex.structureCardHasKind({ key: 'k', lines: ['主研究: x', line] }, kind)]).toEqual([line, false]);
