@@ -3727,6 +3727,9 @@ function assembleArticle(local, ctx) {
     ...(typeof ctx.poolCandidateId === 'string' && POOL_ID_RE.test(ctx.poolCandidateId) ? [`poolCandidateId: ${JSON.stringify(ctx.poolCandidateId)}`] : []),
     // v70: the article structure the pipeline chose for this draft (none when off).
     ...Object.entries(structureIdsOf(ctx.structure)).map(([field, id]) => `${field}: ${JSON.stringify(id)}`),
+    // v71: the accepted main-study fingerprint's four type axes (none when no
+    // fingerprint was accepted), so a held draft counts for type repeats too.
+    ...typeAxesFrontmatterLines(ctx.typeAxes),
     `material: ${material}`,
     ...(material === 'ghostwritten' ? [`voice_sha: ${voice.sha}`] : []),
     ...editorLines,
@@ -5466,6 +5469,24 @@ function typeRepeatFingerprintOf(raw) {
     out[axis] = v;
   }
   return out;
+}
+
+/**
+ * A draft's `type_axes` frontmatter value (JSON text) as the four axes, or
+ * null when it is not exactly an object of the four valid axes. Pure.
+ */
+function parseTypeAxesValue(value) {
+  const parsed = parseJsonValue(String(value || ''));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const keys = Object.keys(parsed);
+  if (keys.length !== TYPE_REPEAT_AXES.length || keys.some((k) => TYPE_REPEAT_AXES.indexOf(k) === -1)) return null;
+  return typeRepeatFingerprintOf(parsed);
+}
+
+/** The `type_axes:` frontmatter line for an accepted fingerprint, or none. Pure. */
+function typeAxesFrontmatterLines(fingerprint) {
+  const axes = typeRepeatFingerprintOf(fingerprint);
+  return axes ? [`type_axes: ${JSON.stringify(axes)}`] : [];
 }
 
 /**
@@ -7979,8 +8000,13 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
   // v70: with `opts.structure` every listed draft's frame / opening / closing
   // (today's too) comes back as `structureUses` [{ date, savedAtMs, ... }].
   const wantStructure = !!(opts && opts.structure);
-  const wantAll = wantIds || wantStructure;
+  // v71: with `opts.typeAxes` every listed draft's valid `type_axes` (today's
+  // too) comes back as `typeAxesUses` [{ date, fingerprint }]; the date is the
+  // filename date for a saved draft and the archive date for a held one.
+  const wantTypeAxes = !!(opts && opts.typeAxes);
+  const wantAll = wantIds || wantStructure || wantTypeAxes;
   const structureUses = [];
+  const typeAxesUses = [];
   const poolIds = new Set();
   const unavailable = new Set();
   const partial = new Set();
@@ -8060,6 +8086,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
         const ids = structureIdsOf(fm);
         if (Object.keys(ids).length) structureUses.push(Object.assign({ date: sortDate, savedAtMs: fm.savedAtMs }, ids));
       }
+      if (wantTypeAxes && fm.typeAxes) typeAxesUses.push({ date: sortDate, fingerprint: fm.typeAxes });
       if (idsOnly) continue;
       const title = cleanHistoryTitle(fm.title);
       if (title && titles.size < PREVIOUSLY_COVERED_MAX_TITLES) titles.add(title);
@@ -8071,6 +8098,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
   const out = { titles: [...titles], unavailable: [...unavailable], partial: [...partial] };
   if (wantIds) out.poolCandidateIds = [...poolIds];
   if (wantStructure) out.structureUses = structureUses;
+  if (wantTypeAxes) out.typeAxesUses = typeAxesUses;
   return out;
 }
 
@@ -8190,13 +8218,13 @@ function parseJsonValue(text) {
  */
 function parseDraftFrontmatter(head) {
   // v69: `poolCandidateId` is set only when the frontmatter has a valid one.
-  // v70: so are `frame`, `opening` and `closing`.
+  // v70: so are `frame`, `opening` and `closing`. v71: and `typeAxes` (from `type_axes`).
   const out = { title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0, quality: '', qualityNote: '' };
   const block = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(head == null ? '' : head));
   if (!block) return out;
   const seen = new Set();
   for (const line of block[1].split(/\r?\n/)) {
-    const m = /^(title|review|review_note|material|lint|saved_at|quality|quality_note|poolCandidateId|frame|opening|closing):[ \t]*(.*)$/.exec(line);
+    const m = /^(title|review|review_note|material|lint|saved_at|quality|quality_note|poolCandidateId|frame|opening|closing|type_axes):[ \t]*(.*)$/.exec(line);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);
     const value = m[2].trim();
@@ -8204,6 +8232,10 @@ function parseDraftFrontmatter(head) {
       // v70: written by assemble as a JSON string; set only when it is a valid id.
       const parsed = value.startsWith('"') ? parseJsonValue(value) : value;
       if (typeof parsed === 'string' && STRUCTURE_ID_RE.test(parsed)) out[m[1]] = parsed;
+    } else if (m[1] === 'type_axes') {
+      // v71: written by assemble as a JSON object; set only when it is exactly the four valid axes.
+      const axes = parseTypeAxesValue(value);
+      if (axes) out.typeAxes = axes;
     } else if (m[1] === 'poolCandidateId') {
       // v69: written by assemble as a JSON string; a hand edit may drop the quotes.
       const parsed = value.startsWith('"') ? parseJsonValue(value) : value;
@@ -14520,7 +14552,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       }
       // Selection-time exclusion: the executor's own records come first; the
       // bridge's status update is only the backstop.
-      const scan = collectPreviouslyCoveredTitles(plan.output.outputDir, paths.agentsDir, sourcingToday, fs, { poolIds: true });
+      const typeRepeat = settings.typeRepeat;
+      const scan = collectPreviouslyCoveredTitles(plan.output.outputDir, paths.agentsDir, sourcingToday, fs, typeRepeat ? { poolIds: true, typeAxes: true } : { poolIds: true });
       const usedIds = new Set(scan.poolCandidateIds || []);
       const historyKeys = new Set();
       const historyEntries = historyFile ? readArticleHistory(historyFile, legacyHistoryFile) : [];
@@ -14529,9 +14562,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         const key = articleStudyKey(e.url);
         if (key) historyKeys.add(key);
       }
-      // v71: a candidate of the same type as a recent article is demoted, never excluded.
-      const typeRepeat = settings.typeRepeat;
-      const isRepeat = typeRepeat ? (c) => typeRepeatMatch(c, historyEntries, sourcingToday, typeRepeat).repeat : undefined;
+      // v71: a candidate of the same type as a recent article (the history, and
+      // the saved and held drafts' type_axes) is demoted, never excluded.
+      const typeEntries = typeRepeat ? historyEntries.concat(scan.typeAxesUses || []) : [];
+      const isRepeat = typeRepeat ? (c) => typeRepeatMatch(c, typeEntries, sourcingToday, typeRepeat).repeat : undefined;
       const selected = selectPoolCandidates(parsed.candidates, usedIds, historyKeys, isRepeat);
       const counts = Object.assign({ invalid: parsed.invalid }, selected.counts);
       const unverified = parsed.candidates.filter((c) => !c.mainAllowed);
@@ -14746,7 +14780,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (settings.typeRepeat) {
       // v71: observability only (no retry, no hold, no review note).
       try {
-        const match = typeRepeatMatch(fp.values, historyFile ? readArticleHistory(historyFile, legacyHistoryFile) : [], sourcingToday, settings.typeRepeat);
+        const drafts = collectPreviouslyCoveredTitles(plan.output.outputDir, paths.agentsDir, sourcingToday, fs, { typeAxes: true }).typeAxesUses || [];
+        const entries = (historyFile ? readArticleHistory(historyFile, legacyHistoryFile) : []).concat(drafts);
+        const match = typeRepeatMatch(fp.values, entries, sourcingToday, settings.typeRepeat);
         poolAudit(i, 'research_type_repeat', { matchedAxes: match.matchedAxes, windowDays: settings.typeRepeat.windowDays, minAxes: settings.typeRepeat.minAxes, repeat: match.repeat });
       } catch (_) {
         // An audit line is never worth the run.
@@ -15250,6 +15286,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       materials: materialsState ? materialsState.entries : [],
       poolCandidateId: adoptedPoolCandidate ? adoptedPoolCandidate.id : '',
       structure: articleStructureIds(),
+      typeAxes: acceptedFingerprint,
     };
   }
 
@@ -18161,6 +18198,8 @@ module.exports = {
   TYPE_REPEAT_AXES,
   POOL_TYPE_REPEAT_LINE,
   POOL_TYPE_REPEAT_RULE,
+  parseTypeAxesValue,
+  typeAxesFrontmatterLines,
   matchPoolCandidate,
   readPoolFile,
   researchHistoryMatches,

@@ -59,18 +59,52 @@ const daysAgo = (n: number) => {
 };
 
 type HistoryEntry = { title: string; url: string; date: string; fingerprint?: unknown };
-type Setup = { pool: unknown; entry?: Record<string, unknown>; history?: HistoryEntry[] };
+type DraftFile = { name: string; frontmatter: string };
+type Setup = {
+  pool: unknown; entry?: Record<string, unknown>; history?: HistoryEntry[];
+  savedDrafts?: DraftFile[]; heldDrafts?: (DraftFile & { day: string })[];
+  // Attended with a pinned tap and a 1 s approval timeout: the draft lands held (approval-timeout).
+  heldByTimeout?: boolean;
+};
 
 const readLines = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
+
+function listHeld(agents: string): string[] {
+  const root = path.join(agents, 'held');
+  const out: string[] = [];
+  if (!fs.existsSync(root)) return out;
+  for (const day of fs.readdirSync(root)) {
+    const dir = path.join(root, day, 'Drafts');
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) out.push(fs.readFileSync(path.join(dir, name), 'utf8'));
+  }
+  return out;
+}
 
 function run(replies: string[], setup: Setup) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-type-repeat-'));
   try {
+    return runIn(home, replies, setup);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/** One executor run in `home` (kept between runs); the audit and bodies are this run's only. */
+function runIn(home: string, replies: string[], setup: Setup) {
+  {
     const agents = path.join(home, '.shelly/agents');
     const logs = path.join(agents, 'logs');
     const outputDir = path.join(home, 'vault', 'Drafts');
     for (const dir of [outputDir, path.join(agents, 'plans'), path.join(home, '.shelly/tmp'), logs]) fs.mkdirSync(dir, { recursive: true });
     if (setup.history) fs.writeFileSync(path.join(logs, 'article-history-tr.json'), JSON.stringify({ version: 1, entries: setup.history }));
+    for (const d of setup.savedDrafts || []) fs.writeFileSync(path.join(outputDir, d.name), `---\n${d.frontmatter}\n---\n\nBody\n`);
+    for (const d of setup.heldDrafts || []) {
+      const dir = path.join(agents, 'held', d.day, 'Drafts');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, d.name), `---\n${d.frontmatter}\n---\n\nBody\n`);
+    }
+    const held = !!setup.heldByTimeout;
     fs.writeFileSync(path.join(outputDir, '_pool.json'), JSON.stringify(setup.pool));
     fs.writeFileSync(path.join(agents, 'article-pipelines.json'), JSON.stringify({
       version: 1,
@@ -79,12 +113,12 @@ function run(replies: string[], setup: Setup) {
     const planFile = path.join(agents, 'plans', `plan-agent-${agentId}.json`);
     fs.writeFileSync(planFile, JSON.stringify({
       kind: PLAN_SPEC_KIND, schemaVersion: PLAN_SPEC_SCHEMA_VERSION, generatedAt: 1,
-      agent: { id: agentId, name: 'Type repeat test', autonomous: false, autonomyLevel: 'L2' },
+      agent: { id: agentId, name: 'Type repeat test', autonomous: false, autonomyLevel: 'L2', ...(held ? { requireActionApproval: true } : {}) },
       prompt: 'Prepare an article.',
       tool: local, action: { type: 'draft' }, paths: { home },
       output: { outputDir, outputNameTemplate: '{date}-tr.md', slug: 'tr', useGlobalOutput: false, suggestedRoots: [] },
       limits: { timeoutSeconds: 30, maxConcurrent: 2 },
-      policy: { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [], unattended: true },
+      policy: { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [], unattended: !held },
       routeDecision: { route: 'on-device', toolType: 'local', toolLabel: 'Local LLM', guard: 'configured-tool', why: 'test' },
       steps: { longform: true, budget: { maxSteps: 7, totalTimeoutMs: 30 * 60_000 }, list: [
         { instruction: 'Search the web and write research notes.' },
@@ -92,26 +126,29 @@ function run(replies: string[], setup: Setup) {
         { instruction: 'Assemble draft.', local: { kind: 'assemble', stream: 'tr', parts: [[1]], reviewSteps: [], footer: '' } },
       ] },
     }));
-    fs.writeFileSync(path.join(agents, '.env'), `LOCAL_LLM_URL='http://127.0.0.1:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${path.join(home, 'vault')}'\n`);
+    fs.writeFileSync(path.join(agents, '.env'), `LOCAL_LLM_URL='http://127.0.0.1:9'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='${held ? 1 : 0}'\n${held ? "SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS='1'\n" : ''}OBSIDIAN_VAULT_PATH='${path.join(home, 'vault')}'\n`);
+    const auditFile = path.join(logs, agentId, 'plan-executor-audit.jsonl');
+    fs.rmSync(auditFile, { force: true });
     const http = path.join(home, 'fake-http.json');
+    fs.rmSync(`${http}.bodies`, { force: true });
     fs.writeFileSync(http, JSON.stringify({
       '127.0.0.1': replies.map((content) => ({ body: { choices: [{ message: { content }, finish_reason: 'stop' }] } })),
     }));
-    const result = spawnSync(process.execPath, [executor, '--plan-file', planFile, '--home', home, '--agent-id', agentId, '--broker', broker, '--unattended', '1'], {
+    const args = [executor, '--plan-file', planFile, '--home', home, '--agent-id', agentId, '--broker', broker, ...(held ? [] : ['--unattended', '1'])];
+    const result = spawnSync(process.execPath, args, {
       env: { ...process.env, HOME: home, SHELLY_TEST_FAKE_HTTP: http, SHELLY_TEST_LONGFORM_RETRY_WAIT_MS: '10' },
       encoding: 'utf8', timeout: 30_000,
     });
     const prompts: string[] = readLines(`${http}.bodies`).map((body) => JSON.parse(body).messages[0].content);
-    const audit = readLines(path.join(logs, agentId, 'plan-executor-audit.jsonl'));
+    const audit = readLines(auditFile);
     const historyFile = path.join(logs, 'article-history-tr.json');
     const history = fs.existsSync(historyFile) ? JSON.parse(fs.readFileSync(historyFile, 'utf8')).entries : [];
-    const drafts = fs.readdirSync(outputDir).filter((f) => f.endsWith('.md')).map((f) => fs.readFileSync(path.join(outputDir, f), 'utf8'));
+    const preset = new Set((setup.savedDrafts || []).map((d) => d.name));
+    const drafts = fs.readdirSync(outputDir).filter((f) => f.endsWith('.md') && !preset.has(f)).map((f) => fs.readFileSync(path.join(outputDir, f), 'utf8'));
     return {
-      status: result.status, stderr: result.stderr, prompts, audit, history, drafts,
+      status: result.status, stderr: result.stderr, prompts, audit, history, drafts, held: listHeld(agents),
       events: (name: string) => audit.filter((e) => e.event === name),
     };
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true });
   }
 }
 
@@ -353,5 +390,99 @@ describe('v71 type-repeat demotion in a run', () => {
     expect(r.events('research_type_repeat')).toEqual([]);
     expect(poolBlockOf(r.prompts[0])).not.toContain('type: repeat');
     expect(r.drafts).toHaveLength(1);
+  });
+});
+
+describe('v71 type_axes frontmatter: saved and held drafts count (gate P3-2)', () => {
+  const frontmatterOf = (text: string) => (/^---\n([\s\S]*?)\n---/.exec(text) || ['', ''])[1];
+  const typeAxesLine = (fp: Fp) => `type_axes: ${JSON.stringify(fourAxes(fp))}`;
+  const pool = { version: 1, candidates: [candidate('r1', FP_A), candidate('n1', FP_B)] };
+  const demotesR1 = (r: ReturnType<typeof run>) => {
+    const block = poolBlockOf(r.prompts[0]);
+    expect(block.indexOf(url('n1'))).toBeLessThan(block.indexOf(url('r1')));
+    expect(block).toContain(ex.POOL_TYPE_REPEAT_LINE);
+    expect(r.events('pool_type_repeat')).toEqual([expect.objectContaining({ demoted: 1, ids: ['r1'] })]);
+  };
+
+  it('the frontmatter line is written only when a fingerprint was accepted, after the P1/P2 keys and before material', () => {
+    expect(ex.typeAxesFrontmatterLines(FP_A)).toEqual([typeAxesLine(FP_A)]);
+    expect(ex.typeAxesFrontmatterLines(null)).toEqual([]);
+    expect(ex.typeAxesFrontmatterLines({ ...FP_A, outcome: '' })).toEqual([]);
+    const r = run([memo('n1', FP_B), draft], { pool });
+    expect(r.status).toBe(0);
+    const fm = frontmatterOf(r.drafts[0]).split('\n');
+    const at = fm.indexOf(typeAxesLine(FP_B));
+    expect(at).toBeGreaterThan(fm.indexOf('poolCandidateId: "n1"'));
+    expect(at).toBe(fm.findIndex((line) => line.startsWith('material:')) - 1);
+    expect(ex.parseDraftFrontmatter(r.drafts[0]).typeAxes).toEqual(fourAxes(FP_B));
+  });
+
+  it('a pipeline without a fingerprint writes no type_axes line', () => {
+    const r = run([`主研究: Study n1 ${url('n1')}\n事実: 8 trials\n事実: 4 weeks\n事実: 6 tasks\n事実: 90% accuracy\n事実: 2 groups\n事実: 30 students`, draft], { pool, entry: { pool: false, fingerprint: undefined } });
+    expect(r.status).toBe(0);
+    expect(r.drafts).toHaveLength(1);
+    expect(r.drafts[0]).not.toContain('type_axes');
+  });
+
+  it('the frontmatter parser ignores a malformed type_axes', () => {
+    const parse = (value: string) => ex.parseDraftFrontmatter(`---\ntitle: "t"\ntype_axes: ${value}\n---\n`).typeAxes;
+    expect(parse(JSON.stringify(fourAxes(FP_A)))).toEqual(fourAxes(FP_A));
+    for (const bad of [
+      'pupils', '{', '[]', 'null',
+      JSON.stringify({ ...fourAxes(FP_A), question: 'effect' }),
+      JSON.stringify({ population: 'pupils', intervention: 'chat tutor', outcome: 'other' }),
+      JSON.stringify({ ...fourAxes(FP_A), direction: ' positive' }),
+      JSON.stringify({ ...fourAxes(FP_A), outcome: 'x'.repeat(41) }),
+      JSON.stringify({ ...fourAxes(FP_A), population: 'a|b' }),
+    ]) {
+      expect(parse(bad)).toBeUndefined();
+    }
+  });
+
+  it('a draft held on approval timeout carries type_axes, and the next run demotes a matching candidate', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-type-repeat-'));
+    try {
+      const first = runIn(home, [memo('x1', FP_A), draft], { pool: { version: 1, candidates: [] }, entry: { typeRepeat: TYPE_REPEAT }, heldByTimeout: true });
+      expect(first.events('article_held')).toEqual([expect.objectContaining({ reason: 'approval-timeout', draftKept: true })]);
+      expect(first.drafts).toEqual([]);
+      expect(first.history).toEqual([]);
+      expect(first.held).toHaveLength(1);
+      expect(first.held[0]).toContain(typeAxesLine(FP_A));
+      const second = runIn(home, [memo('n1', FP_B), draft], { pool, entry: { typeRepeat: TYPE_REPEAT } });
+      expect({ status: second.status, stderr: second.stderr }).toEqual({ status: 0, stderr: '' });
+      demotesR1(second);
+      expect(second.events('research_type_repeat')).toEqual([expect.objectContaining({ matchedAxes: 0, repeat: false })]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('a held draft (text-lint) in the archive counts, inside the window only', () => {
+    const fm = (fp: Fp) => ['held: "text-lint"', 'title: "Earlier held"', 'review: pass', typeAxesLine(fp), 'material: ok'].join('\n');
+    const recent = run([memo('n1', FP_B), draft], { pool, entry: { typeRepeat: TYPE_REPEAT }, heldDrafts: [{ day: daysAgo(14), name: `${daysAgo(14)}-tr.md`, frontmatter: fm(FP_A) }] });
+    expect(recent.status).toBe(0);
+    demotesR1(recent);
+    const old = run([memo('n1', FP_B), draft], { pool, entry: { typeRepeat: TYPE_REPEAT }, heldDrafts: [{ day: daysAgo(15), name: `${daysAgo(15)}-tr.md`, frontmatter: fm(FP_A) }] });
+    expect(old.events('pool_type_repeat')).toEqual([]);
+  });
+
+  it('a saved draft with type_axes counts (today included), and research_type_repeat sees it', () => {
+    const r = run([memo('r1', FP_A), draft], {
+      pool, entry: { typeRepeat: TYPE_REPEAT },
+      savedDrafts: [{ name: `${daysAgo(0)}-earlier.md`, frontmatter: ['title: "Earlier saved"', 'review: pass', typeAxesLine(FP_A), 'material: ok'].join('\n') }],
+    });
+    expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: '' });
+    demotesR1(r);
+    expect(r.events('research_type_repeat')).toEqual([expect.objectContaining({ matchedAxes: 4, repeat: true })]);
+  });
+
+  it('a malformed type_axes on a draft is ignored', () => {
+    const r = run([memo('n1', FP_B), draft], {
+      pool, entry: { typeRepeat: TYPE_REPEAT },
+      savedDrafts: [{ name: `${daysAgo(1)}-earlier.md`, frontmatter: ['title: "Earlier saved"', `type_axes: ${JSON.stringify({ ...fourAxes(FP_A), extra: 'x' })}`, 'material: ok'].join('\n') }],
+    });
+    expect(r.status).toBe(0);
+    expect(r.events('pool_type_repeat')).toEqual([]);
+    expect(poolBlockOf(r.prompts[0])).not.toContain('type: repeat');
   });
 });
