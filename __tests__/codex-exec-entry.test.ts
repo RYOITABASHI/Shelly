@@ -22,6 +22,10 @@ describe('codex_exec native entry', () => {
     // Never the TUI channel, never a caller-supplied path.
     expect(c).not.toMatch(/codex\/current"/);
     expect(c).not.toContain('getenv("SHELLY_CODEX_TUI_PATH")');
+    // The caller's environment never picks the lib dir or HOME (only the binary's own location).
+    expect(c).not.toContain('getenv("SHELLY_LIB_DIR")');
+    expect(c).not.toContain('getenv("HOME")');
+    expect(c).toContain('"/files/termux-libs"');
     // `exec` follows the global -c options, then the caller's arguments.
     const execAt = c.indexOf('args[k++] = (char *)"exec";');
     expect(execAt).toBeGreaterThan(c.indexOf('"features.shell_snapshot=false"'));

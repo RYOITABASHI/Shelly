@@ -32,8 +32,14 @@
  * Exec notes (as shelly-cmd.c): an app-data ELF is only directly executable
  * through libexec_wrapper.so (which rewrites the execve to
  * `linker64 /proc/self/fd/N`), so argv[0] may be `/proc/self/fd/N` and
- * /proc/self/exe may be linker64; the lib dir is resolved from env / the fd
- * link / /proc/self/exe / HOME / a fallback, always checked for codex_tui.
+ * /proc/self/exe may be linker64. The lib dir comes only from this binary's
+ * own location (the wrapper's /proc/self/fd/N, else /proc/self/exe, else the
+ * fixed package path), and only when its real path is an app's
+ * files/termux-libs holding this launcher and codex_tui; HOME is derived as
+ * its sibling. The caller's SHELLY_LIB_DIR / HOME are never read, so the
+ * environment cannot choose codex_tui, libexec_wrapper.so or agent-current.
+ * SHELLY_DISABLE_APP_DATA_CODEX_RUNTIME=1 (as in the driver) can only fall
+ * back to the APK-bundled codex_tui.
  */
 
 #include <errno.h>
@@ -79,30 +85,69 @@ static int dir_of_link(const char *link, char *out, size_t out_size) {
     return to_dirname(out);
 }
 
+/*
+ * True only for the real path of an app's own lib dir:
+ * /data/data/<pkg>/files/termux-libs or /data/user/<n>/<pkg>/files/termux-libs,
+ * holding this launcher itself and codex_tui. The caller's environment never
+ * chooses it (no SHELLY_LIB_DIR / HOME lookup): what runs is decided only by
+ * where this binary is, so the env cannot steer codex_tui, libexec_wrapper.so
+ * or agent-current to another file.
+ */
+static int is_app_lib_dir(const char *dir) {
+    const char *rest;
+    if (strncmp(dir, "/data/data/", 11) == 0) {
+        rest = dir + 11;
+    } else if (strncmp(dir, "/data/user/", 11) == 0) {
+        rest = dir + 11;
+        if (*rest < '0' || *rest > '9') return 0;
+        while (*rest >= '0' && *rest <= '9') rest++;
+        if (*rest++ != '/') return 0;
+    } else {
+        return 0;
+    }
+    const char *pkg = rest;
+    while (*rest && *rest != '/') {
+        char ch = *rest;
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_')) return 0;
+        rest++;
+    }
+    if (rest == pkg || strcmp(rest, "/files/termux-libs") != 0) return 0;
+    char self[PATH_MAX];
+    if (snprintf(self, sizeof(self), "%s/shelly_codex_exec", dir) >= (int)sizeof(self)) return 0;
+    return is_file(self) && has_codex(dir);
+}
+
+/* realpath(dirname(link target)) into out when it is an app lib dir. */
+static int lib_dir_from_link(const char *link, char *out, size_t out_size) {
+    char dir[PATH_MAX];
+    if (dir_of_link(link, dir, sizeof(dir)) != 0) return -1;
+    char real[PATH_MAX];
+    if (!realpath(dir, real) || !is_app_lib_dir(real)) return -1;
+    if (snprintf(out, out_size, "%s", real) >= (int)out_size) return -1;
+    return 0;
+}
+
 static const char *resolve_lib_dir(const char *argv0) {
     static char buf[PATH_MAX];
-    const char *env = getenv("SHELLY_LIB_DIR");
-    if (env && has_codex(env)) return env;
+    /* Launched through libexec_wrapper.so: argv[0] is /proc/self/fd/N, an fd
+     * the wrapper opened on this binary inside $libDir. */
     if (argv0 && strncmp(argv0, "/proc/self/fd/", 14) == 0 &&
-        dir_of_link(argv0, buf, sizeof(buf)) == 0 && has_codex(buf)) {
+        lib_dir_from_link(argv0, buf, sizeof(buf)) == 0) {
         return buf;
     }
-    if (dir_of_link("/proc/self/exe", buf, sizeof(buf)) == 0 && has_codex(buf)) return buf;
-    const char *home = getenv("HOME");
-    if (home && home[0] == '/' &&
-        snprintf(buf, sizeof(buf), "%s/../termux-libs", home) < (int)sizeof(buf) &&
-        has_codex(buf)) {
+    /* Direct exec: the kernel's own record of this executable. */
+    if (lib_dir_from_link("/proc/self/exe", buf, sizeof(buf)) == 0) return buf;
+    char real[PATH_MAX];
+    if (realpath(DEFAULT_LIB_DIR, real) && is_app_lib_dir(real) &&
+        snprintf(buf, sizeof(buf), "%s", real) < (int)sizeof(buf)) {
         return buf;
     }
-    if (has_codex(DEFAULT_LIB_DIR)) return DEFAULT_LIB_DIR;
     return NULL;
 }
 
+/* $libDir is <filesDir>/termux-libs, $HOME is <filesDir>/home (never the caller's HOME). */
 static const char *resolve_home(const char *lib_dir) {
     static char buf[PATH_MAX];
-    const char *home = getenv("HOME");
-    if (home && home[0] == '/') return home;
-    /* $libDir is <filesDir>/termux-libs, $HOME is <filesDir>/home. */
     if (snprintf(buf, sizeof(buf), "%s", lib_dir) >= (int)sizeof(buf) || to_dirname(buf) != 0) return NULL;
     size_t n = strlen(buf);
     if (snprintf(buf + n, sizeof(buf) - n, "/home") >= (int)(sizeof(buf) - n)) return NULL;
@@ -201,7 +246,7 @@ int main(int argc, char **argv, char **envp) {
         return 127;
     }
     size_t j = 0;
-    int have_home = 0, have_tmpdir = 0, have_path = 0, have_root = 0, have_data = 0;
+    int have_tmpdir = 0, have_path = 0, have_root = 0, have_data = 0;
     for (size_t i = 0; i < count; i++) {
         const char *e = envp[i];
         if (env_is(e, "LD_PRELOAD") || env_is(e, "LD_LIBRARY_PATH") || env_is(e, "SHELLY_LIB_DIR") ||
@@ -209,10 +254,7 @@ int main(int argc, char **argv, char **envp) {
             env_is(e, "SHELLY_CODEX_PROC_EXE_OPEN_SHIM")) {
             continue;
         }
-        if (env_is(e, "HOME")) {
-            if (strcmp(e + 5, home) != 0) continue; /* replaced below */
-            have_home = 1;
-        }
+        if (env_is(e, "HOME")) continue; /* always the derived home, set below */
         if (env_is(e, "TMPDIR") && e[7]) have_tmpdir = 1;
         if (env_is(e, "PATH") && e[5]) have_path = 1;
         if (env_is(e, "ANDROID_ROOT") && e[13]) have_root = 1;
@@ -225,7 +267,7 @@ int main(int argc, char **argv, char **envp) {
     env[j++] = make_kv("SHELLY_CODEX_PROC_EXE_OPEN_SHIM", "1");
     env[j++] = make_kv("LD_PRELOAD", preload);
     env[j++] = make_kv("LD_LIBRARY_PATH", ld_path);
-    if (!have_home) env[j++] = make_kv("HOME", home);
+    env[j++] = make_kv("HOME", home);
     if (!have_tmpdir) {
         char tmp[PATH_MAX];
         snprintf(tmp, sizeof(tmp), "%s/tmp", home);
