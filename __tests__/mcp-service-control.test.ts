@@ -93,7 +93,7 @@ describe('always-allow readiness (not enabled in v1)', () => {
   it('is an always-allow op (S2), with the same target pattern on both sides', () => {
     expect(isTypedOp('service_control')).toBe(true);
     const storeKt = readFileSync(join(KT_DIR, 'McpAlwaysAllowStore.kt'), 'utf8');
-    expect(storeKt).toContain('val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", IngressDecision.OP_SUBMIT_INSTRUCTION, IngressDecision.OP_PUT_STREAM_FEED)');
+    expect(storeKt).toContain('val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", "request_pipeline_refire", IngressDecision.OP_SUBMIT_INSTRUCTION, IngressDecision.OP_PUT_STREAM_FEED)');
     expect(storeKt).toContain(`"service_control" to Regex("${SERVICE_CONTROL_TARGET_RE.source}")`);
   });
 
@@ -101,7 +101,7 @@ describe('always-allow readiness (not enabled in v1)', () => {
     const a = { action: 'start', serviceId: 'article-delivery' } as const;
     const bind = await serviceControlRuleBind(a, nodeSha256);
     expect(bind).toMatch(/^[0-9a-f]{64}$/);
-    expect(SERVICE_CONTROL_BIND_DOMAIN).toBe('shelly-service-control-bind-v1:');
+    expect(SERVICE_CONTROL_BIND_DOMAIN).toBe('shelly-service-control-bind-v2:');
     const expected = createHash('sha256').update(`${SERVICE_CONTROL_BIND_DOMAIN}service:article-delivery:start`).digest('hex');
     expect(bind).toBe(expected);
     expect(await serviceControlRuleBind({ action: 'stop', serviceId: 'article-delivery' }, nodeSha256)).not.toBe(bind);

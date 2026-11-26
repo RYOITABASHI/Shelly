@@ -139,6 +139,9 @@ class TerminalSessionService : Service() {
         createNotificationChannel()
         instance = this
         runCatching { StopAllSwitches.enforceAtStart(applicationContext, "service start") }
+        // A council-facade that outlived an app restart: the STOP-ALL watcher
+        // covers it from its persisted launch identity (ManagedServiceSupervisor).
+        runCatching { ManagedServiceSupervisor.adoptPersisted(applicationContext) }
         // Drop only ongoing loop notifications whose agent is no longer a
         // continuous, enabled agent on disk (a live loop between iterations
         // keeps its notification and Stop button).

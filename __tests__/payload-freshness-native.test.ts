@@ -42,10 +42,11 @@ describe('PayloadHygiene stays plain-JVM and java.io only', () => {
 });
 
 describe('A1: retired payloads', () => {
-  it('retires codex_exec, and no retired name is still extracted', () => {
+  it('no retired name is still extracted (codex_exec is the launcher again, not retired)', () => {
     const r = retired();
-    expect(r).toContain('codex_exec');
+    expect(r).not.toContain('codex_exec');
     const values = libsValues();
+    expect(values).toContain('codex_exec');
     expect(values.length).toBeGreaterThan(50);
     expect(values).toContain('codex_tui');
     for (const name of r) expect(values).not.toContain(name);
@@ -81,7 +82,7 @@ describe('A1: retired payloads', () => {
 
   it('is unit-tested on the JVM', () => {
     expect(test).toContain('a dangling retired symlink is removed too');
-    expect(test).toContain('codex_exec is retired and removed, other files stay');
+    expect(test).toContain('a retired name is removed, other files stay');
     expect(test).toContain('a retired symlink is removed without touching its target');
   });
 });

@@ -1112,6 +1112,10 @@ it('names only the latest matching memo in the history retry', () => {
 it('drafts from a URL-less sufficient replacement after a numbers-only retry', () => {
   const replacement = memo('B', true).replace(` ${url('B')}`, '');
   // Owner material satisfies the existing sourcing gate while the replacement stays URL-less.
+  // v68 fix round 1: the no-web-sources hold is only for a plan with a Codex
+  // web-search research step (fact sheet: item 2 is limited to articles with a
+  // search step). This plan researches over HTTP, so it drafts from the
+  // materials as before; the held landing is covered in plan-executor-search-parity.
   const materialRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-research-material-')));
   const result = run([memo('A', false), replacement], true, ['X'], undefined, {}, { materialRoot });
   expect(result.events).toEqual([
@@ -1124,6 +1128,7 @@ it('drafts from a URL-less sufficient replacement after a numbers-only retry', (
   expect(result.prompts[1]).toContain(numbersHeader);
   expect(result.prompts[2]).toContain(writeInstruction);
   expect(result.prompts[2]).toContain(replacement);
+  expect(result.audit.filter(({ event }) => event === 'article_held')).toEqual([]);
   expect(result.drafts[0]).toContain(draft.replace('[1]', '[M1]'));
 });
 

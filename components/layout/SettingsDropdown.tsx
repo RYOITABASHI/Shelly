@@ -58,6 +58,15 @@ import {
 } from '@/lib/closepaw-draft-preapproval';
 import { disableClosePawShellPreapproval, getClosePawShellPreapproval } from '@/lib/closepaw-shell-preapproval';
 import {
+  canToggleWebSearchOptIn,
+  getWebSearchOptIns,
+  isWebSearchOptInAvailable,
+  setWebSearchOptIn,
+  webSearchOptInLabel,
+  type WebSearchOptInList,
+  type WebSearchOptInPipeline,
+} from '@/lib/web-search-opt-in';
+import {
   clientIdLabel,
   ruleOrigin,
   listMcpAlwaysAllowRules,
@@ -211,6 +220,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <ClosePawPreapprovalSection visible={visible} />
             <ConnectivityGuardianSection />
             <DraftPreapprovalSection visible={visible} />
+            <WebSearchOptInSection visible={visible} />
             <McpAlwaysAllowSection visible={visible} />
             <LauncherIngressSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
@@ -2731,6 +2741,132 @@ const DraftPreapprovalSection = React.memo(function DraftPreapprovalSection({ vi
       ))}
       <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
         {t(on ? 'draft_preapproval.settings_hint_on' : 'draft_preapproval.settings_hint_off')}
+      </Text>
+    </Section>
+  );
+});
+
+// "Web search on notification-triggered runs", per article pipeline
+// (lib/web-search-opt-in.ts). The native store (WebSearchOptInStore.kt) is the
+// truth and is re-read every time Settings opens. This toggle is the ONLY way
+// to turn it on (with a confirmation); native computes the stored hash itself.
+// A lapsed entry (the pipeline changed since) reads as off and can be turned
+// on again.
+const WebSearchOptInSection = React.memo(function WebSearchOptInSection({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  const [list, setList] = React.useState<WebSearchOptInList | null>(null);
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+
+  const reload = React.useCallback(async () => {
+    const next = await getWebSearchOptIns();
+    setList(next);
+  }, []);
+
+  useEffect(() => {
+    if (!visible || !isWebSearchOptInAvailable()) return;
+    let cancelled = false;
+    getWebSearchOptIns()
+      .then((next) => { if (!cancelled) setList(next); })
+      .catch((e) => logError('SettingsDropdown', 'Failed to load web search opt-ins', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
+
+  const apply = React.useCallback(async (p: WebSearchOptInPipeline, enabled: boolean) => {
+    setBusyId(p.agentId);
+    try {
+      const res = await setWebSearchOptIn(p, enabled);
+      if (res.ok) {
+        ToastAndroid.show(t(enabled ? 'web_search_opt_in.on_toast' : 'web_search_opt_in.off_toast'), ToastAndroid.SHORT);
+      } else {
+        Alert.alert(
+          t('web_search_opt_in.settings_title'),
+          res.code === 'changed' ? t('web_search_opt_in.changed') : t('web_search_opt_in.failed', { code: res.code }),
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(t('web_search_opt_in.settings_title'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to change web search opt-in', e);
+    } finally {
+      await reload().catch((e) => logError('SettingsDropdown', 'Failed to reload web search opt-ins', e));
+      setBusyId(null);
+    }
+  }, [reload, t]);
+
+  const toggle = React.useCallback((p: WebSearchOptInPipeline) => {
+    if (p.state === 'on') {
+      void apply(p, false);
+      return;
+    }
+    if (p.missing || !p.webSearchStep) {
+      // Lapsed but no longer turnable on: the only change left is OFF.
+      if (p.state === 'lapsed') void apply(p, false);
+      return;
+    }
+    const label = webSearchOptInLabel(p);
+    Alert.alert(t('web_search_opt_in.confirm_title'), t('web_search_opt_in.confirm_body', { label }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('web_search_opt_in.confirm_ok'), onPress: () => void apply(p, true) },
+    ]);
+  }, [apply, t]);
+
+  if (!isWebSearchOptInAvailable()) return null;
+  const pipelines = list?.pipelines ?? [];
+  return (
+    <Section title={t('web_search_opt_in.settings_title')}>
+      {pipelines.map((p) => {
+        const on = p.state === 'on';
+        const disabled = busyId !== null || !canToggleWebSearchOptIn(p);
+        const label = webSearchOptInLabel(p);
+        const stateText = p.missing
+          ? t('web_search_opt_in.missing')
+          : !p.webSearchStep && p.state === 'off'
+            ? t('web_search_opt_in.no_web_search')
+            : t(`web_search_opt_in.state_${p.state}`);
+        return (
+          <View key={p.agentId} style={{ marginBottom: 6 }}>
+            <Row label={label}>
+              <Pressable
+                style={[
+                  styles.switchTrack,
+                  { backgroundColor: on ? withAlpha(C.accent, 0.36) : C.border },
+                  disabled && styles.integrationRowDisabled,
+                ]}
+                onPress={() => toggle(p)}
+                disabled={disabled}
+                hitSlop={4}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: on, disabled }}
+                accessibilityLabel={t('web_search_opt_in.toggle_a11y', { label })}
+              >
+                <View
+                  style={[
+                    styles.switchThumb,
+                    { backgroundColor: on ? C.accent : C.text2 },
+                    on && { alignSelf: 'flex-end' },
+                  ]}
+                />
+              </Pressable>
+            </Row>
+            <Text style={[styles.apiKeyHint, { color: p.state === 'lapsed' ? C.text1 : C.text3 }]}>
+              {[p.pipelineId && p.pipelineId !== label ? p.pipelineId : null, p.agentId !== label ? p.agentId : null, stateText]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </View>
+        );
+      })}
+      {list && !list.ok && (
+        <Text style={[styles.apiKeyHint, { marginTop: 2, color: C.text2 }]}>
+          {t('web_search_opt_in.list_failed', { code: list.code })}
+        </Text>
+      )}
+      {list && list.ok && pipelines.length === 0 && (
+        <Text style={[styles.apiKeyHint, { marginTop: 2, color: C.text2 }]}>{t('web_search_opt_in.empty')}</Text>
+      )}
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t('web_search_opt_in.settings_hint')}
       </Text>
     </Section>
   );

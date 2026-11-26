@@ -108,6 +108,10 @@ import {
   serviceControlRuleTarget, validateServiceControlArgs, type ServiceControlErrorCode,
 } from '@/lib/mcp-service-control';
 import {
+  isPipelineRefireAccepted, parsePipelineRefireResult, pipelineRefireRuleBind, pipelineRefireRuleLabel,
+  pipelineRefireRuleTarget, validatePipelineRefireArgs, type PipelineRefireErrorCode,
+} from '@/lib/mcp-pipeline-refire';
+import {
   articleOutputFolderError, buildArticleDigestPipeline, buildArticlePipeline, parseArticlePipelineFile,
   type ArticlePipelineFile, type PipelinePreset,
 } from '@/lib/agent-pipeline-presets';
@@ -602,7 +606,7 @@ type PipelineConfigErrorCode = 'invalid_path' | 'invalid_digest' | 'invalid_size
 type StreamFeedErrorCode = StreamFeedStoreFailureCode
   | 'disabled' | 'revoked' | 'denied' | 'not_attended' | 'timeout' | 'native_error' | 'target_changed';
 
-type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode | ServiceControlErrorCode | StreamFeedErrorCode };
+type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code?: TypedOpErrorCode | 'digest_changed' | 'read_failed' | DeliveryScriptErrorCode | PipelineConfigErrorCode | ServiceControlErrorCode | PipelineRefireErrorCode | StreamFeedErrorCode };
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
@@ -984,6 +988,8 @@ async function callTool(
       return updateDeliveryScriptTool(args, epoch, ingress, callId, deadlineMs);
     case 'service_control':
       return serviceControlTool(args, epoch, ingress, callId, deadlineMs);
+    case 'request_pipeline_refire':
+      return pipelineRefireTool(args, epoch, ingress, deadlineMs);
     case 'update_pipeline_config':
       return updatePipelineConfigTool(args, epoch, ingress, callId, deadlineMs,
         (requestFileMtimeMs ?? (deadlineMs - INSTALL_CLASS_PRE_APPROVAL_MS)) + PIPELINE_CONFIG_RESULT_TIMEOUT_MS);
@@ -1459,6 +1465,141 @@ async function serviceControlTool(
     return await execute({ via: 'tap' });
   } catch {
     return refuse('native_error', 'could not control the service');
+  }
+}
+
+/**
+ * request_pipeline_refire (lib/mcp-pipeline-refire.ts, search parity item 4):
+ * one re-run of an opted-in article pipeline whose run today ended held,
+ * failed or dead, on the S5 re-fire path. A typed op (listed with run_agent
+ * under "MCP typed operations"): the same ladder as service_control —
+ * refusals (arguments, epoch, setting, deadline, STOP-ALL) → always-allow
+ * rule → "Skip all approvals" → not_attended → dialog. A rule or the switch
+ * only skips the dialog: native checks STOP-ALL, the opt-in, today's run, the
+ * daily maximum and duplicates on every call. Every outcome is one
+ * mcp_pipeline_refire line (code; requestId when accepted).
+ */
+async function pipelineRefireTool(
+  args: Record<string, unknown>, epoch: number, ingress: McpIngress, deadlineMs: number,
+): Promise<ToolResult> {
+  const lineBase = { kind: 'mcp_pipeline_refire', event: 'mcp_pipeline_refire', principal: ingress.principal };
+  const audit = async (code: string, fields: { pipelineId?: string; requestId?: string } = {}): Promise<void> => {
+    try {
+      const ok = await TerminalEmulator.appendMcpIngressAudit?.(null, JSON.stringify({ ...lineBase, ...fields, code }));
+      if (!ok) logError('MCPBridge', `request_pipeline_refire audit line not written (${code})`);
+    } catch {
+      logError('MCPBridge', `request_pipeline_refire audit line not written (${code})`);
+    }
+  };
+  const valid = validatePipelineRefireArgs(args);
+  if ('message' in valid) {
+    if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+    await audit('invalid_params');
+    return { ok: false, error: valid.message, code: 'invalid_params' };
+  }
+  const { pipelineId } = valid.args;
+  const fields = { pipelineId };
+  const refuse = async (code: PipelineRefireErrorCode, error: string): Promise<ToolResult> => {
+    if (epoch !== queueEpoch) {
+      await audit('revoked', fields);
+      return { ok: false, error: REVOKED_ERROR, code: 'revoked' };
+    }
+    await audit(code, fields);
+    return { ok: false, error, code };
+  };
+  const HALTED = 'all agents are stopped (STOP-ALL is on)';
+
+  if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+  if (!typedOpsEnabled()) return refuse('disabled', TYPED_OPS_DISABLED_MESSAGE);
+  if (typeof TerminalEmulator.requestPipelineRefire !== 'function') return refuse('native_error', 'request_pipeline_refire is not available in this build');
+  if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before it could be shown for approval');
+  if (await stopAllActive()) return refuse('halted', HALTED);
+
+  const op = 'request_pipeline_refire';
+  const principalTag = ingress.principal.slice(0, 8);
+  const ruleGone = 'the always-allow rule no longer applies (removed, or the rules became unreadable); call request_pipeline_refire again';
+
+  // As service_control's execute: every check the authorization relied on is
+  // repeated, STOP-ALL last before the native call (which checks it again).
+  const execute = async (auth: { via: 'tap' | 'switch' } | { via: 'rule'; ruleId: string; target: string; bind: string }): Promise<ToolResult> => {
+    if (auth.via === 'rule') {
+      if (!(await mcpAlwaysAllowMatches(ingress.principal, op, auth.target, auth.bind))) return refuse('target_changed', ruleGone);
+      const still = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, auth.target, auth.bind);
+      if (!still || still.id !== auth.ruleId) return refuse('target_changed', ruleGone);
+    }
+    if (!typedOpsEnabled()) return refuse('disabled', TYPED_OPS_DISABLED_MESSAGE);
+    if (await stopAllActive()) return refuse('halted', HALTED);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (Date.now() >= deadlineMs) return refuse('timeout', 'the request expired before it could run');
+
+    const raw = await TerminalEmulator.requestPipelineRefire!(pipelineId, ingress.principal);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const parsed = parsePipelineRefireResult(raw);
+    if (!parsed) return refuse('native_error', 'could not read the re-run request outcome');
+    if (!isPipelineRefireAccepted(parsed.code)) {
+      return refuse(parsed.code as PipelineRefireErrorCode, `re-run of ${pipelineId} refused: ${parsed.code}`);
+    }
+    await audit(parsed.code, { pipelineId, ...(parsed.requestId ? { requestId: parsed.requestId } : {}) });
+    return { ok: true, data: { pipelineId, code: parsed.code, requestId: parsed.requestId } };
+  };
+
+  try {
+    const target = pipelineRefireRuleTarget(valid.args);
+    const bind = await pipelineRefireRuleBind(valid.args, requestSha256);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+
+    // 1. always-allow rule.
+    if (await mcpAlwaysAllowMatches(ingress.principal, op, target, bind)) {
+      const rule = findAlwaysAllowMatch((await listMcpAlwaysAllowRules()).rules, ingress.principal, op, target, bind);
+      if (rule) {
+        logInfo('MCPBridge', `always-allow rule ${rule.id} matched request_pipeline_refire ${target} (principal=${principalTag})`);
+        await audit('always_allowed', fields);
+        return await execute({ via: 'rule', ruleId: rule.id, target, bind });
+      }
+      logError('MCPBridge', `always-allow rule matched request_pipeline_refire ${target} but could not be listed; asking instead`);
+    }
+
+    // 2. "Skip all approvals" (Settings only): a one-time 'once', no rule written.
+    if (await isApproveAllWithoutAskingOn()) {
+      logInfo('MCPBridge', `request_pipeline_refire ${target} auto-approved once (approveAllWithoutAsking, principal=${principalTag})`);
+      await audit('auto_approved', fields);
+      return await execute({ via: 'switch' });
+    }
+
+    // 3. Nobody to ask.
+    const notAttended = 'Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now';
+    if (!appIsForeground()) return await refuse('not_attended', notAttended);
+
+    // 4. Dialog.
+    await audit('approval_requested', fields);
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    const approvalExpiresAt = Math.min(Date.now() + approvalTimeoutMs, deadlineMs);
+    const label = pipelineRefireRuleLabel(valid.args);
+    if (!appIsForeground()) return await refuse('not_attended', notAttended);
+    const { decision } = await requestApprovalDetailed({
+      kind: 'request_pipeline_refire',
+      summary: t('mcp.approval_pipeline_refire'),
+      detail: t('mcp.approval_pipeline_refire_detail', { pipeline: pipelineId }),
+      origin: ingress,
+      alwaysAllowable: { op, targetLabel: label },
+    });
+    if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
+    if (decision === 'deny') return refuse('denied', 'denied by user (or timed out waiting for a response)');
+    if (Date.now() >= approvalExpiresAt) return refuse('timeout', 'the approval came after the request expired');
+    if (decision === 'always') {
+      const added = await addMcpAlwaysAllowRule(ingress.principal, op, target, bind, label);
+      if (added.ok) {
+        logInfo('MCPBridge', `always-allow rule ${added.id} ${added.code} for request_pipeline_refire ${target} (principal=${principalTag})`);
+        await audit('always_allow_saved', fields);
+      } else {
+        logError('MCPBridge', `always-allow rule not saved (${added.code}); running once`);
+        await audit('always_allow_not_saved', fields);
+        showToast('mcp.always_allow_not_saved_refire', 'The "always allow" rule could not be saved. The re-run request is made this once.');
+      }
+    }
+    return await execute({ via: 'tap' });
+  } catch {
+    return refuse('native_error', 'could not request the re-run');
   }
 }
 
@@ -2630,7 +2771,7 @@ async function processRequestFile(name: string): Promise<void> {
     if (request.tool === 'stage_install' || request.tool === 'update_delivery_script' || request.tool === 'update_pipeline_config') {
       // Leave the rest of the server's 260s queue wait for approval and execution.
       deadlineMs = request.receivedAtMs + INSTALL_CLASS_PRE_APPROVAL_MS;
-    } else if (request.tool === 'service_control') {
+    } else if (request.tool === 'service_control' || request.tool === 'request_pipeline_refire') {
       // The server answers within RESULT_TIMEOUT_MS (= TYPED_REQUEST_DEADLINE_MS)
       // of signing: never show the tap or act on the service after that.
       deadlineMs = request.receivedAtMs + TYPED_REQUEST_DEADLINE_MS;

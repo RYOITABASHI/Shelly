@@ -72,8 +72,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 
-const RECOVERY_SCRIPT_VERSION = 1;
+const RECOVERY_SCRIPT_VERSION = 2;
 
 const AUDIT_FILE_NAME = 'plan-executor-audit.jsonl';
 const LAUNCH_FILE_NAME = 'run-launches.jsonl';
@@ -398,6 +399,8 @@ function pairRuns(events) {
       else if ((e.event === 'plan_refire' || e.event === 'plan_refire_failed') && !run.refireResult) run.refireResult = e;
       else if (e.event === 'plan_refire_dispatched' && !run.refireDispatched) run.refireDispatched = e;
       else if (e.event === 'plan_refire_late_start' && !run.refireLate) run.refireLate = e;
+      else if (e.event === 'plan_refire_requested' && !run.refireRequested) run.refireRequested = e;
+      else if (e.event === 'plan_refire_request_expired' && !run.refireRequestClosed) run.refireRequestClosed = e;
       continue;
     }
     for (let i = runs.length - 1; i >= 0; i -= 1) {
@@ -420,7 +423,8 @@ function readAuditRuns(paths) {
 }
 
 /** The executor lines a close reads from its run: the last step (lastStepFromAudit), the saved draft (deliveryFor). */
-const CLOSE_RUN_EVENTS = ['cli_branch_start', 'cli_slot_wait', 'draft_saved', 'draft_exists'];
+// article_held: the v68 held landing, read by an MCP re-fire request (refireRequestDecision).
+const CLOSE_RUN_EVENTS = ['cli_branch_start', 'cli_slot_wait', 'draft_saved', 'draft_exists', 'article_held'];
 const CLOSE_RUN_EVENT_MARKS = CLOSE_RUN_EVENTS.map((name) => `"${name}"`);
 
 /**
@@ -1976,6 +1980,260 @@ function opHangCancel(opts) {
   return { ok: true, op: 'hang-cancel', recorded: true };
 }
 
+// ── an MCP-requested re-fire (search parity item 4) ─────────────────────────
+//
+// request_pipeline_refire(pipelineId) asks for one re-run of an opted-in
+// article pipeline whose run today ended held, failed, or dead. The caller
+// picks only which pipeline and when; the re-run is the S5 re-fire (the same
+// intent, dispatch, refire-result and launch-record settling), never a new
+// execution path. The request is a line in the agent's own audit
+// (plan_refire_requested, append-only like every recovery record), so it
+// outlives an app kill, an update or a reboot: a sweep (the one native starts
+// right after accepting, a boot / update / watchdog reconcile) turns it into
+// a plan_refire_pending intent carrying its requestId, and the existing S5
+// dispatch takes it from there. A request still unconsumed past its local day,
+// or found while STOP-ALL is on, is closed as plan_refire_request_expired.
+// The web-search opt-in is checked by native at the request (WebSearchOptInStore)
+// and the request records the definition hash the opt-in was bound to. The
+// consent is checked again when a sweep takes the request: native passes the
+// verified opt-ins (--opt-ins agentId=sha256,...) and this script recomputes
+// the current definition hash with the executor's own read-only op
+// (--web-search-opt-in-candidates). A request whose opt-in was turned off, or
+// whose pipeline definition changed since (the opt-in lapsed), is expired
+// (opt-in-lapsed), never re-fired. Without --opt-ins, or when the executor op
+// fails, the request waits (nothing is re-fired that could not be checked).
+
+/** Held reasons (the executor's ARTICLE_HELD_REASONS) a re-run can recover from. */
+const REFIRE_REQUEST_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout']);
+/** Accepted requests per pipeline (one agent) per local day. */
+const REFIRE_REQUEST_DAILY_MAX = 2;
+const PRINCIPAL_RE = /^[0-9a-f]{32}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const OPT_IN_CANDIDATES_TIMEOUT_MS = 30 * 1000;
+
+/** --opt-ins "agentId=sha256,..." (or "none") -> Map agentId -> sha256; null when absent or malformed. Pure. */
+function parseOptIns(raw) {
+  if (typeof raw !== 'string') return null;
+  const out = new Map();
+  if (raw === 'none') return out;
+  for (const part of raw.split(',')) {
+    const m = /^([A-Za-z0-9_-]{1,128})=([0-9a-f]{64})$/.exec(part);
+    if (!m) return null;
+    out.set(m[1], m[2]);
+  }
+  return out;
+}
+
+/**
+ * The executor's own --web-search-opt-in-candidates (the list native's
+ * Settings toggle and the request check read): [{agentId, definitionSha256,
+ * webSearchStep, ...}], or null when it could not be run or read.
+ */
+function defaultOptInCandidates(opts) {
+  const executor = opts.executorPath || path.join(opts.home, '.shelly-plan-executor.js');
+  try {
+    const r = spawnSync(process.execPath, [executor, '--web-search-opt-in-candidates'], {
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { HOME: opts.home }),
+      timeout: OPT_IN_CANDIDATES_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+    if (r.status !== 0) return null;
+    const v = JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop());
+    return isPlainObject(v) && Array.isArray(v.pipelines) ? v.pipelines.filter(isPlainObject) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * The run id the S5 records use for this run (closeRun's rule): the tied
+ * launch's id, else the executor's progress runId, else a synthetic one.
+ */
+function recoveryRunIdFor(paths, agentId, run, launchMatch) {
+  const launch = launchForRun(launchMatch, run);
+  if (launch) return launch.launchId;
+  const progress = progressForRun(paths, run);
+  return (progress && RUN_ID_RE.test(progress.runId || '') && progress.runId) || `${agentId}-${run.startMs}-unrecorded`;
+}
+
+/**
+ * Why the newest run of today may (or may not) be re-run on request. Pure.
+ * Returns {code, reason?, run?}: code 'ok' or a refusal code.
+ *   no_run_today      no run of this agent started today (local day)
+ *   run_active        today's newest run has not ended
+ *   delivered         today's newest run saved its draft (or found it saved)
+ *   not_recoverable   it ended any other way (success, a skip that is not held)
+ *   duplicate         it already has a re-run requested or decided (S5 or MCP)
+ *   daily_limit       REFIRE_REQUEST_DAILY_MAX requests were accepted today
+ */
+function refireRequestDecision(runs, nowMs) {
+  const today = localDate(nowMs);
+  const todays = runs.filter((r) => localDate(r.startMs) === today && r.startMs <= nowMs);
+  if (!todays.length) return { code: 'no_run_today' };
+  const run = todays[todays.length - 1];
+  if (isOpenRun(run)) return { code: 'run_active', run };
+  if (run.events.some((e) => e.event === 'draft_saved' || e.event === 'draft_exists')) return { code: 'delivered', run };
+  if (run.refireRequested || run.refirePending) return { code: 'duplicate', run };
+  const held = run.events.filter((e) => e.event === 'article_held').slice(-1)[0];
+  let reason = null;
+  if (held && REFIRE_REQUEST_HELD_REASONS.has(held.reason)) reason = `held:${held.reason}`;
+  else if (run.recoveryClose) reason = run.recoveryClose.event === 'plan_hung' ? REASON_HUNG : REASON_ORPHANED;
+  else if (run.finish && run.finish.status === 'error') reason = 'failed';
+  if (!reason) return { code: 'not_recoverable', run };
+  const accepted = runs.filter((r) => r.refireRequested && r.refireRequested.date === today).length;
+  if (accepted >= REFIRE_REQUEST_DAILY_MAX) return { code: 'daily_limit', run };
+  return { code: 'ok', reason, run };
+}
+
+/**
+ * --op refire-request --agent-id A --pipeline-id P [--principal H]: records
+ * an accepted request, or answers why not. Native has already checked the
+ * opt-in and resolved P to A. Returns {ok, op, code, accepted, duplicate,
+ * requestId?}; code is 'accepted' / 'duplicate' or a refusal code
+ * (refireRequestDecision, plus halted / unknown_pipeline / audit_unreadable /
+ * not_recorded).
+ */
+function opRefireRequest(opts) {
+  if (!AGENT_ID_RE.test(opts.agentId || '')) return { ok: false, error: 'agent-id' };
+  if (typeof opts.pipelineId !== 'string' || !PIPELINE_ID_RE.test(opts.pipelineId)) return { ok: false, error: 'pipeline-id' };
+  const principal = typeof opts.principal === 'string' && PRINCIPAL_RE.test(opts.principal) ? opts.principal : null;
+  // The definition hash native's opt-in check found on (re-checked when a sweep takes the request).
+  if (typeof opts.definitionSha256 !== 'string' || !SHA256_RE.test(opts.definitionSha256)) return { ok: false, error: 'definition-sha256' };
+  const paths = agentPaths(opts.home, opts.agentId);
+  const answer = (code, extra) => Object.assign({ ok: true, op: 'refire-request', code, accepted: code === 'accepted' || code === 'duplicate', duplicate: code === 'duplicate' }, extra || {});
+  // STOP-ALL first: nothing else is read while it is on.
+  if (fs.existsSync(paths.haltSentinel)) return answer('halted');
+  const planInfo = readPlan(paths);
+  if (!planInfo.plan || pipelineIdFor(opts.home, planInfo.plan) !== opts.pipelineId) return answer('unknown_pipeline');
+  const all = readAllAuditRuns(paths, { withEvents: true });
+  if (!all.ok) return answer('audit_unreadable');
+  const decision = refireRequestDecision(all.runs, opts.nowMs);
+  if (decision.code === 'duplicate') {
+    const prior = decision.run.refireRequested;
+    return answer('duplicate', prior && typeof prior.requestId === 'string' ? { requestId: prior.requestId } : {});
+  }
+  if (decision.code !== 'ok') return answer(decision.code);
+  const run = decision.run;
+  const runId = recoveryRunIdFor(paths, opts.agentId, run, matchLaunches(all.runs, readLaunches(paths, opts.agentId)));
+  const requestId = `rq-${opts.nowMs}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    appendLine(paths.auditFile, {
+      ts: new Date(opts.nowMs).toISOString(),
+      kind: 'plan.recovery',
+      event: 'plan_refire_requested',
+      agentId: opts.agentId,
+      pipelineId: opts.pipelineId,
+      requestId,
+      date: localDate(opts.nowMs),
+      runId,
+      runStartTs: run.startTs,
+      reason: decision.reason,
+      definitionSha256: opts.definitionSha256,
+      principal,
+      via: 'mcp',
+    });
+  } catch (_) {
+    return answer('not_recorded');
+  }
+  return answer('accepted', { requestId });
+}
+
+/**
+ * A sweep's turn for this agent's accepted, unconsumed requests: each becomes
+ * a plan_refire_pending intent (with its requestId and no feedback line: the
+ * held landing wrote its own) that the S5 dispatch takes, or is closed as
+ * expired (halted, day-ended, superseded: a newer run started since,
+ * opt-in-lapsed: the opt-in is off now or bound to another definition).
+ * A request whose agent has a live executor, or whose consent could not be
+ * checked, waits for a later sweep. ctx.candidates is the executor's opt-in
+ * list, read once per sweep (lazily). Returns {refire: [...], pending: n}.
+ */
+function consumeRefireRequests(opts, agentId, ctx) {
+  const paths = agentPaths(opts.home, agentId);
+  const out = { refire: [], pending: 0 };
+  const all = readAllAuditRuns(paths);
+  if (!all.ok) return out;
+  const runs = all.runs;
+  const waiting = runs.filter((r) => r.refireRequested && !r.refirePending && !r.refireRequestClosed);
+  if (!waiting.length) return out;
+  const halted = fs.existsSync(paths.haltSentinel);
+  const today = localDate(opts.nowMs);
+  const alive = !halted && executorAlive(paths, agentId, opts.procDeps);
+  const optIns = parseOptIns(opts.optIns);
+  const shared = ctx || {};
+  // Consent as it stands now: the stored opt-in (native) and the current
+  // definition (the executor's hash) must both still be the accepted one.
+  const consent = (rq) => {
+    if (!optIns) return 'unknown';
+    const want = typeof rq.definitionSha256 === 'string' && SHA256_RE.test(rq.definitionSha256) ? rq.definitionSha256 : '';
+    if (!want || optIns.get(agentId) !== want) return 'lapsed';
+    if (shared.candidates === undefined) shared.candidates = (opts.optInCandidates || defaultOptInCandidates)(opts);
+    if (!shared.candidates) return 'unknown';
+    const c = shared.candidates.filter((x) => x.agentId === agentId);
+    if (c.length !== 1 || c[0].webSearchStep !== true || c[0].definitionSha256 !== want) return 'lapsed';
+    return 'on';
+  };
+  let launchMatch = null;
+  for (const run of waiting) {
+    const rq = run.refireRequested;
+    const newer = runs.some((r) => r.startMs > run.startMs);
+    let why = halted ? 'halted' : rq.date !== today ? 'day-ended' : newer ? 'superseded' : '';
+    let state = '';
+    if (!why && !alive) {
+      state = consent(rq);
+      if (state === 'lapsed') why = 'opt-in-lapsed';
+    }
+    if (why) {
+      try {
+        appendLine(paths.auditFile, {
+          ts: new Date(opts.nowMs).toISOString(),
+          kind: 'plan.recovery',
+          event: 'plan_refire_request_expired',
+          agentId,
+          requestId: rq.requestId,
+          runId: rq.runId,
+          runStartTs: run.startTs,
+          why,
+        });
+        run.refireRequestClosed = true;
+      } catch (_) {}
+      continue;
+    }
+    if (alive || state !== 'on') {
+      out.pending += 1;
+      continue;
+    }
+    if (!launchMatch) launchMatch = matchLaunches(runs, readLaunches(paths, agentId));
+    const launch = launchForRun(launchMatch, run);
+    // The slot the re-fire's launch record carries: the scheduled occurrence
+    // when the run was tied to one, else the run's own start (an ad-hoc run,
+    // e.g. notification-triggered, has no occurrence; the service needs > 0).
+    const slotMs = launch && launch.scheduledAt ? launch.scheduledAt : run.startMs;
+    const refireRunId = newRefireRunId(agentId, opts.nowMs);
+    const intent = {
+      ts: new Date(opts.nowMs).toISOString(),
+      kind: 'plan.recovery',
+      event: 'plan_refire_pending',
+      agentId,
+      runId: rq.runId,
+      runStartTs: run.startTs,
+      refireRunId,
+      scheduledAt: isoOrNull(slotMs),
+      requestId: rq.requestId,
+      requested: 'mcp',
+    };
+    try {
+      appendLine(paths.auditFile, intent);
+      run.refirePending = intent;
+      out.refire.push({ agentId, origRunId: rq.runId, refireRunId, scheduledAt: slotMs });
+    } catch (_) {
+      out.pending += 1;
+    }
+  }
+  return out;
+}
+
 /** native's report of a dispatch (--dispatched 1 | 0 | unknown). Unknown is left to a sweep. */
 function opRefireResult(opts) {
   if (!AGENT_ID_RE.test(opts.agentId || '')) return { ok: false, error: 'agent-id' };
@@ -2112,12 +2370,13 @@ function freezePidVerdict(deps, p) {
 
 function opSweep(opts) {
   const ids = opts.agentId ? (AGENT_ID_RE.test(opts.agentId) ? [opts.agentId] : []) : listAgentIds(opts.home);
-  const result = { ok: true, op: 'sweep', closed: [], refire: [] };
+  const result = { ok: true, op: 'sweep', closed: [], refire: [], pendingRequests: 0 };
   // First: a tree a dead watchdog left stopped runs again (and is then live for the checks below).
   try {
     releaseStaleFreezes(opts);
   } catch (_) {}
   const feedbackLines = readFeedback(agentPaths(opts.home, ids[0] || '_'));
+  const requestCtx = {};
   for (const id of ids) {
     try {
       settlePendingRefires(opts, id, feedbackLines, false);
@@ -2126,6 +2385,12 @@ function opSweep(opts) {
       const out = reconcileAgent(Object.assign({}, opts, { feedbackLines }), id, { kind: 'sweep' });
       result.closed.push(...out.closed);
       result.refire.push(...out.refire);
+    } catch (_) {}
+    // After the close: a run S5 just re-fired is not re-fired again on request.
+    try {
+      const rq = consumeRefireRequests(opts, id, requestCtx);
+      result.refire.push(...rq.refire);
+      result.pendingRequests += rq.pending;
     } catch (_) {}
   }
   return result;
@@ -2216,7 +2481,7 @@ function runOp(rawOpts) {
     };
   }
   const fn = opts.op === 'finalize' ? opFinalize : opts.op === 'sweep' ? opSweep : opts.op === 'hang-check' ? opHangCheck
-    : opts.op === 'refire-result' ? opRefireResult : opts.op === 'hang-abort' ? opHangAbort
+    : opts.op === 'refire-result' ? opRefireResult : opts.op === 'refire-request' ? opRefireRequest : opts.op === 'hang-abort' ? opHangAbort
       : opts.op === 'hang-cancel' ? opHangCancel : null;
   if (!fn) return { ok: false, error: 'op' };
   return withRecoveryLock(home, () => fn(opts));
@@ -2241,6 +2506,10 @@ function main(argv) {
       runStartTs: a['run-start-ts'],
       noProgressMs: intArg(a['no-progress-ms']),
       why: a.why,
+      pipelineId: a['pipeline-id'],
+      principal: a.principal,
+      definitionSha256: a['definition-sha256'],
+      optIns: a['opt-ins'],
       executorPath: a.executor,
     });
   } catch (e) {
@@ -2274,6 +2543,8 @@ module.exports = {
   stepKind,
   articleFolderKey,
   refireDecision,
+  refireRequestDecision,
+  REFIRE_REQUEST_DAILY_MAX,
   writeDays,
   signalOf,
   isExecutorCmdline,

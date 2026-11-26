@@ -32,21 +32,23 @@ object PayloadHygiene {
      * is months old instead of failing. A missing file fails loudly and points
      * at the stale reference; a stale file hides it.
      *
-     *  - codex_exec: the separate `codex exec` binary of the pre-0.142.2 Codex
-     *    layout. HomeInitializer setup v231 moved to the unified binary
+     *  - (2026-11-26, no longer listed) codex_exec: the separate `codex exec`
+     *    binary of the pre-0.142.2 Codex layout. HomeInitializer setup v231 moved to the unified binary
      *    (`codex exec ...` runs as `codex_tui exec ...`) and libcodex_exec.so
      *    left the APK (CI deletes it from jniLibs), but the extracted copy was
      *    never removed. On the owner's device it was 0.142.0 from 2026-07-12,
      *    whose model catalog only had codex-auto-review, so every general model
-     *    was refused through it (payload-freshness fact sheet F3).
+     *    was refused through it (payload-freshness fact sheet F3). Since
+     *    2026-11-26 `codex_exec` is an active LibExtractor name again: the
+     *    native launcher jni/shelly-codex-exec.c (`codex_tui exec`), in
+     *    ALWAYS_REFRESH, so that stale copy is overwritten by the launcher
+     *    instead of being deleted.
      *
      * A name here must never also be a LibExtractor LIBS value: removeRetired
      * skips such a name and logs an error, and a jest invariant checks the two
      * lists.
      */
-    val RETIRED_LIB_FILES: List<String> = listOf(
-        "codex_exec",
-    )
+    val RETIRED_LIB_FILES: List<String> = listOf()
 
     /** What [removeRetired] found for one retired name. */
     data class RetiredRemoval(

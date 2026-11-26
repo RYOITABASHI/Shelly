@@ -26,6 +26,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { MCP_PRINCIPAL_RE, type Sha256 } from '@/lib/mcp-request-auth';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import { SERVICE_CONTROL_TARGET_RE, serviceControlRuleTarget, validateServiceControlArgs } from '@/lib/mcp-service-control';
+import { PIPELINE_REFIRE_TARGET_RE, pipelineRefireRuleTarget, validatePipelineRefireArgs } from '@/lib/mcp-pipeline-refire';
 import {
   INGRESS_ORIGIN_LAUNCHER,
   INGRESS_ORIGIN_MCP,
@@ -34,7 +35,7 @@ import {
 } from '@/lib/ingress-origin';
 
 /** Keep in step with McpAlwaysAllowStore.TYPED_OPS. */
-export const TYPED_OPS = ['run_agent', 'service_control', 'submit_instruction', 'put_stream_feed'] as const;
+export const TYPED_OPS = ['run_agent', 'service_control', 'request_pipeline_refire', 'submit_instruction', 'put_stream_feed'] as const;
 export type TypedOp = (typeof TYPED_OPS)[number];
 
 /**
@@ -45,6 +46,7 @@ export type TypedOp = (typeof TYPED_OPS)[number];
 export const OP_ORIGINS: Readonly<Record<TypedOp, IngressOriginName>> = {
   run_agent: INGRESS_ORIGIN_MCP,
   service_control: INGRESS_ORIGIN_MCP,
+  request_pipeline_refire: INGRESS_ORIGIN_MCP,
   submit_instruction: INGRESS_ORIGIN_LAUNCHER,
   put_stream_feed: INGRESS_ORIGIN_MCP,
 };
@@ -63,6 +65,7 @@ const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const TARGET_RES: Record<TypedOp, RegExp> = {
   run_agent: /^agent:[A-Za-z0-9_-]{1,128}$/,
   service_control: SERVICE_CONTROL_TARGET_RE,
+  request_pipeline_refire: PIPELINE_REFIRE_TARGET_RE,
   // The launcher ingress has one target (McpAlwaysAllowStore TARGET_RES).
   submit_instruction: /^hayato$/,
   // The stream feed has one fixed target (McpAlwaysAllowStore TARGET_RES).
@@ -120,6 +123,10 @@ export function normalizeTarget(op: unknown, args: unknown): string | null {
     case 'service_control': {
       const valid = validateServiceControlArgs(args);
       return valid.ok ? serviceControlRuleTarget(valid.args) : null;
+    }
+    case 'request_pipeline_refire': {
+      const valid = validatePipelineRefireArgs(args);
+      return valid.ok ? pipelineRefireRuleTarget(valid.args) : null;
     }
     case 'put_stream_feed':
       // Fixed target; the feed itself never enters the rule.

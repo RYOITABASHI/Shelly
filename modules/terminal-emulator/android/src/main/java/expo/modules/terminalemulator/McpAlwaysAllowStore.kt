@@ -65,7 +65,7 @@ object McpAlwaysAllowStore {
      * (run_command, write_file) are deliberately absent and never added here.
      * Keep in step with TYPED_OPS in lib/mcp-always-allow.ts.
      */
-    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", IngressDecision.OP_SUBMIT_INSTRUCTION, IngressDecision.OP_PUT_STREAM_FEED)
+    val TYPED_OPS: Set<String> = setOf("run_agent", "service_control", "request_pipeline_refire", IngressDecision.OP_SUBMIT_INSTRUCTION, IngressDecision.OP_PUT_STREAM_FEED)
 
     /**
      * The one origin whose principals may hold a rule for each op (fact sheet
@@ -75,6 +75,7 @@ object McpAlwaysAllowStore {
     val OP_ORIGINS: Map<String, String> = mapOf(
         "run_agent" to IngressOrigin.MCP,
         "service_control" to IngressOrigin.MCP,
+        "request_pipeline_refire" to IngressOrigin.MCP,
         IngressDecision.OP_SUBMIT_INSTRUCTION to IngressOrigin.LAUNCHER,
         // The stream feed is pushed by an MCP client (fact sheet §6.2 P5, D9).
         IngressDecision.OP_PUT_STREAM_FEED to IngressOrigin.MCP,
@@ -87,6 +88,8 @@ object McpAlwaysAllowStore {
         "run_agent" to Regex("^agent:[A-Za-z0-9_-]{1,128}$"),
         // Same as SERVICE_CONTROL_TARGET_RE in lib/mcp-service-control.ts.
         "service_control" to Regex("^service:(article-delivery|council-facade):(start|status|stop)$"),
+        // Same as PIPELINE_REFIRE_TARGET_RE in lib/mcp-pipeline-refire.ts.
+        "request_pipeline_refire" to Regex("^pipeline:[a-z0-9-]{1,32}$"),
         // The launcher ingress has one target (fact sheet §1, C3).
         IngressDecision.OP_SUBMIT_INSTRUCTION to Regex("^hayato$"),
         // One fixed sink (StreamFeedCore.TARGET); a rule never names anything else.
