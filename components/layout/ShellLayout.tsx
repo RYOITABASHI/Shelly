@@ -25,6 +25,8 @@ import { ConfigTUI } from '@/components/config/ConfigTUI';
 import { SaveBadge } from '@/components/SaveBadge';
 import { CaseFileBootOverlay } from '@/components/CaseFileBootOverlay';
 import { McpApprovalModal } from '@/components/McpApprovalModal';
+import { LauncherInboxModal } from '@/components/LauncherInboxModal';
+import { useLauncherApproval } from '@/hooks/use-launcher-approval';
 import { useFocusStore } from '@/store/focus-store';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
 import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
@@ -49,6 +51,8 @@ export function ShellLayout() {
   const currentPreset = useMultiPaneStore((s) => s.preset);
   const multiPaneHydrated = useMultiPaneStore((s) => s._hasHydrated);
   const themeVersion = useThemeVersionStore((s) => s.version);
+  // Launcher ingress Phase 2: pending launcher submissions are prompted in McpApprovalModal.
+  useLauncherApproval();
 
   // Initialize pane system on mount
   useEffect(() => {
@@ -438,6 +442,7 @@ export function ShellLayout() {
 
       <CaseFileBootOverlay />
       <McpApprovalModal />
+      <LauncherInboxModal />
 
     </View>
   );

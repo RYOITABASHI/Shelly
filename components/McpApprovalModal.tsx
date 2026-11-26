@@ -8,8 +8,14 @@
  * store/mcp-approval-store.ts and shows at most one request at a time.
  * Auto-denied by the caller's own timeout if this never gets a tap (e.g.
  * app backgrounded), so this component only needs to handle the visible case.
+ *
+ * Launcher ingress Phase 2 (kind 'submit_instruction', D8): the same modal
+ * and the same three decisions show a pending launcher submission — the
+ * owner's own text, when it was sent and the time left — with the labels
+ * allow / always allow / don't allow. Closing it (back, or the close link)
+ * decides nothing: the store's `dismiss`, never 'deny'.
  */
-import React, { memo } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
@@ -17,12 +23,95 @@ import { useTranslation } from '@/lib/i18n';
 import { fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useMcpApprovalStore } from '@/store/mcp-approval-store';
+import { useLauncherInboxStore } from '@/store/launcher-inbox-store';
+import { formatRemaining, remainingMs } from '@/lib/launcher-approval';
 
 export const McpApprovalModal = memo(function McpApprovalModal() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const current = useMcpApprovalStore((s) => s.current);
   const respond = useMcpApprovalStore((s) => s.respond);
+  const dismiss = useMcpApprovalStore((s) => s.dismiss);
+  const openInbox = useLauncherInboxStore((s) => s.open);
+  const launcher = current?.kind === 'submit_instruction' ? current.launcher : undefined;
+  const [now, setNow] = useState(() => Date.now());
+
+  // The launcher prompt's countdown.
+  useEffect(() => {
+    if (!launcher) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [launcher]);
+
+  if (launcher && current) {
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={() => dismiss(current.id)}>
+        <View style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.85)' }]}>
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.accent }]}>
+            <View style={[styles.header, { borderBottomColor: colors.border }]}>
+              <MaterialIcons name="rocket-launch" size={20} color={colors.accent} />
+              <Text style={[styles.title, { color: colors.foreground }]} numberOfLines={2}>
+                {t('launcher_approval.title')}
+              </Text>
+              <Pressable onPress={() => dismiss(current.id)} hitSlop={8} accessibilityRole="button">
+                <Text style={[styles.link, { color: colors.muted }]}>{t('launcher_approval.close')}</Text>
+              </Pressable>
+            </View>
+
+            <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
+              <Text style={[styles.detail, { color: colors.muted }]}>
+                {t('launcher_approval.sent_at', { time: new Date(launcher.sentAt).toLocaleString() })}
+                {'\n'}
+                {t('launcher_approval.remaining', { time: formatRemaining(remainingMs(launcher.expiresAt, now)) })}
+              </Text>
+              {/* The owner's own text: shown on the device only, never logged or audited. */}
+              <Text style={[styles.summary, { color: colors.foreground }]} selectable>
+                {current.detail}
+              </Text>
+              {launcher.untrusted ? (
+                <Text style={[styles.risk, { color: colors.muted }]}>{t('launcher_approval.untrusted_note')}</Text>
+              ) : null}
+              <Text style={[styles.risk, { color: colors.foreground }]}>{t('launcher_approval.always_scope')}</Text>
+              <Pressable
+                onPress={() => {
+                  dismiss(current.id);
+                  openInbox();
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.link, { color: colors.accent }]}>{t('launcher_approval.open_inbox')}</Text>
+              </Pressable>
+            </ScrollView>
+
+            <View style={[styles.actions, { borderTopColor: colors.border }]}>
+              <Pressable
+                onPress={() => respond(current.id, 'deny')}
+                android_ripple={{ color: withAlpha(colors.muted, 0.24) }}
+                style={[styles.actionBtn, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.actionText, { color: colors.foreground }]}>{t('launcher_approval.deny')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => respond(current.id, 'always')}
+                android_ripple={{ color: withAlpha(colors.accent, 0.24) }}
+                style={[styles.actionBtn, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.actionText, { color: colors.foreground }]}>{t('launcher_approval.always')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => respond(current.id, 'once')}
+                android_ripple={{ color: withAlpha(colors.accent, 0.24) }}
+                style={[styles.actionBtn, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.actionText, { color: colors.accent, fontWeight: '800' }]}>{t('launcher_approval.allow')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
 
   return (
     <Modal visible={current !== null} transparent animationType="fade" onRequestClose={() => current && respond(current.id, 'deny')}>
@@ -164,6 +253,11 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontSize: 10,
     fontStyle: 'italic',
+  },
+  link: {
+    fontFamily: F.family,
+    fontSize: 12,
+    fontWeight: '600',
   },
   actions: {
     flexDirection: 'row',

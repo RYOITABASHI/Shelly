@@ -35,8 +35,11 @@ import java.security.SecureRandom
  * call("get_stream_feed"): the same caller check, then the stored stream
  * feed (StreamFeedStore; answer shape StreamFeedCore.readResponse, C7).
  *
- * Phase 1: a pending submission stays `pending_approval` until it expires
- * (10 min); the asynchronous approval that decides it (C6) is Phase 2.
+ * Phase 2 (C6): a pending submission is decided later by the owner, in
+ * Shelly (LauncherSubmissions.decide, from the existing approval modal) within
+ * the approval window (10 min), or it expires. This call only hands the
+ * "please review" notification to LauncherApprovalNotifier's own thread after
+ * the answer is built (never waits for it).
  */
 class LauncherIngressProvider : ContentProvider() {
     companion object {
@@ -247,15 +250,21 @@ class LauncherIngressProvider : ContentProvider() {
             }
 
             when (answer) {
-                is Answer.Written -> toBundle(
-                    LauncherIngressCore.accepted(answer.s.id, answer.s.state == McpRunTickets.SUB_APPROVED, answer.s.untrusted, answer.kind, corr, false),
-                )
+                is Answer.Written -> {
+                    // Phase 2 P2-A1 (b): background notification, posted off this thread.
+                    if (answer.s.state == McpRunTickets.SUB_PENDING) LauncherApprovalNotifier.onPending(ctx)
+                    toBundle(
+                        LauncherIngressCore.accepted(answer.s.id, answer.s.state == McpRunTickets.SUB_APPROVED, answer.s.untrusted, answer.kind, corr, false),
+                    )
+                }
                 is Answer.Duplicate -> {
                     val s = answer.existing
-                    val kind = if (s.state == McpRunTickets.SUB_APPROVED) "launcher_submit_accepted" else "launcher_submit_pending"
-                    if (s.state == McpRunTickets.SUB_APPROVED || s.state == McpRunTickets.SUB_PENDING) {
+                    // Phase 2: an approved submission Hayato already took (consumed) is still approved to the launcher.
+                    val approvedNow = s.state == McpRunTickets.SUB_APPROVED || s.state == McpRunTickets.SUB_CONSUMED
+                    val kind = if (approvedNow) "launcher_submit_accepted" else "launcher_submit_pending"
+                    if (approvedNow || s.state == McpRunTickets.SUB_PENDING) {
                         if (!IngressAuditWriter.appendLauncherLine(ctx, line(kind, "duplicate", s, duplicate = true))) return internalError(s.correlationRef)
-                        toBundle(LauncherIngressCore.accepted(s.id, s.state == McpRunTickets.SUB_APPROVED, s.untrusted, kind, s.correlationRef, true))
+                        toBundle(LauncherIngressCore.accepted(s.id, approvedNow, s.untrusted, kind, s.correlationRef, true))
                     } else {
                         // The earlier submission was refused by a person or expired: the retry is not a new one (D7).
                         if (!IngressAuditWriter.appendLauncherLine(ctx, line("launcher_submit_denied", "duplicate_closed", s, duplicate = true))) {

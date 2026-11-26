@@ -570,6 +570,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   trustedCallerSetExemption?(origin: string, op: string, grant: boolean, expectedDigest: string | null): Promise<string>;
   /** Remove an origin's caller and its always-allow rules. Status JSON plus `ok`, `code`. */
   trustedCallerRemove?(origin: string): Promise<string>;
+  /** Launcher ingress Phase 2 (LauncherSubmissions.kt): the approval inbox JSON (no instruction text), or null. Use lib/launcher-approval.ts. */
+  launcherSubmissionInbox?(): Promise<string | null>;
+  /** The pending submission ids, oldest first, and STOP-ALL: JSON {v, halted, ids}, or null. */
+  launcherSubmissionPending?(): Promise<string | null>;
+  /** The prompt of one PENDING submission, with its text for the on-device prompt only (never log it), or null. */
+  launcherSubmissionPrompt?(id: string): Promise<string | null>;
+  /** The owner's decision with the existing kinds 'deny' | 'once' | 'always'. JSON {ok, code, state?, rule?}. */
+  launcherSubmissionDecide?(id: string, decision: string): Promise<string>;
   /** MCP `run_agent` launch (McpRunTickets.kt). Writes the `accepted` ticket, then
    *  starts the run with origin "event" and ingress taint "mcp". runHandle is
    *  `mr_` + 32 hex; principal is 32 hex. Resolves true when the run was sent. */
