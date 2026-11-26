@@ -363,7 +363,7 @@ describe('gate round 1 fixes', () => {
     const prune = tickets.slice(tickets.indexOf('fun submissionsToPrune(subs: List<Submission>, denials: List<Denial>, now: Long)'), tickets.indexOf('/** [submissionsToPrune] with no denial records. */'));
     expect(prune).toContain('var excess = kept.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS');
     expect(prune).toContain('denials.map { Row(it.id, it.at, false) }');
-    expect(tickets).toContain('runCatching { pruneSubmissionRecords(context, outDir, all, allDenials(dir), now) }');
+    expect(tickets).toContain('if (!pruneSubmissionRecords(context, outDir, all, allDenials(dir), now)) return onResult(answer, SubmissionWriteResult.FAILED)');
   });
 
   it('2: synchronous denials are text-free records next to the submissions, verified callers only; no audit read-back', () => {
@@ -388,7 +388,7 @@ describe('gate round 1 fixes', () => {
     // One atomic write (after the shared retention prune), no new directory.
     const rec = tickets.slice(tickets.indexOf('fun recordDenial('), tickets.indexOf('fun allDenialsCurrent('));
     expect((rec.match(/writePrivateAtomic\(/g) ?? []).length).toBe(1);
-    expect(rec).toContain('pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now)');
+    expect(rec).toContain('if (!pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now)) return false');
     expect(rec).toContain('val dir = ensureRunsDir(context)');
     // The reader: a denial is gettable as `denied` without text, never consumable, listed without text.
     expect(io).toContain('is LauncherSubmissionCore.ReaderArgs.Get -> McpRunTickets.readDenial(context, args.id)?.let { d ->');
@@ -423,7 +423,7 @@ describe('gate round 2 fixes', () => {
     expect(pendingPass).toBeGreaterThan(nonPending);
     const helper = tickets.slice(tickets.indexOf('private fun pruneSubmissionRecords('), tickets.indexOf('/** Every denial record in [dir]'));
     expect(helper).toContain('LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s)');
-    expect(helper).toContain('submissionTextFile(context, id).delete()');
+    expect(helper).toContain('val t = submissionTextFile(context, id)');
     expect(helper).toContain('LauncherApprovalNotifier.refreshAsync(context)');
     // The display cap keeps at most 50, newest pending first.
     const cap = core.slice(core.indexOf('fun capInbox('), core.indexOf('fun inboxJson('));
@@ -458,5 +458,48 @@ describe('gate round 2 fixes', () => {
     // Every other reader answer: unaudited replies are checked at the end; audited ones answer audit_failed themselves.
     expect(io).toContain('if (!reply.audited && !line(reply.code)) {');
     expect((io.match(/Reply\("audit_failed", LauncherSubmissionCore\.errorResult\(LauncherSubmissionCore\.AUDIT_FAILED\), audited = true\)/g) ?? []).length).toBe(3);
+  });
+});
+
+describe('gate round 3 fixes', () => {
+  const tickets = kt('McpRunTickets.kt');
+
+  it('pruning is fail closed: pending line before deletion, every removal checked, nothing written on failure', () => {
+    const apply = tickets.slice(tickets.indexOf('fun applyPrune('), tickets.indexOf('/** [submissionsToPrune] with no denial records. */'));
+    expect(apply.indexOf('if (pending != null && !io.auditPruned(pending)) {')).toBeGreaterThan(-1);
+    expect(apply.indexOf('io.auditPruned(pending)')).toBeLessThan(apply.indexOf('io.deleteRecord(id)'));
+    expect(apply).toContain('if (!io.deleteRecord(id)) {');
+    expect(apply).toContain('if (!io.deleteText(id)) ok = false');
+    expect(apply).toMatch(/return ok\s+\}/);
+    const helper = tickets.slice(tickets.indexOf('private fun pruneSubmissionRecords('), tickets.indexOf('/** Every denial record in [dir]'));
+    expect(helper).toContain('): Boolean {');
+    expect(helper).toContain('return f.delete() || !lexists(f)');
+    expect(helper).toContain('return t.delete() || !lexists(t)');
+    expect(helper).not.toMatch(/runCatching \{ applyPrune/);
+    // submissionTransaction: the prune precedes the audit line and the write, and a failed one is FAILED.
+    const tx = tickets.slice(tickets.indexOf('fun <T> submissionTransaction('), tickets.indexOf('fun readSubmissionJson('));
+    const pruneAt = tx.indexOf('if (!pruneSubmissionRecords(context, outDir, all, allDenials(dir), now)) return onResult(answer, SubmissionWriteResult.FAILED)');
+    expect(pruneAt).toBeGreaterThan(-1);
+    expect(pruneAt).toBeLessThan(tx.indexOf('write.beforeWrite()'));
+    expect(pruneAt).toBeLessThan(tx.indexOf('writePrivateAtomic(textFile'));
+    // recordDenial: no room, no record.
+    const rec = tickets.slice(tickets.indexOf('fun recordDenial('), tickets.indexOf('fun allDenialsCurrent('));
+    expect(rec.indexOf('return false')).toBeLessThan(rec.indexOf('writePrivateAtomic('));
+    expect(tickets).not.toMatch(/runCatching \{ pruneSubmissionRecords/);
+    // FAILED is answered INTERNAL_ERROR through answerDenied (whose keepDenial then fails closed too).
+    const provider = kt('LauncherIngressProvider.kt');
+    expect(provider).toContain('McpRunTickets.SubmissionWriteResult.FAILED -> Answer.RecordFailed(answer.s)');
+  });
+
+  it('the new overlays use theme colors', () => {
+    expect(read('components/LauncherInboxModal.tsx')).not.toMatch(/rgba\(/);
+    const modal = read('components/McpApprovalModal.tsx');
+    const launcherBranch = modal.slice(modal.indexOf('if (launcher && current) {'), modal.indexOf('\n  return (\n    <Modal visible={current !== null}'));
+    expect(launcherBranch).not.toMatch(/rgba\(/);
+    expect(launcherBranch).toContain('withAlpha(colors.background, 0.92)');
+  });
+
+  it('the fact sheet says denial records are best effort', () => {
+    expect(read('docs/superpowers/launcher-ingress-phase2-fact-sheet.md')).toContain('**拒否レコードはベストエフォート**');
   });
 });

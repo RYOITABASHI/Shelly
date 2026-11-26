@@ -47,7 +47,7 @@ export const McpApprovalModal = memo(function McpApprovalModal() {
   if (launcher && current) {
     return (
       <Modal visible transparent animationType="fade" onRequestClose={() => dismiss(current.id)}>
-        <View style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.85)' }]}>
+        <View style={[styles.overlay, { backgroundColor: withAlpha(colors.background, 0.92) }]}>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.accent }]}>
             <View style={[styles.header, { borderBottomColor: colors.border }]}>
               <MaterialIcons name="rocket-launch" size={20} color={colors.accent} />

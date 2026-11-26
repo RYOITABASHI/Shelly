@@ -16,6 +16,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { fonts as F } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
 import { useLauncherInboxStore } from '@/store/launcher-inbox-store';
 import { maybePromptLauncherSubmission, type LauncherInboxItem } from '@/lib/launcher-approval';
 
@@ -43,7 +44,7 @@ export const LauncherInboxModal = memo(function LauncherInboxModal() {
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
-      <View style={[styles.overlay, { backgroundColor: 'rgba(0,0,0,0.85)' }]}>
+      <View style={[styles.overlay, { backgroundColor: withAlpha(colors.background, 0.92) }]}>
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <MaterialIcons name="inbox" size={20} color={colors.accent} />

@@ -1237,6 +1237,45 @@ object McpRunTickets {
         return out
     }
 
+    /** The I/O a prune needs: on device files and the audit writer, in JVM tests injected (failures included). */
+    interface PruneIo {
+        /** The `launcher_submit_expired` / `pruned` line of a pending submission dropped by the cap; false = not written. */
+        fun auditPruned(s: Submission): Boolean
+        /** Removes the record; true only when it is gone. */
+        fun deleteRecord(id: String): Boolean
+        /** Removes the text; true when it is gone (or there never was one, e.g. a denial record). */
+        fun deleteText(id: String): Boolean
+    }
+
+    /**
+     * [submissionsToPrune] carried out through [io], fail closed (gate round
+     * 3): a pending row is deleted only after its `pruned` audit line was
+     * written; a row whose line, record or text could not be removed makes
+     * the whole prune fail. True only when every chosen row is gone, i.e.
+     * the total plus the incoming record is within the cap; on false the
+     * caller writes nothing.
+     */
+    fun applyPrune(all: List<Submission>, denials: List<Denial>, now: Long, io: PruneIo): Boolean {
+        val drop = submissionsToPrune(all, denials, now)
+        if (drop.isEmpty()) return true
+        val pendingById = all.filter { it.id in drop && applySubmissionExpiry(it, now).state == SUB_PENDING }.associateBy { it.id }
+        var ok = true
+        for (id in drop.sorted()) {
+            val pending = pendingById[id]
+            // Never deleted without its line.
+            if (pending != null && !io.auditPruned(pending)) {
+                ok = false
+                continue
+            }
+            if (!io.deleteRecord(id)) {
+                ok = false
+                continue
+            }
+            if (!io.deleteText(id)) ok = false
+        }
+        return ok
+    }
+
     /** [submissionsToPrune] with no denial records. */
     fun submissionsToPrune(subs: List<Submission>, now: Long): Set<String> = submissionsToPrune(subs, emptyList(), now)
 
@@ -1349,24 +1388,35 @@ object McpRunTickets {
      * each dropped record and its text are deleted. A submission dropped
      * while still pending (only when pending ones alone exceed the cap) is
      * handled as an expiry first: its `launcher_submit_expired` line (code
-     * `pruned`, fixed fields, no text), then the review notification is
-     * refreshed. Throws on I/O failure (callers wrap it).
+     * `pruned`, fixed fields, no text, written BEFORE the deletion), then
+     * the review notification is refreshed. Fail closed ([applyPrune]):
+     * false when any chosen row could not be removed (or the prune threw);
+     * the caller then writes nothing.
      */
-    private fun pruneSubmissionRecords(context: Context, dir: File, all: List<Submission>, denials: List<Denial>, now: Long) {
-        val drop = submissionsToPrune(all, denials, now)
-        if (drop.isEmpty()) return
+    private fun pruneSubmissionRecords(context: Context, dir: File, all: List<Submission>, denials: List<Denial>, now: Long): Boolean {
         var pendingDropped = false
-        for (s in all) {
-            if (s.id !in drop || applySubmissionExpiry(s, now).state != SUB_PENDING) continue
-            pendingDropped = true
-            val line = LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s)
-            if (!IngressAuditWriter.appendLauncherLine(context, line)) Log.w(TAG, "submission prune audit line not written")
+        val ok = try {
+            applyPrune(all, denials, now, object : PruneIo {
+                override fun auditPruned(s: Submission): Boolean {
+                    pendingDropped = true
+                    return IngressAuditWriter.appendLauncherLine(context, LauncherSubmissionCore.recordLine("launcher_submit_expired", "pruned", s))
+                }
+                override fun deleteRecord(id: String): Boolean {
+                    val f = submissionFile(dir, id)
+                    return f.delete() || !lexists(f)
+                }
+                override fun deleteText(id: String): Boolean {
+                    val t = submissionTextFile(context, id)
+                    return t.delete() || !lexists(t)
+                }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "submission prune failed type=${e.javaClass.simpleName}")
+            false
         }
-        for (id in drop) {
-            submissionFile(dir, id).delete()
-            submissionTextFile(context, id).delete()
-        }
+        if (!ok) Log.w(TAG, "submission prune incomplete; nothing written")
         if (pendingDropped) runCatching { LauncherApprovalNotifier.refreshAsync(context) }
+        return ok
     }
 
     /** Every denial record in [dir] (the `ls_` files whose kind is `denial`). */
@@ -1421,8 +1471,9 @@ object McpRunTickets {
             if (!isValidSubmission(s) || s.principal != principal) return onResult(answer, SubmissionWriteResult.FAILED)
             val outDir = ensureRunsDir(context)
             if (lexists(submissionFile(outDir, s.id))) return onResult(answer, SubmissionWriteResult.FAILED)
-            runCatching { pruneSubmissionRecords(context, outDir, all, allDenials(dir), now) }
-                .onFailure { Log.w(TAG, "submission prune failed type=${it.javaClass.simpleName}") }
+            // Retention is a precondition of the write (fail closed): if the oldest rows
+            // could not be removed, the new submission is not written (FAILED → INTERNAL_ERROR).
+            if (!pruneSubmissionRecords(context, outDir, all, allDenials(dir), now)) return onResult(answer, SubmissionWriteResult.FAILED)
             if (!write.beforeWrite()) return onResult(answer, SubmissionWriteResult.REFUSED_BY_AUDIT)
             val textFile = submissionTextFile(context, s.id)
             try {
@@ -1626,8 +1677,8 @@ object McpRunTickets {
             val dir = ensureRunsDir(context)
             if (lexists(submissionFile(dir, d.id))) return false
             val now = System.currentTimeMillis()
-            runCatching { pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now) }
-                .onFailure { Log.w(TAG, "denial prune failed type=${it.javaClass.simpleName}") }
+            // Same precondition: no room within the cap, no denial record (best effort; the answer is unchanged).
+            if (!pruneSubmissionRecords(context, dir, allSubmissions(dir), allDenials(dir), now)) return false
             ClosePawRunResults.writePrivateAtomic(submissionFile(dir, d.id), encodeDenial(d))
             true
         } catch (e: Exception) {

@@ -251,6 +251,63 @@ class LauncherSubmissionCoreTest {
         assertTrue((0 until items.length()).all { items.getJSONObject(it).getString("state") == "pending_approval" })
     }
 
+    private class FakePruneIo(
+        val auditOk: Boolean = true,
+        val failDelete: Set<String> = emptySet(),
+        val failText: Set<String> = emptySet(),
+    ) : McpRunTickets.PruneIo {
+        val audited = ArrayList<String>()
+        val deleted = ArrayList<String>()
+        override fun auditPruned(s: McpRunTickets.Submission): Boolean {
+            audited.add(s.id)
+            return auditOk
+        }
+        override fun deleteRecord(id: String): Boolean {
+            if (id in failDelete) return false
+            deleted.add(id)
+            return true
+        }
+        override fun deleteText(id: String): Boolean = id !in failText
+    }
+
+    /** 56 pending across 7 principals: the prune must drop 7 pending ones. */
+    private fun overfullPending(): List<McpRunTickets.Submission> =
+        (0 until 7).flatMap { p ->
+            (0 until LauncherIngressLimits.MAX_PENDING).map { i ->
+                sub(id = "ls_" + "%032x".format(4000 + p * 10 + i), acceptedAt = now - 300_000L + p * 1000L + i)
+                    .copy(principal = "launcher:" + "%032x".format(p + 1))
+            }
+        }
+
+    @Test
+    fun pruneIsFailClosedOnAuditAndDeleteFailures() {
+        val subs = overfullPending()
+        // All good: the chosen pending rows are audited before deletion, and the prune succeeds.
+        val ok = FakePruneIo()
+        assertTrue(McpRunTickets.applyPrune(subs, emptyList(), now, ok))
+        assertEquals(ok.audited.toSet(), ok.deleted.toSet())
+        assertEquals(subs.size + 1 - LauncherIngressLimits.INBOX_MAX_RECORDS, ok.deleted.size)
+        // The pruned audit line fails: nothing pending is deleted, the prune fails (the caller writes nothing).
+        val noAudit = FakePruneIo(auditOk = false)
+        assertFalse(McpRunTickets.applyPrune(subs, emptyList(), now, noAudit))
+        assertTrue(noAudit.deleted.isEmpty())
+        // A record that can't be deleted fails the prune.
+        val victim = McpRunTickets.submissionsToPrune(subs, emptyList(), now).first()
+        assertFalse(McpRunTickets.applyPrune(subs, emptyList(), now, FakePruneIo(failDelete = setOf(victim))))
+        // A text that can't be deleted fails it too.
+        assertFalse(McpRunTickets.applyPrune(subs, emptyList(), now, FakePruneIo(failText = setOf(victim))))
+        // Nothing to prune: success, no I/O.
+        val none = FakePruneIo(auditOk = false)
+        assertTrue(McpRunTickets.applyPrune(subs.take(3), emptyList(), now, none))
+        assertTrue(none.audited.isEmpty() && none.deleted.isEmpty())
+        // Decided rows are deleted without an audit line.
+        val decided = (0 until 50).map { i -> sub(id = "ls_" + "%032x".format(5000 + i), state = McpRunTickets.SUB_EXPIRED, acceptedAt = now - 1000L * (i + 1), decidedAt = now) }
+        val d = FakePruneIo(auditOk = false)
+        assertTrue(McpRunTickets.applyPrune(decided, emptyList(), now, d))
+        assertTrue(d.audited.isEmpty())
+        assertEquals(1, d.deleted.size)
+    }
+
     @Test
     fun denialRecordsAreClosedTextFreeAndNeverSubmissions() {
         val d = denial(1, now)
