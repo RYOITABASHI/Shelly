@@ -111,6 +111,10 @@ object ManagedServices {
      * is unusable (ManagedServiceSupervisor.recoveredFacadeSpec). It carries
      * only enough identity to verify and stop the running process; a start
      * under it is refused (its env would be incomplete).
+     * [autostart] (stage S2): the supervisor brings the service back after the
+     * app process dies, an app update or a reboot, and restarts it with backoff
+     * when it exits by itself — only while it was started and never stopped on
+     * purpose (reconcileAction / nextRestart).
      */
     data class Spec(
         val id: String,
@@ -118,6 +122,7 @@ object ManagedServices {
         val heartbeat: Heartbeat?,
         val health: HealthCheck? = null,
         val stopOnly: Boolean = false,
+        val autostart: Boolean = false,
     )
 
     // article-delivery: the article delivery loop (5-minute rounds). Its
@@ -132,8 +137,9 @@ object ManagedServices {
             id = "article-delivery",
             launch = Launch(".shelly/agents/.env.article-delivery.js", listOf("loop"), DEFAULT_ENV),
             heartbeat = Heartbeat(".shelly/agents/article-delivery-loop.json", 11 * 60_000L),
+            autostart = true,
         ),
-        "council-facade" to Spec(id = "council-facade", launch = null, heartbeat = null),
+        "council-facade" to Spec(id = "council-facade", launch = null, heartbeat = null, autostart = true),
     )
 
     fun spec(id: String?): Spec? = if (id != null && ID_RE.matches(id)) REGISTRY[id] else null
@@ -335,6 +341,29 @@ object ManagedServices {
          * launch-spec file is later deleted or broken. Null for article-delivery.
          */
         val script: String? = null,
+        /**
+         * Restart accounting (stage S2, nextRestart): automatic starts counted
+         * in the window that began at [restartWindowAt]. Carried from run to
+         * run by automatic starts; a start on request writes a fresh Record, so
+         * it resets them.
+         */
+        val restarts: Int = 0,
+        val restartWindowAt: Long? = null,
+        /** Set when the restart limit was reached in that window (audited once). */
+        val gaveUpAt: Long? = null,
+        /**
+         * When the restart charged for this run is due (exit time + backoff).
+         * Persisted so a restart that was waiting when the app process died is
+         * not started early by the next reconcile. Cleared by the next start
+         * (a new record).
+         */
+        val restartAt: Long? = null,
+        /**
+         * [stoppedAt] was written by STOP-ALL (not by a stop on request or the
+         * notification's Exit): reconcileAction brings the service back once
+         * STOP-ALL is lifted. Still `stopped` for status.
+         */
+        val haltStop: Boolean = false,
     )
 
     /** The only script value a Record may carry (ExternalSpec's fixed entry under a single-segment root). */
@@ -346,6 +375,13 @@ object ManagedServices {
         r.exitedAt?.let { o.put("exitedAt", it) }
         r.exitCode?.let { o.put("exitCode", it) }
         r.script?.takeIf { RECORD_SCRIPT_RE.matches(it) }?.let { o.put("script", it) }
+        // Still v 1: these are optional, an older build ignores them, and a
+        // record without them reads as zero restarts.
+        if (r.restarts in 1..RESTART_COUNT_MAX) o.put("restarts", r.restarts)
+        r.restartWindowAt?.takeIf { it >= 0 }?.let { o.put("restartWindowAt", it) }
+        r.gaveUpAt?.takeIf { it >= 0 }?.let { o.put("gaveUpAt", it) }
+        r.restartAt?.takeIf { it >= 0 }?.let { o.put("restartAt", it) }
+        if (r.haltStop && r.stoppedAt != null) o.put("haltStop", true)
         return o.toString()
     }
 
@@ -366,11 +402,119 @@ object ManagedServices {
                 // An unexpected value is dropped, never the record: the record
                 // still answers dead/stopped; only the recovery path loses it.
                 script = (o.opt("script") as? String)?.takeIf { RECORD_SCRIPT_RE.matches(it) },
+                // Restart accounting: a value out of shape is dropped (reads as
+                // none), never the record, so the dead/stopped answer and the
+                // bring-back decision still have it.
+                restarts = (o.opt("restarts") as? Int)?.takeIf { it in 0..RESTART_COUNT_MAX } ?: 0,
+                restartWindowAt = longField(o, "restartWindowAt"),
+                gaveUpAt = longField(o, "gaveUpAt"),
+                restartAt = longField(o, "restartAt"),
+                haltStop = o.opt("haltStop") == true && o.has("stoppedAt"),
             )
         }
     } catch (e: Exception) {
         null
     }
+
+    /** A non-negative integral JSON number, or null (absent or out of shape). */
+    private fun longField(o: JSONObject, key: String): Long? {
+        // Only an integral number (org.json reads 1.5 as Double or BigDecimal, "5" as String).
+        val l = when (val v = o.opt(key)) { is Int -> v.toLong(); is Long -> v; else -> return null }
+        return if (l >= 0) l else null
+    }
+
+    // ── Automatic recovery (stage S2) ──────────────────────────────────────
+    //
+    // Restart budget per service: an automatic start (a restart after an exit
+    // by itself, or a bring-back by reconcile) is allowed at most RESTART_MAX
+    // times in RESTART_WINDOW_MS, waiting RESTART_BACKOFF_MS[n] before the
+    // (n+1)-th (the last value repeats). A run that lasted RESTART_STABLE_MS or
+    // longer clears the count. Past the limit the service stays dead (status
+    // answers dead, the audit has restart_limit) until a start on request or
+    // the window ends.
+
+    const val RESTART_MAX = 5
+    const val RESTART_WINDOW_MS = 24 * 60 * 60_000L
+    const val RESTART_STABLE_MS = 10 * 60_000L
+    val RESTART_BACKOFF_MS: List<Long> = listOf(30_000L, 2 * 60_000L, 10 * 60_000L)
+    private const val RESTART_COUNT_MAX = 1000
+
+    /**
+     * [delayMs] null = the limit is reached: no restart. [record] is the
+     * accounting to persist either way (the count already includes the
+     * restart this plan allows; [Record.gaveUpAt] set when it refuses).
+     */
+    data class RestartPlan(val delayMs: Long?, val record: Record)
+
+    /**
+     * The next automatic start for [rec] (the run that ended, or the one a
+     * reconcile found gone). [ranMs]: how long that run lasted. Clock skew
+     * (a window start in the future) restarts the window.
+     */
+    fun nextRestart(rec: Record, ranMs: Long, now: Long): RestartPlan {
+        var count = rec.restarts
+        var windowAt = rec.restartWindowAt
+        var gaveUpAt = rec.gaveUpAt
+        if (ranMs >= RESTART_STABLE_MS) { count = 0; windowAt = null; gaveUpAt = null }
+        if (windowAt == null || now - windowAt >= RESTART_WINDOW_MS || windowAt - now > 60_000L) {
+            count = 0; windowAt = now; gaveUpAt = null
+        }
+        if (count >= RESTART_MAX) {
+            return RestartPlan(null, rec.copy(restarts = count, restartWindowAt = windowAt, gaveUpAt = gaveUpAt ?: now, restartAt = null))
+        }
+        val delay = RESTART_BACKOFF_MS[minOf(count, RESTART_BACKOFF_MS.size - 1)]
+        return RestartPlan(delay, rec.copy(restarts = count + 1, restartWindowAt = windowAt, gaveUpAt = null, restartAt = now + delay))
+    }
+
+    /**
+     * How long a reconcile waits before a restart already charged in [rec]
+     * ([Record.restartAt]): 0 = due now. Never longer than the longest backoff
+     * (a clock moved back cannot hold a service down for longer).
+     */
+    fun restartWaitMs(rec: Record, now: Long): Long {
+        val at = rec.restartAt ?: return 0L
+        return (at - now).coerceIn(0L, RESTART_BACKOFF_MS.last())
+    }
+
+    /** What a reconcile pass does with one registered service. */
+    enum class ReconcileAction {
+        /** Nothing: not autostart, never started here, stopped on purpose, or already supervised. */
+        NONE,
+        /** STOP-ALL: not brought back (audited). */
+        HALTED,
+        /** STOP-ALL with a verified, unsupervised survivor: it is stopped. */
+        HALTED_STOP,
+        /** Its launch is not resolvable (council-facade without a usable launch spec). */
+        NOT_CONFIGURED,
+        /** Alive and verified, but not supervised: stopped, then started under supervision. */
+        ADOPT,
+        /** Answers its health check but no pid verifies it: left alone (audited). */
+        UNVERIFIED,
+        /** Gone: start it (budget permitting). */
+        START,
+    }
+
+    /**
+     * The reconcile decision (D2, D5, D6). [status] is ManagedServiceSupervisor.status
+     * for [spec] (the resolved Spec); [halted] true also when STOP-ALL cannot be
+     * checked. Pure; the restart budget is applied by the caller (nextRestart).
+     */
+    fun reconcileAction(spec: Spec, record: Record?, status: Status, halted: Boolean): ReconcileAction {
+        if (!spec.autostart || record == null) return ReconcileAction.NONE
+        // Stopped on purpose stays stopped; stopped by STOP-ALL comes back after it.
+        if (record.stoppedAt != null && !record.haltStop) return ReconcileAction.NONE
+        if (status.supervised) return ReconcileAction.NONE
+        if (halted) return if (status.pid != null) ReconcileAction.HALTED_STOP else ReconcileAction.HALTED
+        if (spec.launch == null || spec.stopOnly) return ReconcileAction.NOT_CONFIGURED
+        if (status.pid != null) return ReconcileAction.ADOPT
+        if (status.state == State.RUNNING || status.state == State.STARTING || status.state == State.UNHEALTHY) {
+            return ReconcileAction.UNVERIFIED
+        }
+        return ReconcileAction.START
+    }
+
+    /** Audit code of an automatic start's outcome: <prefix>_<code> (restart_started, reconcile_halted …). */
+    fun autoCode(prefix: String, code: String): String = (prefix + "_" + code).take(32)
 
     // ── Writing under services/<id>/ (leaf symlinks refused) ──────────────
     //

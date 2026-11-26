@@ -294,6 +294,12 @@ class TerminalSessionService : Service() {
                 // fresh scheduled one once (RunRecovery, off the main thread).
                 runCatching { RunRecovery.sweepInBackground(applicationContext, reason) }
                     .onFailure { Log.e(TAG, "Run recovery sweep ($reason) failed to start", it) }
+                // S2: bring back the supervised services (MCP service_control)
+                // that should be running. Off the main thread; while it runs the
+                // service counts as having work (keepsServiceAlive), so the
+                // check below keeps the foreground for the starts it makes.
+                runCatching { ManagedServiceSupervisor.reconcileInBackground(applicationContext, reason) }
+                    .onFailure { Log.e(TAG, "Service reconcile ($reason) failed to start", it) }
                 if (!hasProtectedWork()) {
                     stopForegroundAndMark()
                     stopSelf(startId)
@@ -566,7 +572,13 @@ class TerminalSessionService : Service() {
             }
         }
 
-        // Default: start/restart with base notification
+        // Default: start/restart with base notification. A null intent is the
+        // system's sticky restart after this process was killed: bring the
+        // supervised services back (S2) before deciding whether to stay.
+        if (intent == null) {
+            runCatching { ManagedServiceSupervisor.reconcileInBackground(applicationContext, "sticky") }
+                .onFailure { Log.e(TAG, "Service reconcile (sticky) failed to start", it) }
+        }
         if (!hasProtectedWork()) {
             Log.i(TAG, "Default start with no sessions — not keeping empty service sticky")
             startForegroundWithNotification(null)
