@@ -72,6 +72,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 
 const RECOVERY_SCRIPT_VERSION = 2;
 
@@ -1992,14 +1993,58 @@ function opHangCancel(opts) {
 // a plan_refire_pending intent carrying its requestId, and the existing S5
 // dispatch takes it from there. A request still unconsumed past its local day,
 // or found while STOP-ALL is on, is closed as plan_refire_request_expired.
-// The web-search opt-in check is native's (WebSearchOptInStore); this script
-// checks the run, the day and the counts.
+// The web-search opt-in is checked by native at the request (WebSearchOptInStore)
+// and the request records the definition hash the opt-in was bound to. The
+// consent is checked again when a sweep takes the request: native passes the
+// verified opt-ins (--opt-ins agentId=sha256,...) and this script recomputes
+// the current definition hash with the executor's own read-only op
+// (--web-search-opt-in-candidates). A request whose opt-in was turned off, or
+// whose pipeline definition changed since (the opt-in lapsed), is expired
+// (opt-in-lapsed), never re-fired. Without --opt-ins, or when the executor op
+// fails, the request waits (nothing is re-fired that could not be checked).
 
 /** Held reasons (the executor's ARTICLE_HELD_REASONS) a re-run can recover from. */
 const REFIRE_REQUEST_HELD_REASONS = new Set(['web-search-refused', 'web-search-stopped', 'no-web-sources', 'text-lint', 'approval-timeout']);
 /** Accepted requests per pipeline (one agent) per local day. */
 const REFIRE_REQUEST_DAILY_MAX = 2;
 const PRINCIPAL_RE = /^[0-9a-f]{32}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const OPT_IN_CANDIDATES_TIMEOUT_MS = 30 * 1000;
+
+/** --opt-ins "agentId=sha256,..." (or "none") -> Map agentId -> sha256; null when absent or malformed. Pure. */
+function parseOptIns(raw) {
+  if (typeof raw !== 'string') return null;
+  const out = new Map();
+  if (raw === 'none') return out;
+  for (const part of raw.split(',')) {
+    const m = /^([A-Za-z0-9_-]{1,128})=([0-9a-f]{64})$/.exec(part);
+    if (!m) return null;
+    out.set(m[1], m[2]);
+  }
+  return out;
+}
+
+/**
+ * The executor's own --web-search-opt-in-candidates (the list native's
+ * Settings toggle and the request check read): [{agentId, definitionSha256,
+ * webSearchStep, ...}], or null when it could not be run or read.
+ */
+function defaultOptInCandidates(opts) {
+  const executor = opts.executorPath || path.join(opts.home, '.shelly-plan-executor.js');
+  try {
+    const r = spawnSync(process.execPath, [executor, '--web-search-opt-in-candidates'], {
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { HOME: opts.home }),
+      timeout: OPT_IN_CANDIDATES_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+    if (r.status !== 0) return null;
+    const v = JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop());
+    return isPlainObject(v) && Array.isArray(v.pipelines) ? v.pipelines.filter(isPlainObject) : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 /**
  * The run id the S5 records use for this run (closeRun's rule): the tied
@@ -2053,6 +2098,8 @@ function opRefireRequest(opts) {
   if (!AGENT_ID_RE.test(opts.agentId || '')) return { ok: false, error: 'agent-id' };
   if (typeof opts.pipelineId !== 'string' || !PIPELINE_ID_RE.test(opts.pipelineId)) return { ok: false, error: 'pipeline-id' };
   const principal = typeof opts.principal === 'string' && PRINCIPAL_RE.test(opts.principal) ? opts.principal : null;
+  // The definition hash native's opt-in check found on (re-checked when a sweep takes the request).
+  if (typeof opts.definitionSha256 !== 'string' || !SHA256_RE.test(opts.definitionSha256)) return { ok: false, error: 'definition-sha256' };
   const paths = agentPaths(opts.home, opts.agentId);
   const answer = (code, extra) => Object.assign({ ok: true, op: 'refire-request', code, accepted: code === 'accepted' || code === 'duplicate', duplicate: code === 'duplicate' }, extra || {});
   // STOP-ALL first: nothing else is read while it is on.
@@ -2082,6 +2129,7 @@ function opRefireRequest(opts) {
       runId,
       runStartTs: run.startTs,
       reason: decision.reason,
+      definitionSha256: opts.definitionSha256,
       principal,
       via: 'mcp',
     });
@@ -2095,11 +2143,13 @@ function opRefireRequest(opts) {
  * A sweep's turn for this agent's accepted, unconsumed requests: each becomes
  * a plan_refire_pending intent (with its requestId and no feedback line: the
  * held landing wrote its own) that the S5 dispatch takes, or is closed as
- * expired (halted, day-ended, superseded: a newer run started since).
- * A request whose agent has a live executor waits for a later sweep.
- * Returns {refire: [...], pending: n}.
+ * expired (halted, day-ended, superseded: a newer run started since,
+ * opt-in-lapsed: the opt-in is off now or bound to another definition).
+ * A request whose agent has a live executor, or whose consent could not be
+ * checked, waits for a later sweep. ctx.candidates is the executor's opt-in
+ * list, read once per sweep (lazily). Returns {refire: [...], pending: n}.
  */
-function consumeRefireRequests(opts, agentId) {
+function consumeRefireRequests(opts, agentId, ctx) {
   const paths = agentPaths(opts.home, agentId);
   const out = { refire: [], pending: 0 };
   const all = readAllAuditRuns(paths);
@@ -2110,11 +2160,30 @@ function consumeRefireRequests(opts, agentId) {
   const halted = fs.existsSync(paths.haltSentinel);
   const today = localDate(opts.nowMs);
   const alive = !halted && executorAlive(paths, agentId, opts.procDeps);
+  const optIns = parseOptIns(opts.optIns);
+  const shared = ctx || {};
+  // Consent as it stands now: the stored opt-in (native) and the current
+  // definition (the executor's hash) must both still be the accepted one.
+  const consent = (rq) => {
+    if (!optIns) return 'unknown';
+    const want = typeof rq.definitionSha256 === 'string' && SHA256_RE.test(rq.definitionSha256) ? rq.definitionSha256 : '';
+    if (!want || optIns.get(agentId) !== want) return 'lapsed';
+    if (shared.candidates === undefined) shared.candidates = (opts.optInCandidates || defaultOptInCandidates)(opts);
+    if (!shared.candidates) return 'unknown';
+    const c = shared.candidates.filter((x) => x.agentId === agentId);
+    if (c.length !== 1 || c[0].webSearchStep !== true || c[0].definitionSha256 !== want) return 'lapsed';
+    return 'on';
+  };
   let launchMatch = null;
   for (const run of waiting) {
     const rq = run.refireRequested;
     const newer = runs.some((r) => r.startMs > run.startMs);
-    const why = halted ? 'halted' : rq.date !== today ? 'day-ended' : newer ? 'superseded' : '';
+    let why = halted ? 'halted' : rq.date !== today ? 'day-ended' : newer ? 'superseded' : '';
+    let state = '';
+    if (!why && !alive) {
+      state = consent(rq);
+      if (state === 'lapsed') why = 'opt-in-lapsed';
+    }
     if (why) {
       try {
         appendLine(paths.auditFile, {
@@ -2131,7 +2200,7 @@ function consumeRefireRequests(opts, agentId) {
       } catch (_) {}
       continue;
     }
-    if (alive) {
+    if (alive || state !== 'on') {
       out.pending += 1;
       continue;
     }
@@ -2307,6 +2376,7 @@ function opSweep(opts) {
     releaseStaleFreezes(opts);
   } catch (_) {}
   const feedbackLines = readFeedback(agentPaths(opts.home, ids[0] || '_'));
+  const requestCtx = {};
   for (const id of ids) {
     try {
       settlePendingRefires(opts, id, feedbackLines, false);
@@ -2318,7 +2388,7 @@ function opSweep(opts) {
     } catch (_) {}
     // After the close: a run S5 just re-fired is not re-fired again on request.
     try {
-      const rq = consumeRefireRequests(opts, id);
+      const rq = consumeRefireRequests(opts, id, requestCtx);
       result.refire.push(...rq.refire);
       result.pendingRequests += rq.pending;
     } catch (_) {}
@@ -2438,6 +2508,8 @@ function main(argv) {
       why: a.why,
       pipelineId: a['pipeline-id'],
       principal: a.principal,
+      definitionSha256: a['definition-sha256'],
+      optIns: a['opt-ins'],
       executorPath: a.executor,
     });
   } catch (e) {

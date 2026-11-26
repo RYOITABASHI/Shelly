@@ -639,6 +639,9 @@ object AgentRuntime {
         return exports
     }
 
+    /** Search parity item 4: the verified opt-ins for the recovery sweep (WebSearchOptInStore.optInSnapshot). */
+    fun webSearchOptInSnapshot(context: Context): String = WebSearchOptInStore.optInSnapshot(context)
+
     /**
      * Runs the executor's read-only `--web-search-opt-in-candidates` op for the
      * Settings opt-in list (WebSearchOptInStore). Same runtime as runPlanAgent's

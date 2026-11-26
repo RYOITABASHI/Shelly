@@ -367,7 +367,11 @@ object RunRecovery {
                 val homeDir = HomeInitializer.getHomeDir(app)
                 runCatching { McpRunTickets.reconcileAfterRestart(app) }
                     .onFailure { Log.w(TAG, "ticket reconcile failed type=${it.javaClass.simpleName}") }
-                val r = runOp(app, homeDir, listOf("--op", "sweep"))
+                // Search parity item 4: an MCP re-fire request is taken only
+                // while its pipeline's opt-in is still the one it was accepted under.
+                // A snapshot that could not be taken leaves such requests waiting.
+                val optIns = runCatching { AgentRuntime.webSearchOptInSnapshot(app) }.getOrNull()
+                val r = runOp(app, homeDir, listOf("--op", "sweep") + (if (optIns != null) listOf("--opt-ins", optIns) else emptyList()))
                 Log.i(TAG, "sweep ($reason) ok=${r.ok} refires=${r.refires.size} pendingRequests=${r.pendingRequests}")
                 dispatchRefires(app, r.refires)
                 // An MCP re-fire request still waiting (its agent's executor
@@ -388,23 +392,27 @@ object RunRecovery {
     private val REQUEST_ID_RE = Regex("^rq-[0-9]{1,16}-[0-9a-f]{8}$")
     private val PRINCIPAL_RE = Regex("^[0-9a-f]{32}$")
     private val PIPELINE_ID_RE = Regex("^[a-z0-9-]{1,32}$")
+    private val SHA256_RE = Regex("^[0-9a-f]{64}$")
     /** A request a sweep could not take yet is looked at again by this reconcile tick. */
     private const val REQUEST_FOLLOW_UP_MS = 5L * 60L * 1000L
 
     /**
      * Records an MCP re-fire request for [agentId] (the caller resolved
-     * [pipelineId] to it and checked the web-search opt-in) through the
+     * [pipelineId] to it and checked the web-search opt-in, bound to
+     * [definitionSha256], which the request keeps for the sweep's re-check) through the
      * recovery script, under its lock. An accepted request is in the agent's
      * audit before this returns (it outlives a kill); a sweep is started now
      * to turn it into an S5 re-fire, and a reconcile tick is armed as the
      * fallback. Blocking: call off the main thread. Never throws.
      */
-    fun requestRefire(context: Context, agentId: String, pipelineId: String, principal: String?): RefireRequestResult {
-        if (!AGENT_ID_RE.matches(agentId) || !PIPELINE_ID_RE.matches(pipelineId)) return RefireRequestResult("invalid_params", null)
+    fun requestRefire(context: Context, agentId: String, pipelineId: String, definitionSha256: String, principal: String?): RefireRequestResult {
+        if (!AGENT_ID_RE.matches(agentId) || !PIPELINE_ID_RE.matches(pipelineId) || !SHA256_RE.matches(definitionSha256)) {
+            return RefireRequestResult("invalid_params", null)
+        }
         val app = context.applicationContext
         return try {
             val homeDir = HomeInitializer.getHomeDir(app)
-            val args = mutableListOf("--op", "refire-request", "--agent-id", agentId, "--pipeline-id", pipelineId)
+            val args = mutableListOf("--op", "refire-request", "--agent-id", agentId, "--pipeline-id", pipelineId, "--definition-sha256", definitionSha256)
             if (principal != null && PRINCIPAL_RE.matches(principal)) args += listOf("--principal", principal)
             val r = runOpLine(app, homeDir, args)?.let { parseRefireRequest(it) } ?: RefireRequestResult("native_error", null)
             Log.i(TAG, "re-fire request agent=$agentId pipeline=$pipelineId code=${r.code}")

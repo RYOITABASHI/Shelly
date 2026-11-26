@@ -327,24 +327,42 @@ object WebSearchOptInStore {
      * article pipeline [pipelineId], when that pipeline's web-search opt-in is
      * on now (the same check as the Settings list: a verified stored hash equal
      * to the hash the executor computes for the current definition). Read
-     * only: nothing is stored or audited here. Returns (agentId, "ok") or
-     * (null, code): unknown_pipeline (no candidate, or more than one, carries
-     * this id), not_opted_in (off or lapsed), native_error (the executor op
-     * failed or its output did not parse).
+     * only: nothing is stored or audited here. [PipelineOptIn.code] is ok
+     * (agentId and the definition hash the opt-in is bound to are set), or
+     * unknown_pipeline (no candidate, or more than one, carries this id),
+     * not_opted_in (off or lapsed), native_error (the executor op failed or
+     * its output did not parse). The recovery script records the hash with
+     * the request and checks the consent again before the re-fire
+     * ([optInSnapshot]).
      */
     fun optedInAgentForPipeline(
         context: Context,
         pipelineId: String,
         runCandidates: (Context) -> Pair<String?, String>,
-    ): Pair<String?, String> {
+    ): PipelineOptIn {
         val (stdout, _) = try { runCandidates(context) } catch (e: Exception) { Pair(null, "failed") }
-        if (stdout == null) return Pair(null, "native_error")
-        val candidates = parseCandidates(stdout) ?: return Pair(null, "native_error")
+        if (stdout == null) return PipelineOptIn(null, null, "native_error")
+        val candidates = parseCandidates(stdout) ?: return PipelineOptIn(null, null, "native_error")
         val matching = candidates.filter { it.pipelineId == pipelineId }
-        if (matching.size != 1) return Pair(null, "unknown_pipeline")
+        if (matching.size != 1) return PipelineOptIn(null, null, "unknown_pipeline")
         val c = matching[0]
         val entry = read(context).firstOrNull { it.agentId == c.agentId }
-        return if (stateOf(entry, c) == "on") Pair(c.agentId, "ok") else Pair(null, "not_opted_in")
+        return if (stateOf(entry, c) == "on") PipelineOptIn(c.agentId, c.definitionSha256, "ok")
+        else PipelineOptIn(null, null, "not_opted_in")
+    }
+
+    data class PipelineOptIn(val agentId: String?, val definitionSha256: String?, val code: String)
+
+    /**
+     * The verified opt-ins as the recovery script's --opt-ins argument
+     * (`agentId=sha256,...`, or `none`): a sweep re-checks an MCP re-fire
+     * request's consent with it before the re-fire. Anything that does not
+     * verify reads as no entry (off). Never throws.
+     */
+    fun optInSnapshot(context: Context): String {
+        val entries = try { read(context) } catch (e: Exception) { emptyList() }
+        val parts = entries.filter { isValidAgentId(it.agentId) && isValidSha256(it.sha256) }.map { "${it.agentId}=${it.sha256}" }
+        return if (parts.isEmpty()) "none" else parts.joinToString(",")
     }
 
     /**

@@ -98,12 +98,17 @@ function finishedRun(home: string, startMs: number, status: string, extra: Json[
   ]);
 }
 
+// The definition hash native's opt-in check found on when it accepted the request.
+const SHA = 'c'.repeat(64);
+const OPT_INS = `${AGENT}=${SHA}`;
+const candidatesOn = () => [{ agentId: AGENT, pipelineId: PIPELINE, definitionSha256: SHA, webSearchStep: true }];
+
 function request(home: string, nowMs: number, extra: Json = {}) {
-  return recovery.runOp({ home, op: 'refire-request', agentId: AGENT, pipelineId: PIPELINE, principal: PRINCIPAL, nowMs, procDeps: deadProcs, executorModule: executor, ...extra });
+  return recovery.runOp({ home, op: 'refire-request', agentId: AGENT, pipelineId: PIPELINE, principal: PRINCIPAL, definitionSha256: SHA, nowMs, procDeps: deadProcs, executorModule: executor, ...extra });
 }
 
-function sweep(home: string, nowMs: number, procDeps = deadProcs) {
-  return recovery.runOp({ home, op: 'sweep', nowMs, procDeps, executorModule: executor });
+function sweep(home: string, nowMs: number, procDeps = deadProcs, extra: Json = {}) {
+  return recovery.runOp({ home, op: 'sweep', nowMs, procDeps, executorModule: executor, optIns: OPT_INS, optInCandidates: candidatesOn, ...extra });
 }
 
 describe('refire-request: acceptance (refireRequestDecision)', () => {
@@ -119,7 +124,7 @@ describe('refire-request: acceptance (refireRequestDecision)', () => {
       principal: PRINCIPAL, via: 'mcp', runStartTs: iso(NOON - 60 * MIN),
     });
     // No free text from the caller anywhere in the record.
-    expect(Object.keys(line).sort()).toEqual(['agentId', 'date', 'event', 'kind', 'pipelineId', 'principal', 'reason', 'requestId', 'runId', 'runStartTs', 'ts', 'via']);
+    expect(Object.keys(line).sort()).toEqual(['agentId', 'date', 'definitionSha256', 'event', 'kind', 'pipelineId', 'principal', 'reason', 'requestId', 'runId', 'runStartTs', 'ts', 'via']);
     const again = request(home, NOON + MIN);
     expect(again).toMatchObject({ code: 'duplicate', accepted: true, duplicate: true, requestId: r.requestId });
     expect(recoveryLines(home, 'plan_refire_requested')).toHaveLength(1);
@@ -278,12 +283,66 @@ describe('refire-request: a sweep turns the request into the S5 re-fire', () => 
       const r = spawnSync(process.execPath, [scriptCopy, '--home', home, '--executor', executorCopy, ...args], { encoding: 'utf8' });
       return JSON.parse(r.stdout.trim().split('\n').pop() as string);
     };
-    const accepted = cli(['--op', 'refire-request', '--agent-id', AGENT, '--pipeline-id', PIPELINE, '--principal', PRINCIPAL]);
+    // The hash the executor's own op computes for this definition (what native stored at the opt-in).
+    const listed = spawnSync(process.execPath, [executorCopy, '--web-search-opt-in-candidates'], { encoding: 'utf8', env: { ...process.env, HOME: home } });
+    const sha = JSON.parse(listed.stdout.trim()).pipelines.find((p: Json) => p.agentId === AGENT).definitionSha256;
+    const accepted = cli(['--op', 'refire-request', '--agent-id', AGENT, '--pipeline-id', PIPELINE, '--principal', PRINCIPAL, '--definition-sha256', sha]);
     expect(accepted).toMatchObject({ ok: true, code: 'accepted' });
-    // The first process is gone; only the audit line carries the request.
-    const swept = cli(['--op', 'sweep']);
+    // Without the opt-in snapshot nothing is re-fired: the request waits.
+    expect(cli(['--op', 'sweep'])).toMatchObject({ refire: [], pendingRequests: 1 });
+    // The first process is gone; only the audit line carries the request. The
+    // next sweep re-checks the consent (native's opt-ins + the executor's hash).
+    const swept = cli(['--op', 'sweep', '--opt-ins', `${AGENT}=${sha}`]);
     expect(swept.refire).toHaveLength(1);
     expect(recoveryLines(home, 'plan_refire_pending')[0]).toMatchObject({ requestId: accepted.requestId });
+    expect(recoveryLines(home, 'plan_refire_requested')[0]).toMatchObject({ definitionSha256: sha });
+  });
+
+  it('re-checks the consent when it takes the request: an opt-in turned off or a changed definition expires it', () => {
+    const off = makeHome();
+    heldRun(off, NOON - 60 * MIN);
+    request(off, NOON);
+    expect(sweep(off, NOON + MIN, deadProcs, { optIns: 'none' }).refire).toEqual([]);
+    expect(recoveryLines(off, 'plan_refire_request_expired')[0]).toMatchObject({ why: 'opt-in-lapsed' });
+
+    const edited = makeHome();
+    heldRun(edited, NOON - 60 * MIN);
+    request(edited, NOON);
+    // The owner edited the definition after the request: the executor's hash moved on.
+    const moved = () => [{ agentId: AGENT, definitionSha256: 'd'.repeat(64), webSearchStep: true }];
+    expect(sweep(edited, NOON + MIN, deadProcs, { optInCandidates: moved }).refire).toEqual([]);
+    expect(recoveryLines(edited, 'plan_refire_request_expired')[0]).toMatchObject({ why: 'opt-in-lapsed' });
+
+    const reEnabled = makeHome();
+    heldRun(reEnabled, NOON - 60 * MIN);
+    request(reEnabled, NOON);
+    // Turned on again for the new definition: still not the consent the request was accepted under.
+    expect(sweep(reEnabled, NOON + MIN, deadProcs, { optIns: `${AGENT}=${'d'.repeat(64)}`, optInCandidates: moved }).refire).toEqual([]);
+    expect(recoveryLines(reEnabled, 'plan_refire_request_expired')[0]).toMatchObject({ why: 'opt-in-lapsed' });
+
+    const noSearch = makeHome();
+    heldRun(noSearch, NOON - 60 * MIN);
+    request(noSearch, NOON);
+    expect(sweep(noSearch, NOON + MIN, deadProcs, { optInCandidates: () => [{ agentId: AGENT, definitionSha256: SHA, webSearchStep: false }] }).refire).toEqual([]);
+    expect(recoveryLines(noSearch, 'plan_refire_request_expired')[0]).toMatchObject({ why: 'opt-in-lapsed' });
+  });
+
+  it('waits (never re-fires) when the consent cannot be checked', () => {
+    const home = makeHome();
+    heldRun(home, NOON - 60 * MIN);
+    request(home, NOON);
+    expect(sweep(home, NOON + MIN, deadProcs, { optIns: undefined })).toMatchObject({ refire: [], pendingRequests: 1 });
+    expect(sweep(home, NOON + 2 * MIN, deadProcs, { optInCandidates: () => null })).toMatchObject({ refire: [], pendingRequests: 1 });
+    expect(sweep(home, NOON + 3 * MIN, deadProcs, { optIns: 'garbage' })).toMatchObject({ refire: [], pendingRequests: 1 });
+    expect(recoveryLines(home, 'plan_refire_request_expired')).toEqual([]);
+    expect(sweep(home, NOON + 4 * MIN).refire).toHaveLength(1);
+  });
+
+  it('refuses a request without the accepted definition hash', () => {
+    const home = makeHome();
+    heldRun(home, NOON - 60 * MIN);
+    expect(request(home, NOON, { definitionSha256: undefined })).toEqual({ ok: false, error: 'definition-sha256' });
+    expect(request(home, NOON, { definitionSha256: 'x' })).toEqual({ ok: false, error: 'definition-sha256' });
   });
 
   it('is settled by the existing S5 path: dispatch outcome, then the re-fire\'s own launch record', () => {
