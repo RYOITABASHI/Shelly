@@ -49,6 +49,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
+import { LauncherIngressSection } from '@/components/settings/LauncherIngressSection';
 import {
   disableDraftPreapproval,
   draftDestinationLabel,
@@ -58,6 +59,7 @@ import {
 import { disableClosePawShellPreapproval, getClosePawShellPreapproval } from '@/lib/closepaw-shell-preapproval';
 import {
   clientIdLabel,
+  ruleOrigin,
   listMcpAlwaysAllowRules,
   purgeMcpAlwaysAllowRulesExcept,
   removeMcpAlwaysAllowRules,
@@ -210,6 +212,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <ConnectivityGuardianSection />
             <DraftPreapprovalSection visible={visible} />
             <McpAlwaysAllowSection visible={visible} />
+            <LauncherIngressSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
             <SocialConnectorsSection />
@@ -2818,6 +2821,7 @@ const McpAlwaysAllowSection = React.memo(function McpAlwaysAllowSection({ visibl
               client: clientIdLabel(r.principal),
               date: new Date(r.createdAt).toLocaleDateString(),
             })}
+            {' · '}{t(ruleOrigin(r.principal) === 'launcher' ? 'launcher_ingress.origin.launcher' : 'launcher_ingress.origin.mcp')}
             {' · '}{t(r.actionPolicyPin === undefined ? 'mcp_always_allow.scope_legacy' : 'mcp_always_allow.scope_actions')}
           </Text>
         </View>
