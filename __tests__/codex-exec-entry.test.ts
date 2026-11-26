@@ -54,6 +54,16 @@ describe('codex_exec native entry', () => {
     const wrap = ms.slice(ms.indexOf('if (launch.execWrapper) {'));
     expect(wrap.indexOf('sb.append("export PATH=").append(shQuote(libPath))')).toBeGreaterThan(0);
     expect(wrap.indexOf('sb.append("export PATH=')).toBeLessThan(wrap.indexOf('sb.append("export LD_PRELOAD='));
+    // ALWAYS_REFRESH runs once per process: every facade start re-verifies the
+    // file against the APK entry (rewriting it if needed) and refuses otherwise.
+    const sup = read(`${KT}/ManagedServiceSupervisor.kt`);
+    const spawn = sup.slice(sup.indexOf('private fun spawn('));
+    const check = spawn.indexOf('if (launch.execWrapper && !LibExtractor.ensureMatchesApk(context, "codex_exec")) {');
+    expect(check).toBeGreaterThan(spawn.indexOf('LibExtractor.extractAll(context)'));
+    expect(check).toBeLessThan(spawn.indexOf('ProcessBuilder('));
+    expect(spawn.slice(check, check + 300)).toContain('return "launch_failed"');
+    expect(libExtractor).toContain('fun ensureMatchesApk(context: Context, fileName: String): Boolean {');
+    expect(libExtractor).toContain('java.util.Arrays.equals(f.readBytes(), expected)');
   });
 
   it('is built and marker-checked by both Android workflows', () => {

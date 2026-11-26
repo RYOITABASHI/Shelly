@@ -245,6 +245,48 @@ object LibExtractor {
 
     // KEEP IN SYNC: PayloadHygiene.TEMP_NAME parses this name to find stale
     // leftovers (A4).
+    /**
+     * Makes `<libDir>/<fileName>` byte-identical to its APK entry right now,
+     * whatever extractAll's once-per-process ALWAYS_REFRESH did earlier: reads
+     * the entry, compares it with the file (a regular file, not a link), and if
+     * they differ rewrites it with the same atomic temp+rename as extractAll,
+     * then compares again. True only when the file finally equals the entry.
+     * For small launchers a service start must not trust as found on disk
+     * (council-facade's codex_exec, ManagedServiceSupervisor.spawn).
+     */
+    fun ensureMatchesApk(context: Context, fileName: String): Boolean {
+        val apkEntry = LIBS.entries.firstOrNull { it.value == fileName }?.key ?: return false
+        val libDir = getLibDir(context)
+        val outFile = File(libDir, fileName)
+        return try {
+            val expected = ZipFile(context.applicationInfo.sourceDir).use { zip ->
+                val entry = zip.getEntry(apkEntry) ?: return false
+                if (entry.size > MAX_VERIFIED_BYTES) return false
+                zip.getInputStream(entry).use { it.readBytes() }
+            }
+            if (matchesBytes(outFile, expected)) return true
+            Log.w(TAG, "$fileName differs from the APK; rewriting it")
+            val tmpFile = newTempFile(libDir, fileName)
+            tmpFile.outputStream().use { it.write(expected) }
+            replaceExtractedFile(tmpFile, outFile, fileName)
+            matchesBytes(outFile, expected)
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureMatchesApk($fileName) failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private const val MAX_VERIFIED_BYTES = 1L shl 20
+
+    /** A regular file (never through a symlink) whose bytes are exactly [expected]. */
+    private fun matchesBytes(f: File, expected: ByteArray): Boolean = try {
+        val st = android.system.Os.lstat(f.path)
+        android.system.OsConstants.S_ISREG(st.st_mode) && st.st_size == expected.size.toLong() &&
+            java.util.Arrays.equals(f.readBytes(), expected)
+    } catch (e: Exception) {
+        false
+    }
+
     private fun newTempFile(libDir: File, fileName: String): File =
         File(libDir, "$fileName.${android.os.Process.myPid()}.${Thread.currentThread().id}.${System.nanoTime()}.new")
 
