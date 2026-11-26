@@ -2169,7 +2169,7 @@ describe('CLI and packaging', () => {
     const home = makeHome();
     const r = spawnSync(process.execPath, [scriptCopy, '--op', 'sweep', '--home', home, '--executor', executorCopy], { encoding: 'utf8' });
     expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout.trim())).toEqual({ ok: true, op: 'sweep', closed: [], refire: [] });
+    expect(JSON.parse(r.stdout.trim())).toEqual({ ok: true, op: 'sweep', closed: [], refire: [], pendingRequests: 0 });
     const bad = spawnSync(process.execPath, [scriptCopy, '--op', 'nope', '--home', home], { encoding: 'utf8' });
     expect(bad.status).toBe(1);
     expect(JSON.parse(bad.stdout.trim())).toEqual({ ok: false, error: 'op' });

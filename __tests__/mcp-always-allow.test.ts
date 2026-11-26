@@ -92,7 +92,7 @@ afterEach(() => clearNative());
 
 describe('pure helpers', () => {
   it('the typed-op set is closed and excludes raw ops', () => {
-    expect(TYPED_OPS).toEqual(['run_agent', 'service_control']);
+    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'request_pipeline_refire']);
     expect(isTypedOp('run_agent')).toBe(true);
     expect(isTypedOp('service_control')).toBe(true);
     for (const op of ['run_command', 'write_file', 'list_agents', 'RUN_AGENT', '', null, undefined, 1, {}]) {

@@ -914,7 +914,10 @@ describe('shelly-plan-executor host smoke', () => {
     plan.prompt = 'return sk-proj-abcdefghijklmnopqrstuvwxyz1234567890';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
 
-    const result = await runExecutor([
+    // v68 fix round 1 (item 8): the fixture's explicit requireActionApproval
+    // pin wins over the native-trust shortcut for a draft save, so the tap is
+    // answered here (the redaction under test is unchanged).
+    const result = await runExecutorWithApproval([
       executor,
       '--plan-file', planFile,
       '--home', home,
