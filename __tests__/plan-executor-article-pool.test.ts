@@ -1,5 +1,5 @@
 /**
- * Executor v68: the article candidate pool (<outputFolder>/_pool.json) and the
+ * Executor v69: the article candidate pool (<outputFolder>/_pool.json) and the
  * research step's main-study fingerprint, both switched on by the owner's
  * article-pipelines.json entry. The vocabulary below is a fixture; Shelly ships
  * none.
@@ -147,7 +147,7 @@ const localToday = () => {
 };
 const poolBlockOf = (prompt: string) => prompt.slice(prompt.indexOf('# Candidate studies collected earlier'), prompt.indexOf('Consider these candidates first.'));
 
-describe('v68 candidate pool: composite research (AC1)', () => {
+describe('v69 candidate pool: composite research (AC1)', () => {
   it('offers unused candidates first, records the adopted one in frontmatter and history, and never writes the pool', () => {
     const pool = { version: 1, updatedAt: '2026-11-24', candidates: [
       candidate('c1'), candidate('c2', { status: 'used' }), candidate('c3', { status: 'demoted' }), candidate('c4'),
@@ -233,7 +233,7 @@ describe('v68 candidate pool: composite research (AC1)', () => {
   });
 });
 
-describe('v68 candidate pool: selection-time exclusion (brief 2)', () => {
+describe('v69 candidate pool: selection-time exclusion (brief 2)', () => {
   it('leaves out candidates a saved draft, a held draft or the history already used, and studies the history holds', () => {
     const pool = { version: 1, candidates: ['u1', 'u2', 'u3', 'u4', 'ok'].map((id) => candidate(id)) };
     const r = run([memo('ok'), draft], {
@@ -305,7 +305,7 @@ describe('v68 candidate pool: selection-time exclusion (brief 2)', () => {
   });
 });
 
-describe('v68 main-study fingerprint (brief 3)', () => {
+describe('v69 main-study fingerprint (brief 3)', () => {
   const noteOf = (text: string) => (/review_note: (".*")/.exec(frontmatterOf(text)) || [])[1];
 
   it('tells the research step the five fields and their closed lists', () => {
@@ -432,7 +432,7 @@ describe('v68 main-study fingerprint (brief 3)', () => {
   });
 });
 
-describe('v68 quality bar: unverified numbers (AC5)', () => {
+describe('v69 quality bar: unverified numbers (AC5)', () => {
   it('offers an unverified candidate only as a comparison and retries a main study that is one', () => {
     const pool = { version: 1, candidates: [candidate('unv', { numbersVerified: false }), candidate('ver')] };
     const r = run([memo('unv'), memo('ver'), draft], { pool });
@@ -463,7 +463,7 @@ describe('v68 quality bar: unverified numbers (AC5)', () => {
   });
 });
 
-describe('v68 pure helpers', () => {
+describe('v69 pure helpers', () => {
   it('normalizes fingerprint lists strictly', () => {
     expect(executorModule.normalizeFingerprintConfig(undefined)).toBeUndefined();
     expect(executorModule.normalizeFingerprintConfig(LISTS)).toEqual(LISTS);

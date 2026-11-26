@@ -863,7 +863,9 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     const near = `${'y'.repeat(110)} TOKEN=secretsecretsecret`;
     expect(line({ id: 'a', query: near }).query).not.toContain('secret');
     expect(line({ id: 'a', query: '', action: { type: 'search', queries: ['first', 'second'] } }).query).toBe('first');
-    expect(line({ id: 'a', query: '', action: { type: 'openPage', url: 'https://e.example/p' } })).toEqual({ itemId: 'a', action: 'openPage', query: 'https://e.example/p' });
+    // v68: every string a search carries is audited (queries, queryCount), not the first one only.
+    expect(line({ id: 'a', query: '', action: { type: 'openPage', url: 'https://e.example/p' } }))
+      .toEqual({ itemId: 'a', action: 'openPage', query: 'https://e.example/p', queries: ['https://e.example/p'], queryCount: 1 });
     expect(line({ id: 'a', query: '', action: { type: 'other' } }).query).toBe('');
   });
 
@@ -998,9 +1000,11 @@ describe('driver E2E: MCP / app activity is blocked', () => {
     });
 
     it('a normal search keeps its text; a hit in any text is withheld from the audit line', () => {
-      expect(driver.codexWebSearchAudit(search({ type: 'search', query: 'prices' }), secrets)).toEqual({ itemId: 'ws9', action: 'search', query: 'prices' });
+      expect(driver.codexWebSearchAudit(search({ type: 'search', query: 'prices' }), secrets))
+        .toEqual({ itemId: 'ws9', action: 'search', query: 'prices', queries: ['prices'], queryCount: 1 });
       const entry = driver.codexWebSearchAudit(search({ type: 'other' }, `hello ${MY_ENV} ...`), secrets);
-      expect(entry).toEqual({ itemId: 'ws9', action: 'other', query: '', withheld: 'env_value' });
+      expect(entry).toMatchObject({ itemId: 'ws9', action: 'other', query: '', withheld: 'env_value' });
+      expect(JSON.stringify(entry)).not.toContain(MY_ENV);
       // Past the 120 character limit the value is still seen.
       const long = driver.codexWebSearchAudit(search({ type: 'search', query: `${'y'.repeat(110)} ${OAI}` }), secrets);
       expect(long.query).toBe('');
@@ -1019,7 +1023,10 @@ describe('driver E2E: MCP / app activity is blocked', () => {
       expect(r.out).toContain('CODEX_ERROR A web search carried a secret (github_token); stopped.');
       expect(r.audit).not.toContain(GH);
       expect(r.out).not.toContain(GH);
-      expect(auditKinds(r.audit)).not.toContain('codex_web_search');
+      // v68 (fact sheet addendum 3 (iii)): the search was sent, so it is counted
+      // and audited before the stop, with the hit withheld (never the value).
+      const searched = r.audit.split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.kind === 'codex_web_search');
+      expect(searched).toEqual(expect.objectContaining({ itemId: 'ws1', withheld: 'github_token', queryCount: 3 }));
       expect(r.answerWritten).toBe(false);
     }, 60_000);
 

@@ -32,8 +32,12 @@ describe('AgentRuntime.kt::runPlanAgent — chain-lock check', () => {
 
   it('skips (does not launch the executor) when the chain-lock directory exists', () => {
     expect(agentRuntime).toContain('if (chainLockDir.isDirectory) {');
-    const chainLockIdx = agentRuntime.indexOf('if (chainLockDir.isDirectory) {');
-    const nodeLaunchIdx = agentRuntime.indexOf('/system/bin/linker64 ');
+    // Within runPlanAgent: v68's read-only opt-in candidates op
+    // (webSearchOptInCandidatesOutput) also starts node, earlier in the file.
+    const planAgent = agentRuntime.indexOf('private fun runPlanAgent(');
+    expect(planAgent).toBeGreaterThan(-1);
+    const chainLockIdx = agentRuntime.indexOf('if (chainLockDir.isDirectory) {', planAgent);
+    const nodeLaunchIdx = agentRuntime.indexOf('/system/bin/linker64 ', planAgent);
     expect(chainLockIdx).toBeGreaterThan(-1);
     expect(nodeLaunchIdx).toBeGreaterThan(-1);
     // The chain-lock check must be textually BEFORE the node/executor launch,

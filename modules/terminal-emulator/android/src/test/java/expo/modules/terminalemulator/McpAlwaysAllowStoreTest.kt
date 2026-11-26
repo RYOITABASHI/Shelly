@@ -261,6 +261,16 @@ class McpAlwaysAllowStoreTest {
         val id = McpAlwaysAllowStore.newRuleId(emptyList())
         assertTrue(Regex("^r_[0-9a-f]{16}$").matches(id))
         assertTrue(McpAlwaysAllowStore.isTypedOp("run_agent"))
+        assertTrue(McpAlwaysAllowStore.isTypedOp("service_control"))
+        assertTrue(McpAlwaysAllowStore.isValidTarget("service_control", "service:article-delivery:start"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("service_control", "service:article-delivery:*"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("run_agent", "service:article-delivery:start"))
+        // Search parity item 4: one pipeline per rule, the id form only.
+        assertTrue(McpAlwaysAllowStore.isTypedOp("request_pipeline_refire"))
+        assertTrue(McpAlwaysAllowStore.isValidTarget("request_pipeline_refire", "pipeline:devja"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("request_pipeline_refire", "pipeline:*"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("request_pipeline_refire", "pipeline:Dev JA"))
+        assertFalse(McpAlwaysAllowStore.isValidTarget("request_pipeline_refire", "agent:devja"))
         assertFalse(McpAlwaysAllowStore.isTypedOp("run_command"))
         assertFalse(McpAlwaysAllowStore.isTypedOp("write_file"))
     }

@@ -13,6 +13,7 @@ import {
   clientIdLabel,
   findAlwaysAllowMatch,
   isTypedOp,
+  isValidAlwaysAllowTarget,
   listMcpAlwaysAllowRules,
   mcpAlwaysAllowMatches,
   mcpPrincipalForToken,
@@ -91,8 +92,9 @@ afterEach(() => clearNative());
 
 describe('pure helpers', () => {
   it('the typed-op set is closed and excludes raw ops', () => {
-    expect(TYPED_OPS).toEqual(['run_agent']);
+    expect(TYPED_OPS).toEqual(['run_agent', 'service_control', 'request_pipeline_refire']);
     expect(isTypedOp('run_agent')).toBe(true);
+    expect(isTypedOp('service_control')).toBe(true);
     for (const op of ['run_command', 'write_file', 'list_agents', 'RUN_AGENT', '', null, undefined, 1, {}]) {
       expect(isTypedOp(op)).toBe(false);
     }
@@ -107,6 +109,24 @@ describe('pure helpers', () => {
     }
     expect(normalizeTarget('run_command', { command: 'id' })).toBeNull();
     expect(normalizeTarget('write_file', { path: '/x', content: 'y' })).toBeNull();
+  });
+
+  it('normalizeTarget: service_control → service:<id>:<action>; anything off → null', () => {
+    expect(normalizeTarget('service_control', { action: 'start', serviceId: 'article-delivery' })).toBe('service:article-delivery:start');
+    expect(normalizeTarget('service_control', { action: 'status', serviceId: 'council-facade' })).toBe('service:council-facade:status');
+    for (const args of [
+      { action: 'restart', serviceId: 'article-delivery' }, { action: 'start', serviceId: 'other' },
+      { action: 'start', serviceId: 'article-delivery', command: 'x' }, { action: 'start' }, {}, null, [],
+    ]) {
+      expect(normalizeTarget('service_control', args)).toBeNull();
+    }
+    expect(isValidAlwaysAllowTarget('service_control', 'service:article-delivery:stop')).toBe(true);
+    for (const t of ['service:article-delivery:*', 'service:*:start', 'agent:article-delivery', 'service:article-delivery']) {
+      expect(isValidAlwaysAllowTarget('service_control', t)).toBe(false);
+    }
+    // Targets never cross ops.
+    expect(isValidAlwaysAllowTarget('run_agent', 'service:article-delivery:start')).toBe(false);
+    expect(isValidAlwaysAllowTarget('service_control', 'agent:daily')).toBe(false);
   });
 
   it('ruleKey separates the three fields unambiguously', () => {

@@ -30,6 +30,8 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+    // The Settings opt-in list's executor run (read-only, one readdir + hashes).
+    private const val WEB_SEARCH_OPT_IN_CANDIDATES_TIMEOUT_MS = 60 * 1000
     // Keep in sync with DEFAULT_CIRCUIT_BREAKER_THRESHOLD in
     // lib/agent-circuit-breaker.ts. This native-only backoff covers scheduled
     // fires while the RN/JS runtime is not alive to run that circuit breaker.
@@ -596,8 +598,9 @@ object AgentRuntime {
     // v64: an untainted article run with today's entry in ~/.shelly/agents/recovery-feedback.json takes that entry's topic at queue-pop (no _queue.md read or tick) and its write step gets the previous attempt's critique as a data block. JS-only (executor).
     // v66: research-history repeats fail closed after extra excluded retries (research_topic_exhausted); previously covered articles include history titles. JS-only (executor).
     // v67: research-numbers lint at the research checkpoint. JS-only (executor).
-    // v68: article candidate pool (<outputFolder>/_pool.json, read-only) and the main-study fingerprint with closed lists, both from the owner's article-pipelines.json entry; frontmatter poolCandidateId. JS-only (executor).
-    private const val CURRENT_EXECUTOR_VERSION = 68
+    // v68: search parity — a notification-triggered article run starts its web-search research step when SHELLY_WEB_SEARCH_OPT_IN_SHA256 matches the plan's definition hash, never on MCP ingress. Native exports it (readonly) only on runPlanAgent's tainted, non-ingress launch, from WebSearchOptInStore: the hash native computed itself (executor `--web-search-opt-in-candidates`, webSearchOptInCandidatesOutput) when the owner turned the pipeline on in Settings; a later definition edit no longer matches (lapsed: off); a refused / stopped search or zero web sources lands the run held (skipped) before the write step with a recovery-feedback.jsonl line. JS-only (executor + driver).
+    // v69: article candidate pool (<outputFolder>/_pool.json, read-only) and the main-study fingerprint with closed lists, both from the owner's article-pipelines.json entry; frontmatter poolCandidateId. JS-only (executor).
+    private const val CURRENT_EXECUTOR_VERSION = 69
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -621,6 +624,83 @@ object AgentRuntime {
         }
         return " && export SHELLY_INGRESS_TAINTED=1 SHELLY_INGRESS_TAINTED_REASON=$safe" +
             " && readonly SHELLY_INGRESS_TAINTED SHELLY_INGRESS_TAINTED_REASON"
+    }
+
+    /**
+     * v68 search parity: the readonly SHELLY_WEB_SEARCH_OPT_IN_SHA256 export for
+     * a PlanSpec executor launch (WebSearchOptInStore.launchExports). Only when
+     * [tainted] (notification-triggered), never with an MCP ingress taint, and
+     * only for a hash the store verifies. Empty otherwise; never throws.
+     */
+    private fun webSearchOptInExports(context: Context, agentId: String, tainted: Boolean, ingressReason: String?): String {
+        if (!tainted || ingressReason != null) return ""
+        // shaFor never throws: anything that does not verify reads as null (off).
+        val sha = WebSearchOptInStore.shaFor(context, agentId) ?: return ""
+        val exports = WebSearchOptInStore.launchExports(tainted, ingressReason, sha)
+        if (exports.isNotEmpty()) Log.i(TAG, "Agent $agentId: web search opt-in exported sha=${sha.take(16)}")
+        return exports
+    }
+
+    /** Search parity item 4: the verified opt-ins for the recovery sweep (WebSearchOptInStore.optInSnapshot). */
+    fun webSearchOptInSnapshot(context: Context): String = WebSearchOptInStore.optInSnapshot(context)
+
+    /**
+     * Runs the executor's read-only `--web-search-opt-in-candidates` op for the
+     * Settings opt-in list (WebSearchOptInStore). Same runtime as runPlanAgent's
+     * launch: bundled node from the extracted lib dir via linker64, PATH /
+     * LD_LIBRARY_PATH / HOME exported, LD_PRELOAD dropped, `$HOME/.shelly-plan-executor.js`
+     * at the version this build expects. Blocking: call off the main thread.
+     * Returns (stdout, "ok") or (null, code): executor-missing, stale-executor,
+     * runtime-missing, failed.
+     */
+    fun webSearchOptInCandidatesOutput(context: Context): Pair<String?, String> {
+        val appContext = context.applicationContext
+        val homeDir = HomeInitializer.getHomeDir(appContext)
+        val executor = File(homeDir, ".shelly-plan-executor.js")
+        if (!executor.isFile) return Pair(null, "executor-missing")
+        if (readExecutorScriptVersion(executor) != CURRENT_EXECUTOR_VERSION) return Pair(null, "stale-executor")
+        val libDir = try {
+            LibExtractor.ensureExtracted(appContext).first
+        } catch (e: Exception) {
+            Log.w(TAG, "web search opt-in candidates: runtime extraction failed type=${e.javaClass.simpleName}")
+            return Pair(null, "runtime-missing")
+        }
+        val libPath = libDir.absolutePath
+        val bashPath = LibExtractor.getBashPath(appContext)
+        val command = buildString {
+            append("export PATH=")
+            append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))
+            append(" && export LD_LIBRARY_PATH=")
+            append(shellQuote(libPath))
+            append(" && export HOME=")
+            append(shellQuote(homeDir.absolutePath))
+            // Same reason as runPlanAgent: the exec-wrapper preload aborts node.
+            append(" && unset LD_PRELOAD && /system/bin/linker64 ")
+            append(shellQuote("$libPath/node"))
+            append(" ")
+            append(shellQuote(executor.absolutePath))
+            append(" --web-search-opt-in-candidates")
+        }
+        return try {
+            val result = ShellyJNI.execSubprocess(
+                "/system/bin/linker64",
+                bashPath,
+                libPath,
+                homeDir.absolutePath,
+                command,
+                WEB_SEARCH_OPT_IN_CANDIDATES_TIMEOUT_MS
+            )
+            val exitCode = result.getOrNull(0)?.toIntOrNull() ?: -1
+            if (exitCode != 0) {
+                Log.w(TAG, "web search opt-in candidates: exit=$exitCode stderrLen=${result.getOrNull(2).orEmpty().length}")
+                Pair(null, "failed")
+            } else {
+                Pair(result.getOrNull(1).orEmpty(), "ok")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "web search opt-in candidates threw type=${e.javaClass.simpleName}")
+            Pair(null, "failed")
+        }
     }
 
     private data class TrustedPlanLaunch(
@@ -1249,6 +1329,11 @@ object AgentRuntime {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
             append(ingressTaintExports(ingressReason))
+            // v68 search parity: the owner's Settings opt-in for this pipeline's
+            // web search on a notification-triggered (tainted) run. Empty unless
+            // tainted, not MCP ingress, and a verified stored hash exists; the
+            // executor still compares it with its own definition hash.
+            append(webSearchOptInExports(context, agentId, tainted, ingressReason))
             append(" && export SHELLY_MCP_ACTIONS_PREAPPROVED=${if (mcpActionsPreapproved && ingressReason == null && !tainted) 1 else 0} && readonly SHELLY_MCP_ACTIONS_PREAPPROVED")
             // POLICY-001: readonly so nothing later in this shell can relabel
             // a proactive run as user-initiated.

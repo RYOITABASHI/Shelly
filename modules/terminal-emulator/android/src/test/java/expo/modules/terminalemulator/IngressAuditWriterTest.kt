@@ -259,4 +259,25 @@ class IngressAuditWriterTest {
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, json(*base, "ts" to "1999")))
         assertNull(IngressAuditWriter.buildMcpLine(ts, null, "not json"))
     }
+
+    @Test
+    fun pipelineRefireLineKeepsClosedFieldsOnly() {
+        val rq = "rq-1795555200867-0a1b2c3d"
+        val line = IngressAuditWriter.buildPipelineRefireLine(ts, p, "devja", "accepted", rq)
+        assertNotNull(line)
+        val o = JSONObject(line!!)
+        assertEquals("mcp_pipeline_refire", o.getString("kind"))
+        assertEquals("mcp_pipeline_refire", o.getString("event"))
+        assertEquals("devja", o.getString("pipelineId"))
+        assertEquals(rq, o.getString("requestId"))
+        assertNull(IngressAuditWriter.buildPipelineRefireLine(ts, p, "Dev JA", "accepted", null))
+        assertNull(IngressAuditWriter.buildPipelineRefireLine(ts, p, null, "accepted", null))
+        assertNotNull(IngressAuditWriter.buildPipelineRefireLine(ts, p, null, "invalid_params", null))
+        assertNull(IngressAuditWriter.buildPipelineRefireLine(ts, p, "devja", "accepted", "free text"))
+        assertNull(IngressAuditWriter.buildPipelineRefireLine(ts, "X", "devja", "accepted", null))
+        val base = arrayOf("kind" to "mcp_pipeline_refire", "event" to "mcp_pipeline_refire", "principal" to p, "pipelineId" to "devja", "code" to "denied")
+        assertNotNull(IngressAuditWriter.buildPipelineRefireLineFromJson(ts, json(*base)))
+        assertNull(IngressAuditWriter.buildPipelineRefireLineFromJson(ts, json(*base, "prompt" to "x")))
+        assertNull(IngressAuditWriter.buildPipelineRefireLineFromJson(ts, json(*base, "event" to "mcp_service_control")))
+    }
 }

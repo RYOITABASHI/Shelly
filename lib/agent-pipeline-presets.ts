@@ -218,12 +218,12 @@ export interface ArticlePipelineConfig {
   /** Review -> revise rounds (executor v53): 2 (the default) or 3. Round 3
    *  adds two steps, and the whole chain must stay within HARD_MAX_STEPS. */
   reviewRounds?: 2 | 3;
-  /** Executor v68: the closed lists the research step's main-study fingerprint
+  /** Executor v69: the closed lists the research step's main-study fingerprint
    *  takes its five values from (ARTICLE_FINGERPRINT_FIELDS). The executor
    *  reads them from this file at run start; an invalid answer gets one
    *  re-output, then the draft is held. */
   fingerprint?: ArticleFingerprintConfig;
-  /** Executor v68: `true` offers the research step the unused candidates of
+  /** Executor v69: `true` offers the research step the unused candidates of
    *  `<outputFolder>/_pool.json` (written by another tool, never by Shelly)
    *  before today's search. Needs `fingerprint`; not with `queue`. */
   pool?: boolean;
