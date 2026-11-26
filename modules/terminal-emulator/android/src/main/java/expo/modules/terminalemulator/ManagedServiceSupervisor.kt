@@ -512,6 +512,15 @@ object ManagedServiceSupervisor {
 
     private fun waitForExit(context: Context, spec: ManagedServices.Spec, r: Running) {
         val code = runCatching { r.proc.waitFor() }.getOrDefault(-1)
+        // Under controlLock: leaving [running], recording the exit and
+        // registering the restart are one step to a reconcile (which also runs
+        // under it), so it never sees this service gone with no restart
+        // waiting and starts it at once, skipping the backoff.
+        synchronized(controlLock) { recordExit(context, spec, r, code) }
+        TerminalSessionService.instance?.onCodexRemoteChanged() // re-checks whether the service may stop
+    }
+
+    private fun recordExit(context: Context, spec: ManagedServices.Spec, r: Running, code: Int) {
         val now = System.currentTimeMillis()
         synchronized(lock) { if (running[spec.id] === r) running.remove(spec.id) }
         Log.i(TAG, "${spec.id} pid=${r.pid} exited code=$code after ${now - r.startedAt}ms stopping=${r.stopping}")
@@ -520,7 +529,6 @@ object ManagedServiceSupervisor {
         updateRecord(context, spec.id, r.pid, r.startTime) { it.copy(exitedAt = now, exitCode = code) }
         if (!r.stopping) runCatching { scheduleRestart(context, spec, r, now) }
             .onFailure { Log.e(TAG, "${spec.id}: restart not scheduled: ${it.javaClass.simpleName}") }
-        TerminalSessionService.instance?.onCodexRemoteChanged() // re-checks whether the service may stop
     }
 
     // ── S2: restart after an exit by itself ────────────────────────────────
@@ -624,8 +632,10 @@ object ManagedServiceSupervisor {
     }
 
     private fun reconcileOne(context: Context, base: ManagedServices.Spec, reason: String) {
-        // A restart is already waiting: the exit path owns this service.
-        if (synchronized(lock) { pending.containsKey(base.id) }) return
+        // A restart is already waiting, or a process this supervisor spawned is
+        // still registered (alive, or exited with its waiter not done yet): the
+        // exit path owns this service.
+        if (synchronized(lock) { pending.containsKey(base.id) || running.containsKey(base.id) }) return
         // Never started here, or stopped on purpose: nothing to read further
         // (no launch-spec read, no /health poll).
         val record = readRecord(context, base.id) ?: return
@@ -664,6 +674,13 @@ object ManagedServiceSupervisor {
                         writeRecord(context, spec.id, plan.record)
                         audit(context, null, "start", spec, "reconcile_restart_limit")
                     }
+                    return
+                }
+                // Charged before the start, so a start that fails before it
+                // writes a new record (not installed, launch refused) still
+                // counts and reconcile passes cannot retry without bound.
+                if (!writeRecord(context, spec.id, plan.record)) {
+                    audit(context, null, "start", spec, "reconcile_record_failed")
                     return
                 }
                 // The bring-back itself is immediate; the backoff paces restarts after exits.
@@ -823,11 +840,11 @@ object ManagedServiceSupervisor {
                     if (StopAllSwitches.halted(context)) {
                         for (id in ids) {
                             val base = ManagedServices.spec(id) ?: continue
-                            runCatching { synchronized(controlLock) { stop(context, resolvedSpec(context, base), null, "STOP-ALL") } }
+                            runCatching { synchronized(controlLock) { stop(context, resolvedSpec(context, base), null, "STOP-ALL", codePrefix = "halt") } }
                         }
                         if (orphan != null) {
                             runCatching {
-                                synchronized(controlLock) { persistedOrphan(context)?.let { stop(context, it, null, "STOP-ALL") } }
+                                synchronized(controlLock) { persistedOrphan(context)?.let { stop(context, it, null, "STOP-ALL", codePrefix = "halt") } }
                             }
                         }
                     }
