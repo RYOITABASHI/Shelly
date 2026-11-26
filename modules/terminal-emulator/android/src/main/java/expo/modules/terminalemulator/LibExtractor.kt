@@ -166,6 +166,13 @@ object LibExtractor {
         // replacing the generated #!/system/bin/sh script Knox refused to
         // exec outside the interactive shelly() bash function.
         "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd",
+        // Native `codex_exec` launcher (jni/shelly-codex-exec.c): runs
+        // `codex_tui exec "$@"` for callers that spawn Codex without a shell --
+        // council-facade's node (COUNCIL_CODEX_COMMAND=codex_exec; the supervisor
+        // puts this lib dir first on its PATH). Extracted under the name the
+        // pre-0.142.2 separate `codex exec` binary had: ALWAYS_REFRESH below
+        // overwrites any stale copy of that old binary with this launcher.
+        "lib/arm64-v8a/libshelly_codex_exec.so" to "codex_exec",
         // Claude Code glibc (S1): ulexec-style userland loader that starts the
         // official, UNMODIFIED linux-arm64 glibc binary via its glibc ld.so.
         // Launched as `linker64 $libDir/shelly_glibc_exec <ld.so> ...`; it
@@ -202,6 +209,10 @@ object LibExtractor {
         "shelly_xdg_open",
         // BASHRC_VERSION 255: same reasoning for the native `shelly` shim.
         "shelly_cmd",
+        // The codex_exec launcher: refreshed on every extractAll (the supervisor
+        // calls it right before starting council-facade), so the file the facade
+        // resolves is always the APK's.
+        "codex_exec",
         // Claude Code glibc loader: ALWAYS_REFRESH so loader fixes ship
         // without a versionCode bump (same reasoning as the other helpers).
         "shelly_glibc_exec",
@@ -234,6 +245,74 @@ object LibExtractor {
 
     // KEEP IN SYNC: PayloadHygiene.TEMP_NAME parses this name to find stale
     // leftovers (A4).
+    /**
+     * Makes `<libDir>/<fileName>` byte-identical to its APK entry right now,
+     * whatever extractAll's once-per-process ALWAYS_REFRESH did earlier: reads
+     * the entry, compares it with the file (a regular file, not a link), and if
+     * they differ rewrites it with the same atomic temp+rename as extractAll,
+     * then compares again. True only when the file finally equals the entry.
+     * For small launchers a service start must not trust as found on disk
+     * (council-facade's codex_exec, ManagedServiceSupervisor.spawn).
+     */
+    fun ensureMatchesApk(context: Context, fileName: String): Boolean {
+        val apkEntry = LIBS.entries.firstOrNull { it.value == fileName }?.key ?: return false
+        val libDir = getLibDir(context)
+        val outFile = File(libDir, fileName)
+        return try {
+            val expected = ZipFile(context.applicationInfo.sourceDir).use { zip ->
+                val entry = zip.getEntry(apkEntry) ?: return false
+                zip.getInputStream(entry).use { readCapped(it, MAX_VERIFIED_BYTES) } ?: return false
+            }
+            if (expected.isEmpty()) return false
+            if (matchesBytes(outFile, expected)) {
+                if (isExecutable(outFile)) return true
+                // Same bytes, but node's bare spawn would fail with EACCES: restore +x.
+                runCatching { android.system.Os.chmod(outFile.path, 0b111_101_101) }
+                return matchesBytes(outFile, expected) && isExecutable(outFile)
+            }
+            Log.w(TAG, "$fileName differs from the APK; rewriting it")
+            val tmpFile = newTempFile(libDir, fileName)
+            tmpFile.outputStream().use { it.write(expected) }
+            replaceExtractedFile(tmpFile, outFile, fileName)
+            matchesBytes(outFile, expected) && isExecutable(outFile)
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureMatchesApk($fileName) failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private const val MAX_VERIFIED_BYTES = 1 shl 20
+
+    /** All of [input], or null when it holds more than [max] bytes (counts what is read, not ZipEntry.size). */
+    private fun readCapped(input: java.io.InputStream, max: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) return out.toByteArray()
+            total += n
+            if (total > max) return null
+            out.write(buf, 0, n)
+        }
+    }
+
+    /** Owner-executable per lstat (a regular file was already required by matchesBytes). */
+    private fun isExecutable(f: File): Boolean = try {
+        (android.system.Os.lstat(f.path).st_mode and android.system.OsConstants.S_IXUSR) != 0
+    } catch (e: Exception) {
+        false
+    }
+
+    /** A regular file (never through a symlink) whose bytes are exactly [expected]. */
+    private fun matchesBytes(f: File, expected: ByteArray): Boolean = try {
+        val st = android.system.Os.lstat(f.path)
+        android.system.OsConstants.S_ISREG(st.st_mode) && st.st_size == expected.size.toLong() &&
+            java.util.Arrays.equals(f.readBytes(), expected)
+    } catch (e: Exception) {
+        false
+    }
+
     private fun newTempFile(libDir: File, fileName: String): File =
         File(libDir, "$fileName.${android.os.Process.myPid()}.${Thread.currentThread().id}.${System.nanoTime()}.new")
 
@@ -326,7 +405,8 @@ object LibExtractor {
         // Shelly extracted here that are no longer in LIBS, so no APK update
         // would ever refresh them and a stale reference would silently run a
         // months-old binary (termux-libs/codex_exec, retired by HomeInitializer
-        // setup v231). See PayloadHygiene.RETIRED_LIB_FILES. One stat per name
+        // setup v231; that name is now the codex_exec launcher, refreshed from
+        // the APK). See PayloadHygiene.RETIRED_LIB_FILES. One stat per name
         // when absent, so it runs on every call.
         PayloadHygiene.removeRetired(libDir, PayloadHygiene.RETIRED_LIB_FILES, LIBS.values.toSet()) { logHygiene(TAG, it) }
 

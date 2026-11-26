@@ -370,6 +370,14 @@ object ManagedServiceSupervisor {
     private fun spawn(context: Context, spec: ManagedServices.Spec, launch: ManagedServices.Launch): String {
         HomeInitializer.initialize(context) // regenerates a stale ~/.bashrc after an update (as CodexRemoteHost)
         val libDir = LibExtractor.extractAll(context)
+        // council-facade spawns the bare codex_exec, which its PATH resolves to
+        // `<libDir>/codex_exec`: that file must be the APK's launcher at this
+        // start, not whatever is on disk (extractAll refreshes it only once per
+        // process). Not verifiable -> no start.
+        if (launch.execWrapper && !LibExtractor.ensureMatchesApk(context, "codex_exec")) {
+            Log.w(TAG, "start ${spec.id}: codex_exec does not match the APK; not starting")
+            return "launch_failed"
+        }
         val bashPath = LibExtractor.getBashPath(context)
         val home = home(context)
         val dir = serviceDir(context, spec.id) ?: return "launch_failed"

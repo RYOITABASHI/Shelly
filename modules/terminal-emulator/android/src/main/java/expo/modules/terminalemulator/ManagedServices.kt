@@ -64,6 +64,14 @@ object ManagedServices {
         val env: LaunchEnv,
         val workDir: String? = null,
         val extraEnv: List<EnvVar> = emptyList(),
+        /**
+         * Run node with `LD_PRELOAD=<lib>/libexec_wrapper.so`, so processes it
+         * spawns itself (no shell) can be app-data ELFs: without it, node's own
+         * execve of one fails with EACCES (W^X; measured on device 2026-11-26 for
+         * council-facade spawning `codex_exec`). False for article-delivery
+         * (unchanged); ExternalSpec sets it for council-facade.
+         */
+        val execWrapper: Boolean = false,
     )
 
     /**
@@ -203,6 +211,16 @@ object ManagedServices {
             }
         }
         sb.append("printf '%s service start\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\n")
+        // After every external command above (date), before the STOP-ALL check
+        // that stays the last statement: `export` is a builtin.
+        if (launch.execWrapper) {
+            // The lib dir first on PATH: a command node spawns by bare name
+            // (council-facade's codex_exec) resolves to the APK-extracted file,
+            // refreshed by LibExtractor right before this start, never to
+            // whatever $HOME/bin (first on the .bashrc PATH) holds.
+            sb.append("export PATH=").append(shQuote(libPath)).append(":\"\$PATH\"\n")
+            sb.append("export LD_PRELOAD=").append(shQuote("$libPath/libexec_wrapper.so")).append('\n')
+        }
         // STOP-ALL, checked again as the very last statement before exec: `[`
         // is a builtin, so no external command runs between the check and exec.
         sb.append("[ -e ").append(shQuote("$homePath/$HALT_SENTINEL")).append(" ] && exit 125\n")
@@ -629,6 +647,8 @@ object ExternalSpec {
             env = ManagedServices.DEFAULT_ENV,
             workDir = root,
             extraEnv = extraEnv,
+            // node spawns COUNCIL_CODEX_COMMAND (codex_exec, an app-data ELF) itself.
+            execWrapper = true,
         )
         val health = ManagedServices.HealthCheck(port = port, timeoutMs = HEALTH_TIMEOUT_MS, staleMs = HEALTH_STALE_MS)
         return Result(launch, health, "ok")

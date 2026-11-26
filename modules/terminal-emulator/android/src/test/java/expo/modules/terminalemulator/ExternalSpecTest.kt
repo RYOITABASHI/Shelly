@@ -216,5 +216,16 @@ class ExternalSpecTest {
         assertFalse(cmd.contains("\$(cat"))
         assertTrue(cmd.contains("exec /system/bin/linker64 '/data/lib/node' '$home/council-spike/dist/http/server.js'\n"))
         assertTrue(cmd.trimEnd('\n').endsWith("'$home/council-spike/dist/http/server.js'"))
+        // node runs with the exec wrapper so it can spawn codex_exec (an app-data
+        // ELF) itself; set after `date`, and the STOP-ALL check stays last.
+        assertTrue(launch.execWrapper)
+        val lines = cmd.trimEnd('\n').split('\n')
+        val preload = lines.indexOf("export LD_PRELOAD='/data/lib/libexec_wrapper.so'")
+        assertTrue(preload > lines.indexOfFirst { it.startsWith("printf ") })
+        assertEquals(lines.size - 3, preload)
+        // ...right after the lib dir is put first on PATH, so the bare
+        // codex_exec resolves to the APK-extracted launcher.
+        assertEquals("export PATH='/data/lib':\"\$PATH\"", lines[lines.size - 4])
+        assertTrue(lines[lines.size - 2].startsWith("[ -e "))
     }
 }
