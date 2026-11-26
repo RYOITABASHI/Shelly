@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=69
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=70
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -298,7 +298,17 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // missing / broken / empty / exhausted pool falls back with a pool_unavailable
 // audit line. The five fingerprint fields must come from the closed lists (one
 // re-output at most, then the draft is held). See articlePoolSettings.
-const EXECUTOR_SCRIPT_VERSION = 69;
+// v70 (2026-11-26): article structure from the owner's article-pipelines.json
+// entry (`structure`: frames, fallback, openings, closings). Once per run, after
+// the research settled, the pipeline picks a frame whose `requires` the notes
+// meet (main-study cards, the fingerprint's direction, fact kinds per card),
+// never the most recent article's (else the fallback, audit
+// article_structure_fallback), and an opening and a closing other than the most
+// recent article's; the write, revise and review steps get the choice, the
+// draft's frontmatter and the history record it (frame / opening / closing).
+// A malformed structure is off for the run (article_structure_config_invalid).
+// See normalizeStructureConfig.
+const EXECUTOR_SCRIPT_VERSION = 70;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -3701,6 +3711,8 @@ function assembleArticle(local, ctx) {
     ...(notes.length ? [`review_note: ${JSON.stringify(notes.join('、'))}`] : []),
     // v69: the pool candidate this draft's main study is; the bridge marks it used.
     ...(typeof ctx.poolCandidateId === 'string' && POOL_ID_RE.test(ctx.poolCandidateId) ? [`poolCandidateId: ${JSON.stringify(ctx.poolCandidateId)}`] : []),
+    // v70: the article structure the pipeline chose for this draft (none when off).
+    ...Object.entries(structureIdsOf(ctx.structure)).map(([field, id]) => `${field}: ${JSON.stringify(id)}`),
     `material: ${material}`,
     ...(material === 'ghostwritten' ? [`voice_sha: ${voice.sha}`] : []),
     ...editorLines,
@@ -5071,6 +5083,8 @@ function parseArticleHistory(text) {
     const item = { title, url, date: typeof e.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e.date) ? e.date : '' };
     // v69: the pool candidate the draft was built on.
     if (typeof e.poolCandidateId === 'string' && POOL_ID_RE.test(e.poolCandidateId)) item.poolCandidateId = e.poolCandidateId;
+    // v70: the article structure the draft was written in.
+    Object.assign(item, structureIdsOf(e));
     out.push(item);
   }
   return out;
@@ -5102,7 +5116,7 @@ function recordArticleHistory(file, entry, legacyFile) {
     const date = entry && typeof entry.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date) ? entry.date : '';
     const entries = readArticleHistory(file, legacyFile).filter((e) => !(e.title === title && e.url === url));
     const poolCandidateId = entry && typeof entry.poolCandidateId === 'string' && POOL_ID_RE.test(entry.poolCandidateId) ? entry.poolCandidateId : '';
-    entries.push(poolCandidateId ? { title, url, date, poolCandidateId } : { title, url, date });
+    entries.push(Object.assign(poolCandidateId ? { title, url, date, poolCandidateId } : { title, url, date }, structureIdsOf(entry)));
     writeAtomic(file, `${JSON.stringify({ version: 1, entries: entries.slice(-ARTICLE_HISTORY_MAX_ENTRIES) }, null, 2)}\n`);
     return true;
   } catch (_) {
@@ -5208,11 +5222,38 @@ function researchHistoryNamedExclusionBlock(entries, nonce) {
   ].join('\n');
 }
 
+// The research-numbers lint (v67): a main study passes with at least
+// RESEARCH_MAIN_MIN_NUMERIC_LINES fact lines holding a digit and
+// RESEARCH_MAIN_MIN_SAMPLE_LINES lines naming a sample. v70 shares these line
+// rules with the article structure's per-card checks (researchStudyCards).
+const RESEARCH_MAIN_MIN_NUMERIC_LINES = 6;
+const RESEARCH_MAIN_MIN_SAMPLE_LINES = 1;
+const RESEARCH_MAIN_START_RE = /^主研究\s*:/;
+const RESEARCH_FACT_LINE_RE = /^事実\s*:/;
+const RESEARCH_CARD_END_RE = /^(?:比較研究|比較対象|comparison stud(?:y|ies)|sources\b)/i;
+
+/** The research notes as the numbers lint reads them: NFKC, no reasoning, no bullet / heading / bold lead. Pure. */
+function researchLintLines(text) {
+  return nfkc(stripReasoning(text)).split(/\r?\n/).map((line) =>
+    line.trim().replace(/^(?:#{1,6}\s+|[-*+•]\s+)?(?:\*\*|__)?/, ''));
+}
+
+/** A fact line holding a digit (the lint's numeric line). Pure. */
+function researchNumericLine(line) {
+  return RESEARCH_FACT_LINE_RE.test(line) && /\d/.test(line);
+}
+
+/** A line naming a sample (the lint's sample line). Pure. */
+function researchSampleLine(line) {
+  return /\bn\s*=\s*\d/i.test(line)
+    || /\d[\d,]*\s*(?:participants?|students?|subjects?|respondents?)\b/i.test(line)
+    || /\d[\d,]*\s*[人名](?!称)/u.test(line);
+}
+
 /** Counts numeric evidence in the explicitly labelled main study. Pure. */
 function researchMainNumbers(text) {
-  const lines = nfkc(stripReasoning(text)).split(/\r?\n/).map((line) =>
-    line.trim().replace(/^(?:#{1,6}\s+|[-*+•]\s+)?(?:\*\*|__)?/, ''));
-  const start = lines.findIndex((line) => /^主研究\s*:/.test(line));
+  const lines = researchLintLines(text);
+  const start = lines.findIndex((line) => RESEARCH_MAIN_START_RE.test(line));
   if (start === -1) return null;
   const headerLink = researchNoteUrlRe().exec(lines[start]);
   const url = (headerLink && researchNoteUrl(headerLink[2] || headerLink[0])) || '';
@@ -5221,15 +5262,13 @@ function researchMainNumbers(text) {
   let blockUrl = '';
   for (let index = start; index < lines.length; index += 1) {
     const line = lines[index];
-    if (/^(?:比較研究|比較対象|comparison stud(?:y|ies)|sources\b)/i.test(line)) break;
+    if (RESEARCH_CARD_END_RE.test(line)) break;
     if (index > start && !blockUrl) {
       const link = researchNoteUrlRe().exec(line);
       if (link) blockUrl = researchNoteUrl(link[2] || link[0]);
     }
-    if (/^事実\s*:/.test(line) && /\d/.test(line)) numericLines += 1;
-    if (/\bn\s*=\s*\d/i.test(line)
-      || /\d[\d,]*\s*(?:participants?|students?|subjects?|respondents?)\b/i.test(line)
-      || /\d[\d,]*\s*[人名](?!称)/u.test(line)) sampleLines += 1;
+    if (researchNumericLine(line)) numericLines += 1;
+    if (researchSampleLine(line)) sampleLines += 1;
   }
   const title = cleanHistoryTitle(lines[start].replace(/^主研究\s*:\s*/, '').replace(researchNoteUrlRe(), '$1').replace(/\[\d+\]|\*\*|__/g, ''));
   const citationMatch = /\[(\d+)\]/.exec(lines[start]);
@@ -5707,6 +5746,333 @@ function readPoolFile(vault, outputDir, fsImpl) {
   } catch (e) {
     return { status: isMissingPathError(e) ? 'missing' : 'unreadable' };
   }
+}
+
+// ── Article pipeline: frames, openings and closings (v70) ────────────────────
+// Off unless the owner's article-pipelines.json entry for this plan has
+// `structure` (Shelly ships no frame, opening or closing): { frames, fallback,
+// openings, closings }, nothing else. Each list holds 2–8 items { id, label,
+// instruction } (ids unique in their list); a frame may add `requires`. The
+// fallback names a frame with no requirement. Malformed: the structure is off
+// for the run, with one audit line (article_structure_config_invalid); a bad
+// optional structure never holds a draft.
+// `requires` (every key optional, nothing else):
+//  - mainStudies 1–3: the research notes hold at least that many distinct
+//    main-study cards (researchStudyCards).
+//  - direction: values of the entry's fingerprint `direction` list; met when the
+//    accepted fingerprint's direction is one of them (no accepted fingerprint:
+//    unmet).
+//  - facts: kinds from STRUCTURE_FACT_KINDS; met when each of the first
+//    max(1, mainStudies) cards holds every kind (structureCardHasKind).
+// Once per run, after the research step settled (its fingerprint included) and
+// before the write step's prompt, the pipeline picks (selectArticleStructure):
+// a frame whose requirements the notes meet, never the most recent article's
+// (least recently used first, never-used first, config order on ties; with no
+// such frame other than the fallback, the fallback even when it repeats, audit
+// article_structure_fallback), and, independently, the least recently used
+// opening and closing other than the most recent article's. Last use comes from
+// the history entries and the saved and held drafts' frontmatter (today's too).
+// The choice reaches the write step and every revise (articleStructureBlock),
+// and every review as information; never research or the editor. It is recorded
+// as frontmatter `frame` / `opening` / `closing` and in the history entry.
+const STRUCTURE_KEYS = ['frames', 'fallback', 'openings', 'closings'];
+const STRUCTURE_ITEM_KEYS = ['id', 'label', 'instruction'];
+const STRUCTURE_FRAME_KEYS = ['id', 'label', 'instruction', 'requires'];
+const STRUCTURE_REQUIRE_KEYS = ['mainStudies', 'direction', 'facts'];
+const STRUCTURE_MIN_ITEMS = 2;
+const STRUCTURE_MAX_ITEMS = 8;
+const STRUCTURE_ID_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
+const STRUCTURE_LABEL_MAX_CHARS = 40;
+const STRUCTURE_INSTRUCTION_MAX_CHARS = 300;
+const STRUCTURE_MAIN_STUDIES_MAX = 3;
+const STRUCTURE_BAD_CHAR_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029<>`|]/;
+const STRUCTURE_FACT_KINDS = ['effect-size', 'confidence-interval', 'sample-size', 'percentage', 'result', 'implementation-detail', 'reliability'];
+const STRUCTURE_FIELDS = ['frame', 'opening', 'closing'];
+const ARTICLE_STRUCTURE_HEADING = '# Article structure for today (set by the pipeline)';
+const ARTICLE_STRUCTURE_WRITE_RULE = 'Write the opening and the closing in these types. Do not end with a generic wrap-up of limitations and possible uses unless that is today\'s closing type.';
+const ARTICLE_STRUCTURE_REVIEW_RULE = 'The pipeline set this structure for the draft: do not flag the frame, the opening type or the closing type themselves; judge how well the draft carries them out.';
+
+function structureTextOk(v, max) {
+  return typeof v === 'string' && !!v.trim() && v === v.trim() && Array.from(v).length <= max && !STRUCTURE_BAD_CHAR_RE.test(v);
+}
+
+/** The items of one structure list, or null. Pure. */
+function normalizeStructureItems(list, keys, normalizeRequires) {
+  if (!Array.isArray(list) || list.length < STRUCTURE_MIN_ITEMS || list.length > STRUCTURE_MAX_ITEMS) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    if (Object.keys(item).some((k) => keys.indexOf(k) === -1)) return null;
+    if (typeof item.id !== 'string' || !STRUCTURE_ID_RE.test(item.id) || seen.has(item.id)) return null;
+    if (!structureTextOk(item.label, STRUCTURE_LABEL_MAX_CHARS) || !structureTextOk(item.instruction, STRUCTURE_INSTRUCTION_MAX_CHARS)) return null;
+    seen.add(item.id);
+    const copy = { id: item.id, label: item.label, instruction: item.instruction };
+    if (normalizeRequires) {
+      const requires = normalizeRequires(item.requires);
+      if (requires === null) return null;
+      copy.requires = requires;
+    }
+    out.push(copy);
+  }
+  return out;
+}
+
+/** A frame's `requires` ({} when absent), or null. `fingerprint` are the entry's lists. Pure. */
+function normalizeStructureRequires(raw, fingerprint) {
+  if (raw === undefined) return {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (Object.keys(raw).some((k) => STRUCTURE_REQUIRE_KEYS.indexOf(k) === -1)) return null;
+  const out = {};
+  if (raw.mainStudies !== undefined) {
+    if (!Number.isInteger(raw.mainStudies) || raw.mainStudies < 1 || raw.mainStudies > STRUCTURE_MAIN_STUDIES_MAX) return null;
+    out.mainStudies = raw.mainStudies;
+  }
+  if (raw.direction !== undefined) {
+    const allowed = fingerprint && Array.isArray(fingerprint.direction) ? fingerprint.direction : null;
+    if (!allowed || !Array.isArray(raw.direction) || !raw.direction.length) return null;
+    if (raw.direction.some((v) => typeof v !== 'string' || allowed.indexOf(v) === -1)) return null;
+    if (new Set(raw.direction).size !== raw.direction.length) return null;
+    out.direction = raw.direction.slice();
+  }
+  if (raw.facts !== undefined) {
+    if (!Array.isArray(raw.facts) || !raw.facts.length) return null;
+    if (raw.facts.some((v) => typeof v !== 'string' || STRUCTURE_FACT_KINDS.indexOf(v) === -1)) return null;
+    if (new Set(raw.facts).size !== raw.facts.length) return null;
+    out.facts = raw.facts.slice();
+  }
+  return out;
+}
+
+/**
+ * The structure of a pipeline entry: undefined when the entry has none, null
+ * when it is malformed (the structure is then off), else { frames, fallback,
+ * openings, closings }. `fingerprint` is the entry's normalized fingerprint
+ * lists (undefined / null: a `direction` requirement is malformed). Pure.
+ */
+function normalizeStructureConfig(raw, fingerprint) {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (Object.keys(raw).some((k) => STRUCTURE_KEYS.indexOf(k) === -1)) return null;
+  const frames = normalizeStructureItems(raw.frames, STRUCTURE_FRAME_KEYS, (r) => normalizeStructureRequires(r, fingerprint));
+  const openings = normalizeStructureItems(raw.openings, STRUCTURE_ITEM_KEYS);
+  const closings = normalizeStructureItems(raw.closings, STRUCTURE_ITEM_KEYS);
+  if (!frames || !openings || !closings) return null;
+  const fallback = typeof raw.fallback === 'string' ? frames.find((f) => f.id === raw.fallback) : undefined;
+  if (!fallback || Object.keys(fallback.requires).length) return null;
+  return { frames, fallback: fallback.id, openings, closings };
+}
+
+// A main-study card: a line that labels a main study (主研究: as the numbers
+// lint reads it, also numbered or lettered, 主研究2: / 主研究 B:, and the same
+// in English, main study:) and the lines after it up to the next such label or
+// a line the numbers lint ends a main study on (a comparison study, Sources).
+// Lines are read as the lint reads them (researchLintLines).
+const STRUCTURE_CARD_START_RE = /^(?:主研究|main stud(?:y|ies))\s*(?:\d{1,2}|[A-Za-z](?![A-Za-z]))?\s*:/i;
+
+/**
+ * The distinct main-study cards of research notes, in order: [{ key, lines }].
+ * A card is known by the first usable address on its lines (articleStudyKey),
+ * else by its label line's title; a card with neither is not counted, and a
+ * later card with an earlier one's key is the same study. Pure.
+ */
+function researchStudyCards(text) {
+  const lines = researchLintLines(text);
+  const cards = [];
+  let current = null;
+  for (const line of lines) {
+    if (STRUCTURE_CARD_START_RE.test(line)) {
+      current = { lines: [line] };
+      cards.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (RESEARCH_CARD_END_RE.test(line)) {
+      current = null;
+      continue;
+    }
+    current.lines.push(line);
+  }
+  const out = [];
+  const seen = new Set();
+  for (const card of cards) {
+    let key = '';
+    for (const line of card.lines) {
+      const re = researchNoteUrlRe();
+      let m;
+      while (!key && (m = re.exec(line))) {
+        const url = researchNoteUrl(m[2] || m[0]);
+        if (url) key = articleStudyKey(url);
+      }
+      if (key) break;
+    }
+    if (!key) {
+      const title = cleanHistoryTitle(card.lines[0].replace(STRUCTURE_CARD_START_RE, '').replace(researchNoteUrlRe(), '$1').replace(/\[\d+\]|\*\*|__/g, '')).toLowerCase();
+      if (title) key = `title:${title}`;
+    }
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, lines: card.lines });
+  }
+  return out;
+}
+
+// One test per fact kind, on one card line (NFKC). Each also needs a digit on the line.
+const STRUCTURE_FACT_LINE_TESTS = {
+  'effect-size': (line) => /\b(?:cohen'?s\s+)?[dgr]\s*=\s*[-−+]?\.?\d|η\s*p?\s*[2²]|\beta[- ]squared\b|\bodds ratios?\b|\bOR\s*=\s*\d|\beffect sizes?\b|\bhedges'?\s*g\b|効果量/i.test(line),
+  'confidence-interval': (line) => /\bCI\b/.test(line) || /\bconfidence intervals?\b|信頼区間|95\s*%/i.test(line),
+  'sample-size': (line) => researchSampleLine(line),
+  percentage: (line) => /\d\s*%|パーセント/.test(line),
+  'implementation-detail': (line) => /\d[\d.,]*\s*(?:(?:-|–|〜|~|to)\s*\d[\d.,]*\s*)?(?:weeks?|months?|days?|hours?|hrs?|minutes?|mins?|sessions?|lessons?|classes|semesters?)\b/i.test(line)
+    || /\d[\d.,]*\s*times\s+(?:a|per)\s+\w/i.test(line)
+    || /\d[\d.,]*\s*(?:(?:-|–|〜|~)\s*\d[\d.,]*\s*)?(?:週間?|か月|ヶ月|カ月|ケ月|日間|分間|分(?!の)|回|時間|コマ|学期)/.test(line),
+  reliability: (line) => /\bcronbach|\balpha\b|α|\bICC\b|\bkappa\b|κ|\btest[- ]retest\b|\breliabilit|\bvalidity\b|信頼性|妥当性|信頼係数/i.test(line)
+    && /(?:^|[^\d])\.\d|\d\.\d|=\s*\d/.test(line),
+};
+
+/** Whether a card holds a kind. `result` is the numbers lint's own test. Pure. */
+function structureCardHasKind(card, kind) {
+  if (kind === 'result') {
+    let numeric = 0;
+    let sample = 0;
+    for (const line of card.lines) {
+      if (researchNumericLine(line)) numeric += 1;
+      if (researchSampleLine(line)) sample += 1;
+    }
+    return numeric >= RESEARCH_MAIN_MIN_NUMERIC_LINES && sample >= RESEARCH_MAIN_MIN_SAMPLE_LINES;
+  }
+  const test = STRUCTURE_FACT_LINE_TESTS[kind];
+  return !!test && card.lines.some((line) => /\d/.test(line) && test(line));
+}
+
+/**
+ * The names of a frame's unmet requirements ([] when met): `mainStudies`,
+ * `direction`, `facts:<kind>`. `cards` from researchStudyCards, `fingerprint`
+ * the accepted values (or null). Pure.
+ */
+function structureFrameUnmet(frame, cards, fingerprint) {
+  const req = (frame && frame.requires) || {};
+  const unmet = [];
+  if (req.mainStudies && cards.length < req.mainStudies) unmet.push('mainStudies');
+  if (req.direction && !(fingerprint && req.direction.indexOf(fingerprint.direction) !== -1)) unmet.push('direction');
+  if (req.facts) {
+    const n = Math.max(1, req.mainStudies || 0);
+    const checked = cards.slice(0, n);
+    for (const kind of req.facts) {
+      if (checked.length < n || !checked.every((card) => structureCardHasKind(card, kind))) unmet.push(`facts:${kind}`);
+    }
+  }
+  return unmet;
+}
+
+function structureUseAfter(a, b) {
+  if (a.date !== b.date) return a.date > b.date;
+  return (a.savedAtMs || 0) >= (b.savedAtMs || 0);
+}
+
+/**
+ * For one field: the most recent article's id ('' for none) and each id's last
+ * use { date, savedAtMs }. `uses`: [{ date, savedAtMs, frame?, opening?,
+ * closing? }]; a use without the field is ignored, and on an exact tie the
+ * later one in the list wins. Pure.
+ */
+function structureLastUse(uses, field) {
+  let last = null;
+  const byId = new Map();
+  for (const use of Array.isArray(uses) ? uses : []) {
+    const id = use && typeof use[field] === 'string' && STRUCTURE_ID_RE.test(use[field]) ? use[field] : '';
+    if (!id || typeof use.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(use.date)) continue;
+    const at = { date: use.date, savedAtMs: Number.isFinite(use.savedAtMs) ? use.savedAtMs : 0 };
+    if (!last || structureUseAfter(at, last.at)) last = { id, at };
+    const prev = byId.get(id);
+    if (!prev || structureUseAfter(at, prev)) byId.set(id, at);
+  }
+  return { last: last ? last.id : '', byId };
+}
+
+/** The least recently used of `items` (never used first, then list order). Pure. */
+function structureLeastRecent(items, byId) {
+  let best = null;
+  for (const item of items) {
+    const at = byId.get(item.id);
+    if (!best) {
+      best = { item, at };
+      continue;
+    }
+    if (!best.at) continue;
+    if (!at || !structureUseAfter(at, best.at)) best = { item, at };
+  }
+  return best ? best.item : null;
+}
+
+/**
+ * Today's structure. `structure` from normalizeStructureConfig, `notes` the
+ * carried research notes, `fingerprint` the accepted values or null, `uses` as
+ * in structureLastUse. Returns { frame, opening, closing } (the items), with
+ * `fallback`, `reason` ('requirements' | 'repeat', only on a fallback),
+ * `repeated` (the frame equals the most recent article's), `met` (frame ids)
+ * and `unmet` ({ frameId: [names] } of the frames not met). Pure.
+ */
+function selectArticleStructure(structure, notes, fingerprint, uses) {
+  const cards = researchStudyCards(notes);
+  const met = [];
+  const unmet = {};
+  for (const frame of structure.frames) {
+    const names = structureFrameUnmet(frame, cards, fingerprint);
+    if (names.length) unmet[frame.id] = names;
+    else met.push(frame);
+  }
+  const frameUse = structureLastUse(uses, 'frame');
+  const fallbackFrame = structure.frames.find((f) => f.id === structure.fallback);
+  const others = met.filter((f) => f.id !== structure.fallback);
+  let frame;
+  let fallback = false;
+  let reason;
+  if (others.some((f) => f.id !== frameUse.last)) {
+    frame = structureLeastRecent(met.filter((f) => f.id !== frameUse.last), frameUse.byId);
+  } else {
+    // No frame but the fallback qualifies: the fallback, even as a repeat.
+    frame = fallbackFrame;
+    fallback = true;
+    reason = others.length ? 'repeat' : 'requirements';
+  }
+  const pick = (list, field) => {
+    const use = structureLastUse(uses, field);
+    const fresh = list.filter((item) => item.id !== use.last);
+    return structureLeastRecent(fresh.length ? fresh : list, use.byId);
+  };
+  return {
+    frame,
+    opening: pick(structure.openings, 'opening'),
+    closing: pick(structure.closings, 'closing'),
+    fallback,
+    ...(fallback ? { reason } : {}),
+    repeated: frame.id === frameUse.last,
+    met: met.map((f) => f.id),
+    unmet,
+  };
+}
+
+/** The fixed-format block for a write / revise ('write') or review ('review') step, or ''. Pure. */
+function articleStructureBlock(selection, role) {
+  if (!selection || (role !== 'write' && role !== 'review')) return '';
+  return [
+    ARTICLE_STRUCTURE_HEADING,
+    `Frame: ${selection.frame.label} — ${selection.frame.instruction}`,
+    `Opening: ${selection.opening.label} — ${selection.opening.instruction}`,
+    `Closing: ${selection.closing.label} — ${selection.closing.instruction}`,
+    ARTICLE_STRUCTURE_WRITE_RULE,
+    ...(role === 'review' ? [ARTICLE_STRUCTURE_REVIEW_RULE] : []),
+  ].join('\n');
+}
+
+/** frame / opening / closing ids of a record (frontmatter, history), validated. Pure. */
+function structureIdsOf(raw) {
+  const out = {};
+  for (const field of STRUCTURE_FIELDS) {
+    if (raw && typeof raw[field] === 'string' && STRUCTURE_ID_RE.test(raw[field])) out[field] = raw[field];
+  }
+  return out;
 }
 
 // ── Article pipeline: the full text of each review (v60) ────────────────────
@@ -7437,6 +7803,11 @@ function readPreviouslyCoveredHead(file, st, f) {
 function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opts) {
   const f = fsImpl || fs;
   const wantIds = !!(opts && opts.poolIds);
+  // v70: with `opts.structure` every listed draft's frame / opening / closing
+  // (today's too) comes back as `structureUses` [{ date, savedAtMs, ... }].
+  const wantStructure = !!(opts && opts.structure);
+  const wantAll = wantIds || wantStructure;
+  const structureUses = [];
   const poolIds = new Set();
   const unavailable = new Set();
   const partial = new Set();
@@ -7447,7 +7818,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
     for (const name of f.readdirSync(dir)) {
       if (!datePrefix.test(name) || !name.endsWith('.md')) continue;
       const idsOnly = name.startsWith(today + '-') || archiveDate === today;
-      if (idsOnly && !wantIds) continue;
+      if (idsOnly && !wantAll) continue;
       candidates.push({
         name,
         file: path.join(dir, name),
@@ -7474,7 +7845,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
       const realHeld = f.realpathSync(heldDir);
       const folder = path.basename(articleFolderKey(outputDir) || path.resolve(String(outputDir || '')));
       for (const day of f.readdirSync(realHeld)) {
-        if ((day === today && !wantIds) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+        if ((day === today && !wantAll) || !/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
         if (!folder || folder === '.') continue;
         try {
           const dateDir = path.join(realHeld, day);
@@ -7501,7 +7872,7 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
     return Number(b.held) - Number(a.held);
   });
   const titles = new Set();
-  for (const { file, root, held, idsOnly } of candidates) {
+  for (const { file, root, held, idsOnly, sortDate } of candidates) {
     try {
       // Capture identity before realpath checks for an escaped parent. Compare
       // it after open to catch a later swap, then read from the pinned descriptor.
@@ -7512,16 +7883,21 @@ function collectPreviouslyCoveredTitles(outputDir, agentsDir, today, fsImpl, opt
       if (head === null) continue;
       const fm = parseDraftFrontmatter(head);
       if (wantIds && fm.poolCandidateId) poolIds.add(fm.poolCandidateId);
+      if (wantStructure) {
+        const ids = structureIdsOf(fm);
+        if (Object.keys(ids).length) structureUses.push(Object.assign({ date: sortDate, savedAtMs: fm.savedAtMs }, ids));
+      }
       if (idsOnly) continue;
       const title = cleanHistoryTitle(fm.title);
       if (title && titles.size < PREVIOUSLY_COVERED_MAX_TITLES) titles.add(title);
-      if (!wantIds && titles.size === PREVIOUSLY_COVERED_MAX_TITLES) break;
+      if (!wantAll && titles.size === PREVIOUSLY_COVERED_MAX_TITLES) break;
     } catch (e) {
       if (!isMissingPathError(e)) partial.add(held ? 'held' : 'drafts');
     }
   }
   const out = { titles: [...titles], unavailable: [...unavailable], partial: [...partial] };
   if (wantIds) out.poolCandidateIds = [...poolIds];
+  if (wantStructure) out.structureUses = structureUses;
   return out;
 }
 
@@ -7641,16 +8017,21 @@ function parseJsonValue(text) {
  */
 function parseDraftFrontmatter(head) {
   // v69: `poolCandidateId` is set only when the frontmatter has a valid one.
+  // v70: so are `frame`, `opening` and `closing`.
   const out = { title: '', review: '', reviewNote: '', material: '', lint: [], savedAtMs: 0, quality: '', qualityNote: '' };
   const block = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(String(head == null ? '' : head));
   if (!block) return out;
   const seen = new Set();
   for (const line of block[1].split(/\r?\n/)) {
-    const m = /^(title|review|review_note|material|lint|saved_at|quality|quality_note|poolCandidateId):[ \t]*(.*)$/.exec(line);
+    const m = /^(title|review|review_note|material|lint|saved_at|quality|quality_note|poolCandidateId|frame|opening|closing):[ \t]*(.*)$/.exec(line);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);
     const value = m[2].trim();
-    if (m[1] === 'poolCandidateId') {
+    if (m[1] === 'frame' || m[1] === 'opening' || m[1] === 'closing') {
+      // v70: written by assemble as a JSON string; set only when it is a valid id.
+      const parsed = value.startsWith('"') ? parseJsonValue(value) : value;
+      if (typeof parsed === 'string' && STRUCTURE_ID_RE.test(parsed)) out[m[1]] = parsed;
+    } else if (m[1] === 'poolCandidateId') {
       // v69: written by assemble as a JSON string; a hand edit may drop the quotes.
       const parsed = value.startsWith('"') ? parseJsonValue(value) : value;
       if (typeof parsed === 'string' && POOL_ID_RE.test(parsed)) out.poolCandidateId = parsed;
@@ -13892,21 +14273,31 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   let poolBlockText = null;
   let adoptedPoolCandidate = null;
   let fingerprintChecked = false;
+  // v70: the accepted fingerprint values (or null) and today's article structure,
+  // chosen once (articleStructureForRun): { selection } with selection null when off.
+  let acceptedFingerprint = null;
+  let structureState = null;
   function poolAudit(i, event, extra) {
     appendJsonl(paths.planAuditFile, Object.assign({ ts: new Date().toISOString(), kind: 'plan.executor', event, agentId: plan.agent.id, stepIndex: i }, extra));
   }
   function articlePoolSettingsForRun() {
     if (poolSettingsState) return poolSettingsState;
-    poolSettingsState = { pool: false, poolAsked: false, fingerprint: undefined };
+    poolSettingsState = { pool: false, poolAsked: false, fingerprint: undefined, structure: undefined };
     if (!longform || isDigestPlan(plan) || coveredResearchIndex === -1) return poolSettingsState;
     try {
       const entry = articlePipelineEntryFor(plan, readArticlePipelineFileForAudit(paths.home, fs));
       if (!entry) return poolSettingsState;
       const settings = articlePoolSettings(entry);
       const queueChain = plan.steps.list.some((step) => step && step.local && step.local.kind === 'queue-pop');
-      poolSettingsState = { pool: settings.pool && !queueChain, poolAsked: entry.pool === true, fingerprint: settings.fingerprint };
+      poolSettingsState = { pool: settings.pool && !queueChain, poolAsked: entry.pool === true, fingerprint: settings.fingerprint, structure: undefined };
+      // v70: the article structure (frames, openings, closings), same entry.
+      poolSettingsState.structure = normalizeStructureConfig(entry.structure, settings.fingerprint);
     } catch (_) {
-      // No readable entry: both stay off, as for a pipeline without them.
+      // No readable entry: all stay off, as for a pipeline without them.
+    }
+    if (poolSettingsState.structure === null) {
+      // A malformed optional structure is off for the run; it holds nothing.
+      poolAudit(coveredResearchIndex, 'article_structure_config_invalid', {});
     }
     if (poolSettingsState.fingerprint === null) {
       // The owner asked for a fingerprint the lists of which cannot be used:
@@ -13983,6 +14374,71 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       poolPromptBlockFor(i),
       settings.fingerprint ? fingerprintInstructionBlock(settings.fingerprint) : '',
     ].filter(Boolean).join('\n\n');
+  }
+  /**
+   * v70: today's article structure, chosen once, after the research step settled
+   * and before the first step that reads it (the write step). null when the
+   * entry has none, it is malformed, or the run has no research step. Never
+   * throws: a failure leaves the structure off with an audit line.
+   */
+  function articleStructureForRun() {
+    if (structureState) return structureState.selection;
+    structureState = { selection: null };
+    if (!longform || isDigestPlan(plan) || coveredResearchIndex === -1) return null;
+    const settings = articlePoolSettingsForRun();
+    if (!settings.structure) return null;
+    try {
+      const notes = typeof resultsByStep[coveredResearchIndex] === 'string' ? resultsByStep[coveredResearchIndex] : '';
+      const uses = [];
+      if (historyFile) {
+        for (const e of readArticleHistory(historyFile, legacyHistoryFile)) {
+          const ids = structureIdsOf(e);
+          if (Object.keys(ids).length && e.date) uses.push(Object.assign({ date: e.date, savedAtMs: 0 }, ids));
+        }
+      }
+      const scan = collectPreviouslyCoveredTitles(plan.output.outputDir, paths.agentsDir, sourcingToday, fs, { structure: true });
+      uses.push(...(scan.structureUses || []));
+      const selection = selectArticleStructure(settings.structure, notes, acceptedFingerprint, uses);
+      structureState.selection = selection;
+      if (selection.fallback) {
+        poolAudit(coveredResearchIndex, 'article_structure_fallback', { frame: selection.frame.id, reason: selection.reason, repeated: selection.repeated, unmet: selection.unmet });
+      }
+      poolAudit(coveredResearchIndex, 'article_structure', {
+        frame: selection.frame.id,
+        opening: selection.opening.id,
+        closing: selection.closing.id,
+        fallback: selection.fallback,
+        met: selection.met,
+        ...(scan.unavailable.length || scan.partial.length ? { recordsUnavailable: scan.unavailable.concat(scan.partial) } : {}),
+      });
+      progressStepEvent(activeProgress, coveredResearchIndex, 'tail', { tail: progressTail(`Structure: frame ${selection.frame.id}, opening ${selection.opening.id}, closing ${selection.closing.id}${selection.fallback ? ' (fallback)' : ''}.`) });
+    } catch (_) {
+      structureState.selection = null;
+      poolAudit(coveredResearchIndex, 'article_structure_unavailable', { reason: 'error' });
+    }
+    return structureState.selection;
+  }
+  /** v70: the structure block for step i ('' for the research, the editor and any other step). */
+  function articleStructurePromptBlock(i, role) {
+    if (!longform || coveredResearchIndex === -1 || i <= coveredResearchIndex) return '';
+    const list = plan.steps.list;
+    const step = list[i];
+    let kind = role || '';
+    if (!kind) {
+      const h = handoffOf(list, i);
+      if (h) kind = h.kind === 'revise' ? 'write' : h.kind === 'review' ? 'review' : '';
+      else if (step && step.local === undefined && !step.apiCall && i === articleWriteStepIndex()) kind = 'write';
+    }
+    if (!kind) return '';
+    return articleStructureBlock(articleStructureForRun(), kind);
+  }
+  /** The write step: the second plain model step (the first is the research). */
+  function articleWriteStepIndex() {
+    const plain = [];
+    plan.steps.list.forEach((s, k) => {
+      if (s && s.local === undefined && !s.apiCall && s.handoff === undefined) plain.push(k);
+    });
+    return plain.length >= 2 && plain[0] === coveredResearchIndex ? plain[1] : -1;
   }
   /** The labelled main study of a research answer: its addresses and title. */
   function researchMainIdentity(outcome) {
@@ -14079,6 +14535,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       }
     }
     poolAudit(i, 'research_fingerprint', { values: fp.values, retried });
+    acceptedFingerprint = Object.assign({}, fp.values);
     // The later steps read the carried notes: absorbOutcome puts the accepted
     // fingerprint into them, not the one that failed, and not a copy the
     // absorption's Sources removal or NFKC could drop or fold (fix round 2, B3).
@@ -14547,6 +15004,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     return Object.assign({}, state, { optional: true, omittedFooter: voiceOmittedFooter(voiceLocal.lang, voiceLocal.author) });
   }
 
+  /** v70: the chosen structure's ids for the frontmatter and the history, or null. */
+  function articleStructureIds() {
+    const selection = structureState ? structureState.selection : null;
+    return selection ? { frame: selection.frame.id, opening: selection.opening.id, closing: selection.closing.id } : null;
+  }
+
   function assembleContext(assembleLocal) {
     // v69: with fingerprint lists, a draft whose main study was never checked
     // (the research step was not one the guard settles) is held too.
@@ -14570,6 +15033,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       voice: voiceContext(assembleLocal),
       materials: materialsState ? materialsState.entries : [],
       poolCandidateId: adoptedPoolCandidate ? adoptedPoolCandidate.id : '',
+      structure: articleStructureIds(),
     };
   }
 
@@ -14806,7 +15270,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const contextResults = indexes.map((k) => resultsByStep[k]);
       const synthesis = sourcingActive && evidence.sources.length > 0;
       const stepEvidence = synthesis ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount } : undefined;
-      const composed = composeStepPrompt(plan.prompt, longformHandoffInstruction(step), contextResults, stepEvidence, carriedRolesFor(j, indexes, contextResults.length), undefined, true, longformDataBlocks());
+      const composed = composeStepPrompt(plan.prompt, longformHandoffInstruction(step), contextResults, stepEvidence, carriedRolesFor(j, indexes, contextResults.length), undefined, true, [longformDataBlocks(), articleStructurePromptBlock(j, 'review')].filter(Boolean).join('\n\n'));
       if (composed.truncated) return skip('prompt-cut');
       const independentType = longformIndependentReviewEngine(list, j, usedEnginesByStep, effectiveStepTool(step).type, draftStep);
       const independentTool = independentType ? vettedToolObject(independentType) : null;
@@ -14980,7 +15444,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const synthesis = sourcingActive && evidence.sources.length > 0;
       const stepEvidence = synthesis ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount } : undefined;
       const instruction = `${longformHandoffInstruction(step)}\n${LONGFORM_EDITOR_NOTES_RULE}\n${EDITOR_RESCUE_RULES}`;
-      const composed = composeStepPrompt(plan.prompt, instruction, contextResults, stepEvidence, carriedRolesFor(j, indexes, contextResults.length), undefined, true, longformDataBlocks());
+      const composed = composeStepPrompt(plan.prompt, instruction, contextResults, stepEvidence, carriedRolesFor(j, indexes, contextResults.length), undefined, true, [longformDataBlocks(), articleStructurePromptBlock(j, 'write')].filter(Boolean).join('\n\n'));
       if (composed.truncated) return skip('prompt-cut');
       const tool = effectiveStepTool(step);
       const writerPlan = Object.assign({}, plan, {
@@ -15146,6 +15610,8 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       coveredBlock,
       // v69: the candidate pool and the fingerprint rule, research step only.
       research ? researchPoolBlocks(i) : '',
+      // v70: today's frame, opening and closing (write, revise, review).
+      research ? '' : articleStructurePromptBlock(i),
       recoveryBlock,
     ].filter(Boolean).join('\n\n') : '';
     // Preserve the base isolated prompt when only the history guard retries.
@@ -15619,7 +16085,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       // A notification-triggered (tainted) run never feeds later prompts.
       if (historyActive && !(stepOpts && stepOpts.tainted) && step.local !== undefined && action.status === 'success' && paths.savedOutput) {
         const main = evidence.sources.find((src) => src.id === (evidence.mainSourceId || 1));
-        const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday, poolCandidateId: adoptedPoolCandidate ? adoptedPoolCandidate.id : '' }, legacyHistoryFile);
+        const recorded = recordArticleHistory(historyFile, { title: assembledArticleTitle(resultText), url: main ? main.url : '', date: sourcingToday, poolCandidateId: adoptedPoolCandidate ? adoptedPoolCandidate.id : '', ...(articleStructureIds() || {}) }, legacyHistoryFile);
         appendJsonl(paths.planAuditFile, { ts: new Date().toISOString(), kind: 'plan.executor', event: 'article_history_recorded', agentId: plan.agent.id, recorded });
       }
     }
@@ -15790,7 +16256,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       return true;
     };
     const numbersVerdict = (candidate, stats) => {
-      if (!stats || (stats.numericLines >= 6 && stats.sampleLines >= 1)) return false;
+      if (!stats || (stats.numericLines >= RESEARCH_MAIN_MIN_NUMERIC_LINES && stats.sampleLines >= RESEARCH_MAIN_MIN_SAMPLE_LINES)) return false;
       audit('research_numbers_insufficient', { attempt, numericLines: stats.numericLines, sampleLines: stats.sampleLines });
       const citationUrl = (parsed) => parsed.sources.find((source) => source.id === parsed.indexMap[stats.citation])?.url;
       const url = cleanHistoryUrl(stats.url || (stats.citation !== null && (
@@ -17443,6 +17909,18 @@ module.exports = {
   POOL_UNVERIFIED_MAIN_NOTE,
   normalizeFingerprintConfig,
   articlePoolSettings,
+  STRUCTURE_FACT_KINDS,
+  ARTICLE_STRUCTURE_HEADING,
+  ARTICLE_STRUCTURE_WRITE_RULE,
+  ARTICLE_STRUCTURE_REVIEW_RULE,
+  normalizeStructureConfig,
+  researchStudyCards,
+  structureCardHasKind,
+  structureFrameUnmet,
+  structureLastUse,
+  selectArticleStructure,
+  articleStructureBlock,
+  researchMainNumbers,
   fingerprintInstructionBlock,
   parseFingerprint,
   notesWithFingerprint,

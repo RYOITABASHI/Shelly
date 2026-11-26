@@ -227,7 +227,52 @@ export interface ArticlePipelineConfig {
    *  `<outputFolder>/_pool.json` (written by another tool, never by Shelly)
    *  before today's search. Needs `fingerprint`; not with `queue`. */
   pool?: boolean;
+  /** Executor v70: the article structure. Each run takes a frame whose
+   *  `requires` the research meets and an opening and a closing, none equal to
+   *  the most recent article's; frontmatter `frame` / `opening` / `closing`. */
+  structure?: ArticleStructureConfig;
 }
+
+/** One frame, opening or closing (executor normalizeStructureConfig). */
+export interface ArticleStructureItem {
+  /** ARTICLE_STRUCTURE_ID_RE, unique in its list. */
+  id: string;
+  /** At most ARTICLE_STRUCTURE_LABEL_MAX_CHARS characters. */
+  label: string;
+  /** At most ARTICLE_STRUCTURE_INSTRUCTION_MAX_CHARS characters. */
+  instruction: string;
+}
+
+/** What a frame needs from the research notes (every key optional). */
+export interface ArticleStructureRequires {
+  /** 1 to ARTICLE_STRUCTURE_MAIN_STUDIES_MAX distinct main-study cards. */
+  mainStudies?: number;
+  /** Values of `fingerprint.direction`; met when the accepted direction is one. */
+  direction?: string[];
+  /** Kinds each of the first max(1, mainStudies) cards must hold. */
+  facts?: (typeof ARTICLE_STRUCTURE_FACT_KINDS)[number][];
+}
+
+export interface ArticleStructureFrame extends ArticleStructureItem {
+  requires?: ArticleStructureRequires;
+}
+
+export interface ArticleStructureConfig {
+  frames: ArticleStructureFrame[];
+  /** A frame id whose `requires` is absent or empty. */
+  fallback: string;
+  openings: ArticleStructureItem[];
+  closings: ArticleStructureItem[];
+}
+
+/** Mirrors executor STRUCTURE_* (v70). */
+export const ARTICLE_STRUCTURE_ID_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
+export const ARTICLE_STRUCTURE_MIN_ITEMS = 2;
+export const ARTICLE_STRUCTURE_MAX_ITEMS = 8;
+export const ARTICLE_STRUCTURE_LABEL_MAX_CHARS = 40;
+export const ARTICLE_STRUCTURE_INSTRUCTION_MAX_CHARS = 300;
+export const ARTICLE_STRUCTURE_MAIN_STUDIES_MAX = 3;
+export const ARTICLE_STRUCTURE_FACT_KINDS = ['effect-size', 'confidence-interval', 'sample-size', 'percentage', 'result', 'implementation-detail', 'reliability'] as const;
 
 /** The five fields of a main-study fingerprint (executor FINGERPRINT_FIELDS). */
 export const ARTICLE_FINGERPRINT_FIELDS = ['population', 'intervention', 'outcome', 'direction', 'question'] as const;
@@ -359,7 +404,7 @@ function articleCommonError(r: Record<string, unknown>, where: string): string |
   );
 }
 
-const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds', 'fingerprint', 'pool'] as const;
+const ARTICLE_PIPELINE_KEYS = ['id', 'name', 'prompt', 'lang', 'schedule', 'scheduleLabel', 'outputFolder', 'footer', 'queue', 'instructions', 'engines', 'lintTerms', 'nameLint', 'lintSources', 'quality', 'voice', 'editor', 'materials', 'fetchSources', 'reviewRounds', 'fingerprint', 'pool', 'structure'] as const;
 
 // Mirrors normalizeFingerprintConfig in scripts/shelly-plan-executor.js.
 // eslint-disable-next-line no-control-regex
@@ -383,6 +428,88 @@ function articleFingerprintError(v: unknown, where: string): string | null {
       if (seen.has(key)) return `${where}.${field}: "${value}" is listed twice`;
       seen.add(key);
     }
+  }
+  return null;
+}
+
+// Mirrors normalizeStructureConfig in scripts/shelly-plan-executor.js (v70).
+function articleStructureTextError(v: unknown, max: number, where: string): string | null {
+  if (typeof v !== 'string' || !v.trim() || v !== v.trim() || Array.from(v).length > max || ARTICLE_FINGERPRINT_BAD_CHAR_RE.test(v)) {
+    return `${where}: needs text of at most ${max} characters, with no space around it and no control character, <, >, \` or |`;
+  }
+  return null;
+}
+
+function articleStructureListError(v: unknown, where: string, frames: boolean, fingerprint: unknown): string | null {
+  if (!Array.isArray(v) || v.length < ARTICLE_STRUCTURE_MIN_ITEMS || v.length > ARTICLE_STRUCTURE_MAX_ITEMS) {
+    return `${where}: needs a list of ${ARTICLE_STRUCTURE_MIN_ITEMS} to ${ARTICLE_STRUCTURE_MAX_ITEMS} items`;
+  }
+  const seen = new Set<string>();
+  for (let k = 0; k < v.length; k += 1) {
+    const item = v[k];
+    const at = `${where}[${k}]`;
+    if (!isPlainObject(item)) return `${at}: needs { "id", "label", "instruction" }`;
+    const keyError = unknownKeyError(item, frames ? ['id', 'label', 'instruction', 'requires'] : ['id', 'label', 'instruction'], at);
+    if (keyError) return keyError;
+    if (typeof item.id !== 'string' || !ARTICLE_STRUCTURE_ID_RE.test(item.id)) return `${at}.id: use 1 to 24 of a-z, 0-9 and -, starting with a letter or digit`;
+    if (seen.has(item.id)) return `${at}.id: "${item.id}" is listed twice`;
+    seen.add(item.id);
+    const textError = articleStructureTextError(item.label, ARTICLE_STRUCTURE_LABEL_MAX_CHARS, `${at}.label`)
+      ?? articleStructureTextError(item.instruction, ARTICLE_STRUCTURE_INSTRUCTION_MAX_CHARS, `${at}.instruction`);
+    if (textError) return textError;
+    if (frames && item.requires !== undefined) {
+      const requiresError = articleStructureRequiresError(item.requires, `${at}.requires`, fingerprint);
+      if (requiresError) return requiresError;
+    }
+  }
+  return null;
+}
+
+function articleStructureRequiresError(v: unknown, where: string, fingerprint: unknown): string | null {
+  if (!isPlainObject(v)) return `${where}: needs an object, e.g. { "mainStudies": 2, "facts": ["sample-size"] }`;
+  const keyError = unknownKeyError(v, ['mainStudies', 'direction', 'facts'], where);
+  if (keyError) return keyError;
+  if (v.mainStudies !== undefined && (typeof v.mainStudies !== 'number' || !Number.isInteger(v.mainStudies) || v.mainStudies < 1 || v.mainStudies > ARTICLE_STRUCTURE_MAIN_STUDIES_MAX)) {
+    return `${where}.mainStudies: use 1 to ${ARTICLE_STRUCTURE_MAIN_STUDIES_MAX}`;
+  }
+  if (v.direction !== undefined) {
+    const allowed = isPlainObject(fingerprint) && Array.isArray(fingerprint.direction) ? (fingerprint.direction as unknown[]) : null;
+    if (!allowed) return `${where}.direction: needs "fingerprint" (its "direction" list)`;
+    if (!Array.isArray(v.direction) || v.direction.length < 1) return `${where}.direction: needs a list of fingerprint direction values`;
+    const seen = new Set<unknown>();
+    for (const value of v.direction) {
+      if (typeof value !== 'string' || !allowed.includes(value)) return `${where}.direction: "${String(value)}" is not in fingerprint.direction`;
+      if (seen.has(value)) return `${where}.direction: "${value}" is listed twice`;
+      seen.add(value);
+    }
+  }
+  if (v.facts !== undefined) {
+    if (!Array.isArray(v.facts) || v.facts.length < 1) return `${where}.facts: needs a list of ${ARTICLE_STRUCTURE_FACT_KINDS.join(', ')}`;
+    const seen = new Set<unknown>();
+    for (const kind of v.facts) {
+      if (typeof kind !== 'string' || !(ARTICLE_STRUCTURE_FACT_KINDS as readonly string[]).includes(kind)) {
+        return `${where}.facts: "${String(kind)}" is not one of ${ARTICLE_STRUCTURE_FACT_KINDS.join(', ')}`;
+      }
+      if (seen.has(kind)) return `${where}.facts: "${kind}" is listed twice`;
+      seen.add(kind);
+    }
+  }
+  return null;
+}
+
+function articleStructureError(v: unknown, where: string, fingerprint: unknown): string | null {
+  if (!isPlainObject(v)) return `${where}: needs { "frames": [...], "fallback": "<frame id>", "openings": [...], "closings": [...] }`;
+  const keyError = unknownKeyError(v, ['frames', 'fallback', 'openings', 'closings'], where);
+  if (keyError) return keyError;
+  const listError = articleStructureListError(v.frames, `${where}.frames`, true, fingerprint)
+    ?? articleStructureListError(v.openings, `${where}.openings`, false, fingerprint)
+    ?? articleStructureListError(v.closings, `${where}.closings`, false, fingerprint);
+  if (listError) return listError;
+  const frames = v.frames as Record<string, unknown>[];
+  const fallback = typeof v.fallback === 'string' ? frames.find((f) => f.id === v.fallback) : undefined;
+  if (!fallback) return `${where}.fallback: needs the id of one of the frames`;
+  if (fallback.requires !== undefined && Object.keys(fallback.requires as Record<string, unknown>).length) {
+    return `${where}.fallback: "${String(v.fallback)}" must be a frame without "requires"`;
   }
   return null;
 }
@@ -495,6 +622,10 @@ export function articlePipelineConfigError(raw: unknown, where = 'pipeline'): st
   if (raw.fingerprint !== undefined) {
     const fingerprintError = articleFingerprintError(raw.fingerprint, `${where}.fingerprint`);
     if (fingerprintError) return fingerprintError;
+  }
+  if (raw.structure !== undefined) {
+    const structureError = articleStructureError(raw.structure, `${where}.structure`, raw.fingerprint);
+    if (structureError) return structureError;
   }
   if (raw.pool !== undefined) {
     if (typeof raw.pool !== 'boolean') return `${where}.pool: needs true or false`;

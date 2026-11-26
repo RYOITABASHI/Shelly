@@ -600,7 +600,8 @@ object AgentRuntime {
     // v67: research-numbers lint at the research checkpoint. JS-only (executor).
     // v68: search parity — a notification-triggered article run starts its web-search research step when SHELLY_WEB_SEARCH_OPT_IN_SHA256 matches the plan's definition hash, never on MCP ingress. Native exports it (readonly) only on runPlanAgent's tainted, non-ingress launch, from WebSearchOptInStore: the hash native computed itself (executor `--web-search-opt-in-candidates`, webSearchOptInCandidatesOutput) when the owner turned the pipeline on in Settings; a later definition edit no longer matches (lapsed: off); a refused / stopped search or zero web sources lands the run held (skipped) before the write step with a recovery-feedback.jsonl line. JS-only (executor + driver).
     // v69: article candidate pool (<outputFolder>/_pool.json, read-only) and the main-study fingerprint with closed lists, both from the owner's article-pipelines.json entry; frontmatter poolCandidateId. JS-only (executor).
-    private const val CURRENT_EXECUTOR_VERSION = 69
+    // v70: article structure (frames with requirements, openings, closings) from the owner's article-pipelines.json entry, chosen once per run without repeating the last article's; frontmatter frame / opening / closing. JS-only (executor).
+    private const val CURRENT_EXECUTOR_VERSION = 70
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
