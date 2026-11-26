@@ -29,4 +29,11 @@ object LauncherIngressLimits {
     const val RATE_WINDOW_MS = 60_000L
     /** Code points per second since the previous submission. */
     const val RATE_MAX_CODE_POINTS_PER_SECOND = 20
+
+    // The exported Provider can be called by any installed app. Audit lines
+    // for callers that do NOT verify are capped so such an app cannot grow
+    // the audit file without bound; the answer (VERIFY_FAILED) is unchanged.
+    /** Unverified-caller audit lines per [UNVERIFIED_AUDIT_WINDOW_MS] (both methods together). */
+    const val UNVERIFIED_AUDIT_MAX_IN_WINDOW = 30
+    const val UNVERIFIED_AUDIT_WINDOW_MS = 60_000L
 }

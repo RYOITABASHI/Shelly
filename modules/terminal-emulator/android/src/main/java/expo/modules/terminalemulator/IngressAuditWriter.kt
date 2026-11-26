@@ -407,7 +407,7 @@ object IngressAuditWriter {
         val feedBytes: Int? = null,
     )
 
-    /** Null when any field is off. `origin` is always `launcher`; the ts is this side's clock. */
+    /** Null when any field is off. `origin` is `launcher` when the line has a (verified) principal, absent otherwise; the ts is this side's clock. */
     fun buildLauncherLine(ts: Long, l: LauncherLine): String? {
         if (l.kind !in LAUNCHER_KINDS) return null
         val feed = l.kind == "launcher_feed_read"
@@ -426,13 +426,17 @@ object IngressAuditWriter {
         if (!feed && (l.feedSha256 != null || l.feedBytes != null)) return null
         return try {
             val out = JSONObject().put("ts", isoUtc(ts)).put("kind", l.kind).put("event", l.event)
-                .put("origin", IngressOrigin.LAUNCHER).put("code", l.code)
+            // Fact sheet §2: origin `launcher` belongs only to a verified caller (one
+            // that has a principal); a caller that failed verification gets none.
+            if (l.principal != null) out.put("origin", IngressOrigin.LAUNCHER)
+            out.put("code", l.code)
             if (l.principal != null) out.put("principal", l.principal)
             if (l.certDigest != null) out.put("certDigest", l.certDigest)
             if (!feed) out.put("op", IngressDecision.OP_SUBMIT_INSTRUCTION)
             if (l.schemaVersion != null) out.put("schemaVersion", l.schemaVersion)
-            if (l.submissionId != null) out.put("submissionId", l.submissionId)
-            if (l.correlationRef != null) out.put("correlationRef", l.correlationRef)
+            // The join keys use the contract's names (fact sheet §1.2 / C2), the same as the Binder answer.
+            if (l.submissionId != null) out.put("submission_id", l.submissionId)
+            if (l.correlationRef != null) out.put("correlation_ref", l.correlationRef)
             if (l.tainted != null) out.put("tainted", l.tainted)
             if (l.exemptApplied != null) out.put("exemptApplied", l.exemptApplied)
             if (l.textSha256 != null) out.put("textSha256", l.textSha256)
@@ -479,11 +483,26 @@ object IngressAuditWriter {
                 Log.w(TAG, "audit directory is a link - skipped")
                 return false
             }
+            // O_NONBLOCK: a FIFO planted at the audit path must not park the caller
+            // (the exported launcher Provider reaches this on a Binder thread); with
+            // no reader the open fails (ENXIO). It changes nothing for a regular file,
+            // and anything that is not a regular file is refused below.
             val flags = OsConstants.O_WRONLY or OsConstants.O_APPEND or OsConstants.O_CREAT or
-                OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC
+                OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC or OsConstants.O_NONBLOCK
             val fd = Os.open(target.path, flags, 384 /* 0600 */)
-            FileOutputStream(fd).use { out ->
-                out.write((line + "\n").toByteArray(Charsets.UTF_8))
+            try {
+                if (!OsConstants.S_ISREG(Os.fstat(fd).st_mode)) {
+                    Log.w(TAG, "audit target is not a regular file - skipped")
+                    return false
+                }
+                // A stream over a FileDescriptor does not own it on Android, so
+                // closing the stream leaves the fd open: close it here. (The
+                // exported launcher Provider can reach this on every denied call.)
+                FileOutputStream(fd).use { out ->
+                    out.write((line + "\n").toByteArray(Charsets.UTF_8))
+                }
+            } finally {
+                runCatching { Os.close(fd) }
             }
             return true
         } catch (e: Exception) {

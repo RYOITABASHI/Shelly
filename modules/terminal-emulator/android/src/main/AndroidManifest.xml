@@ -109,6 +109,19 @@
       </intent-filter>
     </receiver>
 
+    <!-- Launcher ingress (LauncherIngressProvider.kt; fact sheet §1). Exported
+         with no android:permission on purpose: authorization is the caller
+         check in call() (Binder UID → one package → the owner-registered
+         package and certificate pin, TrustedCallerStore), not an Android
+         permission. The authority follows the applicationId, so the
+         production build answers on the contract value
+         dev.shelly.terminal.ingress and a future variant cannot collide.
+         Nothing is read through query/insert/update/delete (all null / 0). -->
+    <provider
+      android:name=".LauncherIngressProvider"
+      android:authorities="${applicationId}.ingress"
+      android:exported="true" />
+
     <!-- Wi-Fi connectivity guardian ("Wi-Fi連動オートパイロット",
          ConnectivityGuardian.kt). Short-lived specialUse foreground service
          while an ON / OFF sequence runs; stopWithTask=false so a sequence

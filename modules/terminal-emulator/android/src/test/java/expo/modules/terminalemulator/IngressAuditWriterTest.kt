@@ -280,8 +280,8 @@ class IngressAuditWriterTest {
         assertEquals(lp, o.getString("principal"))
         assertEquals(committedSha256, o.getString("certDigest"))
         assertEquals(1, o.getInt("schemaVersion"))
-        assertEquals(sid, o.getString("submissionId"))
-        assertEquals("task:42/a.b-c", o.getString("correlationRef"))
+        assertEquals(sid, o.getString("submission_id"))
+        assertEquals("task:42/a.b-c", o.getString("correlation_ref"))
         assertEquals(true, o.getBoolean("tainted"))
         assertEquals(false, o.getBoolean("exemptApplied"))
         assertEquals(previousSha256, o.getString("textSha256"))
@@ -290,8 +290,8 @@ class IngressAuditWriterTest {
         val keys = HashSet<String>()
         o.keys().forEach { keys.add(it) }
         assertEquals(
-            setOf("ts", "kind", "event", "origin", "code", "principal", "certDigest", "op", "schemaVersion", "submissionId",
-                "correlationRef", "tainted", "exemptApplied", "textSha256", "textCodePoints"),
+            setOf("ts", "kind", "event", "origin", "code", "principal", "certDigest", "op", "schemaVersion", "submission_id",
+                "correlation_ref", "tainted", "exemptApplied", "textSha256", "textCodePoints"),
             keys,
         )
     }
@@ -301,7 +301,11 @@ class IngressAuditWriterTest {
         for (k in IngressAuditWriter.LAUNCHER_KINDS - "launcher_feed_read") assertNotNull(k, IngressAuditWriter.buildLauncherLine(ts, launcher(kind = k)))
         // A denied verification line: only the check that failed, no principal.
         val denied = IngressAuditWriter.LauncherLine(kind = "launcher_submit_denied", event = IngressAuditWriter.LAUNCHER_EVENT_SUBMIT, code = "verify_signature")
-        assertEquals("verify_signature", JSONObject(IngressAuditWriter.buildLauncherLine(ts, denied)!!).getString("code"))
+        val d = JSONObject(IngressAuditWriter.buildLauncherLine(ts, denied)!!)
+        assertEquals("verify_signature", d.getString("code"))
+        // Fact sheet §2: no origin is issued to a caller that failed verification.
+        assertFalse(d.has("origin"))
+        assertFalse(d.has("principal"))
     }
 
     @Test

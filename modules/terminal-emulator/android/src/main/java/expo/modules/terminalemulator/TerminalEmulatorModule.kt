@@ -2090,6 +2090,26 @@ class TerminalEmulatorModule : Module() {
             }
         }
 
+        // Trusted callers of the launcher ingress (TrustedCallerStore; D6: the
+        // package and certificate pins are entered on the device, never shipped).
+        // Only Settings calls these; no file, queue or shell command reaches them.
+        AsyncFunction("trustedCallerList") {
+            TrustedCallerStore.list(requireReactContext())
+        }
+
+        AsyncFunction("trustedCallerSet") { origin: String, packageName: String, pins: List<String>, enabled: Boolean ->
+            TrustedCallerStore.setCaller(requireReactContext(), origin, packageName, pins, enabled)
+        }
+
+        // D1: grant (with the digest the owner confirmed) or withdraw the taint exemption.
+        AsyncFunction("trustedCallerSetExemption") { origin: String, op: String, grant: Boolean, expectedDigest: String? ->
+            TrustedCallerStore.setExemption(requireReactContext(), origin, op, grant, expectedDigest)
+        }
+
+        AsyncFunction("trustedCallerRemove") { origin: String ->
+            TrustedCallerStore.removeCaller(requireReactContext(), origin)
+        }
+
         // Per-agent MCP ingress taint (AgentIngressTaint.kt, DEFERRED.md P1 "MCP の入口").
         // mark: MCP ingress path only. clear/reset: owner only. remove: owner's explicit delete only.
         AsyncFunction("markAgentIngress") { agentId: String, source: String, principal: String ->

@@ -553,6 +553,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** put_stream_feed store (StreamFeedStore.kt), called by the RN MCP bridge only after a tap or a rule match.
    *  Native re-validates and re-checks STOP-ALL and deadlineMs (epoch ms; 0 = refuse) right before the rename. Resolves JSON {ok:true, sha256, bytes, receivedAt} or {ok:false, code}. */
   streamFeedPut?(feedJson: string, expectedSha256: string, expectedBytes: number, principal: string, deadlineMs: number): Promise<string>;
+  /** Trusted callers of the launcher ingress (TrustedCallerStore.kt). Status JSON. */
+  trustedCallerList?(): Promise<string>;
+  /** Register / update an origin's caller (package + 1..4 SHA-256 pins). Status JSON plus `ok`, `code`. */
+  trustedCallerSet?(origin: string, packageName: string, pins: string[], enabled: boolean): Promise<string>;
+  /** D1: grant (bound to the confirmed pin digest) or withdraw the taint exemption. Status JSON plus `ok`, `code`. */
+  trustedCallerSetExemption?(origin: string, op: string, grant: boolean, expectedDigest: string | null): Promise<string>;
+  /** Remove an origin's caller and its always-allow rules. Status JSON plus `ok`, `code`. */
+  trustedCallerRemove?(origin: string): Promise<string>;
   /** MCP `run_agent` launch (McpRunTickets.kt). Writes the `accepted` ticket, then
    *  starts the run with origin "event" and ingress taint "mcp". runHandle is
    *  `mr_` + 32 hex; principal is 32 hex. Resolves true when the run was sent. */

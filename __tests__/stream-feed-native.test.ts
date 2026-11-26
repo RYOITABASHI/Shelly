@@ -99,3 +99,35 @@ describe('stream feed native invariants', () => {
     for (const s of ['"ok"', '"empty"', '"denied"', '"error"', '"INTERNAL_ERROR"']) expect(core).toContain(s);
   });
 });
+
+describe('get_stream_feed in the Provider (C5 wiring of the C7 answer)', () => {
+  const provider = kt('LauncherIngressProvider.kt');
+  const fn = provider.slice(provider.indexOf('private fun getFeed('), provider.indexOf('// ── Not a data provider'));
+
+  it('is dispatched, verifies the caller first, refuses a disabled ingress, and only then reads the store', () => {
+    expect(provider).toContain('LauncherIngressCore.METHOD_GET_FEED -> getFeed(ctx)');
+    const verify = fn.indexOf('LauncherCallerVerifierCore.verify(Binder.getCallingUid()');
+    const denied = fn.indexOf('StreamFeedCore.deniedResponse(LauncherIngressCore.Reason.VERIFY_FAILED.name)');
+    const disabled = fn.indexOf('StreamFeedCore.deniedResponse(LauncherIngressCore.Reason.DISABLED.name)');
+    const read = fn.indexOf('StreamFeedStore.read(ctx)');
+    expect(verify).toBeGreaterThan(0);
+    expect(denied).toBeGreaterThan(verify);
+    expect(disabled).toBeGreaterThan(denied);
+    expect(read).toBeGreaterThan(disabled);
+    expect(fn).toContain('toBundle(StreamFeedCore.readResponse(state))');
+  });
+
+  it('never logs or audits the feed text', () => {
+    for (const l of fn.split('\n').filter((x) => /Log\.[iwed]\(/.test(x))) {
+      expect(l).toMatch(/type=\$\{t\.javaClass\.simpleName\}/);
+    }
+    expect(fn).not.toMatch(/\.text\b/);
+  });
+
+  it('StreamFeedStore.read has exactly one production caller: the Provider', () => {
+    const dir = K;
+    const callers = fs.readdirSync(dir).filter((f) => f.endsWith('.kt') && f !== 'StreamFeedStore.kt')
+      .filter((f) => /StreamFeedStore\.read\(/.test(fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(callers).toEqual(['LauncherIngressProvider.kt']);
+  });
+});
