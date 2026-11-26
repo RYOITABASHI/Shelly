@@ -411,6 +411,8 @@ const en: Record<string, string> = {
   'mcp_always_allow.op.run_agent': 'Run agent',
   'mcp_always_allow.op.service_control': 'Service control',
   'mcp_always_allow.op.request_pipeline_refire': 'Re-run an article pipeline',
+  'mcp_always_allow.op.submit_instruction': 'Launcher instruction',
+  'mcp_always_allow.op.put_stream_feed': 'Store the stream feed',
   'mcp_always_allow.row_title': '{{op}}: {{label}}',
   'mcp_always_allow.row_meta': '{{target}} · client {{client}} · added {{date}}',
   'mcp_always_allow.revoke': 'Revoke',
