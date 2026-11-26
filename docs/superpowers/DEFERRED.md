@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-26: CC（PC STEAM 席、PR #218 の CI）が `agent-chain-lock-protocol.test.ts` の 1 件失敗を観測。再実行で通過。テストの揺れかチェーンロックの競合の欠陥かは未確定。下記「チェーンロックの同時取得テストで勝者が 2 つ」に登録（ハヤトの依頼）。
 - 2026-11-25: VM CC（`feat/launcher-ingress`、Piece A Phase 1）がランチャー ingress（ContentProvider `submit_instruction` / `get_stream_feed`）・stream feed の取り込み（MCP `put_stream_feed`）・D1 の条件付き taint 免除・`hayato://chat/<slug>` の受信を実装。Phase 2 と残余を下記「ランチャー ingress」に登録。Kotlin はこの VM でコンパイル・JVM テスト未実行（JDK なし）、実機未検証。
 - 2026-11-25: CC（PCセッション、ブランチ `hayato/facade-wiring`、ハヤトの起票依頼）が council-facade の起動仕様配線（service_control 監督下への移行）を実装。`SERVICE_CONTROL_BIND_DOMAIN` v1→v2 も完了（上の S2 項目の残件を解消）。PC 対話セッションで Gradle ユニットテスト通過、稼働中の spec 消失で stop/STOP-ALL が効かなくなる穴を出荷前に修正（起動時の Spec を保持）。Codex ゲート（VM 側、NOT OK・blocking 3件）の指摘（health ポーリングの境界、トークンのトレース経路と script の範囲、spec 破損時の緊急停止、コンパイル不能）をすべて修正。実機検証は出荷後。詳細は上の「council-facade の起動仕様を配線」項目。
 - 2026-11-24: CC（`feat/service-control-p1`、P1 バッチ S1）が MCP typed op `service_control` を実装し、「配達ループの typed な起動経路と生存確保」に進捗と残り 4 件を追記。ハヤトの依頼で「executor が終端記録を残さずに死ぬ経路」を P1（バッチの次点）に登録。Gradle・実機未検証。
@@ -101,6 +102,14 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### チェーンロックの同時取得テストで勝者が 2 つ — 原因未確定（2026-11-26、P1）
+
+- **観測**: PR #218（STEAM P3）のブランチ CI [45783701377](https://github.com/RYOITABASHI/Shelly/actions/runs/45783701377) 1 回目の unit-tests shard 2 で、`__tests__/agent-chain-lock-protocol.test.ts` の「many concurrent acquirers on one stale lock: exactly one wins, and the lock on disk is the winner's」が失敗。勝者が 1 つのはずのところ 2 つ（`0:CHAIN_LOCK_OK`、`2:CHAIN_LOCK_OK`）。失敗したジョブだけの再実行（attempt 2）では通った。
+- **関係のなさ**: PR #218 は executor の記事パイプライン部分だけを変えており、チェーンロック（生成 .sh の lock、`run-agent-*.sh`）周りのファイルには触れていない（差分で確認）。
+- **未確定の点（記録者の注記）**: テストの時間依存の揺れなのか、古いロックを複数の取得者が同時に奪う経路の競合の欠陥なのかは確かめていない。「勝者が 2 つ」は、チェーンロックの単一飛行（per-agent single-flight）が破れる形でも起きうるので、揺れと決めつけない。
+- **次の一手**: 該当テストを Linux で繰り返し実行して再現率を測り、古いロックの奪取（stale-lock takeover）の手順の原子性（rename／mkdir の順序、nonce の照合）を読む。欠陥なら修正し、揺れならテストの待ち方を直す。
+- **Why not now**: STEAM P3 とは無関係で、再実行で通ったため P3 の出荷は止めない（ハヤトの判断、2026-11-26）。
 
 ### ランチャー ingress（Piece A Phase 1）— 実装済み、Gradle・JVM テスト・実機未検証（2026-11-25、ブランチ `feat/launcher-ingress`、P1）
 
