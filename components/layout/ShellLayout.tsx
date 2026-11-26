@@ -3,7 +3,7 @@ import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import { View, Platform, StyleSheet, StatusBar, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { DeviceLayoutSizeContext, useDeviceLayout } from '@/hooks/use-device-layout';
 import { useMultiPaneStore, PRESET_CAPACITY, type PresetId } from '@/hooks/use-multi-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useThemeVersionStore } from '@/store/theme-version-store';
@@ -370,81 +370,82 @@ export function ShellLayout() {
     });
   }, []);
   return (
-    <View
-      key={`theme-${themeVersion}`}
-      style={[
-        styles.root,
-        {
-          paddingTop: insets.top,
-          paddingBottom: insets.bottom,
-          // Display cutout / landscape nav-bar insets. Zero on the Fold6
-          // inner display in portrait, but in landscape (or with a side
-          // cutout) ignoring them let the pane frame and ContextBar run
-          // underneath the system chrome on the right edge.
-          paddingLeft: insets.left,
-          paddingRight: insets.right,
-        },
-      ]}
-      onLayout={handleRootLayout}
-    >
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+    <DeviceLayoutSizeContext.Provider value={rootSize}>
+      <View
+        key={`theme-${themeVersion}`}
+        style={[
+          styles.root,
+          {
+            paddingTop: insets.top,
+            paddingBottom: insets.bottom,
+            // Display cutout / landscape nav-bar insets. Zero on the Fold6
+            // inner display in portrait, but in landscape (or with a side
+            // cutout) ignoring them let the pane frame and ContextBar run
+            // underneath the system chrome on the right edge.
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          },
+        ]}
+        onLayout={handleRootLayout}
+      >
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* Background — wallpaper or flat theme color. Must be FIRST so it
-          lives behind every subsequent layer. Replaces the root View's
-          backgroundColor (removed above) because when a wallpaper is set
-          that solid colour would punch a hole through the image. */}
-      <BackgroundLayer />
+        {/* Background — wallpaper or flat theme color. Must be FIRST so it
+            lives behind every subsequent layer. Replaces the root View's
+            backgroundColor (removed above) because when a wallpaper is set
+            that solid colour would punch a hole through the image. */}
+        <BackgroundLayer />
 
-      {/* Agent Bar (top) */}
-      <AgentBar />
+        {/* Agent Bar (top) */}
+        <AgentBar />
 
-      <AgentSuggestionCard />
+        <AgentSuggestionCard />
 
-      {/* Main area: sidebar + panes */}
-      <GestureDetector gesture={composed}>
-        <View style={styles.main}>
-          <Sidebar />
-          {/* Pane area gutter (wide layouts only). The left edge of the
-              grid is framed by the sidebar rail border and the top by the
-              AgentBar border, but the right/bottom edges previously ran
-              flush into the screen edge / ContextBar, which read as
-              clipped on Fold6. A uniform PANE_GUTTER on every side gives
-              the grid a consistent outer frame. MultiPaneContainer measures
-              its own onLayout, so the native terminal re-measures columns
-              once from the already-inset size (no extra resize pass). */}
-          <View style={[styles.paneArea, layout.isWide && styles.paneAreaWide]}>
-            <MultiPaneContainer />
+        {/* Main area: sidebar + panes */}
+        <GestureDetector gesture={composed}>
+          <View style={styles.main}>
+            <Sidebar />
+            {/* Pane area gutter (wide layouts only). The left edge of the
+                grid is framed by the sidebar rail border and the top by the
+                AgentBar border, but the right/bottom edges previously ran
+                flush into the screen edge / ContextBar, which read as
+                clipped on Fold6. A uniform PANE_GUTTER on every side gives
+                the grid a consistent outer frame. MultiPaneContainer measures
+                its own onLayout, so the native terminal re-measures columns
+                once from the already-inset size (no extra resize pass). */}
+            <View style={[styles.paneArea, layout.isWide && styles.paneAreaWide]}>
+              <MultiPaneContainer />
+            </View>
           </View>
+        </GestureDetector>
+
+        {/* Context Bar (bottom) */}
+        <ContextBar />
+
+        {/* Overlays */}
+        <CommandPalette />
+
+        {/* Settings TUI overlay */}
+        <ConfigTUI visible={showConfig} onClose={closeConfig} />
+
+        {/* Full-screen voice overlay */}
+        <VoiceChat visible={showVoice} onClose={closeVoice} />
+
+        {/* Scouter detail overlay */}
+        <ScouterDetailModal visible={showScouterDetail} onClose={closeScouterDetail} />
+        <BackupRestoreModalHost />
+
+        {/* Savepoint badge — floating top-right indicator, fires when
+            auto-savepoint writes a commit (see savepoint bridge in _layout.tsx) */}
+        <View pointerEvents="none" style={styles.saveBadgeSlot}>
+          <SaveBadge />
         </View>
-      </GestureDetector>
 
-      {/* Context Bar (bottom) */}
-      <ContextBar />
-
-      {/* Overlays */}
-      <CommandPalette />
-
-      {/* Settings TUI overlay */}
-      <ConfigTUI visible={showConfig} onClose={closeConfig} />
-
-      {/* Full-screen voice overlay */}
-      <VoiceChat visible={showVoice} onClose={closeVoice} />
-
-      {/* Scouter detail overlay */}
-      <ScouterDetailModal visible={showScouterDetail} onClose={closeScouterDetail} />
-      <BackupRestoreModalHost />
-
-      {/* Savepoint badge — floating top-right indicator, fires when
-          auto-savepoint writes a commit (see savepoint bridge in _layout.tsx) */}
-      <View pointerEvents="none" style={styles.saveBadgeSlot}>
-        <SaveBadge />
+        <CaseFileBootOverlay />
+        <McpApprovalModal />
+        <LauncherInboxModal />
       </View>
-
-      <CaseFileBootOverlay />
-      <McpApprovalModal />
-      <LauncherInboxModal />
-
-    </View>
+    </DeviceLayoutSizeContext.Provider>
   );
 }
 
