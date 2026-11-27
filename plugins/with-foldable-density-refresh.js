@@ -47,6 +47,15 @@
  * unconditionally would be the FIRST override on an old-arch build and would
  * wrongly force fabric/bridgeless/turboModules on.
  * __tests__/foldable-density-refresh-plugin.test.ts pins this shape.
+ *
+ * LOGGING (PR #226 production build failure): CI regenerates the android
+ * project with `expo prebuild`, so this plugin patches the STOCK TEMPLATE
+ * MainApplication.kt -- which has neither an `android.util.Log` import nor
+ * a TAG companion (those exist only in the checked-in file, as hand edits
+ * prebuild does not reproduce). The inserted block must therefore log via
+ * the fully-qualified `android.util.Log.w("MainApplication", ...)` form,
+ * the same convention the other generated code uses. A bare `Log.w(TAG, ...)`
+ * here fails :app:compileReleaseKotlin with unresolved references.
  */
 const { withMainApplication } = require("expo/config-plugins");
 
@@ -108,7 +117,7 @@ import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsProvider`
             override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
           })
       if (accessedBeforeForceOverride != null) {
-        Log.w(TAG, "ReactNativeFeatureFlags read before the fold-layout force-override: $accessedBeforeForceOverride")
+        android.util.Log.w("MainApplication", "ReactNativeFeatureFlags read before the fold-layout force-override: $accessedBeforeForceOverride")
       }
     }
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
