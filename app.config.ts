@@ -151,6 +151,7 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-release-signing",
     "./plugins/with-saved-instance-state",
     "./plugins/with-configuration-change-guard",
+    "./plugins/with-foldable-density-refresh",
     "./plugins/with-agent-launch-queries",
     "./plugins/with-remote-text-input",
     [
