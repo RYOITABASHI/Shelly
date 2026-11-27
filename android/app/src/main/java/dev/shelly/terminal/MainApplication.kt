@@ -13,6 +13,9 @@ import com.facebook.react.ReactHost
 import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.facebook.react.defaults.DefaultReactNativeHost
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlags
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android
+import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsProvider
 
 import com.horcrux.svg.SvgPackage
 import com.reactnativecommunity.asyncstorage.AsyncStoragePackage
@@ -72,6 +75,29 @@ class MainApplication : Application(), ReactApplication {
       ReleaseLevel.STABLE
     }
     loadReactNative(this)
+    // bug fold-layout: refresh RN's DisplayMetricsHolder on every
+    // onConfigurationChanged (not just Activity recreation), so dp->px
+    // scaling stays correct when the Z Fold6 cover/main displays swap
+    // density without recreating the Activity. Must run AFTER
+    // loadReactNative(): see plugins/with-foldable-density-refresh.js for
+    // why this is dangerouslyForceOverride() wrapping (via Kotlin
+    // interface delegation, not hand-replicated fields)
+    // ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android, the exact
+    // provider loadReactNative() already seeded at ReleaseLevel.STABLE.
+    // __tests__/foldable-density-refresh-plugin.test.ts pins this shape.
+    if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
+      val accessedBeforeForceOverride = ReactNativeFeatureFlags.dangerouslyForceOverride(
+          object : ReactNativeFeatureFlagsProvider by
+              ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android(
+                  fabricEnabled = true,
+                  bridgelessEnabled = true,
+                  turboModulesEnabled = true) {
+            override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
+          })
+      if (accessedBeforeForceOverride != null) {
+        Log.w(TAG, "ReactNativeFeatureFlags read before the fold-layout force-override: $accessedBeforeForceOverride")
+      }
+    }
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }
 

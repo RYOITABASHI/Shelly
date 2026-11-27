@@ -1255,6 +1255,26 @@ jobs:
           set -euo pipefail
           node scripts/release-safety-scan.js android/app/build/outputs/apk/release
 
+      # An emulator launch check (x86_64 debug APK, install + launch +
+      # assert-alive) was attempted here to catch Application.onCreate()
+      # crashes like builds 3184/3186 before they ship. Pulled before merge
+      # (Codex review + follow-up investigation on PR #226): the x86_64
+      # debug APK is not equivalent to the arm64-v8a release build the
+      # comment above assumed -- modules/terminal-emulator/android/build.gradle
+      # hardcodes `abiFilters "arm64-v8a"` (bug #139: its native code,
+      # including hand-written AArch64 `svc #0` syscall stubs in
+      # exec-wrapper.c, cannot be cross-compiled for x86_64), and the default
+      # Terminal pane calls createSession on mount, which touches that
+      # native lib within the launch window. The resulting debug APK would
+      # reliably crash with UnsatisfiedLinkError on the x86_64 emulator
+      # regardless of whether the feature-flag fix under test is correct,
+      # permanently failing this step (and skipping every later step,
+      # including publish) on every main push. See DEFERRED.md
+      # "emulator launch check のABI不整合" for the redesign options
+      # (real arm64-v8a image on an HVF-accelerated runner, or excluding
+      # :terminal-emulator from a CI-only debug variant) and
+      # shelly-hayato-bridge#7.
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
