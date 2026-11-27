@@ -16,28 +16,37 @@
  * fold/unfold the header bar / tab bar / terminal grid render at the wrong
  * pixel size for the now-active display (oversized bars, stretched-looking
  * letter spacing, misaligned terminal columns).
+ *
+ * ORDERING (build 3184 crash): the override must be inserted AFTER
+ * loadReactNative(). The override touches the Cxx feature-flag interop,
+ * whose class initializer loads a native library through SoLoader — and
+ * SoLoader is only initialized inside loadReactNative(). Placing the
+ * override before it crashed Application.onCreate with
+ * "SoLoader.init() not yet called". The ReactHost is created lazily after
+ * onCreate, so the override still lands before the flag is first read.
+ * __tests__/foldable-density-refresh-plugin.test.ts pins this order.
  */
 const { withMainApplication } = require("expo/config-plugins");
 
-function withFoldableDensityRefresh(config) {
-  return withMainApplication(config, (config) => {
-    const marker = "bug fold-layout: refresh RN's DisplayMetricsHolder";
-    if (config.modResults.contents.includes(marker)) {
-      return config;
-    }
+const MARKER = "bug fold-layout: refresh RN's DisplayMetricsHolder";
 
-    const importTarget = `import com.facebook.react.defaults.DefaultReactNativeHost`;
-    const importReplacement = `import com.facebook.react.defaults.DefaultReactNativeHost
+function applyFoldableDensityRefresh(contents) {
+  if (contents.includes(MARKER)) {
+    return contents;
+  }
+
+  const importTarget = `import com.facebook.react.defaults.DefaultReactNativeHost`;
+  const importReplacement = `import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.internal.featureflags.ReactNativeFeatureFlags
 import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsDefaults`;
 
-    if (!config.modResults.contents.includes(importTarget)) {
-      throw new Error(
-        "with-foldable-density-refresh could not find MainApplication import anchor"
-      );
-    }
+  if (!contents.includes(importTarget)) {
+    throw new Error(
+      "with-foldable-density-refresh could not find MainApplication import anchor"
+    );
+  }
 
-    const onCreateTarget = `  override fun onCreate() {
+  const onCreateTarget = `  override fun onCreate() {
     super.onCreate()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
@@ -48,36 +57,51 @@ import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsDefaults`
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }`;
 
-    const onCreateReplacement = `  override fun onCreate() {
+  const onCreateReplacement = `  override fun onCreate() {
     super.onCreate()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {
       ReleaseLevel.STABLE
     }
+    loadReactNative(this)
     // bug fold-layout: refresh RN's DisplayMetricsHolder on every
     // onConfigurationChanged (not just Activity recreation), so dp->px
     // scaling stays correct when the Z Fold6 cover/main displays swap
-    // density without recreating the Activity. Must be set before
-    // loadReactNative() builds the ReactHost.
+    // density without recreating the Activity. This must run AFTER
+    // loadReactNative(): the override touches the Cxx feature-flag
+    // interop, whose class initializer loads a native library through
+    // SoLoader — and SoLoader is only initialized inside
+    // loadReactNative(). Calling it earlier crashes onCreate with
+    // "SoLoader.init() not yet called" (build 3184). The ReactHost is
+    // created lazily after onCreate, so the override still lands
+    // before the flag is first read.
     ReactNativeFeatureFlags.override(object : ReactNativeFeatureFlagsDefaults() {
       override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
     })
-    loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }`;
 
-    if (!config.modResults.contents.includes(onCreateTarget)) {
-      throw new Error(
-        "with-foldable-density-refresh could not find MainApplication.onCreate template"
-      );
-    }
+  if (!contents.includes(onCreateTarget)) {
+    throw new Error(
+      "with-foldable-density-refresh could not find MainApplication.onCreate template"
+    );
+  }
 
-    config.modResults.contents = config.modResults.contents
-      .replace(importTarget, importReplacement)
-      .replace(onCreateTarget, onCreateReplacement);
+  return contents
+    .replace(importTarget, importReplacement)
+    .replace(onCreateTarget, onCreateReplacement);
+}
+
+function withFoldableDensityRefresh(config) {
+  return withMainApplication(config, (config) => {
+    config.modResults.contents = applyFoldableDensityRefresh(
+      config.modResults.contents
+    );
     return config;
   });
 }
 
 module.exports = withFoldableDensityRefresh;
+module.exports.applyFoldableDensityRefresh = applyFoldableDensityRefresh;
+module.exports.MARKER = MARKER;
