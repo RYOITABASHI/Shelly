@@ -201,6 +201,9 @@ describe('claude_exec native entry', () => {
       expect(y).toContain('SRC="modules/terminal-emulator/android/src/main/jni/shelly-claude-exec.c"');
       expect(y).toContain('jniLibs/arm64-v8a/libshelly_claude_exec.so');
       expect(y).toContain("check_marker /tmp/libshelly_claude_exec.so 'shelly-claude-exec:v1:musl-runner'");
+      // One real command line (a stray literal backslash-n once made clang look for a file named `n`).
+      const step = y.slice(y.indexOf('Build Shelly `claude_exec` native launcher'));
+      expect(step.slice(0, step.indexOf('chmod 755'))).toContain('-Werror "${SRC}" -o "${OUT}"');
     }
   });
 });

@@ -782,7 +782,7 @@ jobs:
           NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
 
           test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
-          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \n            "${SRC}" -o "${OUT}"
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror "${SRC}" -o "${OUT}"
           chmod 755 "${OUT}"
           ls -lh "${OUT}"
           file "${OUT}"
