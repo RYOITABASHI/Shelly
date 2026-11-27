@@ -73,15 +73,21 @@ class MainApplication : Application(), ReactApplication {
     } catch (e: IllegalArgumentException) {
       ReleaseLevel.STABLE
     }
+    loadReactNative(this)
     // bug fold-layout: refresh RN's DisplayMetricsHolder on every
     // onConfigurationChanged (not just Activity recreation), so dp->px
     // scaling stays correct when the Z Fold6 cover/main displays swap
-    // density without recreating the Activity. Must be set before
-    // loadReactNative() builds the ReactHost.
+    // density without recreating the Activity. This must run AFTER
+    // loadReactNative(): the override touches the Cxx feature-flag
+    // interop, whose class initializer loads a native library through
+    // SoLoader — and SoLoader is only initialized inside
+    // loadReactNative(). Calling it earlier crashes onCreate with
+    // "SoLoader.init() not yet called" (build 3184). The ReactHost is
+    // created lazily after onCreate, so the override still lands
+    // before the flag is first read.
     ReactNativeFeatureFlags.override(object : ReactNativeFeatureFlagsDefaults() {
       override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
     })
-    loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }
 
