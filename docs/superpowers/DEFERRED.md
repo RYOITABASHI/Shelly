@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-27: PC CC（PR #226 の Codex ゲート回収）が、PR に追加された x86_64 エミュレータ起動チェックの ABI 不整合（`:terminal-emulator` が arm64-v8a 固定で `-PreactNativeArchitectures=x86_64` を読まない、かつ native 側に AArch64 専用インラインアセンブリがあり素朴な追従修正も不可）を Codex レビュー＋追加調査で確認。3 ステップを PR から削除してマージ、再設計を「emulator launch check のABI不整合」に登録。
 - 2026-11-26: CC（`feat/launcher-ingress-p2`、Piece A Phase 2）がランチャー ingress の C6 非同期承認（既存の承認ストア・モーダル・決定種別を再利用、背面時の「確認してください」通知）・承認インボックス・`consumed`／派生 `stale`・D2 の reader（MCP `get_launcher_submission` / `list_launcher_submissions` / `mark_launcher_submission_consumed`）を実装。「ランチャー ingress」残件 1・2 を解消、9・10 を追加。Kotlin 未コンパイル・実機未検証。
 - 2026-11-26: CC（PC STEAM 席、PR #218 の CI）が `agent-chain-lock-protocol.test.ts` の 1 件失敗を観測。再実行で通過。テストの揺れかチェーンロックの競合の欠陥かは未確定。下記「チェーンロックの同時取得テストで勝者が 2 つ」に登録（ハヤトの依頼）。
 - 2026-11-25: VM CC（`feat/launcher-ingress`、Piece A Phase 1）がランチャー ingress（ContentProvider `submit_instruction` / `get_stream_feed`）・stream feed の取り込み（MCP `put_stream_feed`）・D1 の条件付き taint 免除・`hayato://chat/<slug>` の受信を実装。Phase 2 と残余を下記「ランチャー ingress」に登録。Kotlin はこの VM でコンパイル・JVM テスト未実行（JDK なし）、実機未検証。
@@ -103,6 +104,15 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### emulator launch check のABI不整合 — PR #226 でステップごと削除、再設計が必要（2026-11-27、P1）
+
+- **発見経緯**: PR #226（`feat/fold-density-flag-proper`）に対する Codex ゲートレビューが、build-android.yml に追加された x86_64 エミュレータ起動チェック（`-PreactNativeArchitectures=x86_64` で debug APK をビルドし x86_64 エミュレータで起動確認）について「`modules/terminal-emulator/android/build.gradle` が `abiFilters "arm64-v8a"` を固定しており、この property を読まない」と P1 指摘。PC CC が深掘りして裏付けた。
+- **実際の壊れ方**: `:terminal-emulator:externalNativeBuildDebug` は上記ハードコードのため常に arm64-v8a の .so だけを生成する（x86_64 向けコンパイルは試みられない — これ自体は成功する）。しかし合成された debug APK は x86_64 の RN/Hermes コアライブラリ＋arm64-v8a の terminal-emulator ライブラリという ABI 混在になる。デフォルトUIの Terminal pane は起動直後に `createSession`（`TerminalPane.tsx`）を呼び、これが `ShellyJNI`（Kotlin `object` の `init{}` ブロックで `System.loadLibrary("shelly-pty")`/`"shelly-exec"`）に触れる。x86_64 の google_apis イメージ（ARM 変換レイヤなし）ではこの `System.loadLibrary` が `UnsatisfiedLinkError` で失敗し、`createSession` 呼び出し元に try/catch が無い（`TerminalEmulatorModule.kt` の `AsyncFunction("createSession")`）ため、Expo の AsyncFunction ディスパッチが `Throwable` まで捕捉するかは未確認、少なくとも Codex の指摘どおり起動後数秒でクラッシュする確率が高い。
+- **さらに深い制約（PC CC 追加調査）**: 仮に abiFilters を `-PreactNativeArchitectures` に追従させて x86_64 でもコンパイルを試みる形に変えても、`exec-wrapper.c`（LD_PRELOAD の execve インターセプト、SELinux 回避用）は `asm volatile("svc #0" ...)` という AArch64 専用インラインアセンブリの生 syscall スタブを使っており、x86_64 ではコンパイルが通らない。つまり「abiFilters を追従させる」という素朴な修正は、ランタイムクラッシュをビルド時コンパイルエラーに変えるだけで解決にならない。
+- **対応**: PR #226 から 3 ステップ（`Build x86_64 debug APK...`／`Enable KVM group perms...`／`Emulator launch check...`）を削除してマージ（本来の目的＝フラグ正攻法の再導入＋回帰テストはそのまま出荷）。削除理由のコメントを build-android.yml に残置。
+- **再設計の選択肢（次の一手）**: (a) GitHub Actions の `macos-14`/`macos-15`（Apple Silicon、HVF アクセラレーション）ランナーで実際の arm64-v8a デバッグ APK をそのまま起動確認する（`reactivecircus/android-emulator-runner` は arm64-v8a イメージを Apple Silicon ランナーでサポートしている実績がある）。ジョブ分割が必要（現在のリリースジョブは ubuntu 上の既存ステップに同居しており、OS をまたいで artifact を受け渡す形にする）。(b) このチェック専用に `:terminal-emulator` を含まない debug variant/flavor を作り、Application.onCreate() クラッシュだけを狙って検出する（Terminal pane の自動 createSession を CI ビルドだけ無効化する仕組みが必要、本番コードに「起きないはずの」エラーハンドリングを追加しない方針と相反するため要検討）。
+- **Why not now**: ローカル Gradle コンパイルがサンドボックス制約で実行不可、CI 1 回あたり分オーダーの反復コストがかかるため、今回は「出荷を止めない」ために削除を優先。再設計は別ブランチで Codex ゲート付きで進める。
 
 ### チェーンロックの同時取得テストで勝者が 2 つ — 原因未確定（2026-11-26、P1）
 

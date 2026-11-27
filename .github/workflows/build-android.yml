@@ -1255,82 +1255,25 @@ jobs:
           set -euo pipefail
           node scripts/release-safety-scan.js android/app/build/outputs/apk/release
 
-      # ---------------------------------------------------------------------
-      # Emulator launch check. Added after builds 3184/3186 shipped (install
-      # succeeded, MainActivity crashed in Application.onCreate()) while
-      # device-smoke-test-lab.yml reported green: that workflow (a) no-ops
-      # with a soft "skip" when its Firebase Test Lab secrets aren't
-      # configured -- which they weren't, so it never ran a device for
-      # either build -- and (b) is triggered by `workflow_run: [completed]`
-      # on this very workflow, i.e. it can only start AFTER this job's own
-      # "Publish Android update release" step below has already run. Even
-      # a correctly-configured Test Lab run cannot gate a publish step that
-      # finishes before it starts. See shelly-hayato-bridge#7.
-      #
-      # This check instead runs IN this job, BEFORE "Publish Android update
-      # release": a failed step here stops the job (no continue-on-error),
-      # and GitHub Actions skips every later step by default once a step
-      # fails, so the publish step below never runs.
-      #
-      # The release APK is lib/arm64-v8a only (reactNativeArchitectures in
-      # android/gradle.properties) and cannot run on the x86_64 GitHub-hosted
-      # emulator, so this builds a throwaway x86_64 **debug** APK instead
-      # (Gradle's auto-generated debug keystore, no release-signing secrets
-      # needed) purely to exercise Application.onCreate(), which is pure
-      # JVM/Kotlin code and identical across ABI and (for the feature-flag
-      # logic under test) across build type. Gated on the same condition as
-      # the publish step: PR/branch builds don't ship, so they skip this.
-      - name: Build x86_64 debug APK for the emulator launch check
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew :terminal-emulator:externalNativeBuildDebug assembleDebug -PreactNativeArchitectures=x86_64 --build-cache
-        env:
-          GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
-
-      - name: Enable KVM group perms for the emulator
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Emulator launch check (install, launch, assert alive + no FATAL)
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          script: |
-            set -euo pipefail
-            apk="$(ls android/app/build/outputs/apk/debug/*.apk | head -1)"
-            test -n "${apk}" || { echo "FATAL: x86_64 debug APK not found for launch check" >&2; exit 1; }
-            adb install -r "${apk}"
-            adb logcat -c
-            set +e
-            am_out="$(adb shell am start -W -n dev.shelly.terminal/.MainActivity 2>&1)"
-            am_rc=$?
-            set -e
-            echo "${am_out}"
-            if [ "${am_rc}" -ne 0 ] || ! echo "${am_out}" | grep -q 'Status: ok'; then
-              echo "::error::MainActivity did not start cleanly (am start -W did not report Status: ok)"
-              exit 1
-            fi
-            sleep 10
-            if ! adb shell pidof dev.shelly.terminal >/dev/null; then
-              echo "::error::dev.shelly.terminal is not running 10s after launch (process died)"
-              adb logcat -d | tail -n 200
-              exit 1
-            fi
-            if adb logcat -d | grep -qE 'FATAL EXCEPTION|AndroidRuntime: FATAL'; then
-              echo "::error::FATAL EXCEPTION in logcat after launch"
-              adb logcat -d | grep -A 40 -E 'FATAL EXCEPTION|AndroidRuntime: FATAL'
-              exit 1
-            fi
-            echo "OK: dev.shelly.terminal launched and is alive with no FATAL exception"
+      # An emulator launch check (x86_64 debug APK, install + launch +
+      # assert-alive) was attempted here to catch Application.onCreate()
+      # crashes like builds 3184/3186 before they ship. Pulled before merge
+      # (Codex review + follow-up investigation on PR #226): the x86_64
+      # debug APK is not equivalent to the arm64-v8a release build the
+      # comment above assumed -- modules/terminal-emulator/android/build.gradle
+      # hardcodes `abiFilters "arm64-v8a"` (bug #139: its native code,
+      # including hand-written AArch64 `svc #0` syscall stubs in
+      # exec-wrapper.c, cannot be cross-compiled for x86_64), and the default
+      # Terminal pane calls createSession on mount, which touches that
+      # native lib within the launch window. The resulting debug APK would
+      # reliably crash with UnsatisfiedLinkError on the x86_64 emulator
+      # regardless of whether the feature-flag fix under test is correct,
+      # permanently failing this step (and skipping every later step,
+      # including publish) on every main push. See DEFERRED.md
+      # "emulator launch check のABI不整合" for the redesign options
+      # (real arm64-v8a image on an HVF-accelerated runner, or excluding
+      # :terminal-emulator from a CI-only debug variant) and
+      # shelly-hayato-bridge#7.
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
