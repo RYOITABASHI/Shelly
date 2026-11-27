@@ -14,7 +14,7 @@ import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
 import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.internal.featureflags.ReactNativeFeatureFlags
-import com.facebook.react.internal.featureflags.ReactNativeFeatureFlagsDefaults
+import com.facebook.react.internal.featureflags.ReactNativeNewArchitectureFeatureFlagsDefaults
 
 import com.horcrux.svg.SvgPackage
 import com.reactnativecommunity.asyncstorage.AsyncStoragePackage
@@ -82,12 +82,40 @@ class MainApplication : Application(), ReactApplication {
     // interop, whose class initializer loads a native library through
     // SoLoader — and SoLoader is only initialized inside
     // loadReactNative(). Calling it earlier crashes onCreate with
-    // "SoLoader.init() not yet called" (build 3184). The ReactHost is
-    // created lazily after onCreate, so the override still lands
-    // before the flag is first read.
-    ReactNativeFeatureFlags.override(object : ReactNativeFeatureFlagsDefaults() {
-      override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
-    })
+    // "SoLoader.init() not yet called" (build 3184).
+    //
+    // ORDERING (build 3186 crash): loadReactNative() itself already
+    // calls the single-shot override(...) on ReactNativeFeatureFlags once internally
+    // (DefaultNewArchitectureEntryPoint.load() at ReleaseLevel.STABLE)
+    // to seed fabric/bridgeless/turboModules = true. override() is
+    // single-shot and throws "Feature flags cannot be overridden more
+    // than once" on a second call, so a plain override() here (the
+    // build 3184 fix) crashed onCreate again in build 3186.
+    // dangerouslyForceOverride() is the sanctioned way to replace an
+    // already-set override, but it discards the previous provider
+    // outright, so the replacement must re-assert the same
+    // fabric/bridgeless/turboModules=true defaults loadReactNative()
+    // seeded, or new-architecture would silently flip off.
+    // ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android (the
+    // provider loadReactNative() used) is a final class in the
+    // prebuilt react-android AAR, so it can't be subclassed here; this
+    // extends its open parent, ReactNativeNewArchitectureFeatureFlagsDefaults,
+    // and replicates the same overrides RNOSS_Stable_Android applies
+    // for fabricEnabled=bridgelessEnabled=turboModulesEnabled=true (the
+    // values DefaultNewArchitectureEntryPoint.load() always passes at
+    // ReleaseLevel.STABLE), then adds the font-scale flag.
+    // __tests__/foldable-density-refresh-plugin.test.ts pins this shape.
+    val previouslyAccessedFlags = ReactNativeFeatureFlags.dangerouslyForceOverride(
+        object : ReactNativeNewArchitectureFeatureFlagsDefaults(true) {
+          override fun useFabricInterop(): Boolean = true
+          override fun enableFabricRenderer(): Boolean = true
+          override fun useTurboModules(): Boolean = true
+          override fun useShadowNodeStateOnClone(): Boolean = true
+          override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
+        })
+    if (previouslyAccessedFlags != null) {
+      Log.w(TAG, "ReactNativeFeatureFlags read before dangerouslyForceOverride: $previouslyAccessedFlags")
+    }
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
   }
 

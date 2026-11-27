@@ -30,12 +30,30 @@ class MainApplication {
 `;
 
 describe('with-foldable-density-refresh plugin', () => {
-  it('inserts the feature-flag override AFTER loadReactNative (build 3184 crash)', () => {
+  it('force-overrides the feature flags AFTER loadReactNative, never calling the single-shot override() (build 3184 + 3186 crashes)', () => {
     const out = applyFoldableDensityRefresh(TEMPLATE);
     const loadIdx = out.indexOf('loadReactNative(this)');
-    const overrideIdx = out.indexOf('ReactNativeFeatureFlags.override');
+    const forceOverrideIdx = out.indexOf('ReactNativeFeatureFlags.dangerouslyForceOverride');
     expect(loadIdx).toBeGreaterThan(-1);
-    expect(overrideIdx).toBeGreaterThan(loadIdx);
+    expect(forceOverrideIdx).toBeGreaterThan(loadIdx);
+    // loadReactNative() already calls the plain, single-shot override()
+    // once internally (DefaultNewArchitectureEntryPoint.load()). A second
+    // plain override() call throws "Feature flags cannot be overridden
+    // more than once" (build 3186 crash) -- the patched onCreate must not
+    // call it at all.
+    expect(out).not.toContain('ReactNativeFeatureFlags.override(');
+    // ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android (the provider
+    // loadReactNative() seeds) is a final class in the prebuilt
+    // react-android AAR and can't be subclassed, so the replacement
+    // provider extends its open parent and must replicate all of its
+    // overrides -- otherwise dangerouslyForceOverride()'s full-replace
+    // semantics would silently flip fabric/bridgeless/turboModules back
+    // to their ReactNativeFeatureFlagsDefaults (off).
+    expect(out).toContain('ReactNativeNewArchitectureFeatureFlagsDefaults(true)');
+    expect(out).toContain('useFabricInterop(): Boolean = true');
+    expect(out).toContain('enableFabricRenderer(): Boolean = true');
+    expect(out).toContain('useTurboModules(): Boolean = true');
+    expect(out).toContain('useShadowNodeStateOnClone(): Boolean = true');
     expect(out).toContain('enableFontScaleChangesUpdatingLayout(): Boolean = true');
     expect(out).toContain(MARKER);
   });
@@ -45,14 +63,15 @@ describe('with-foldable-density-refresh plugin', () => {
     expect(applyFoldableDensityRefresh(once)).toEqual(once);
   });
 
-  it('the checked-in MainApplication.kt keeps the override after loadReactNative', () => {
+  it('the checked-in MainApplication.kt force-overrides after loadReactNative and never calls the plain override()', () => {
     const kt = fs.readFileSync(
       path.join(ROOT, 'android/app/src/main/java/dev/shelly/terminal/MainApplication.kt'),
       'utf8',
     );
     const loadIdx = kt.indexOf('loadReactNative(this)');
-    const overrideIdx = kt.indexOf('ReactNativeFeatureFlags.override');
+    const forceOverrideIdx = kt.indexOf('ReactNativeFeatureFlags.dangerouslyForceOverride');
     expect(loadIdx).toBeGreaterThan(-1);
-    expect(overrideIdx).toBeGreaterThan(loadIdx);
+    expect(forceOverrideIdx).toBeGreaterThan(loadIdx);
+    expect(kt).not.toContain('ReactNativeFeatureFlags.override(');
   });
 });
