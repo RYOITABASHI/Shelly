@@ -105,6 +105,12 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### MainApplication.kt の dangerouslyForceOverride が releaseLevel を stable に固定（2026-11-27、P2）
+
+- **指摘**: Codex レビュー（PR #226、2回目）。`onCreate()` は `BuildConfig.REACT_NATIVE_RELEASE_LEVEL`（`-PreactNativeReleaseLevel` が無指定なら `"stable"`）から `DefaultNewArchitectureEntryPoint.releaseLevel` を設定し `loadReactNative(this)` を呼ぶが、直後の `dangerouslyForceOverride` は常に `ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android` を包む。`-PreactNativeReleaseLevel=experimental`/`canary` でビルドした場合、loadReactNative が入れた non-stable プロバイダがこの override で stable 相当に差し替えられてしまう。
+- **現状の実害**: なし。`reactNativeReleaseLevel` は `android/gradle.properties`・CI ワークフロー・他のどこにも設定されておらず、Shelly の実ビルドは常に `stable` 既定値のまま（`BuildConfig.REACT_NATIVE_RELEASE_LEVEL` のデフォルト値と一致）。このコード自体は PR #226 の元コミット（11dfa5bc9）由来で、ハヤトの最終レビューでも通過済み。
+- **Why not now**: blocking ではない（P2）。実際に non-stable release level を使う計画が出た時点で、`BuildConfig.REACT_NATIVE_RELEASE_LEVEL` に応じて `ReactNativeFeatureFlagsOverrides_RNOSS_{Stable,Experimental,Canary}_Android` を選び分ける形に直す（`enableFontScaleChangesUpdatingLayout` の override だけ共通化）。
+
 ### emulator launch check のABI不整合 — PR #226 でステップごと削除、再設計が必要（2026-11-27、P1）
 
 - **発見経緯**: PR #226（`feat/fold-density-flag-proper`）に対する Codex ゲートレビューが、build-android.yml に追加された x86_64 エミュレータ起動チェック（`-PreactNativeArchitectures=x86_64` で debug APK をビルドし x86_64 エミュレータで起動確認）について「`modules/terminal-emulator/android/build.gradle` が `abiFilters "arm64-v8a"` を固定しており、この property を読まない」と P1 指摘。PC CC が深掘りして裏付けた。
