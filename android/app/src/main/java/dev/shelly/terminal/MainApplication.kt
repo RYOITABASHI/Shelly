@@ -95,7 +95,7 @@ class MainApplication : Application(), ReactApplication {
             override fun enableFontScaleChangesUpdatingLayout(): Boolean = true
           })
       if (accessedBeforeForceOverride != null) {
-        Log.w(TAG, "ReactNativeFeatureFlags read before the fold-layout force-override: $accessedBeforeForceOverride")
+        android.util.Log.w("MainApplication", "ReactNativeFeatureFlags read before the fold-layout force-override: $accessedBeforeForceOverride")
       }
     }
     ApplicationLifecycleDispatcher.onApplicationCreate(this)

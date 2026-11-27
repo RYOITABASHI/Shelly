@@ -61,6 +61,12 @@ describe('with-foldable-density-refresh plugin', () => {
     // bridgeless/turboModules on.
     expect(out).toContain('if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED)');
     expect(out).toContain(MARKER);
+    // The plugin patches the stock template during `expo prebuild`, which
+    // has no `android.util.Log` import and no TAG companion -- the inserted
+    // logging must use the fully-qualified form or the release Kotlin
+    // compile fails (PR #226 production build failure).
+    expect(out).toContain('android.util.Log.w("MainApplication",');
+    expect(out).not.toContain('Log.w(TAG');
   });
 
   it('is idempotent', () => {
