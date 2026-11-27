@@ -122,6 +122,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_cmd.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_codex_exec.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_glibc_exec.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_claude_exec.so
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
           key: android-payloads-${{ runner.os }}-${{ steps.bundle-cache-key.outputs.date }}-${{ hashFiles('.github/workflows/build-android.yml', '.ci-versions/codex.txt', '.ci-versions/codex-termux-deb.json', 'scripts/codex-termux-apt.js', 'modules/terminal-emulator/android/src/main/jni/*.c', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/LibExtractor.kt', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/HomeInitializer.kt', 'pnpm-lock.yaml') }}
           restore-keys: |
@@ -680,6 +681,24 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
+      - name: Build Shelly `claude_exec` native launcher
+        # Extracted as $SHELLY_LIB_DIR/claude_exec: the Claude Code counterpart of
+        # codex_exec for council-facade (COUNCIL_CLAUDE_COMMAND). Runs the
+        # generated musl runner ~/.shelly-claude-musl-run.sh in Shelly bash.
+        # Same toolchain as the other native helpers.
+        if: steps.android-payload-cache.outputs.cache-hit != 'true'
+        run: |
+          JNILIBS="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          SRC="modules/terminal-emulator/android/src/main/jni/shelly-claude-exec.c"
+          OUT="${GITHUB_WORKSPACE}/${JNILIBS}/libshelly_claude_exec.so"
+          NDK_CLANG="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+
+          test -x "${NDK_CLANG}" || { echo "NDK clang not found: ${NDK_CLANG}"; exit 1; }
+          "${NDK_CLANG}" -fPIE -pie -O2 -Wall -Wextra -Werror \n            "${SRC}" -o "${OUT}"
+          chmod 755 "${OUT}"
+          ls -lh "${OUT}"
+          file "${OUT}"
+
       - name: Build Shelly glibc userland loader (Claude Code glibc, S1)
         # ulexec-style loader that starts the official, UNMODIFIED Claude Code
         # linux-arm64 glibc binary via its glibc ld.so, in-process, after
@@ -792,6 +811,9 @@ jobs:
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly_codex_exec.so > /tmp/libshelly_codex_exec.so
           check_marker /tmp/libshelly_codex_exec.so 'shelly-codex-exec:v1:agent-current-or-bundled'
+
+          unzip -p "${apk}" lib/arm64-v8a/libshelly_claude_exec.so > /tmp/libshelly_claude_exec.so
+          check_marker /tmp/libshelly_claude_exec.so 'shelly-claude-exec:v1:musl-runner'
 
       - name: Release-safety secret scan (APK)
         # Fail before anything is uploaded/published if a recognizable secret,

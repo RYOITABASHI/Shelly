@@ -179,7 +179,12 @@ object LibExtractor {
         // mmaps ld.so in-process and jumps with a kernel-style stack (bionic
         // cannot start the glibc ld.so directly). Built from
         // jni/shelly-glibc-exec.c. See DEFERRED.md "Claude Code 公式 glibc 版".
-        "lib/arm64-v8a/libshelly_glibc_exec.so" to "shelly_glibc_exec"
+        "lib/arm64-v8a/libshelly_glibc_exec.so" to "shelly_glibc_exec",
+        // Native `claude_exec` launcher (jni/shelly-claude-exec.c): the Claude
+        // Code counterpart of codex_exec for council-facade
+        // (COUNCIL_CLAUDE_COMMAND=claude_exec). Runs the generated musl runner
+        // $HOME/.shelly-claude-musl-run.sh in Shelly bash (#6 Step 2).
+        "lib/arm64-v8a/libshelly_claude_exec.so" to "claude_exec"
     )
 
     // Files that must be re-extracted on every launch even when the version
@@ -216,6 +221,8 @@ object LibExtractor {
         // Claude Code glibc loader: ALWAYS_REFRESH so loader fixes ship
         // without a versionCode bump (same reasoning as the other helpers).
         "shelly_glibc_exec",
+        // The claude_exec launcher: refreshed on every extractAll, like codex_exec.
+        "claude_exec",
         // git + its transport/credential helpers: force-refresh so the HTTPS
         // helper exec fix (git() now preloads libexec_wrapper.so) is validated
         // against fresh binaries — a stale helper from a prior broken state must
