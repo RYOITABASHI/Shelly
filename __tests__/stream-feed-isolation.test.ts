@@ -17,6 +17,9 @@ const ALLOWED = new Set([
   'modules/terminal-emulator/android/src/main/assets/shelly-mcp-server.js',
   'lib/mcp-stream-feed.ts',
   'lib/mcp-always-allow.ts',
+  // Settings always-allow rule labels for the op (PR #221); display strings only.
+  'lib/i18n/locales/en.ts',
+  'lib/i18n/locales/ja.ts',
   'lib/mcp-server-bridge.ts',
   'lib/ingress-origin.ts',
   'store/mcp-approval-store.ts',
