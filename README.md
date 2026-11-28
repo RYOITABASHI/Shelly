@@ -510,7 +510,7 @@ Shelly is a local-first execution and consent layer on the phone. Any MCP client
 
 | Group | Tools | Switch |
 |---|---|---|
-| Read-only | `device_status`, `list_agents`, `list_repos`, `git_status`, `read_agent_audit`, `read_article_history`, `list_drafts`, `read_draft`, `read_chat_requests` | none beyond the server itself |
+| Read-only | `device_status`, `list_agents`, `list_repos`, `git_status`, `read_agent_audit`, `read_article_history`, `list_drafts`, `read_draft`, `read_chat_requests`, `read_residency` | none beyond the server itself |
 | Read-only | `read_terminal_output` | "MCP: Allow reading terminal output" |
 | Read-only | `read_logs`, `get_settings` (secrets withheld) | "MCP: Allow diagnostics (logs, settings)" |
 | Typed operations | `run_agent`, `get_run_result`, `put_stream_feed` | "MCP: Allow typed operations (run agents)" |
