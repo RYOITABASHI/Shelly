@@ -1,0 +1,44 @@
+name: Build overlay sentinel
+
+# Builds tools/overlay-sentinel into one dex (shelly-hayato-bridge #6 item 1).
+# The dex runs on the phone as the shell uid via app_process; it is not part
+# of the APK.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/overlay-sentinel/**'
+      - '.github/workflows/build-overlay-sentinel.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compile and dex
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"
+          PLAT=$(ls -d "$SDK"/platforms/android-* | sort -V | tail -1)
+          BT=$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)
+          echo "platform=$PLAT build-tools=$BT"
+          mkdir -p out/classes out/dex
+          javac --release 11 -cp "$PLAT/android.jar" -d out/classes \
+            $(find tools/overlay-sentinel/src -name '*.java')
+          "$BT/d8" --release --min-api 33 --lib "$PLAT/android.jar" --output out/dex \
+            $(find out/classes -name '*.class')
+          mv out/dex/classes.dex out/overlay-sentinel.dex
+          sha256sum out/overlay-sentinel.dex | tee out/overlay-sentinel.dex.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overlay-sentinel
+          path: |
+            out/overlay-sentinel.dex
+            out/overlay-sentinel.dex.sha256
