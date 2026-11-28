@@ -222,12 +222,16 @@ class ResidencyLedgerCoreTest {
 
     @Test
     fun cliSeatKindsFromAHealthBody() {
-        assertEquals(listOf("codex", "claude"), ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cliSeatKinds\":[\"codex\",\"claude\"]}"))
+        // council-tool's actual /health shape (device, 2026-11-28).
+        assertEquals(listOf("claude", "codex"), ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":{\"codex\":true,\"claude\":true}}"))
+        assertEquals(listOf("codex"), ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":{\"codex\":true,\"claude\":false}}"))
+        assertEquals(emptyList<String>(), ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":{\"codex\":false}}"))
         assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true}"))
-        assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cliSeatKinds\":[\"Has Space\"]}"))
-        assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cliSeatKinds\":[]}"))
+        assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":{\"Has Space\":true}}"))
+        assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":{\"codex\":\"yes\"}}"))
+        assertNull(ResidencyLedgerCore.cliSeatKinds("{\"ok\":true,\"cli_seat_kinds\":[\"codex\"]}"))
         assertNull(ResidencyLedgerCore.cliSeatKinds("not json"))
-        val raw = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true,\"cliSeatKinds\":[\"codex\"]}".toByteArray()
+        val raw = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true,\"cli_seat_kinds\":{\"codex\":true,\"claude\":false}}".toByteArray()
         assertEquals(listOf("codex"), ResidencyLedgerCore.cliSeatKinds(ResidencyLedgerCore.httpBody(raw)))
     }
 

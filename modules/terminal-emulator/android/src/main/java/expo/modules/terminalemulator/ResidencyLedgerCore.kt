@@ -106,21 +106,23 @@ object ResidencyLedgerCore {
     fun cleanCode(code: String?): String? = code?.takeIf { CODE_RE.matches(it) }
 
     /**
-     * `cliSeatKinds` from a /health JSON body: an array of 1..[MAX_SEATS]
-     * short lowercase strings, else null (absent or out of shape).
+     * The seat kinds council-tool reports as available, from its /health body
+     * `{"ok":true,"cli_seat_kinds":{"codex":true,"claude":false}}`: the keys
+     * whose value is exactly `true`, in sorted order (0..[MAX_SEATS] short
+     * lowercase names), else null (absent or out of shape).
      */
     fun cliSeatKinds(body: String?): List<String>? {
         if (body == null || body.length > ManagedServices.HEALTH_MAX_BODY) return null
         return try {
-            val arr = JSONObject(body).opt("cliSeatKinds") as? JSONArray
-            if (arr == null || arr.length() == 0 || arr.length() > MAX_SEATS) return null
+            val obj = JSONObject(body).opt("cli_seat_kinds") as? JSONObject ?: return null
+            if (obj.length() > MAX_SEATS) return null
             val out = ArrayList<String>()
-            for (i in 0 until arr.length()) {
-                val s = arr.opt(i) as? String
-                if (s == null || !SEAT_RE.matches(s)) return null
-                out.add(s)
+            for (k in obj.keys()) {
+                if (!SEAT_RE.matches(k)) return null
+                val v = obj.opt(k) as? Boolean ?: return null
+                if (v) out.add(k)
             }
-            out
+            out.sorted()
         } catch (e: Exception) {
             null
         }
