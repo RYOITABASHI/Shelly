@@ -105,6 +105,14 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### overlay_display_devices の書き込み不能化と自動復帰（2026-11-28、P1、設計提案中）
+
+2026-11-26 と 2026-11-28 に、PC の端末作業ジョブが adb で `settings put global overlay_display_devices` を書き、オーナーの画面（display 0）にオーバーレイ表示が出た。11-28 は削除の後も、実行中のジョブが 11:52 に書き戻した（ジョブは 11:55 に停止）。要件は、(a) 端末作業ジョブが構造的に書けないこと、(b) 書かれたら検出して自動で戻すこと。完了は、意図的に書いて自動で戻ることを一次証拠で示すところまで。書き手は PC の adb（shell uid）で、Shelly の app uid は WRITE_SECURE_SETTINGS を持たない。設計案は shelly-hayato-bridge #6。
+
+### 常駐証拠（residency-evidence）の端末内永続記録（2026-11-28、P1、設計提案中）
+
+24 時間常駐の判定の証拠が、PC 側の formal.log（adb と Tailscale 経由の 10 分ごとのサンプル）にしか無く、端末が寝たりネットワークが落ちたりすると観測できなくなる（2026-11-28 未明に実際に発生）。ManagedServiceSupervisor が持つ pid・/proc の starttime・heartbeat・起動時刻を、端末の中で追記型に記録し、後から回収して判定できるようにする。設計案は shelly-hayato-bridge #6。
+
 ### MainApplication.kt の dangerouslyForceOverride が releaseLevel を stable に固定（2026-11-27、P2）
 
 - **指摘**: Codex レビュー（PR #226、2回目）。`onCreate()` は `BuildConfig.REACT_NATIVE_RELEASE_LEVEL`（`-PreactNativeReleaseLevel` が無指定なら `"stable"`）から `DefaultNewArchitectureEntryPoint.releaseLevel` を設定し `loadReactNative(this)` を呼ぶが、直後の `dangerouslyForceOverride` は常に `ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android` を包む。`-PreactNativeReleaseLevel=experimental`/`canary` でビルドした場合、loadReactNative が入れた non-stable プロバイダがこの override で stable 相当に差し替えられてしまう。
