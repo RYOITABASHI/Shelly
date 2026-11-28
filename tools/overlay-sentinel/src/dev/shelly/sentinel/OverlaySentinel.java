@@ -127,14 +127,58 @@ public final class OverlaySentinel {
      * platform `settings` command instead. Only runs on a change notification.
      */
     private static String read(ContentResolver cr) {
-        String out = exec(new String[] {"cmd", "settings", "get", "global", key}).trim();
+        String out = settings("get").trim();
         if (out.startsWith("ERROR")) return null;
         return "null".equals(out) ? null : out;
     }
 
     private static boolean delete() {
-        String out = exec(new String[] {"cmd", "settings", "delete", "global", key});
+        String out = settings("delete");
         return !out.startsWith("ERROR");
+    }
+
+    private static Object settingsBinder;
+    private static Method shellCommand;
+    private static boolean inProcessFailed;
+
+    /**
+     * `cmd settings <verb> global <key>` without a new process: the same
+     * shellCommand transaction on the "settings" binder service that `cmd`
+     * makes (the service checks the caller is shell/root). Polling with a
+     * process per call cost ~2.8% of a core at 1 s on device; this does not
+     * fork. Falls back to exec if the hidden call is not available.
+     */
+    private static String settings(String verb) {
+        String[] args = {verb, "global", key};
+        if (!inProcessFailed) {
+            try {
+                if (shellCommand == null) {
+                    Class<?> sm = Class.forName("android.os.ServiceManager");
+                    settingsBinder = sm.getMethod("getService", String.class).invoke(null, "settings");
+                    Class<?> cb = Class.forName("android.os.ShellCallback");
+                    Class<?> rr = Class.forName("android.os.ResultReceiver");
+                    shellCommand = android.os.IBinder.class.getMethod("shellCommand", java.io.FileDescriptor.class,
+                        java.io.FileDescriptor.class, java.io.FileDescriptor.class, String[].class, cb, rr);
+                    line("settings via in-process shellCommand");
+                }
+                android.os.ParcelFileDescriptor[] pipe = android.os.ParcelFileDescriptor.createPipe();
+                java.io.FileInputStream devnull = new java.io.FileInputStream("/dev/null");
+                final android.os.ResultReceiver done = new android.os.ResultReceiver(null);
+                shellCommand.invoke(settingsBinder, devnull.getFD(), pipe[1].getFileDescriptor(),
+                    pipe[1].getFileDescriptor(), args, null, done);
+                pipe[1].close();
+                devnull.close();
+                java.io.InputStream in = new android.os.ParcelFileDescriptor.AutoCloseInputStream(pipe[0]);
+                byte[] b = in.readAllBytes();
+                in.close();
+                return new String(b, StandardCharsets.UTF_8);
+            } catch (Throwable t) {
+                inProcessFailed = true;
+                Throwable c = t.getCause() != null ? t.getCause() : t;
+                line("in-process shellCommand unavailable (" + c + "); using cmd");
+            }
+        }
+        return exec(new String[] {"cmd", "settings", verb, "global", key});
     }
 
     private static String exec(String[] cmd) {
