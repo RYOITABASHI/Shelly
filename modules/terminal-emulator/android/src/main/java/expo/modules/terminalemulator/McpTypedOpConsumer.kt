@@ -226,16 +226,22 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             val st = lstatOrNull(f) ?: return null
             if (!OsConstants.S_ISREG(st.st_mode) || st.st_size > max) return null
             val fd = Os.open(f.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
-            FileInputStream(fd).use { input ->
-                val buf = ByteArray(max + 1)
-                var n = 0
-                while (n < buf.size) {
-                    val r = input.read(buf, n, buf.size - n)
-                    if (r < 0) break
-                    n += r
+            // A stream over a FileDescriptor does not own it on Android: closing
+            // the stream leaves the fd open, so close it here (as IngressAuditWriter).
+            try {
+                FileInputStream(fd).use { input ->
+                    val buf = ByteArray(max + 1)
+                    var n = 0
+                    while (n < buf.size) {
+                        val r = input.read(buf, n, buf.size - n)
+                        if (r < 0) break
+                        n += r
+                    }
+                    if (n > max) return null
+                    return buf.copyOf(n)
                 }
-                if (n > max) return null
-                return buf.copyOf(n)
+            } finally {
+                runCatching { Os.close(fd) }
             }
         }
     }
@@ -948,7 +954,12 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
                 OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC,
                 384, /* 0600 */
             )
-            FileOutputStream(fd).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+            try {
+                FileOutputStream(fd).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+            } finally {
+                runCatching { Os.close(fd) } // the stream does not own the fd
+            }
+            McpFdProbe.log(TAG, "result")
         } catch (e: Exception) {
             val errno = (e as? android.system.ErrnoException)?.errno
             if (errno == OsConstants.EEXIST) Log.w(TAG, "result already present; not overwritten")
@@ -965,9 +976,13 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC,
             384, /* 0600 */
         )
-        val value = McpTypedOpDecision.handoffToken(bridgeKey, callId)
-        if (!Regex(TOKEN_RE_SRC).matches(value)) throw IllegalStateException("token")
-        FileOutputStream(fd).use { it.write(value.toByteArray(Charsets.US_ASCII)) }
+        try {
+            val value = McpTypedOpDecision.handoffToken(bridgeKey, callId)
+            if (!Regex(TOKEN_RE_SRC).matches(value)) throw IllegalStateException("token")
+            FileOutputStream(fd).use { it.write(value.toByteArray(Charsets.US_ASCII)) }
+        } finally {
+            runCatching { Os.close(fd) } // the stream does not own the fd
+        }
         true
     } catch (e: Exception) {
         Log.w(TAG, "handoff token not written type=${e.javaClass.simpleName}")

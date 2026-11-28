@@ -459,9 +459,13 @@ object ClosePawDrafts {
         val target = itemFile(app, reqId)
         val tmp = File(target.path + ".tmp")
         val fd = Os.open(tmp.path, OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY, 384) // 0600
-        FileOutputStream(fd).use {
-            it.write((meta.toString() + "\n").toByteArray(Charsets.UTF_8))
-            it.write(request)
+        try {
+            FileOutputStream(fd).use {
+                it.write((meta.toString() + "\n").toByteArray(Charsets.UTF_8))
+                it.write(request)
+            }
+        } finally {
+            runCatching { Os.close(fd) } // the stream does not own the fd
         }
         Os.rename(tmp.path, target.path)
         removeEntry(sending)
@@ -892,7 +896,11 @@ object ClosePawDrafts {
         snapshots[reqId] = dir
         val file = File(dir, "request.json")
         val fd = Os.open(file.path, OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY, 384) // 0600
-        FileOutputStream(fd).use { it.write(request) }
+        try {
+            FileOutputStream(fd).use { it.write(request) }
+        } finally {
+            runCatching { Os.close(fd) } // the stream does not own the fd
+        }
         return FileProvider.getUriForFile(app, "${app.packageName}.shelly.fileprovider", file)
     }
 
