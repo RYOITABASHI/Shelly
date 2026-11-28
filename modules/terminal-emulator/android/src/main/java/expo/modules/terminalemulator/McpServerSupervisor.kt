@@ -148,13 +148,17 @@ object McpServerSupervisor {
     /** The wanted server has exec on (service_control's setting in McpTypedOpConsumer, with the mirror). */
     fun execWanted(): Boolean = desired?.exec == true
 
+    /** The wanted server has "MCP: Allow reading terminal output" on (read_terminal_output in McpTypedOpConsumer, with the mirror). */
+    fun readTerminalWanted(): Boolean = desired?.readTerminal == true
+
     /**
-     * The typed-op consumer also drains service_control (an exec tool) and
-     * request_pipeline_refire (a typed op), so it runs while either switch is
-     * on; each op checks its own switch per request (run_agent and the other
-     * typed ops refuse disabled when typed ops are off).
+     * The typed-op consumer also drains service_control (an exec tool),
+     * request_pipeline_refire (a typed op) and, while RN is not live,
+     * read_terminal_output (background ingress, phase B-1), so it runs while
+     * any of those switches is on; each op checks its own switch per request
+     * (run_agent and the other typed ops refuse disabled when typed ops are off).
      */
-    private fun consumerWanted(d: Desired): Boolean = d.typedOps || d.exec
+    private fun consumerWanted(d: Desired): Boolean = d.typedOps || d.exec || d.readTerminal
 
     /** McpTypedOpConsumer's native epoch: [c] is still the live consumer. */
     fun isCurrentTypedOpConsumer(c: McpTypedOpConsumer): Boolean = typedOpConsumer === c
@@ -181,7 +185,7 @@ object McpServerSupervisor {
             // A new bridge key is the native queueEpoch: the old consumer stops
             // (waiting for its request in progress) and its pending typed
             // requests are cleared before the new server can write any.
-            retireStaleTypedOpConsumerLocked(bridgeKey, typedOps || exec)
+            retireStaleTypedOpConsumerLocked(bridgeKey, typedOps || exec || readTerminal)
             retireStaleRawToolConsumerLocked(bridgeKey, token, exec)
             val request = Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true)
             val started = spawnWithFingerprint(app, request) == true
@@ -304,7 +308,7 @@ object McpServerSupervisor {
                 return false
             }
             val key = newBridgeKey()
-            retireStaleTypedOpConsumerLocked(key, cfg.typedOps || cfg.exec)
+            retireStaleTypedOpConsumerLocked(key, cfg.typedOps || cfg.exec || cfg.readTerminal)
             retireStaleRawToolConsumerLocked(key, cfg.token, cfg.exec)
             val request = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
             val ok = spawnWithFingerprint(app, request) ?: return false
@@ -413,7 +417,7 @@ object McpServerSupervisor {
                 use = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, d.bridgeKey, fromApp = false)
             }
             prepareRuntime(app, "watchdog restart")
-            retireStaleTypedOpConsumerLocked(use.bridgeKey, use.typedOps || use.exec)
+            retireStaleTypedOpConsumerLocked(use.bridgeKey, use.typedOps || use.exec || use.readTerminal)
             retireStaleRawToolConsumerLocked(use.bridgeKey, use.token, use.exec)
             val ok = spawnWithFingerprint(app, use)
             if (ok == null) {

@@ -301,6 +301,13 @@ export function filterLogcatLines(raw: string): string[] {
   return out;
 }
 
+/** read_logs source "app": the in-memory log, one redacted line per entry. */
+function appLogLines(): string[] {
+  // Already redacted when logged (lib/debug-logger.ts); redacted again in
+  // case a pattern was added since.
+  return getDebugLogEntries().map((e) => redactForMcp(`${new Date(e.ts).toISOString()} ${e.level.toUpperCase()} ${e.line}`));
+}
+
 async function readLogs(args: Record<string, unknown>): Promise<ToolResult> {
   const source = args.source === undefined ? 'app' : args.source;
   if (source !== 'app' && source !== 'logcat') return { ok: false, error: 'source must be "app" or "logcat"' };
@@ -308,9 +315,7 @@ async function readLogs(args: Record<string, unknown>): Promise<ToolResult> {
   const maxBytes = clampInt(args.maxBytes, READ_LOGS_DEFAULT_BYTES, 256, READ_LOGS_MAX_BYTES);
   let lines: string[];
   if (source === 'app') {
-    // Already redacted when logged (lib/debug-logger.ts); redacted again in
-    // case a pattern was added since.
-    lines = getDebugLogEntries().map((e) => redactForMcp(`${new Date(e.ts).toISOString()} ${e.level.toUpperCase()} ${e.line}`));
+    lines = appLogLines();
   } else {
     // Own-process logcat: an app may read its own uid's log without
     // READ_LOGS. Fetch more than `limit` because the tag filter drops lines.
@@ -2978,8 +2983,98 @@ export function agentSummaries(): McpSnapshotAgent[] {
   }));
 }
 
-export function buildSnapshotBody(agents: McpSnapshotAgent[], repoPaths: string[], device?: McpDeviceSection | null): string {
-  return JSON.stringify(device ? { v: 1, agents, repoPaths, device } : { v: 1, agents, repoPaths });
+// ── Background-read sections (ingress phase B-1) ──
+//
+// While RN is paused the server answers read_logs (source "app"),
+// get_settings and read_terminal_output from these (createDirectReadCallTool
+// in scripts/shelly-mcp-server.js). Each is published only while its own
+// switch is on, so turning the switch off removes it on the next publish:
+//   terminal — session ids only (logical id, native id, the active one),
+//     "MCP: Allow reading terminal output";
+//   settings — redactSettingsForMcp output + capturedAt, "MCP: Allow diagnostics";
+//   appLog — the newest in-memory log lines (redacted), capturedAt and
+//     whether older lines were left out, "MCP: Allow diagnostics".
+// settings and appLog are captured on the device-section refreshes (start,
+// every AppState change to active / background, every DEVICE_REFRESH_MS in
+// the foreground) and settings also on every settings change; the server
+// returns them with stale: true. The whole file stays under
+// SNAPSHOT_PUBLISH_MAX_BYTES (the readers refuse more than 256 KiB): appLog
+// shrinks first, then the sections are dropped (appLog, settings, terminal).
+
+export type McpSnapshotTerminal = {
+  activeSessionId: string;
+  sessions: Array<{ id: string; nativeSessionId: string }>;
+};
+export type McpSnapshotSettings = { capturedAt: string; settings: Record<string, unknown>; withheldKeys: string[] };
+export type McpSnapshotAppLog = { capturedAt: string; lines: string[]; truncated: boolean };
+export type McpSnapshotExtras = {
+  terminal?: McpSnapshotTerminal | null;
+  settings?: McpSnapshotSettings | null;
+  appLog?: McpSnapshotAppLog | null;
+};
+
+/** Must stay below SNAPSHOT_MAX_BYTES in the server and MAX_SNAPSHOT_BYTES in McpRawToolConsumer.kt (256 KiB). */
+export const SNAPSHOT_PUBLISH_MAX_BYTES = 200 * 1024;
+/** Must match SNAPSHOT_TERMINAL_MAX_SESSIONS / SNAPSHOT_SESSION_ID_MAX_CHARS in the server. */
+export const SNAPSHOT_TERMINAL_MAX_SESSIONS = 64;
+const SNAPSHOT_SESSION_ID_MAX_CHARS = 128;
+
+/** The terminal section from terminal-store state (bounded). Exported for tests. */
+export function terminalSection(state: { sessions: Array<{ id: string; nativeSessionId?: string }>; activeSessionId: string }): McpSnapshotTerminal | null {
+  const ok = (v: unknown): v is string => typeof v === 'string' && v.length <= SNAPSHOT_SESSION_ID_MAX_CHARS;
+  if (!ok(state.activeSessionId)) return null;
+  const sessions = state.sessions
+    .filter((s) => ok(s.id) && ok(s.nativeSessionId ?? ''))
+    .slice(0, SNAPSHOT_TERMINAL_MAX_SESSIONS)
+    .map((s) => ({ id: s.id, nativeSessionId: s.nativeSessionId ?? '' }));
+  return { activeSessionId: state.activeSessionId, sessions };
+}
+
+/** The newest lines of `lines` that fit `maxLines` / `maxBytes` (oldest dropped first). Exported for tests. */
+export function appLogTail(lines: string[], maxLines: number, maxBytes: number): { lines: string[]; truncated: boolean } {
+  const out: string[] = [];
+  let size = 0;
+  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
+    const add = utf8Length(lines[i]) + (out.length ? 1 : 0);
+    if (size + add > maxBytes) break;
+    size += add;
+    out.unshift(lines[i]);
+  }
+  return { lines: out, truncated: out.length < lines.length };
+}
+
+function snapshotFileBytes(body: string): number {
+  // {"body":<json string>,"mac":"<64 hex>"}
+  return utf8Length(JSON.stringify(body)) + 90;
+}
+
+export function buildSnapshotBody(agents: McpSnapshotAgent[], repoPaths: string[], device?: McpDeviceSection | null, extras: McpSnapshotExtras = {}): string {
+  const base: Record<string, unknown> = device ? { v: 1, agents, repoPaths, device } : { v: 1, agents, repoPaths };
+  const compose = (terminal: McpSnapshotTerminal | null | undefined, settings: McpSnapshotSettings | null | undefined, appLog: McpSnapshotAppLog | null | undefined) => {
+    const o: Record<string, unknown> = { ...base };
+    if (terminal) o.terminal = terminal;
+    if (settings) o.settings = settings;
+    if (appLog) o.appLog = appLog;
+    return JSON.stringify(o);
+  };
+  let { terminal, settings, appLog } = extras;
+  let body = compose(terminal, settings, appLog);
+  // appLog shrinks first (oldest half of its lines dropped each round).
+  while (appLog && snapshotFileBytes(body) > SNAPSHOT_PUBLISH_MAX_BYTES) {
+    appLog = appLog.lines.length > 1
+      ? { ...appLog, lines: appLog.lines.slice(Math.ceil(appLog.lines.length / 2)), truncated: true }
+      : null;
+    body = compose(terminal, settings, appLog);
+  }
+  if (snapshotFileBytes(body) > SNAPSHOT_PUBLISH_MAX_BYTES) {
+    settings = null;
+    body = compose(terminal, settings, appLog);
+  }
+  if (snapshotFileBytes(body) > SNAPSHOT_PUBLISH_MAX_BYTES) {
+    terminal = null;
+    body = compose(terminal, settings, appLog);
+  }
+  return body;
 }
 
 /** Must match DEVICE_STALE_AFTER_MS in scripts/shelly-mcp-server.js. */
@@ -3089,11 +3184,53 @@ let lastSnapshotBody = '';
 let lastDevice: McpDeviceSection | null = null;
 let snapshotUnsubs: (() => void)[] = [];
 let snapshotWrite: Promise<void> = Promise.resolve();
+// Background-read sections (see McpSnapshotExtras). Captured, not rebuilt on
+// each publish, so capturedAt means when RN read them.
+let lastSettingsSection: McpSnapshotSettings | null = null;
+let lastAppLog: McpSnapshotAppLog | null = null;
+let lastSettingsRef: unknown = null;
+let lastTerminalKey = '';
+
+function captureSettingsSection(): void {
+  const settings = useSettingsStore.getState().settings;
+  lastSettingsRef = settings;
+  lastSettingsSection = { capturedAt: new Date().toISOString(), ...redactSettingsForMcp(settings) };
+}
+
+function captureAppLog(): void {
+  const tail = appLogTail(appLogLines(), READ_LOGS_MAX_LIMIT, READ_LOGS_MAX_BYTES);
+  lastAppLog = { capturedAt: new Date().toISOString(), lines: tail.lines, truncated: tail.truncated };
+}
+
+function currentTerminalSection(): McpSnapshotTerminal | null {
+  try {
+    const state = useTerminalStore.getState();
+    return Array.isArray(state?.sessions) ? terminalSection(state) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** store.subscribe(listener), or a no-op unsubscribe for a store without one. */
+function subscribeIfAble(store: unknown, listener: () => void): () => void {
+  const sub = (store as { subscribe?: unknown } | null)?.subscribe;
+  return typeof sub === 'function' ? (sub as (l: () => void) => () => void)(listener) : () => {};
+}
+
+function currentExtras(): McpSnapshotExtras {
+  const settings = useSettingsStore.getState().settings;
+  const diagnostics = settings.mcpDiagnosticsEnabled === true;
+  return {
+    terminal: settings.mcpReadTerminalEnabled === true ? currentTerminalSection() : null,
+    settings: diagnostics ? lastSettingsSection : null,
+    appLog: diagnostics ? lastAppLog : null,
+  };
+}
 
 function publishSnapshot(): void {
   const token = snapshotToken;
   if (!token) return;
-  const body = buildSnapshotBody(agentSummaries(), useSidebarStore.getState().repoPaths, lastDevice);
+  const body = buildSnapshotBody(agentSummaries(), useSidebarStore.getState().repoPaths, lastDevice, currentExtras());
   if (body === lastSnapshotBody) return;
   lastSnapshotBody = body;
   snapshotWrite = snapshotWrite
@@ -3124,18 +3261,52 @@ export async function refreshMCPDeviceSnapshot(): Promise<void> {
   const device = await captureDeviceSection();
   if (!snapshotToken) return;
   if (device) lastDevice = device;
+  captureBackgroundReadSections();
   publishSnapshot();
+}
+
+/** settings + app log tail, only while "MCP: Allow diagnostics" is on (nothing kept otherwise). */
+function captureBackgroundReadSections(): void {
+  if (diagnosticsEnabled()) {
+    try {
+      captureSettingsSection();
+      captureAppLog();
+    } catch (e) {
+      lastSettingsSection = null;
+      lastAppLog = null;
+      logError('MCPBridge', 'snapshot diagnostics capture failed', e);
+    }
+  } else {
+    lastSettingsSection = null;
+    lastAppLog = null;
+  }
 }
 
 export function startMCPSnapshotPublisher(token: string): void {
   stopMCPSnapshotPublisher({ keepFile: true });
   snapshotToken = token;
   lastSnapshotBody = '';
+  captureBackgroundReadSections();
+  lastTerminalKey = JSON.stringify(currentTerminalSection());
   publishSnapshot();
   void refreshMCPDeviceSnapshot();
   snapshotUnsubs = [
     useAgentStore.subscribe(() => publishSnapshot()),
     useSidebarStore.subscribe(() => publishSnapshot()),
+    subscribeIfAble(useSettingsStore, () => {
+      const settings = useSettingsStore.getState().settings;
+      if (settings === lastSettingsRef) return;
+      lastSettingsRef = settings;
+      captureBackgroundReadSections();
+      publishSnapshot();
+    }),
+    // The terminal store changes often; publish only when the ids change.
+    subscribeIfAble(useTerminalStore, () => {
+      const key = JSON.stringify(currentTerminalSection());
+      if (key === lastTerminalKey) return;
+      lastTerminalKey = key;
+      publishSnapshot();
+    }),
   ];
 }
 
@@ -3144,6 +3315,10 @@ export function stopMCPSnapshotPublisher(opts: { keepFile?: boolean } = {}): voi
   snapshotUnsubs = [];
   snapshotToken = null;
   lastSnapshotBody = '';
+  lastSettingsSection = null;
+  lastAppLog = null;
+  lastSettingsRef = null;
+  lastTerminalKey = '';
   if (!opts.keepFile) {
     snapshotWrite = snapshotWrite.then(() => FileSystem.deleteAsync(SNAPSHOT_URI, { idempotent: true })).catch(() => {});
   }
