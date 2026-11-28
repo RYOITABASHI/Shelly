@@ -464,7 +464,8 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () =>
     expect(cmd).toContain('CLAUDE_CODE_SHELL="${CLAUDE_CODE_SHELL:-$__sh}" CLAUDE_ENV_FILE="${CLAUDE_ENV_FILE:-$__envf}" \\');
     expect(fn).toContain('__sh="$__root/bin/bash"');
     expect(fn).toContain('[ "$(readlink "$__sh" 2>/dev/null)" = /system/bin/sh ] || ln -sfn /system/bin/sh "$__sh"');
-    const env = /cat > "\$__envf\.\$BASHPID\.tmp" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n    mv -f "\$__envf\.\$BASHPID\.tmp" "\$__envf"\n/.exec(fn)![1];
+    // v294: the tmp name is fixed in __envtmp before cat (claude-musl-channel.test.ts).
+    const env = /__envtmp="\$__envf\.\$BASHPID\.tmp"\n    cat > "\$__envtmp" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n    mv -f "\$__envtmp" "\$__envf"\n/.exec(fn)![1];
     // S4 (v283): the env file first drops claude's own credentials for tool commands.
     expect(env).toMatch(/^unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS BASH_ENV ENV CDPATH PROMPT_COMMAND\nif \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
     expect(env).toMatch(/\/system\/bin\/linker64 \S+\/shelly_shell -c 'mapfile -d "" -t __a < \/proc\/\$PPID\/cmdline; eval "\$\{__a\[-1\]\}"'/);

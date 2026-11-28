@@ -1566,7 +1566,15 @@ patchCodex(libDir);
     //      closepaw confirm|reject` writes its agentctl line with
     //      agentIngressSuffix() too, so a ClosePaw confirm issued from an MCP
     //      run_command is refused the same way a plain `shelly agent confirm` is.
-    private const val BASHRC_VERSION = 293
+    // v294: shelly-claude-glibc() Bash-tool env file fix: the tmp name is put in
+    //      __envtmp before `cat >` runs. A redirect of an external command is
+    //      expanded in the forked child ($BASHPID = the child's pid), so in the
+    //      non-interactive runner (cat = /bin/cat) the env file was never written
+    //      and CLAUDE_ENV_FILE named a missing file (Bash-tool commands stayed in
+    //      mksh). Also the musl channel's runner ~/.shelly-claude-musl-run.sh
+    //      (claudeMuslRunnerScript, derived from the same function), started by
+    //      the native claude_exec launcher for council-facade.
+    private const val BASHRC_VERSION = 294
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1947,6 +1955,24 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-claude-run.sh write failed: ${e.message}")
+        }
+
+        // On-device Claude Code, musl channel (#6 Step 2): the runner claude_exec
+        // starts (council-facade's COUNCIL_CLAUDE_COMMAND). Same write rules as
+        // the glibc runner above: every launch, 0700, only run as `bash <file>`.
+        val claudeMuslRunner = File(home, ".shelly-claude-musl-run.sh")
+        try {
+            val tmp = File(home, ".shelly-claude-musl-run.sh.tmp")
+            tmp.writeText(claudeMuslRunnerScript(libDir))
+            tmp.setReadable(false, false); tmp.setReadable(true, true)
+            tmp.setWritable(false, false); tmp.setWritable(true, true)
+            tmp.setExecutable(false, false); tmp.setExecutable(true, true)
+            if (!tmp.renameTo(claudeMuslRunner)) {
+                claudeMuslRunner.writeText(tmp.readText())
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-claude-musl-run.sh write failed: ${e.message}")
         }
 
         // v285: devices updated from a build whose Claude sessions wrote
@@ -6102,14 +6128,18 @@ patchCodex(libDir);
         sb.appendLine("    mkdir -p \"\$__root/bin\" 2>/dev/null")
         sb.appendLine("    [ \"\$(readlink \"\$__sh\" 2>/dev/null)\" = /system/bin/sh ] || ln -sfn /system/bin/sh \"\$__sh\"")
         sb.appendLine("    # v283: tmp + rename, so a concurrent run never reads a half-written file.")
-        sb.appendLine("    cat > \"\$__envf.\$BASHPID.tmp\" <<'__SHELLY_CLAUDE_ENV'")
+        sb.appendLine("    # v294: the name is fixed before cat runs. A redirect of an external command is")
+        sb.appendLine("    # expanded in the forked child, where \$BASHPID is the child's pid, so the runner")
+        sb.appendLine("    # (cat = /bin/cat, not a function) wrote one name and mv looked for another.")
+        sb.appendLine("    __envtmp=\"\$__envf.\$BASHPID.tmp\"")
+        sb.appendLine("    cat > \"\$__envtmp\" <<'__SHELLY_CLAUDE_ENV'")
         sb.appendLine("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN NODE_OPTIONS BASH_ENV ENV CDPATH PROMPT_COMMAND")
         sb.appendLine("if [ -z \"\${BASH_VERSION:-}\" ]; then")
         sb.appendLine("  /system/bin/linker64 $libDir/shelly_shell -c 'mapfile -d \"\" -t __a < /proc/\$PPID/cmdline; eval \"\${__a[-1]}\"'")
         sb.appendLine("  exit \$?")
         sb.appendLine("fi")
         sb.appendLine("__SHELLY_CLAUDE_ENV")
-        sb.appendLine("    mv -f \"\$__envf.\$BASHPID.tmp\" \"\$__envf\"")
+        sb.appendLine("    mv -f \"\$__envtmp\" \"\$__envf\"")
         sb.appendLine("    # v283: the env file above (inlined into every Bash-tool -c) first drops claude's own")
         sb.appendLine("    # credentials, so a tool command can never read them from its environment.")
         sb.appendLine("    # Grep/Glob spawn the bundled rg by plain execve (denied, silent \"no matches\");")
@@ -6286,6 +6316,65 @@ patchCodex(libDir);
         sb.appendLine("__shelly_paste_tui_end() { :; }")
         appendClaudeGlibcFunction(sb, libDir)
         sb.appendLine("shelly-claude-glibc \"\$@\"")
+        return sb.toString()
+    }
+
+    /**
+     * On-device Claude Code, musl channel (shelly-hayato-bridge #6, Step 2):
+     * shelly-claude-musl(), DERIVED from shelly-claude-glibc() so the proxy /
+     * token / TMPDIR / CLAUDE_CODE_SHELL / CLAUDE_ENV_FILE / Grep-Glob recipe
+     * stays one definition. Only where the binary and its loader live change:
+     * the official, unmodified linux-arm64-musl `claude` and Alpine's
+     * `ld-musl-aarch64.so.1` in $SHELLY_LIB_DIR/claude-musl/, started through
+     * the same ulexec loader (linker64 shelly_glibc_exec <ld> --library-path
+     * <dir> <claude>); bionic's linker64 cannot load musl's ld.so itself
+     * ("Could not find a PHDR"). Runtime state (tmp, bin/bash -> mksh, the
+     * Bash-tool env file, leases) lives in $HOME/.shelly-runtime/claude-musl.
+     * There is no agent mode: claude_exec never sets __SHELLY_CLAUDE_AGENT_RUN.
+     * Each replacement must match exactly as counted, or the generator throws
+     * (a drift in the glibc text must not silently produce a half-glibc runner).
+     */
+    internal fun claudeMuslFunction(libDir: String): String {
+        val glibc = StringBuilder()
+        appendClaudeGlibcFunction(glibc, libDir)
+        var text = glibc.toString()
+        fun swap(from: String, to: String, times: Int) {
+            val n = text.split(from).size - 1
+            check(n == times) { "claudeMuslFunction: expected $times of \"$from\", found $n" }
+            text = text.replace(from, to)
+        }
+        swap("shelly-claude-glibc() {", "shelly-claude-musl() {", 1)
+        swap("local __root=\"\$HOME/.shelly-runtime/claude-glibc\"", "local __root=\"\$HOME/.shelly-runtime/claude-musl\"", 1)
+        swap("local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"", "local __ld=\"\$SHELLY_LIB_DIR/claude-musl/ld-musl-aarch64.so.1\"", 1)
+        swap("builtin cd -P \"\$__root/current\"", "builtin cd -P \"\$SHELLY_LIB_DIR/claude-musl\"", 1)
+        swap("--library-path \"\$__root/lib\"", "--library-path \"\$SHELLY_LIB_DIR/claude-musl\"", 1)
+        swap("Run: claude-install --agent", "the musl channel has no agent mode", 1)
+        swap("(run: claude-install)", "(stage Claude Code musl in \$SHELLY_LIB_DIR/claude-musl)", 2)
+        text = text.replace("shelly-claude-glibc:", "shelly-claude-musl:")
+        check(!text.contains("claude-glibc")) { "claudeMuslFunction: glibc path left in the musl function" }
+        return text
+    }
+
+    /**
+     * $HOME/.shelly-claude-musl-run.sh, the musl channel's non-interactive
+     * runner. Rewritten on every start like the glibc runner; run only as
+     * `bash <file> <claude args>`, by the native `claude_exec` launcher
+     * (jni/shelly-claude-exec.c) that council-facade spawns as
+     * COUNCIL_CLAUDE_COMMAND. Not an agent runner: no __SHELLY_CLAUDE_AGENT_RUN.
+     */
+    internal fun claudeMuslRunnerScript(libDir: String): String {
+        val sb = StringBuilder()
+        sb.appendLine("# Generated by Shelly (HomeInitializer.claudeMuslRunnerScript). Do not edit.")
+        sb.appendLine("# Non-interactive Claude Code (musl) launcher, run by claude_exec:")
+        sb.appendLine("#   bash ~/.shelly-claude-musl-run.sh <claude args>")
+        sb.appendLine("# shelly-claude-musl() is derived from shelly-claude-glibc(); the TUI paste markers are no-ops here.")
+        sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
+        sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
+        sb.appendLine("case \":\$PATH:\" in *:/system/bin:*) ;; *) export PATH=\"\${PATH:+\$PATH:}/system/bin\" ;; esac")
+        sb.appendLine("__shelly_paste_tui_begin() { :; }")
+        sb.appendLine("__shelly_paste_tui_end() { :; }")
+        sb.append(claudeMuslFunction(libDir))
+        sb.appendLine("shelly-claude-musl \"\$@\"")
         return sb.toString()
     }
 

@@ -4364,6 +4364,28 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### 端末上 Claude Code 連携 Step2 — musl チャネル実装（claude_exec）、APK での実機確認は Step 3 枠（2026-11-27）
+
+**経緯**: Step1 は対話セッション（PC CC、shelly-phone `run_command`）で成立（#6 コメント 7217421931）。仕様の「musl ld.so を直接実行」は `Could not find a PHDR`（libexec_wrapper が linker64 経由に書き換え、bionic linker64 は musl ld.so を読めない）で不成立、既存の ulexec ローダ `linker64 shelly_glibc_exec <ld-musl> --library-path <dir> <claude>` で `2.1.331 (Claude Code)` が返った（ローダ改修不要）。
+
+**実装**: `jni/shelly-claude-exec.c`（`claude_exec`、codex_exec と対。council-facade の `COUNCIL_CLAUDE_COMMAND`）→ `linker64 libbash.so --noprofile --norc ~/.shelly-claude-musl-run.sh "$@"`。ランナーの `shelly-claude-musl()` は `HomeInitializer.claudeMuslFunction` が `shelly-claude-glibc()` の出力から置換回数つきで導出する（プロキシ・トークン・Bash ツール迂回・Grep/Glob deny は一つの定義のまま）。バイナリは `$SHELLY_LIB_DIR/claude-musl/{claude,ld-musl-aarch64.so.1}`、状態は `~/.shelly-runtime/claude-musl`。
+
+**実機での確認（APK 未更新、生成ランナー相当を手で配置）**: 2026-11-27 22:11 JST、`env -i` ＋ claude_exec と同じ実行連鎖で `--version`／`-p`（API 応答 `MUSL-GEN-OK`）／Bash ツール（`bash=5.3.9`、資格情報の環境変数は tool 側で unset）すべて成立（#6 に一次証拠）。
+
+**BASHRC_VERSION 294 の不具合修正**: Bash ツールの env ファイルを `cat > "$__envf.$BASHPID.tmp"` で書いて `mv` していたが、外部コマンドのリダイレクトは fork 後の子で展開されるため `$BASHPID` が子の pid になり、非対話ランナー（glibc の `~/.shelly-claude-run.sh` も）では env ファイルが一度も作られていなかった（PID 違いの `.tmp` が残る）。名前を `__envtmp` に固定してから使う形に修正。
+
+**残り（Step 3 枠＝ council-facade 24h 計測の判定 2026-11-28 11:07:48 JST 以降）**: APK を入れて `claude_exec` 本体の実機確認（Shelly 再起動で facade も再起動するため今は不可）。`ManagedServiceSupervisor.spawn` の `ensureMatchesApk("codex_exec")` と同等の検査を `claude_exec` にも付けるかは、facade の起動経路に触れるため Step 3 で判断。facade 側は `COUNCIL_CLAUDE_COMMAND=claude_exec`（council-tool の claude プリセットが `-p` を付ける）。
+
+---
+
+### 端末上 Claude Code 連携 Step1 — セッションレベルのツール許可ゲートで未着手（2026-11-27）
+
+**発見**: ハヤト発注束「端末上 Claude Code 連携」(Issue #6) の Step1（termux-libs 配置済み musl バイナリの起動証明）に着手したが、このセッションでは `mcp__shelly-phone__*`（device_status/run_command/write_file/get_settings/list_repos 等）の初回使用が Claude Code 自体の許可ダイアログレベルで拒否され続けた（Shelly側の承認タップより手前）。`scrcpy --version` も同様に承認待ちで止まり、Bash の作業ディレクトリは `C:\Users\ryoxr\Shelly` 配下に限定（`ls /c/Users/ryoxr/` 拒否）されていた。plain `adb shell` は接続・Awake/Unlocked確認はできたが、本番ビルド(debuggable=0)のため `run-as` 不可でアプリサンドボックス(termux-libs・app home)に到達できない。過去セッション(build 3188, Issue #6 内)では同じMCPツール群が機能していたため、ツール自体の欠陥ではなく**このセッションの許可が一度も付与されていない**ことが原因と判断。
+
+**対応**: Issue #6 へブロッカー報告済み（コメント #7209205477）。次回セッションでは、起動時に対話で一度 `mcp__shelly-phone__device_status` 等への許可を明示的に得てから Step1 に着手するか、オーナーが事前に `.claude/settings.local.json` へ `mcp__shelly-phone__*` を許可リスト登録してから開始すること（本セッションでは設定ファイル自体への Write も同じ許可ゲートで拒否され自己解決不可だった）。Step1 の技術的な実行可否自体はまだ何も判明していない。
+
+---
+
 ### ✅ CLAUDE.md「Terminal pane background」節の陳腐化 — ドキュメント同期完了（2026-08-25）
 
 **発見**: Fable5実機②レビュー(2026-08-10)がSettings内「Show wallpaper in Terminal (experimental)」の説明文(「On by default, matching the other panes」)とCLAUDE.mdの「Terminal pane背景はopaque固定」記載の矛盾を指摘。CC調査の結果、**矛盾しているのはCLAUDE.md側**と判明: `store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示による同日3分前`85da0d144`のrevert)で`true`(ON)に確定し、HEADまで一貫して変更なし。CLAUDE.mdの該当節はそれより前の中間状態(opaque固定)の記述のままだった。
