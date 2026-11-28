@@ -43,7 +43,7 @@ class ExternalSpecTest {
         assertEquals("--skip-git-repo-check -", env["COUNCIL_CODEX_ARGS"]) // fixed, not from the file
         assertEquals("claude_exec", env["COUNCIL_CLAUDE_COMMAND"]) // fixed, not from the file
         assertFalse(env.containsKey("COUNCIL_CLAUDE_ARGS")) // council-tool's claude preset (-p)
-        assertFalse(launch.extraEnv.any { it.name == "CLAUDE_CODE_OAUTH_TOKEN" }) // the runner loads it, never this env
+        assertFalse(launch.extraEnv.any { v -> when (v) { is ManagedServices.EnvVar.Literal -> v.name; is ManagedServices.EnvVar.FromFile -> v.name } == "CLAUDE_CODE_OAUTH_TOKEN" }) // the runner loads it, never this env
 
         val secret = launch.extraEnv.filterIsInstance<ManagedServices.EnvVar.FromFile>().single()
         assertEquals("COUNCIL_HTTP_TOKEN", secret.name)
