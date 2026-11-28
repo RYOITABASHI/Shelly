@@ -1491,25 +1491,11 @@ class TerminalEmulatorModule : Module() {
         // bridge's approval ladder. STOP-ALL first, then the pipeline's
         // web-search opt-in (read only, the Settings check), then the
         // recovery script decides on today's run and records the request
-        // (RunRecovery.requestRefire). Returns {code, requestId?}.
+        // (RunRecovery.requestRefire, via McpPipelineRefire — the headless
+        // typed-op drain runs the same body). Returns {code, requestId?}.
         AsyncFunction("requestPipelineRefire") Coroutine { pipelineId: String, principal: String? ->
             withContext(Dispatchers.IO) {
-                val context = requireReactContext()
-                val answer = { code: String, requestId: String? ->
-                    mapOf<String, Any?>("code" to code, "requestId" to requestId)
-                }
-                if (!Regex("^[a-z0-9-]{1,32}$").matches(pipelineId)) return@withContext answer("invalid_params", null)
-                if (StopAllSwitches.halted(context)) return@withContext answer("halted", null)
-                val optIn = WebSearchOptInStore.optedInAgentForPipeline(context, pipelineId) {
-                    AgentRuntime.webSearchOptInCandidatesOutput(it)
-                }
-                val agentId = optIn.agentId
-                val sha = optIn.definitionSha256
-                if (optIn.code != "ok" || agentId == null || sha == null) {
-                    return@withContext answer(if (optIn.code == "ok") "native_error" else optIn.code, null)
-                }
-                val r = RunRecovery.requestRefire(context, agentId, pipelineId, sha, principal)
-                answer(r.code, r.requestId)
+                McpPipelineRefire.request(requireReactContext(), pipelineId, principal).toMap()
             }
         }
 

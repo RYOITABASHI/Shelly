@@ -1,0 +1,769 @@
+{
+  "note": "Shared by __tests__/mcp-service-control-native-parity.test.ts (drives the RN ladder) and ServiceControlDecisionTest (JVM). rule: null = none, current = bound with the current derivation, stale = bound to sha256(\"stale:\" + target) (an older derivation; never matches). Dummy values only.",
+  "principal": "0123456789abcdef0123456789abcdef",
+  "binds": [
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "target": "service:article-delivery:start",
+      "bind": "d74b255a74874ddfb4ee649f35e6a4c1c75835ecd64582164730b1da864448a4"
+    },
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "article-delivery"
+      },
+      "target": "service:article-delivery:status",
+      "bind": "fc5f3d1d2c16062aa993d63c3d2b3f21f49278ba938906c7260b0b26d911ebc5"
+    },
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "stop",
+        "serviceId": "article-delivery"
+      },
+      "target": "service:article-delivery:stop",
+      "bind": "aaa97ae345cecc081d71ce86ece6f2356cc134a7bc676b6632c4b3b219026eea"
+    },
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "council-facade"
+      },
+      "target": "service:council-facade:start",
+      "bind": "b96fafccc07d696a3b9f093f869eda84e50ded9b6af5a8098aea81543fe4620f"
+    },
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "council-facade"
+      },
+      "target": "service:council-facade:status",
+      "bind": "6fb59e1116f00774b818a63e41ee34fdbfbd99dcec1f76f568ed8fdda7c8f633"
+    },
+    {
+      "tool": "service_control",
+      "args": {
+        "action": "stop",
+        "serviceId": "council-facade"
+      },
+      "target": "service:council-facade:stop",
+      "bind": "4032e1e2d5f3393adc228f9d78ba314b1e2fc453f0c64bcc7ff51bfc3e6aa9b9"
+    },
+    {
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "target": "pipeline:devja",
+      "bind": "c3010254f517288bb45ae1b387060183d4a3ddf8878481ca9c8939b397b28bbb"
+    },
+    {
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "a"
+      },
+      "target": "pipeline:a",
+      "bind": "4695801c1e75367aeb0cbc2f40dd477a6f57db73a2553c438936115f9c65f2ea"
+    },
+    {
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "x-1-y"
+      },
+      "target": "pipeline:x-1-y",
+      "bind": "c3eee478250838d4905b01ecac949d26bb2a310b9fdaabee04aaf693201ccda1"
+    }
+  ],
+  "ladder": [
+    {
+      "name": "args before the setting: unknown key with exec off",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery",
+        "command": "node evil.js"
+      },
+      "facts": {
+        "exec": false,
+        "typedOps": true,
+        "halted": false,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "unknown argument: command",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "bad action",
+      "tool": "service_control",
+      "args": {
+        "action": "restart",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "action must be one of: start, status, stop",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "missing serviceId",
+      "tool": "service_control",
+      "args": {
+        "action": "start"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "serviceId must be one of: article-delivery, council-facade",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "unregistered serviceId",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "../../bin/sh"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "serviceId must be one of: article-delivery, council-facade",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "exec off",
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": false,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "disabled",
+        "message": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+        "audit": [
+          "disabled",
+          true
+        ]
+      }
+    },
+    {
+      "name": "exec off beats STOP-ALL, a rule and the switch",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": false,
+        "typedOps": true,
+        "halted": true,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "disabled",
+        "message": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+        "audit": [
+          "disabled",
+          true
+        ]
+      }
+    },
+    {
+      "name": "typed ops off does not matter to service_control",
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": false,
+        "halted": false,
+        "rule": "current",
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "deadline before STOP-ALL",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 100000
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "timeout",
+        "message": "the request expired before it could be shown for approval",
+        "audit": [
+          "timeout",
+          true
+        ]
+      }
+    },
+    {
+      "name": "STOP-ALL refuses a start even with a rule and the switch",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "halted",
+        "message": "all agents are stopped (STOP-ALL is on)",
+        "audit": [
+          "halted",
+          true
+        ]
+      }
+    },
+    {
+      "name": "STOP-ALL lets a stop through (rule)",
+      "tool": "service_control",
+      "args": {
+        "action": "stop",
+        "serviceId": "council-facade"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": "current",
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "STOP-ALL lets a status through (no rule, RN live)",
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "rule",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": "current",
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "rule wins over the switch",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "a v1-bound rule does not match; the switch answers",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": "stale",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "auto_approved",
+          true
+        ]
+      }
+    },
+    {
+      "name": "switch",
+      "tool": "service_control",
+      "args": {
+        "action": "status",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "auto_approved",
+          true
+        ]
+      }
+    },
+    {
+      "name": "no match, RN live: the dialog (handed to RN)",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "no match, a v1-bound rule, RN not live: not_attended",
+      "tool": "service_control",
+      "args": {
+        "action": "start",
+        "serviceId": "article-delivery"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": "stale",
+        "approveAll": false,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "not_attended",
+        "message": "Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now",
+        "audit": [
+          "not_attended",
+          true
+        ]
+      }
+    },
+    {
+      "name": "no match, RN not live: not_attended",
+      "tool": "service_control",
+      "args": {
+        "action": "stop",
+        "serviceId": "council-facade"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "not_attended",
+        "message": "Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now",
+        "audit": [
+          "not_attended",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: bad id",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "BAD"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": false,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "pipelineId must be an article pipeline id (a-z, 0-9, -; 1-32 characters)",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "refire: unknown key",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja",
+        "when": "now"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "invalid_params",
+        "message": "unknown argument: when",
+        "audit": [
+          "invalid_params",
+          false
+        ]
+      }
+    },
+    {
+      "name": "refire: typed ops off",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": false,
+        "halted": false,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "disabled",
+        "message": "typed operations are disabled (Settings → Agents → MCP: Allow typed operations)",
+        "audit": [
+          "disabled",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: exec off does not matter",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": false,
+        "typedOps": true,
+        "halted": false,
+        "rule": "current",
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: deadline before STOP-ALL",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 100000
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "timeout",
+        "message": "the request expired before it could be shown for approval",
+        "audit": [
+          "timeout",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: STOP-ALL even with a rule and the switch",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": true,
+        "rule": "current",
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "halted",
+        "message": "all agents are stopped (STOP-ALL is on)",
+        "audit": [
+          "halted",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: rule",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": "current",
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "always_allowed",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: switch",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "execute",
+        "audit": [
+          "auto_approved",
+          true
+        ]
+      }
+    },
+    {
+      "name": "refire: no match, RN live",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "refire: no match, RN not live",
+      "tool": "request_pipeline_refire",
+      "args": {
+        "pipelineId": "devja"
+      },
+      "facts": {
+        "exec": true,
+        "typedOps": true,
+        "halted": false,
+        "rule": null,
+        "approveAll": false,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "refuse",
+        "code": "not_attended",
+        "message": "Shelly is not in the foreground on the phone and no always-allow rule matches; nobody can approve this now",
+        "audit": [
+          "not_attended",
+          true
+        ]
+      }
+    }
+  ]
+}

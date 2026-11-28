@@ -465,6 +465,11 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             processSubmissionReader(request, claimed)
             return
         }
+        // service_control / request_pipeline_refire (ServiceControlDecision; phase A).
+        if (request.tool in ServiceControlDecision.OPS) {
+            processServiceOp(request, name, claimed, now)
+            return
+        }
         when (val outcome = McpTypedOpDecision.decide(request, steps, now)) {
             is McpTypedOpDecision.Outcome.Refuse -> {
                 refuse(request, claimed, outcome.refusal, outcome.agentId, outcome.taint)
@@ -557,11 +562,22 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         return null
     }
 
-    private fun handOff(request: McpTypedOpDecision.Request, name: String, claimed: File, agentId: String?, feed: Boolean = false) {
+    private fun handOff(
+        request: McpTypedOpDecision.Request,
+        name: String,
+        claimed: File,
+        agentId: String?,
+        feed: Boolean = false,
+        svc: ServiceControlDecision.Args? = null,
+    ) {
         val dest = File(requestsDir, name)
         val token = File(handoffsDir, request.callId)
         // The line first: a line without a move is harmless, a move without a line is not.
-        if (feed) feedAudit(request.principal, "handed_off") else audit("mcp_typed_op_handed_off", agentId, request.principal, null)
+        when {
+            svc != null -> svcAudit(svc.op, request.principal, svc, "handed_off")
+            feed -> feedAudit(request.principal, "handed_off")
+            else -> audit("mcp_typed_op_handed_off", agentId, request.principal, null)
+        }
         val result = if (writeHandoffToken(token, request.callId)) McpHandoffMove.move(claimed.path, dest.path, handoffFs) else null
         if (result is McpHandoffMove.Result.Moved) {
             // One way: from here on RN alone answers this request.
@@ -573,12 +589,22 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         val errno = (result as? McpHandoffMove.Result.Failed)?.errno ?: -1
         val route = (result as? McpHandoffMove.Result.Failed)?.route ?: "-"
         Log.w(TAG, "handoff move failed code=$why errno=$errno route=$route")
-        if (feed) feedAudit(request.principal, "handoff_failed") else audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
+        when {
+            svc != null -> svcAudit(svc.op, request.principal, svc, "handoff_failed")
+            feed -> feedAudit(request.principal, "handoff_failed")
+            else -> audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
+        }
         val refusal = McpHandoffMove.refusalAfterFailure(lexists(claimed), lexists(dest))
         if (refusal != null) {
             // Still ours and not in RN's queue: refuse instead (and void the token).
             runCatching { Os.remove(token.path) }
-            if (feed) feedRefuse(request, claimed, refusal) else refuse(request, claimed, refusal, agentId, false)
+            when {
+                // The handoff_failed line was just written: answer without a second one.
+                svc != null -> svcAnswer(request, claimed, ServiceControlDecision.errorResult(
+                    ServiceControlDecision.Refusal(refusal.code, ServiceControlDecision.HANDOFF_FAILED_MESSAGE)))
+                feed -> feedRefuse(request, claimed, refusal)
+                else -> refuse(request, claimed, refusal, agentId, false)
+            }
         } else {
             Log.w(TAG, "handoff state unknown; not answering (no second writer)")
         }
@@ -694,6 +720,166 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         override fun epochCurrent(): Boolean = isCurrent()
         // Strict (only ENOENT is "off"; any other lstat failure is STOP-ALL), as put_stream_feed.
         override fun halted(): Boolean = StreamFeedStore.haltedStrict(app)
+    }
+
+    // ── service_control / request_pipeline_refire (ServiceControlDecision) ──
+
+    /**
+     * RN's ladder without RN (see ServiceControlDecision): a refusal or
+     * `not_attended` is answered here; a rule / "Skip all approvals" match
+     * runs here after RN's re-checks (under [commitLock], so once stop()
+     * returns nothing of this instance runs); the dialog case is handed to RN
+     * only while it is live. Same result JSON and audit codes as RN.
+     */
+    private fun processServiceOp(request: McpTypedOpDecision.Request, name: String, claimed: File, now: Long) {
+        val outcome = try {
+            ServiceControlDecision.decide(request, svcSteps, now)
+        } catch (e: Exception) {
+            // RN's catch around the ladder: native_error (with the checked fields).
+            val a = ServiceControlDecision.validate(request.tool, request.args) as? ServiceControlDecision.Args
+            ServiceControlDecision.Outcome.Refuse(nativeErrorFor(request.tool), a, audit = a != null)
+        }
+        when (outcome) {
+            is ServiceControlDecision.Outcome.Refuse -> svcRefuse(request, claimed, outcome.refusal, outcome.args, outcome.audit)
+            is ServiceControlDecision.Outcome.Execute -> svcExecute(request, claimed, outcome)
+            is ServiceControlDecision.Outcome.Handoff -> handOff(request, name, claimed, null, svc = outcome.args)
+        }
+    }
+
+    private fun nativeErrorFor(tool: String) = ServiceControlDecision.Refusal(
+        "native_error",
+        if (tool == ServiceControlDecision.OP_PIPELINE_REFIRE) ServiceControlDecision.REFIRE_NATIVE_ERROR else ServiceControlDecision.SERVICE_NATIVE_ERROR,
+    )
+
+    /**
+     * RN's refuse(): with checked arguments, a request whose epoch ended
+     * meanwhile is answered (and audited) as `revoked`; then one line with the
+     * code, the error result, the claimed file deleted.
+     */
+    private fun svcRefuse(
+        request: McpTypedOpDecision.Request,
+        claimed: File,
+        r: ServiceControlDecision.Refusal,
+        args: ServiceControlDecision.Args?,
+        auditIt: Boolean = true,
+    ) {
+        val refusal = if (args != null && r.code != "revoked" && !isCurrent()) {
+            ServiceControlDecision.Refusal("revoked", ServiceControlDecision.REVOKED_ERROR)
+        } else {
+            r
+        }
+        if (auditIt) svcAudit(request.tool, request.principal, args, refusal.code)
+        svcAnswer(request, claimed, ServiceControlDecision.errorResult(refusal))
+        Log.i(TAG, "${request.tool} refused (${refusal.code})")
+    }
+
+    private fun svcAnswer(request: McpTypedOpDecision.Request, claimed: File, json: String) {
+        writeResult(request.callId, json)
+        delete(claimed)
+    }
+
+    private fun svcExecute(request: McpTypedOpDecision.Request, claimed: File, x: ServiceControlDecision.Outcome.Execute) {
+        val a = x.args
+        // RN writes the stage line before its execute().
+        svcAudit(a.op, request.principal, a, x.auditCode)
+        if (x.via == ServiceControlDecision.Via.RULE) Log.i(TAG, "always-allow rule ${x.ruleId} matched ${a.op} ${a.target}")
+        else Log.i(TAG, "${a.op} ${a.target} auto-approved once (approveAllWithoutAsking)")
+        // A Refusal goes through svcRefuse (audited); a String is the final answer (its lines are written).
+        val answer: Any = synchronized(commitLock) {
+            ServiceControlDecision.recheck(request, x, svcSteps, System.currentTimeMillis())
+                ?: when (a) {
+                    is ServiceControlDecision.Args.Service -> runService(request, a)
+                    is ServiceControlDecision.Args.Refire -> runRefire(request, a)
+                }
+        }
+        when (answer) {
+            is ServiceControlDecision.Refusal -> svcRefuse(request, claimed, answer, a)
+            is String -> {
+                svcAnswer(request, claimed, answer)
+                Log.i(TAG, "${a.op} answered headless")
+            }
+            else -> svcRefuse(request, claimed, nativeErrorFor(a.op), a)
+        }
+    }
+
+    /** RN's execute() for service_control after the re-checks. Refusal or the final result JSON. */
+    private fun runService(request: McpTypedOpDecision.Request, a: ServiceControlDecision.Args.Service): Any {
+        val raw = try {
+            ManagedServiceSupervisor.control(app, a.action, a.serviceId, request.principal)
+        } catch (e: Exception) {
+            Log.w(TAG, "service_control native call failed type=${e.javaClass.simpleName}")
+            return nativeErrorFor(a.op)
+        }
+        if (!isCurrent()) return ServiceControlDecision.Refusal("revoked", ServiceControlDecision.REVOKED_ERROR)
+        val st = ServiceControlDecision.parseServiceResult(raw, a.serviceId)
+            ?: return ServiceControlDecision.Refusal("native_error", ServiceControlDecision.SERVICE_STATE_UNREADABLE)
+        // The supervisor wrote the start / stop outcome line; status gets one here.
+        if (a.action == "status") svcAudit(a.op, request.principal, a, "status")
+        return ServiceControlDecision.serviceResult(a.action, st)
+    }
+
+    /** RN's execute() for request_pipeline_refire after the re-checks. */
+    private fun runRefire(request: McpTypedOpDecision.Request, a: ServiceControlDecision.Args.Refire): Any {
+        val raw = try {
+            McpPipelineRefire.request(app, a.pipelineId, request.principal)
+        } catch (e: Exception) {
+            Log.w(TAG, "request_pipeline_refire native call failed type=${e.javaClass.simpleName}")
+            return nativeErrorFor(a.op)
+        }
+        if (!isCurrent()) return ServiceControlDecision.Refusal("revoked", ServiceControlDecision.REVOKED_ERROR)
+        val parsed = ServiceControlDecision.parseRefireResult(raw.code, raw.requestId)
+            ?: return ServiceControlDecision.Refusal("native_error", ServiceControlDecision.REFIRE_OUTCOME_UNREADABLE)
+        if (!ServiceControlDecision.isRefireAccepted(parsed.code)) return ServiceControlDecision.refireRefusal(a.pipelineId, parsed.code)
+        svcAudit(a.op, request.principal, a, parsed.code, parsed.requestId)
+        return ServiceControlDecision.refireResult(a.pipelineId, parsed)
+    }
+
+    /** The op's own line (`mcp_service_control` / `mcp_pipeline_refire`), as RN writes it. */
+    private fun svcAudit(op: String, principal: String?, args: ServiceControlDecision.Args?, code: String, requestId: String? = null) {
+        val ok = when (args) {
+            is ServiceControlDecision.Args.Service ->
+                IngressAuditWriter.appendServiceControlDrainLine(app, principal, args.action, args.serviceId, code)
+            is ServiceControlDecision.Args.Refire ->
+                IngressAuditWriter.appendPipelineRefireLine(app, principal, args.pipelineId, code, requestId)
+            null -> if (op == ServiceControlDecision.OP_PIPELINE_REFIRE) {
+                IngressAuditWriter.appendPipelineRefireLine(app, principal, null, code, null)
+            } else {
+                IngressAuditWriter.appendServiceControlDrainLine(app, principal, null, null, code)
+            }
+        }
+        if (!ok) Log.w(TAG, "audit line not written ($op $code)")
+    }
+
+    private val svcSteps = object : ServiceControlDecision.Steps {
+        override fun epochCurrent(): Boolean = isCurrent()
+
+        // RN's settings.mcpExecEnabled: the wanted server's switch and the
+        // Keystore mirror RN writes on every settings change and app start
+        // (McpAutostartStore; missing / unreadable = OFF, fail closed).
+        override fun execOn(): Boolean = try {
+            McpServerSupervisor.execWanted() && (McpAutostartStore.read(app)?.exec == true)
+        } catch (e: Exception) {
+            false
+        }
+
+        override fun typedOpsOn(): Boolean = steps.typedOpsOn()
+
+        // `.halted` present, or it cannot be checked.
+        override fun halted(): Boolean = StopAllSwitches.halted(app)
+
+        override fun matchRule(principal: String, op: String, target: String, bind: String): String? = try {
+            McpAlwaysAllowStore.findMatch(McpAlwaysAllowStore.read(app).rules, principal, op, target, bind)?.id
+        } catch (e: Exception) {
+            null
+        }
+
+        override fun approveAllOn(): Boolean = try {
+            ApproveAllStore.isOn(app)
+        } catch (e: Exception) {
+            false
+        }
+
+        override fun rnLive(): Boolean = steps.rnLive()
     }
 
     // ── Facts (each fails closed) ─────────────────────────────────────────

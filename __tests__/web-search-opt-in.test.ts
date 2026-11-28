@@ -203,6 +203,11 @@ describe('native source contract', () => {
     expect(module.split('WebSearchOptInStore.setFromSettings(').length - 1).toBe(1);
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.kt') || name === 'WebSearchOptInStore.kt' || name === 'TerminalEmulatorModule.kt' || name === 'AgentRuntime.kt') continue;
+      // The request_pipeline_refire body (moved out of the module) only reads the opt-in.
+      if (name === 'McpPipelineRefire.kt') {
+        expect(read(name).match(/WebSearchOptInStore\.\w+/g)).toEqual(['WebSearchOptInStore.optedInAgentForPipeline']);
+        continue;
+      }
       expect([name, read(name).includes('WebSearchOptInStore')]).toEqual([name, false]);
     }
     const mcpServer = path.join(__dirname, '../scripts/shelly-mcp-server.js');

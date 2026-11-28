@@ -906,8 +906,9 @@ describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', (
     expect(byName.request_pipeline_refire.inputSchema.properties.pipelineId.pattern).toBe('^[a-z0-9-]{1,32}$');
     expect(byName.request_pipeline_refire.inputSchema.required).toEqual(['pipelineId']);
     expect(mcp.TYPED_OP_TOOLS.has('request_pipeline_refire') && mcp.APPROVAL_TOOLS.has('request_pipeline_refire')).toBe(true);
-    // Not a native typed-request: it goes to requests/ for the RN bridge (like service_control).
-    expect(mcp.requestDirName('request_pipeline_refire')).toBe('requests');
+    // Drained natively (background ingress, phase A), like service_control.
+    expect(mcp.requestDirName('request_pipeline_refire')).toBe('typed-requests');
+    expect(mcp.requestDirName('service_control')).toBe('typed-requests');
   });
 
   it('refused while typedOps is off, without calling the bridge (even with exec on)', async () => {
