@@ -65,6 +65,9 @@ class TerminalSessionService : Service() {
         // repair all start the service with this action.
         const val ACTION_SCHEDULE_RECONCILE = "expo.modules.terminalemulator.SCHEDULE_RECONCILE"
         const val EXTRA_RECONCILE_REASON = "reconcile_reason"
+        // Residency ledger tick (ResidencyLedger): a chained 10-minute exact
+        // alarm samples the supervised services and re-arms itself.
+        const val ACTION_RESIDENCY_TICK = "expo.modules.terminalemulator.RESIDENCY_TICK"
         // Set ONLY on a late run built by AgentAlarmScheduler.reconcile: the
         // run still carries interval/cron, so it is an ordinary "schedule"
         // origin run through every gate below; these only label it.
@@ -142,6 +145,10 @@ class TerminalSessionService : Service() {
         // A council-facade that outlived an app restart: the STOP-ALL watcher
         // covers it from its persisted launch identity (ManagedServiceSupervisor).
         runCatching { ManagedServiceSupervisor.adoptPersisted(applicationContext) }
+        // Residency evidence: the 10-minute tick is armed while a supervised
+        // service is wanted running; overlay displays are reported (detection only).
+        runCatching { ResidencyLedger.ensureArmedLater(applicationContext) }
+        runCatching { OverlayGuard.register(applicationContext) }
         // Drop only ongoing loop notifications whose agent is no longer a
         // continuous, enabled agent on disk (a live loop between iterations
         // keeps its notification and Stop button).
@@ -306,6 +313,21 @@ class TerminalSessionService : Service() {
                     return START_NOT_STICKY
                 }
                 return START_STICKY
+            }
+            ACTION_RESIDENCY_TICK -> {
+                // Started via startForegroundService (the tick alarm): enter the
+                // foreground first, sample off the main thread, then drop the
+                // service again if nothing else keeps it.
+                startForegroundWithNotification(null)
+                ResidencyLedger.onTick(applicationContext) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (instance === this && !hasProtectedWork()) {
+                            stopForegroundAndMark()
+                            stopSelf(startId)
+                        }
+                    }
+                }
+                return if (hasProtectedWork()) START_STICKY else START_NOT_STICKY
             }
             ACTION_RUN_AGENT -> {
                 val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
@@ -607,6 +629,7 @@ class TerminalSessionService : Service() {
         if (instance === this) instance = null
         userPresentReceiver?.let { runCatching { unregisterReceiver(it) } }
         userPresentReceiver = null
+        runCatching { OverlayGuard.unregister(applicationContext) }
         CodexRemoteHost.wake()
         Log.i(TAG, "Service destroyed sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         super.onDestroy()
