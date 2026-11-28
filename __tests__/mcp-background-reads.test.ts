@@ -226,7 +226,9 @@ describe('read_terminal_output while RN is paused', () => {
 });
 
 describe('RN-only ops stay bridge_not_live at enqueue (production chain)', () => {
-  it.each(['stage_install'])('%s', async (tool) => {
+  // No current tool is RN-only (stage_install went to the native typed path
+  // with the foreground-for-approval change); a future one still gets this.
+  it.each(['some_rn_only_tool'])('%s', async (tool) => {
     heartbeat('0');
     const chain = mcp.createRunResultCallTool({
       queueDir: dir,

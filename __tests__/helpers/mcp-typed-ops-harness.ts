@@ -17,6 +17,7 @@ export const QUEUE = `${HOME}/.shelly-mcp-queue`;
 export const REQUESTS = `${QUEUE}/requests`;
 export const RESULTS = `${QUEUE}/results`;
 export const HANDOFFS = `${QUEUE}/handoffs`;
+export const LOCK_APPROVALS = `${QUEUE}/lock-approvals`;
 export const AGENTS = `${HOME}/.shelly/agents`;
 export const OTHER_PRINCIPAL = 'fedcba9876543210fedcba9876543210';
 
@@ -269,14 +270,14 @@ export { waitFor };
 export async function callTool(
   tool: string,
   args: Record<string, unknown>,
-  opts: { principal?: string; handoff?: 'valid' | 'none' | 'forged'; receivedAt?: string; waitClock?: () => number } = {},
+  opts: { principal?: string; handoff?: 'valid' | 'none' | 'forged'; receivedAt?: string; waitClock?: () => number; callId?: string } = {},
 ): Promise<{ ok: boolean; data?: any; error?: string; code?: string } | null> {
-  const callId = nodeCrypto.randomUUID();
+  const callId = opts.callId ?? nodeCrypto.randomUUID();
   // run_agent reaches requests/ only by the native consumer's handoff (PR 6),
   // which leaves a single-use token; simulate it unless told otherwise.
   // service_control / request_pipeline_refire likewise (background ingress, phase A).
-  // update_delivery_script / update_pipeline_config too (phase B-2).
-  const handoff = opts.handoff ?? (['run_agent', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config'].includes(tool) ? 'valid' : 'none');
+  // update_delivery_script / update_pipeline_config too (phase B-2), and stage_install.
+  const handoff = opts.handoff ?? (['run_agent', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config', 'stage_install'].includes(tool) ? 'valid' : 'none');
   if (handoff !== 'none') {
     const token = handoff === 'valid' ? await mcpHandoffToken(TEST_BRIDGE_KEY, callId, nodeSha256) : 'b'.repeat(64);
     h.files.set(`${HANDOFFS}/${callId}`, token);

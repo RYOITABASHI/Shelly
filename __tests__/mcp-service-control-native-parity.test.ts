@@ -264,7 +264,8 @@ describe('script routing', () => {
   it.each(['0', String(Date.now() - 10_000)])('an RN-only tool is answered bridge_not_live at once when the heartbeat is %s', async (hb) => {
     fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), hb);
     const callTool2 = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
-    for (const tool of ['stage_install']) {
+    // No current tool is RN-only (stage_install is native-drained now); a future one gets this.
+    for (const tool of ['some_rn_only_tool']) {
       const started = Date.now();
       const r = await callTool2(tool, {}, ingress);
       expect(r).toMatchObject({ ok: false, code: 'bridge_not_live' });
@@ -279,7 +280,7 @@ describe('script routing', () => {
     for (const hb of [String(Date.now()), null]) {
       if (hb === null) fs.rmSync(path.join(dir, 'bridge-heartbeat'), { force: true });
       else fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), hb);
-      const pending = callTool2('stage_install', {}, ingress);
+      const pending = callTool2('some_rn_only_tool', {}, ingress);
       const reqs = fs.readdirSync(path.join(dir, 'requests')).filter((n: string) => n.endsWith('.json'));
       expect(reqs).toHaveLength(1);
       fs.writeFileSync(path.join(dir, 'results', reqs[0]), JSON.stringify({ ok: true, data: null }));

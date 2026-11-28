@@ -83,7 +83,7 @@ describe('typed-requests routing', () => {
     expect(fs.existsSync(resultFile)).toBe(false);
   });
 
-  it.each(['read_logs', 'stage_install', 'stage_install_result'])('%s goes to requests/', async (tool) => {
+  it.each(['read_logs', 'stage_install_result'])('%s goes to requests/', async (tool) => {
     const callTool = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
     const pending = callTool(tool, {}, ingress);
     const reqs = fs.readdirSync(path.join(dir, 'requests')).filter((n: string) => n.endsWith('.json'));

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- McpApprovalForeground: the overlay shown while Shelly is brought to the front for an MCP approval tap. -->
+  <string name="mcp_approval_foreground_overlay">Shelly: approval needed</string>
+
+  <!-- McpLockScreenApprovalActivity / McpLockScreenPrompt (lock-screen approval). The summaries,
+       origin, token id and buttons are RN's dialog texts (lib/i18n/locales mcp.approval_*). -->
+  <string name="mcp_lock_channel_name">MCP approvals on the lock screen</string>
+  <string name="mcp_lock_channel_description">An MCP client asks for an update that needs your approval</string>
+  <string name="mcp_lock_summary_stage_install">Install an APK via MCP?</string>
+  <string name="mcp_lock_summary_update_delivery_script">Update the delivery script via MCP?</string>
+  <string name="mcp_lock_summary_update_pipeline_config">Update the article pipeline config via MCP?</string>
+  <string name="mcp_lock_detail_update_pipeline_config">%1$s (%2$s bytes)\nChanged pipelines: %3$s\nAgents to rebuild: %4$s</string>
+  <string name="mcp_lock_pipelines_after_approval">(checked by Shelly after approval)</string>
+  <string name="mcp_lock_origin">Source: External (MCP)</string>
+  <string name="mcp_lock_principal">Client token ID: %1$s</string>
+  <string name="mcp_lock_auth_note">Approve asks you to unlock the phone first. Nothing is changed until then.</string>
+  <string name="mcp_lock_deny">Deny</string>
+  <string name="mcp_lock_approve">Approve</string>
+</resources>

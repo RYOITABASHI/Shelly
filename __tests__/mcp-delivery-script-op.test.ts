@@ -101,7 +101,7 @@ it('honors denial without executing', async () => {
 });
 
 it('returns a timeout for an expired pre-approval deadline', async () => {
-  expect(await callTool(tool, args, { receivedAt: new Date(Date.now() - 16_000).toISOString() }))
+  expect(await callTool(tool, args, { receivedAt: new Date(Date.now() - 301_000).toISOString() }))
     .toEqual({ ok: true, data: { status: 'timeout' } });
   expect(current()).toBeNull();
   expect(exec).not.toHaveBeenCalled();

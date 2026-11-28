@@ -132,7 +132,7 @@ it('asks even when approval omission is enabled and honors denial', async () => 
 it('refuses a late tap if JS did not run the approval timer in time', async () => {
   const pending = callTool('stage_install', { path });
   await waitFor(() => current() !== null);
-  const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 91_000);
+  const now = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 301_000);
   try {
     useMcpApprovalStore.getState().respond(current()!.id, 'once');
     expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('denied') });
