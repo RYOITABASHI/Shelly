@@ -109,21 +109,21 @@ object ResidencyLedgerCore {
      * `cliSeatKinds` from a /health JSON body: an array of 1..[MAX_SEATS]
      * short lowercase strings, else null (absent or out of shape).
      */
-    fun cliSeatKinds(body: String?): List<String>? = try {
-        if (body == null || body.length > ManagedServices.HEALTH_MAX_BODY) null else {
+    fun cliSeatKinds(body: String?): List<String>? {
+        if (body == null || body.length > ManagedServices.HEALTH_MAX_BODY) return null
+        return try {
             val arr = JSONObject(body).opt("cliSeatKinds") as? JSONArray
-            if (arr == null || arr.length() == 0 || arr.length() > MAX_SEATS) null else {
-                val out = ArrayList<String>()
-                for (i in 0 until arr.length()) {
-                    val s = arr.opt(i) as? String
-                    if (s == null || !SEAT_RE.matches(s)) return null
-                    out.add(s)
-                }
-                out
+            if (arr == null || arr.length() == 0 || arr.length() > MAX_SEATS) return null
+            val out = ArrayList<String>()
+            for (i in 0 until arr.length()) {
+                val s = arr.opt(i) as? String
+                if (s == null || !SEAT_RE.matches(s)) return null
+                out.add(s)
             }
+            out
+        } catch (e: Exception) {
+            null
         }
-    } catch (e: Exception) {
-        null
     }
 
     /** The body of a raw HTTP response (after the first CRLFCRLF), or null. */
@@ -266,8 +266,7 @@ object ResidencyLedgerCore {
      * not end in a newline has a torn last line: it is ignored.
      */
     fun lastLine(chunk: ByteArray, chunkStartsFile: Boolean): String? {
-        val nl = '
-'.code.toByte()
+        val nl = '\n'.code.toByte()
         if (chunk.isEmpty()) return null
         // `end` is the index of the newline that closes the last complete line.
         var end = chunk.size - 1

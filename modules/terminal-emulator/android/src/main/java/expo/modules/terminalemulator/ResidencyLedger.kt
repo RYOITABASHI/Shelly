@@ -201,9 +201,13 @@ object ResidencyLedger {
     }.getOrDefault(-1L)
 
     /** The last complete line of [f] (a regular file, not a link), or null. */
-    private fun tailLine(f: File): String? = runCatching {
+    private fun tailLine(f: File): String? {
         val size = fileSize(f)
         if (size <= 0L) return null
+        return tailLineOf(f, size)
+    }
+
+    private fun tailLineOf(f: File, size: Long): String? = runCatching {
         val n = minOf(size, ResidencyLedgerCore.TAIL_READ_BYTES.toLong()).toInt()
         val buf = ByteArray(n)
         RandomAccessFile(f, "r").use { raf ->
@@ -230,14 +234,16 @@ object ResidencyLedger {
         null
     }
 
-    private fun mac(canonical: String): String? = try {
+    private fun mac(canonical: String): String? {
         val k = key() ?: return null
-        val m = Mac.getInstance("HmacSHA256")
-        m.init(k)
-        m.doFinal("$DOMAIN$canonical".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-    } catch (e: Exception) {
-        Log.w(TAG, "residency mac failed type=${e.javaClass.simpleName}")
-        null
+        return try {
+            val m = Mac.getInstance("HmacSHA256")
+            m.init(k)
+            m.doFinal("$DOMAIN$canonical".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "residency mac failed type=${e.javaClass.simpleName}")
+            null
+        }
     }
 
     /**
