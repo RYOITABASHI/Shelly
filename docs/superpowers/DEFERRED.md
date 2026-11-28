@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-11-28: PC CC（facade 席、ハヤト発注）が「overlay_display_devices の書き込み不能化と自動復帰」と「常駐証拠の端末内永続記録」を P1 に登録。設計案は shelly-hayato-bridge #6、実装はハヤトの確認後。
 - 2026-11-27: PC CC（PR #226 の Codex ゲート回収）が、PR に追加された x86_64 エミュレータ起動チェックの ABI 不整合（`:terminal-emulator` が arm64-v8a 固定で `-PreactNativeArchitectures=x86_64` を読まない、かつ native 側に AArch64 専用インラインアセンブリがあり素朴な追従修正も不可）を Codex レビュー＋追加調査で確認。3 ステップを PR から削除してマージ、再設計を「emulator launch check のABI不整合」に登録。
 - 2026-11-26: CC（`feat/launcher-ingress-p2`、Piece A Phase 2）がランチャー ingress の C6 非同期承認（既存の承認ストア・モーダル・決定種別を再利用、背面時の「確認してください」通知）・承認インボックス・`consumed`／派生 `stale`・D2 の reader（MCP `get_launcher_submission` / `list_launcher_submissions` / `mark_launcher_submission_consumed`）を実装。「ランチャー ingress」残件 1・2 を解消、9・10 を追加。Kotlin 未コンパイル・実機未検証。
 - 2026-11-26: CC（PC STEAM 席、PR #218 の CI）が `agent-chain-lock-protocol.test.ts` の 1 件失敗を観測。再実行で通過。テストの揺れかチェーンロックの競合の欠陥かは未確定。下記「チェーンロックの同時取得テストで勝者が 2 つ」に登録（ハヤトの依頼）。
