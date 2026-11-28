@@ -275,8 +275,8 @@ export async function callTool(
   // run_agent reaches requests/ only by the native consumer's handoff (PR 6),
   // which leaves a single-use token; simulate it unless told otherwise.
   // service_control / request_pipeline_refire likewise (background ingress, phase A).
-  // update_delivery_script / update_pipeline_config too (phase B-2).
-  const handoff = opts.handoff ?? (['run_agent', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config'].includes(tool) ? 'valid' : 'none');
+  // update_delivery_script / update_pipeline_config too (phase B-2), and stage_install.
+  const handoff = opts.handoff ?? (['run_agent', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config', 'stage_install'].includes(tool) ? 'valid' : 'none');
   if (handoff !== 'none') {
     const token = handoff === 'valid' ? await mcpHandoffToken(TEST_BRIDGE_KEY, callId, nodeSha256) : 'b'.repeat(64);
     h.files.set(`${HANDOFFS}/${callId}`, token);

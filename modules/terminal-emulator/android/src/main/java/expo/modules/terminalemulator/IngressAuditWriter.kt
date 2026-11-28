@@ -43,7 +43,8 @@ object IngressAuditWriter {
     val MCP_KINDS: Set<String> = setOf("ingress_tainted_refused", "mcp_typed_op_refused")
     /** Events (the typed op that was refused). */
     val MCP_EVENTS: Set<String> = setOf("mcp_run_agent")
-    private val MCP_KEYS: Set<String> = setOf("kind", "event", "agentId", "principal", "code")
+    // `reason`: only on a `foreground_failed` line (McpInstallOpDecision FG_*), same charset as `code`.
+    private val MCP_KEYS: Set<String> = setOf("kind", "event", "agentId", "principal", "code", "reason")
     private const val PIPELINE_CONFIG_KIND = "mcp_update_pipeline_config"
     private val PIPELINE_CONFIG_AGENT_ID_KEYS = setOf("rebuiltAgentIds", "failedAgentIds")
     private const val MAX_PIPELINE_CONFIG_AGENT_IDS = 33
@@ -101,6 +102,11 @@ object IngressAuditWriter {
         if (agentId != null) out.put("agentId", agentId)
         if (principal != null) out.put("principal", principal)
         if (code != null) out.put("code", code)
+        if (o.has("reason")) {
+            val reason = o.get("reason") as? String ?: throw IllegalArgumentException("reason")
+            if (code != "foreground_failed" || !CODE_RE.matches(reason)) throw IllegalArgumentException("reason")
+            out.put("reason", reason)
+        }
         if (pipelineConfig && o.has("observedSha256")) {
             val hash = o.get("observedSha256") as? String ?: throw IllegalArgumentException("observedSha256")
             if (code != "native_error" || !SHA256_RE.matches(hash)) throw IllegalArgumentException("observedSha256")

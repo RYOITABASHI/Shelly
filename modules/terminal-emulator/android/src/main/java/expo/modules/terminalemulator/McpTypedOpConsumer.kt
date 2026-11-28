@@ -336,6 +336,15 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
                 finished = !t.isAlive
             }
         }
+        // Requests waiting for RN after the foreground step: the epoch ended,
+        // answer `revoked` (RN's answer) — only once the worker is gone, so the
+        // poll can no longer hand one off. Otherwise just remove the overlays
+        // (each also removes itself after its wait).
+        if (finished) {
+            revokeForegroundWaits()
+        } else {
+            for (w in foregroundWaits.values) McpApprovalForeground.hide(w.overlay)
+        }
         if (clearPending && finished) McpTypedOpConsumer.clearPending(app)
         Log.i(TAG, "stopped clearPending=$clearPending finished=$finished")
     }
@@ -481,7 +490,8 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             processServiceOp(request, name, claimed, now)
             return
         }
-        // update_delivery_script / update_pipeline_config (McpInstallOpDecision; phase B-2).
+        // update_delivery_script / update_pipeline_config (McpInstallOpDecision; phase B-2)
+        // and stage_install (with the foreground-for-approval step).
         if (request.tool in McpInstallOpDecision.OPS) {
             processInstallOp(request, name, claimed, now)
             return
@@ -922,22 +932,105 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             null
         }
         when (outcome) {
-            is McpInstallOpDecision.Outcome.Answer -> {
-                installAudit(request, outcome.auditCode)
-                val (extra, result) = McpInstallOpDecision.afterAudit(request.tool, outcome, isCurrent())
-                if (extra != null) installAudit(request, extra)
-                svcAnswer(request, claimed, result)
-                Log.i(TAG, "${request.tool} answered natively (${outcome.auditCode})")
-            }
+            is McpInstallOpDecision.Outcome.Answer -> installAnswer(request, claimed, outcome)
             McpInstallOpDecision.Outcome.Handoff -> handOff(request, name, claimed, null, install = true)
+            is McpInstallOpDecision.Outcome.Foreground -> startForeground(request, name, claimed, outcome.waitUntilMs)
+            // Not returned by decide().
+            McpInstallOpDecision.Outcome.Wait -> delete(claimed)
             // Fail closed and silent: the client times out; nothing ran.
             null -> delete(claimed)
         }
     }
 
-    /** The op's own line (`mcp_update_delivery_script` / `mcp_update_pipeline_config`), RN's shape. */
-    private fun installAudit(request: McpTypedOpDecision.Request, code: String) {
-        val ok = IngressAuditWriter.appendMcpLine(app, null, McpInstallOpDecision.auditJson(request.tool, request.principal, code))
+    /** RN's refusal / timeout / `not_attended` answer, with its audit line(s). */
+    private fun installAnswer(request: McpTypedOpDecision.Request, claimed: File, outcome: McpInstallOpDecision.Outcome.Answer) {
+        outcome.foregroundFailure?.let { installAudit(request, "foreground_failed", it) }
+        installAudit(request, outcome.auditCode)
+        val (extra, result) = McpInstallOpDecision.afterAudit(request.tool, outcome, isCurrent())
+        if (extra != null) installAudit(request, extra)
+        svcAnswer(request, claimed, result)
+        Log.i(TAG, "${request.tool} answered natively (${outcome.auditCode}${outcome.foregroundFailure?.let { " after foreground_failed $it" } ?: ""})")
+    }
+
+    // ── Foreground for approval (McpApprovalForeground; owner decision 2026-11-29) ──
+
+    /** A request waiting for RN after Shelly was brought to the front. Handler thread only (plus [stop]). */
+    private class ForegroundWait(
+        val request: McpTypedOpDecision.Request,
+        val name: String,
+        val claimed: File,
+        val waitUntilMs: Long,
+        val overlay: McpApprovalForeground.Handle,
+        var rnLiveSinceMs: Long? = null,
+    )
+
+    private val foregroundWaits = java.util.concurrent.ConcurrentHashMap<String, ForegroundWait>()
+
+    /**
+     * RN is not live and the phone is interactive, unlocked and Shelly may draw
+     * overlays (McpInstallOpDecision.decide): show the overlay, start the
+     * activity, then poll the heartbeat on this thread (other typed requests
+     * are not held up) until afterForeground() hands off or answers.
+     */
+    private fun startForeground(request: McpTypedOpDecision.Request, name: String, claimed: File, waitUntilMs: Long) {
+        val overlay = try {
+            McpApprovalForeground.show(app, waitUntilMs)
+        } catch (e: Exception) {
+            Log.w(TAG, "${request.tool} foreground failed type=${e.javaClass.simpleName}")
+            null
+        }
+        if (overlay == null) {
+            installAnswer(request, claimed, McpInstallOpDecision.notAttended(request.tool, McpInstallOpDecision.FG_START_FAILED))
+            return
+        }
+        installAudit(request, "foregrounded")
+        Log.i(TAG, "${request.tool} needs the tap: Shelly brought to the front, waiting for RN")
+        val w = ForegroundWait(request, name, claimed, waitUntilMs, overlay)
+        foregroundWaits[request.callId] = w
+        pollForeground(w)
+    }
+
+    private fun pollForeground(w: ForegroundWait) {
+        if (stopped) return
+        val now = System.currentTimeMillis()
+        if (w.rnLiveSinceMs == null && steps.rnLive()) w.rnLiveSinceMs = now
+        val outcome = try {
+            McpInstallOpDecision.afterForeground(w.request, installSteps, now, w.waitUntilMs, w.rnLiveSinceMs)
+        } catch (e: Exception) {
+            Log.w(TAG, "${w.request.tool} foreground poll failed type=${e.javaClass.simpleName}")
+            null
+        }
+        if (outcome == McpInstallOpDecision.Outcome.Wait) {
+            val h = synchronized(this) { handler }
+            if (h != null && h.postDelayed({ pollForeground(w) }, McpInstallOpDecision.FOREGROUND_POLL_MS)) return
+            // No thread to poll on (stopping): stop() answers what is left.
+            return
+        }
+        if (foregroundWaits.remove(w.request.callId) == null) return
+        McpApprovalForeground.hide(w.overlay)
+        when (outcome) {
+            is McpInstallOpDecision.Outcome.Answer -> installAnswer(w.request, w.claimed, outcome)
+            McpInstallOpDecision.Outcome.Handoff -> handOff(w.request, w.name, w.claimed, null, install = true)
+            // Fail closed and silent (as processInstallOp): the client times out; nothing ran.
+            else -> delete(w.claimed)
+        }
+    }
+
+    /** stop(): the epoch ended while requests waited for RN — RN's answer is `revoked`. */
+    private fun revokeForegroundWaits() {
+        for (callId in foregroundWaits.keys.toList()) {
+            val w = foregroundWaits.remove(callId) ?: continue
+            McpApprovalForeground.hide(w.overlay)
+            runCatching {
+                installAudit(w.request, "revoked")
+                svcAnswer(w.request, w.claimed, McpInstallOpDecision.revokedResult())
+            }
+        }
+    }
+
+    /** The op's own line (`mcp_update_delivery_script` / `mcp_update_pipeline_config` / `mcp_stage_install`), RN's shape. */
+    private fun installAudit(request: McpTypedOpDecision.Request, code: String, reason: String? = null) {
+        val ok = IngressAuditWriter.appendMcpLine(app, null, McpInstallOpDecision.auditJson(request.tool, request.principal, code, reason))
         if (!ok) Log.w(TAG, "audit line not written (${request.tool} $code)")
     }
 
@@ -945,6 +1038,11 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         override fun epochCurrent(): Boolean = isCurrent()
         override fun execOn(): Boolean = svcSteps.execOn()
         override fun rnLive(): Boolean = steps.rnLive()
+        override fun foregroundBlocker(): String? = try {
+            McpApprovalForeground.blocker(app)
+        } catch (e: Exception) {
+            McpInstallOpDecision.FG_LOCKED
+        }
     }
 
     private val svcSteps = object : ServiceControlDecision.Steps {

@@ -1,5 +1,5 @@
 {
-  "note": "Shared by __tests__/mcp-install-op-native-parity.test.ts (drives the real RN ladder) and McpInstallOpDecisionTest (JVM). handoff and not_attended are both the point where RN shows its tap dialog: native hands the request to RN only while RN is live and the request is fresh, else answers notAttended. answer = RN's exact result and its single audit line code. Dummy values only.",
+  "note": "Shared by __tests__/mcp-install-op-native-parity.test.ts (drives the real RN ladder) and McpInstallOpDecisionTest (JVM). handoff and not_attended are both the point where RN shows its tap dialog: native hands the request to RN only while RN is live and the request is fresh, else answers notAttended. answer = RN's exact result and its single audit line code. Dummy values only. stage_install (same native path since the foreground-for-approval change): RN's refuse() carries no code except for digest_changed / revoked, and its path / digest checks run before anything else (no epoch check first). The foreground-for-approval step is native only: these cases model it as unavailable (phone locked), so RN paused is not_attended.",
   "principal": "0123456789abcdef0123456789abcdef",
   "notAttended": {
     "code": "not_attended",
@@ -2165,6 +2165,978 @@
           "ok": false,
           "error": "expectedBytes must be an integer from 1 to 262144",
           "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "stage_install: valid, RN live, fresh -> handoff",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: valid, RN paused -> not_attended",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "stage_install: valid, RN live, 6 s old (past the handoff window, before the deadline) -> not_attended",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 6000
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "stage_install: valid, 16 s old -> pre-approval timeout",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": true,
+          "data": {
+            "status": "timeout"
+          }
+        }
+      }
+    },
+    {
+      "name": "stage_install: valid, 16 s old, RN live -> timeout too",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": true,
+          "data": {
+            "status": "timeout"
+          }
+        }
+      }
+    },
+    {
+      "name": "stage_install: exec off -> disabled (no code, as RN)",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)"
+        }
+      }
+    },
+    {
+      "name": "stage_install: exec off beats invalid arguments",
+      "tool": "stage_install",
+      "args": {
+        "path": "x"
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)"
+        }
+      }
+    },
+    {
+      "name": "stage_install: invalid arguments beat the deadline",
+      "tool": "stage_install",
+      "args": {
+        "path": "x.apk"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 omitted -> handoff",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path relative path",
+      "tool": "stage_install",
+      "args": {
+        "path": "Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path bare name",
+      "tool": "stage_install",
+      "args": {
+        "path": "app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path other extension",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.zip",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path no extension",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path extension only in the middle",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk.zip",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path uppercase extension",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.APK",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path mixed-case extension",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.ApK",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path Kelvin sign in the extension (JS /i without u: no match)",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apK",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path trailing newline",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk\n",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path control character",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Down\u0001load/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path DEL character",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path dot-dot segment",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/../Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must not contain \"..\""
+        }
+      }
+    },
+    {
+      "name": "stage_install: path leading dot-dot segment",
+      "tool": "stage_install",
+      "args": {
+        "path": "/../app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must not contain \"..\""
+        }
+      }
+    },
+    {
+      "name": "stage_install: path dot-dot inside a name (not a segment)",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/a..b.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path dot segment",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/./Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path root .apk",
+      "tool": "stage_install",
+      "args": {
+        "path": "/.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path too short",
+      "tool": "stage_install",
+      "args": {
+        "path": "/apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path empty string",
+      "tool": "stage_install",
+      "args": {
+        "path": "",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path a number",
+      "tool": "stage_install",
+      "args": {
+        "path": 42,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path null",
+      "tool": "stage_install",
+      "args": {
+        "path": null,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path an array",
+      "tool": "stage_install",
+      "args": {
+        "path": [
+          "/a.apk"
+        ],
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path non-ASCII name",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/アプリ.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path space in the name",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/my app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: path control character beats dot-dot",
+      "tool": "stage_install",
+      "args": {
+        "path": "/../a\u0002.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path missing",
+      "tool": "stage_install",
+      "args": {
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 uppercase -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 63 digits -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 65 digits -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 trailing newline -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab\n"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 non-hex -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 a number -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": 1
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 null -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": null
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 empty string -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": ""
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: expectedSha256 boolean -> invalid_digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": true
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits"
+        }
+      }
+    },
+    {
+      "name": "stage_install: path beats digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "x",
+        "expectedSha256": "X"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: dot-dot beats digest",
+      "tool": "stage_install",
+      "args": {
+        "path": "/a/../b.apk",
+        "expectedSha256": "X"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must not contain \"..\""
+        }
+      }
+    },
+    {
+      "name": "stage_install: an unknown extra argument is ignored -> handoff",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "extra": "x"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "stage_install: update tools' arguments are not read -> invalid_path",
+      "tool": "stage_install",
+      "args": {
+        "stagedPath": "/sdcard/Download/a.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 3
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: invalid arguments, RN paused -> invalid_path (not not_attended)",
+      "tool": "stage_install",
+      "args": {
+        "path": "x"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "path must be an absolute .apk file path without control characters"
+        }
+      }
+    },
+    {
+      "name": "stage_install: exec off, RN paused -> disabled",
+      "tool": "stage_install",
+      "args": {
+        "path": "/storage/emulated/0/Download/app.apk",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)"
         }
       }
     }

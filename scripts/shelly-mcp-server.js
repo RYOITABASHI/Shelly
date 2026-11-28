@@ -674,7 +674,11 @@ function cleanClientName(raw) {
 // pre-approval timeout and `not_attended` (RN paused) itself, and hands the
 // rest to RN while it is live (McpInstallOpDecision.kt); RN then runs its
 // whole ladder and the write, unchanged.
-const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config']);
+// stage_install too (foreground for approval, owner decision 2026-11-29): the
+// same native ladder; while RN is paused native brings Shelly to the front
+// (overlay + activity, phone unlocked) and hands off once RN is live, else
+// answers `not_attended`. The staging / install itself stays in RN.
+const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config', 'stage_install']);
 // Raw tools (run_command / write_file) likewise go to their own directory,
 // drained ONLY by the native McpRawToolConsumer. It is the one place that
 // decides, per callId, how the call is answered: with the owner's native

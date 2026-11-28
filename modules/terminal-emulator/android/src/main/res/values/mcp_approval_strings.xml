@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- McpApprovalForeground: the overlay shown while Shelly is brought to the front for an MCP approval tap. -->
+  <string name="mcp_approval_foreground_overlay">Shelly: approval needed</string>
+</resources>

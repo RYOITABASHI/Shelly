@@ -2774,11 +2774,13 @@ async function processRequestFile(name: string): Promise<void> {
     const request = check.request;
     let deadlineMs = Number.POSITIVE_INFINITY;
     if (request.tool === 'stage_install' || request.tool === 'update_delivery_script' || request.tool === 'update_pipeline_config') {
-      // update_delivery_script / update_pipeline_config reach requests/ only by
-      // the native typed-op consumer's handoff (McpInstallOpDecision.kt, ingress
-      // phase B-2: RN live, nothing refused earlier). Its single-use token is
-      // consumed first, so a copied signed request is never run here.
-      if (request.tool !== 'stage_install' && !(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
+      // All three reach requests/ only by the native typed-op consumer's
+      // handoff (McpInstallOpDecision.kt: ingress phase B-2 for the update_*
+      // ops; stage_install since the foreground-for-approval change: RN live,
+      // possibly after native brought Shelly to the front, nothing refused
+      // earlier). Its single-use token is consumed first, so a copied signed
+      // request is never run here.
+      if (!(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
         logError('MCPBridge', `rejected typed request file ${name} (no valid handoff token)`);
         return;
       }
