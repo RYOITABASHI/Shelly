@@ -2704,7 +2704,8 @@ public final class TerminalEmulator {
         // a proxy for "the guest can actually handle bracketed paste".
         try {
             boolean bm = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
-            boolean tui = isAlternateBufferActive() || isMouseTrackingActive();
+            boolean fgProgram = isForegroundProgramNotShellyBash();
+            boolean tui = isAlternateBufferActive() || isMouseTrackingActive() || fgProgram;
             // bug #121: log which HOME candidate produced the force-TUI
             // marker hit ("dynamic" / "injected" / "hardcoded"), or "none"
             // when the marker isn't active, so a forceTui regression can be
@@ -2721,6 +2722,7 @@ public final class TerminalEmulator {
                 "paste(raw=" + rawLen + ", sanitized=" + text.length()
                 + ", nl=" + nlCount + ", bracketed=" + bm
                 + ", tui=" + tui
+                + ", fgProgram=" + fgProgram
                 + ", forceTui=" + forceTui
                 + ", forceTuiSource=" + (forceTuiSource != null ? forceTuiSource : "none")
                 + ", " + shellyPasteProcProbe() + ")");
@@ -2773,7 +2775,9 @@ public final class TerminalEmulator {
         // exactly where we intend.
         if (text.isEmpty()) return;
         boolean bracketedMode = isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
-        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive();
+        // #6: a foreground program (Claude Code, ssh, ...) reads the paste, not
+        // readline; it gets the standard markers, never 0x18 0x02.
+        boolean tuiMode = isAlternateBufferActive() || isMouseTrackingActive() || isForegroundProgramNotShellyBash();
         boolean forceTuiPaste = isShellyPasteForceTui();
         // zsh / fish guard: the \C-x\C-b readline trigger is bash-only
         // (Shelly's .bashrc binds it to bracketed-paste-begin). If the
@@ -2818,6 +2822,67 @@ public final class TerminalEmulator {
             // don't support bracketed-paste anyway.
             mSession.write(text.replaceAll("\r?\n", "\r"));
         }
+    }
+
+    /**
+     * shelly-hayato-bridge #6 (2026-11-28): true when a program other than a
+     * Shelly bash owns the terminal's foreground process group, so that
+     * program, not readline, reads the paste.
+     *
+     * Claude Code (and other Ink / non-alternate-screen TUIs) enable DECSET
+     * 2004 but neither the alternate screen nor mouse tracking, so tuiMode
+     * alone read them as "bash prompt" and sent the readline-only BEGIN
+     * trigger 0x18 0x02. Claude Code inserts both bytes into its input: the
+     * setup-token code arrived 2 characters longer than pasted, with the
+     * cursor 2 cells before the end, and was refused every time. The
+     * force-TUI marker only covers the .bashrc claude function, not
+     * ~/.shelly-claude-musl-run.sh or any other program.
+     *
+     * The foreground group comes from /proc/&lt;shell&gt;/stat (tpgid): the
+     * interactive Shelly bash runs every job in its own process group. Equal
+     * to the shell's pid = the prompt (readline). Otherwise the group is a
+     * program unless every member we can read is a Shelly bash (a nested
+     * interactive `bash` at its own prompt still has the C-x C-b bind). Any
+     * read failure keeps the previous behaviour.
+     */
+    private boolean isForegroundProgramNotShellyBash() {
+        int shellPid = shellyShellPid();
+        if (shellPid <= 0) return false;
+        int tpgid = procStatField(readProcText("/proc/" + shellPid + "/stat"), 5);
+        if (tpgid <= 0 || tpgid == shellPid) return false;
+        File[] procs = new File("/proc").listFiles();
+        if (procs == null) return false;
+        for (File p : procs) {
+            String name = p.getName();
+            if (name.isEmpty() || !Character.isDigit(name.charAt(0))) continue;
+            if (procStatField(readProcText("/proc/" + name + "/stat"), 2) != tpgid) continue;
+            if (!isShellyBashCmdline(readProcText("/proc/" + name + "/cmdline"))) return true;
+        }
+        // No readable member: unknown, keep the previous behaviour.
+        return false;
+    }
+
+    /**
+     * One numeric field of /proc/&lt;pid&gt;/stat, counted after "pid (comm) ":
+     * 0 = state, 1 = ppid, 2 = pgrp, 3 = session, 4 = tty_nr, 5 = tpgid.
+     * The comm may hold spaces and parentheses, so parsing starts after the
+     * last ')'. Returns -1 when the field is missing or not a number.
+     */
+    static int procStatField(String stat, int index) {
+        if (stat == null) return -1;
+        int close = stat.lastIndexOf(')');
+        if (close < 0 || close + 2 > stat.length()) return -1;
+        String[] fields = stat.substring(close + 2).split(" ");
+        if (index >= fields.length) return -1;
+        try {
+            return Integer.parseInt(fields[index]);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    static boolean isShellyBashCmdline(String cmdline) {
+        return cmdline != null && (cmdline.contains("libbash.so") || cmdline.contains("shelly_shell"));
     }
 
     private boolean hasLineBreak(String text) {
