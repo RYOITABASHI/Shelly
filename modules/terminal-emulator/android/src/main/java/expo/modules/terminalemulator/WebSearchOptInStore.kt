@@ -446,8 +446,12 @@ object WebSearchOptInStore {
             val flags = OsConstants.O_WRONLY or OsConstants.O_APPEND or OsConstants.O_CREAT or
                 OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC
             val fd = Os.open(target.path, flags, 384 /* 0600 */)
-            FileOutputStream(fd).use { out ->
-                out.write((line + "\n").toByteArray(Charsets.UTF_8))
+            try {
+                FileOutputStream(fd).use { out ->
+                    out.write((line + "\n").toByteArray(Charsets.UTF_8))
+                }
+            } finally {
+                runCatching { Os.close(fd) } // the stream does not own the fd
             }
             return true
         } catch (e: Exception) {
