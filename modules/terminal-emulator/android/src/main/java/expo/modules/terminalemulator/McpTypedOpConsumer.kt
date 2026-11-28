@@ -92,6 +92,8 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         fun typedDir(context: Context): File = File(queueDir(context), "typed-requests")
         fun claimedDir(context: Context): File = File(typedDir(context), "claimed")
         fun handoffsDir(context: Context): File = File(queueDir(context), "handoffs")
+        /** Lock-screen approvals for RN (McpLockScreenApproval.token), one per callId. */
+        fun lockApprovalsDir(context: Context): File = File(queueDir(context), "lock-approvals")
 
         /**
          * Deletes every pending typed request and claimed file (token revoke /
@@ -100,7 +102,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
          */
         fun clearPending(context: Context) {
             try {
-                for (dir in listOf(typedDir(context), claimedDir(context), handoffsDir(context))) {
+                for (dir in listOf(typedDir(context), claimedDir(context), handoffsDir(context), lockApprovalsDir(context))) {
                     val files = dir.listFiles() ?: continue
                     for (f in files) {
                         if (isRegular(f)) runCatching { Os.remove(f.path) }
@@ -254,6 +256,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
     private val resultsDir = File(queueDir(app), "results")
     private val heartbeatFile = File(queueDir(app), "bridge-heartbeat")
     private val handoffsDir = handoffsDir(app)
+    private val lockApprovalsDir = lockApprovalsDir(app)
     /** Held across the final re-check → audit → ticket → intent; see the class doc. */
     private val commitLock = Object()
     private val agentsDir = File(home, ".shelly/agents")
@@ -344,6 +347,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             revokeForegroundWaits()
         } else {
             for (w in foregroundWaits.values) McpApprovalForeground.hide(w.overlay)
+            for (w in lockWaits.values) McpLockScreenPrompt.close(app, w.entry)
         }
         if (clearPending && finished) McpTypedOpConsumer.clearPending(app)
         Log.i(TAG, "stopped clearPending=$clearPending finished=$finished")
@@ -421,6 +425,8 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         for (f in claimed ?: emptyArray()) {
             val st = lstatOrNull(f) ?: continue
             if (!McpTypedOpDecision.isOrphan(st.st_mtime * 1000L, now)) continue
+            // Still waiting for a decision (the lock-screen prompt may stay up to 5 min).
+            if (waitingClaimedPaths().contains(f.path)) continue
             audit("mcp_typed_op_dropped", null, null, "orphan")
             runCatching { Os.remove(f.path) }
         }
@@ -430,7 +436,17 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             val st = lstatOrNull(f) ?: continue
             if (McpTypedOpDecision.isOrphan(st.st_mtime * 1000L, now)) runCatching { Os.remove(f.path) }
         }
+        // Lock-screen approvals RN never consumed, past any request's approval deadline.
+        val approvals = try { lockApprovalsDir.listFiles() } catch (e: Exception) { null }
+        for (f in approvals ?: emptyArray()) {
+            val st = lstatOrNull(f) ?: continue
+            val mtime = st.st_mtime * 1000L
+            if (mtime > 0L && now - mtime > McpInstallOpDecision.PRE_APPROVAL_MS + McpTypedOpDecision.ORPHAN_AGE_MS) runCatching { Os.remove(f.path) }
+        }
     }
+
+    private fun waitingClaimedPaths(): Set<String> =
+        (foregroundWaits.values.map { it.claimed.path } + lockWaits.values.map { it.claimed.path }).toSet()
 
     // ── One request ───────────────────────────────────────────────────────
 
@@ -935,6 +951,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             is McpInstallOpDecision.Outcome.Answer -> installAnswer(request, claimed, outcome)
             McpInstallOpDecision.Outcome.Handoff -> handOff(request, name, claimed, null, install = true)
             is McpInstallOpDecision.Outcome.Foreground -> startForeground(request, name, claimed, outcome.waitUntilMs)
+            is McpInstallOpDecision.Outcome.LockScreen -> startLockScreen(request, name, claimed, outcome.waitUntilMs)
             // Not returned by decide().
             McpInstallOpDecision.Outcome.Wait -> delete(claimed)
             // Fail closed and silent: the client times out; nothing ran.
@@ -1016,7 +1033,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         }
     }
 
-    /** stop(): the epoch ended while requests waited for RN — RN's answer is `revoked`. */
+    /** stop(): the epoch ended while requests waited (for RN or a lock-screen decision) — RN's answer is `revoked`. */
     private fun revokeForegroundWaits() {
         for (callId in foregroundWaits.keys.toList()) {
             val w = foregroundWaits.remove(callId) ?: continue
@@ -1026,6 +1043,110 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
                 svcAnswer(w.request, w.claimed, McpInstallOpDecision.revokedResult())
             }
         }
+        for (callId in lockWaits.keys.toList()) {
+            val w = lockWaits.remove(callId) ?: continue
+            McpLockScreenPrompt.close(app, w.entry)
+            runCatching {
+                installAudit(w.request, "revoked")
+                svcAnswer(w.request, w.claimed, McpInstallOpDecision.revokedResult())
+            }
+        }
+    }
+
+    // -- Lock-screen approval (McpLockScreenApproval / McpLockScreenPrompt; owner decision 2026-11-29) --
+
+    private class LockWait(
+        val request: McpTypedOpDecision.Request,
+        val name: String,
+        val claimed: File,
+        val waitUntilMs: Long,
+        val entry: McpLockScreenPrompt.Entry,
+    )
+
+    private val lockWaits = java.util.concurrent.ConcurrentHashMap<String, LockWait>()
+
+    /**
+     * Locked (or screen off), RN not live, notifications and the full-screen
+     * intent allowed (McpInstallOpDecision.decide): post the full-screen
+     * prompt, then poll its decision on this thread until afterLockScreen()
+     * hands off (approved after the keyguard was dismissed), answers RN's
+     * `denied`, or gives up at the wait's end.
+     */
+    private fun startLockScreen(request: McpTypedOpDecision.Request, name: String, claimed: File, waitUntilMs: Long) {
+        val entry = try {
+            McpLockScreenPrompt.open(app, request, waitUntilMs)
+        } catch (e: Exception) {
+            Log.w(TAG, "${request.tool} lock-screen prompt failed type=${e.javaClass.simpleName}")
+            null
+        }
+        if (entry == null) {
+            installAnswer(request, claimed, McpInstallOpDecision.notAttended(request.tool, McpInstallOpDecision.FG_START_FAILED))
+            return
+        }
+        installAudit(request, "lock_screen_shown")
+        Log.i(TAG, "${request.tool} needs the tap: lock-screen prompt shown")
+        val w = LockWait(request, name, claimed, waitUntilMs, entry)
+        lockWaits[request.callId] = w
+        pollLock(w)
+    }
+
+    private fun pollLock(w: LockWait) {
+        if (stopped) return
+        val now = System.currentTimeMillis()
+        val outcome = try {
+            McpInstallOpDecision.afterLockScreen(w.request, installSteps, now, w.waitUntilMs, w.entry.machine.state(now))
+        } catch (e: Exception) {
+            Log.w(TAG, "${w.request.tool} lock-screen poll failed type=${e.javaClass.simpleName}")
+            null
+        }
+        if (outcome == McpInstallOpDecision.Outcome.Wait) {
+            val h = synchronized(this) { handler }
+            if (h != null && h.postDelayed({ pollLock(w) }, McpLockScreenApproval.POLL_MS)) return
+            return // stopping: stop() answers what is left
+        }
+        if (lockWaits.remove(w.request.callId) == null) return
+        McpLockScreenPrompt.close(app, w.entry)
+        when (outcome) {
+            McpInstallOpDecision.Outcome.Handoff -> {
+                installAudit(w.request, "lock_screen_approved")
+                val expiresAt = w.request.receivedAtMs + McpInstallOpDecision.PRE_APPROVAL_MS
+                if (writeLockApproval(w.request, expiresAt)) {
+                    handOff(w.request, w.name, w.claimed, null, install = true)
+                } else {
+                    // Without the token RN would ask again; nobody is there to tap: say so.
+                    installAudit(w.request, "handoff_failed")
+                    svcAnswer(w.request, w.claimed, McpInstallOpDecision.errorResult(
+                        McpInstallOpDecision.Refusal("handoff_failed", McpInstallOpDecision.HANDOFF_FAILED_MESSAGE)))
+                }
+            }
+            is McpInstallOpDecision.Outcome.Answer -> {
+                if (outcome.auditCode == "denied") installAudit(w.request, "lock_screen_denied")
+                installAnswer(w.request, w.claimed, outcome)
+            }
+            else -> delete(w.claimed)
+        }
+    }
+
+    /** `lock-approvals/<callId>` = McpLockScreenApproval.token, created 0600, never over an existing file. */
+    private fun writeLockApproval(request: McpTypedOpDecision.Request, expiresAtMs: Long): Boolean = try {
+        ensurePrivateDir(lockApprovalsDir)
+        val file = File(lockApprovalsDir, request.callId)
+        if (lexists(file)) Os.remove(file.path) // stale or planted: never trusted, replaced
+        val fd = Os.open(
+            file.path,
+            OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC,
+            384, /* 0600 */
+        )
+        try {
+            val value = McpLockScreenApproval.token(bridgeKey, request.callId, request.tool, expiresAtMs)
+            FileOutputStream(fd).use { it.write(value.toByteArray(Charsets.US_ASCII)) }
+        } finally {
+            runCatching { Os.close(fd) } // the stream does not own the fd
+        }
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "lock-screen approval not written type=${e.javaClass.simpleName}")
+        false
     }
 
     /** The op's own line (`mcp_update_delivery_script` / `mcp_update_pipeline_config` / `mcp_stage_install`), RN's shape. */
@@ -1041,7 +1162,12 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         override fun foregroundBlocker(): String? = try {
             McpApprovalForeground.blocker(app)
         } catch (e: Exception) {
-            McpInstallOpDecision.FG_LOCKED
+            McpInstallOpDecision.FG_START_FAILED
+        }
+        override fun lockScreenBlocker(): String? = try {
+            McpLockScreenPrompt.blocker(app)
+        } catch (e: Exception) {
+            McpInstallOpDecision.FG_START_FAILED
         }
     }
 

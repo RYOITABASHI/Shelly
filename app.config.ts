@@ -94,6 +94,12 @@ const config: ExpoConfig & { android?: any } = {
       "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
       "MANAGE_EXTERNAL_STORAGE",
       "REQUEST_INSTALL_PACKAGES",
+      // MCP lock-screen approval (McpLockScreenPrompt.kt, owner decision
+      // 2026-11-29): the full-screen notification that opens the approval
+      // prompt over the keyguard. Android 14+ also needs the special access
+      // (Settings → Apps → Shelly → Full-screen notifications), granted once
+      // by the owner; without it the request is answered not_attended.
+      "USE_FULL_SCREEN_INTENT",
       // DeviceStatusBridge's network-connectivity capability (network.json):
       // "normal" protection level, no runtime prompt. Declared here (not by
       // hand-editing android/app/src/main/AndroidManifest.xml) because a

@@ -65,8 +65,28 @@ object McpInstallOpDecision {
     /** RN came up, but the handoff could not follow within HANDOFF_MAX_AGE_MS of that (a stalled worker). */
     const val FG_HANDOFF_WINDOW = "handoff_window"
 
-    /** lib/mcp-server-bridge.ts INSTALL_CLASS_PRE_APPROVAL_MS (RN's deadlineMs = receivedAt + this). */
-    const val PRE_APPROVAL_MS = 15_000L
+    // -- Lock-screen approval (owner decision 2026-11-29; McpLockScreenApproval) --
+    //
+    // Locked (or screen off) instead of FG_LOCKED: a full-screen notification
+    // opens McpLockScreenApprovalActivity; 拒否 decides at once, 承認 counts
+    // only after the keyguard was dismissed (onDismissSucceeded). An approval
+    // is handed to RN with a single-use lock-approval token, and RN runs it
+    // without a second tap; a denial is answered here with RN's `denied`.
+
+    /** Android 14+: the full-screen-intent special access is not granted. */
+    const val FG_NO_FULL_SCREEN_INTENT = "no_full_screen_intent"
+    /** Shelly's notifications are off. */
+    const val FG_NOTIFICATIONS_OFF = "notifications_off"
+    /** Nobody decided on the lock screen before the deadline margin. */
+    const val FG_NO_DECISION = "no_decision"
+    /** RN's deny message (all three ops). */
+    const val DENIED_MESSAGE = "denied by user (or timed out waiting for a response)"
+
+    /**
+     * lib/mcp-server-bridge.ts INSTALL_CLASS_PRE_APPROVAL_MS (RN's deadlineMs = receivedAt + this):
+     * the approval deadline, 5 min (owner decision 2026-11-29, was 15 s).
+     */
+    const val PRE_APPROVAL_MS = 300_000L
     /** update_delivery_script: expectedBytes 1..this. */
     const val DELIVERY_MAX_BYTES = 1_048_576L
     /** lib/agent-article-pipeline-file.ts ARTICLE_PIPELINE_FILE_MAX_BYTES (256 KiB). */
@@ -119,8 +139,10 @@ object McpInstallOpDecision {
         object Handoff : Outcome()
         /** RN is not live: show the overlay, start the activity, wait for RN until [waitUntilMs]. */
         data class Foreground(val waitUntilMs: Long) : Outcome()
-        /** Still waiting for RN (afterForeground only). */
+        /** Still waiting (afterForeground / afterLockScreen only). */
         object Wait : Outcome()
+        /** Phone locked (or screen off), RN not live: the lock-screen prompt, decided until [waitUntilMs]. */
+        data class LockScreen(val waitUntilMs: Long) : Outcome()
     }
 
     interface Steps {
@@ -135,6 +157,12 @@ object McpInstallOpDecision {
          * FG_NO_OVERLAY). Read only when RN is not live.
          */
         fun foregroundBlocker(): String?
+        /**
+         * Read only when [foregroundBlocker] said FG_LOCKED: null when the
+         * lock-screen prompt can be shown (notifications on, full-screen
+         * intent allowed); else FG_NOTIFICATIONS_OFF / FG_NO_FULL_SCREEN_INTENT.
+         */
+        fun lockScreenBlocker(): String?
     }
 
     private fun isString(v: Any?): Boolean = v is String
@@ -223,8 +251,41 @@ object McpInstallOpDecision {
         // RN is not live: bring Shelly to the front (see FOREGROUND_WAIT_MS).
         val waitUntil = foregroundWaitUntil(req.receivedAtMs, nowMs)
         if (waitUntil <= nowMs) return notAttended(req.tool, FG_NO_TIME)
-        s.foregroundBlocker()?.let { return notAttended(req.tool, it) }
-        return Outcome.Foreground(waitUntil)
+        when (val blocker = s.foregroundBlocker()) {
+            null -> return Outcome.Foreground(waitUntil)
+            FG_LOCKED -> {
+                s.lockScreenBlocker()?.let { return notAttended(req.tool, it) }
+                return Outcome.LockScreen(lockScreenWaitUntil(req.receivedAtMs))
+            }
+            else -> return notAttended(req.tool, blocker)
+        }
+    }
+
+    /** The lock-screen prompt is decided until the approval deadline minus [FOREGROUND_DEADLINE_MARGIN_MS]. */
+    fun lockScreenWaitUntil(receivedAtMs: Long): Long = receivedAtMs + PRE_APPROVAL_MS - FOREGROUND_DEADLINE_MARGIN_MS
+
+    /**
+     * One poll of the lock-screen prompt. [state] is the request's
+     * McpLockScreenApproval.Machine state (it expires itself at the wait's end).
+     * APPROVED → Handoff (the consumer writes the lock-approval token first);
+     * DENIED → RN's `denied`; the end of the wait → `not_attended`.
+     */
+    fun afterLockScreen(req: McpTypedOpDecision.Request, s: Steps, nowMs: Long, waitUntilMs: Long, state: McpLockScreenApproval.State): Outcome {
+        if (!s.epochCurrent()) return Outcome.Answer("revoked", revokedResult())
+        if (isExpired(req.receivedAtMs, nowMs)) return Outcome.Answer("timeout", timeoutResult(req.tool), FG_NO_DECISION)
+        return when (state) {
+            McpLockScreenApproval.State.APPROVED -> Outcome.Handoff
+            McpLockScreenApproval.State.DENIED -> deniedAnswer(req.tool)
+            McpLockScreenApproval.State.EXPIRED -> notAttended(req.tool, FG_NO_DECISION)
+            McpLockScreenApproval.State.PENDING, McpLockScreenApproval.State.AUTHENTICATING ->
+                if (nowMs >= waitUntilMs) notAttended(req.tool, FG_NO_DECISION) else Outcome.Wait
+        }
+    }
+
+    /** RN's deny: audit `denied`, `{ok:false,error,code:"denied"}` (stage_install: without code). */
+    fun deniedAnswer(tool: String): Outcome.Answer {
+        val r = Refusal("denied", DENIED_MESSAGE)
+        return Outcome.Answer(r.code, refusalResult(tool, r))
     }
 
     /**

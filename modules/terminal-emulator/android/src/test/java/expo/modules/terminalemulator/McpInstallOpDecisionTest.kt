@@ -18,18 +18,23 @@ class McpInstallOpDecisionTest {
     private val principal = fixture.getString("principal")
     private val now = 1_800_000_000_000L
 
-    /** The fixture models the foreground step as unavailable (phone locked) unless a test says otherwise. */
+    /**
+     * The fixture models the foreground step and the lock-screen prompt as
+     * unavailable (phone locked, no full-screen intent) unless a test says otherwise.
+     */
     private class Facts(
         var epoch: Boolean = true,
         var exec: Boolean = true,
         var rnLive: Boolean = true,
         var blocker: String? = McpInstallOpDecision.FG_LOCKED,
+        var lockBlocker: String? = McpInstallOpDecision.FG_NO_FULL_SCREEN_INTENT,
     ) : McpInstallOpDecision.Steps {
         val reads = mutableListOf<String>()
         override fun epochCurrent(): Boolean { reads += "epoch"; return epoch }
         override fun execOn(): Boolean { reads += "exec"; return exec }
         override fun rnLive(): Boolean { reads += "rnLive"; return rnLive }
         override fun foregroundBlocker(): String? { reads += "foreground"; return blocker }
+        override fun lockScreenBlocker(): String? { reads += "lock"; return lockBlocker }
     }
 
     private fun req(tool: String, args: JSONObject, ageMs: Long = 0) =
@@ -63,8 +68,8 @@ class McpInstallOpDecisionTest {
                 "not_attended" -> {
                     val a = out as? McpInstallOpDecision.Outcome.Answer ?: throw AssertionError("$name: $out")
                     assertEquals(name, "not_attended", a.auditCode)
-                    // RN paused: the foreground step was refused (locked); RN live but stale: not tried.
-                    assertEquals(name, if (f.getBoolean("rnLive")) null else McpInstallOpDecision.FG_LOCKED, a.foregroundFailure)
+                    // RN paused: locked and no full-screen intent; RN live but stale: nothing tried.
+                    assertEquals(name, if (f.getBoolean("rnLive")) null else McpInstallOpDecision.FG_NO_FULL_SCREEN_INTENT, a.foregroundFailure)
                     assertJson(name, JSONObject().put("ok", false).put("error", notAttended.getString("message")).put("code", "not_attended"), a.result)
                 }
                 "answer" -> {
@@ -99,7 +104,7 @@ class McpInstallOpDecisionTest {
     fun readsInRnOrderAndRnLiveOnlyAtTheEnd() {
         val facts = Facts(rnLive = false)
         McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery), facts, now)
-        assertEquals(listOf("epoch", "exec", "rnLive", "foreground"), facts.reads)
+        assertEquals(listOf("epoch", "exec", "rnLive", "foreground", "lock"), facts.reads)
         val refused = Facts()
         McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_PIPELINE_CONFIG, JSONObject()), refused, now)
         assertEquals(listOf("epoch", "exec"), refused.reads)
@@ -110,15 +115,15 @@ class McpInstallOpDecisionTest {
         // stage_install: RN's order (exec, arguments, then the epoch).
         val stage = Facts(rnLive = false)
         McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_STAGE_INSTALL, apk), stage, now)
-        assertEquals(listOf("exec", "epoch", "rnLive", "foreground"), stage.reads)
+        assertEquals(listOf("exec", "epoch", "rnLive", "foreground", "lock"), stage.reads)
     }
 
     @Test
     fun deadlineBoundaryIsRnsGreaterOrEqual() {
-        val at = McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery, 15_000), Facts(), now)
+        val at = McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery, 300_000), Facts(), now)
         assertEquals("timeout", (at as McpInstallOpDecision.Outcome.Answer).auditCode)
         assertEquals("{\"ok\":true,\"data\":{\"status\":\"timeout\"}}", at.result)
-        val before = McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery, 14_999), Facts(), now)
+        val before = McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery, 299_999), Facts(), now)
         assertEquals("not_attended", (before as McpInstallOpDecision.Outcome.Answer).auditCode)
         // Handoff window boundary: ≤ 5 s.
         assertEquals(McpInstallOpDecision.Outcome.Handoff, McpInstallOpDecision.decide(req(McpInstallOpDecision.OP_DELIVERY_SCRIPT, delivery, 5_000), Facts(), now))
@@ -152,7 +157,10 @@ class McpInstallOpDecisionTest {
     @Test
     fun auditLineIsRnsShapeAndPassesTheWriter() {
         for (tool in McpInstallOpDecision.OPS) {
-            for (code in listOf("invalid_path", "not_attended", "handed_off", "handoff_failed", "timeout", "revoked", "foregrounded")) {
+            for (code in listOf(
+                "invalid_path", "not_attended", "handed_off", "handoff_failed", "timeout", "revoked", "foregrounded",
+                "lock_screen_shown", "lock_screen_approved", "lock_screen_denied", "lock_screen_auth_failed", "denied",
+            )) {
                 val json = McpInstallOpDecision.auditJson(tool, principal, code)
                 val kind = McpInstallOpDecision.auditKind(tool)
                 assertEquals("{\"kind\":\"$kind\",\"event\":\"$kind\",\"principal\":\"$principal\",\"code\":\"$code\"}", json)
@@ -204,14 +212,14 @@ class McpInstallOpDecisionTest {
             McpInstallOpDecision.OP_PIPELINE_CONFIG to pipeline,
             McpInstallOpDecision.OP_STAGE_INSTALL to apk,
         )) {
-            // Fresh request: the deadline cap (receipt + 15 s - 3 s) is earlier than now + 15 s.
-            assertEquals(tool, McpInstallOpDecision.Outcome.Foreground(now + 12_000), fg(tool, args))
+            // Fresh request: now + 15 s (earlier than receipt + 300 s - 3 s).
+            assertEquals(tool, McpInstallOpDecision.Outcome.Foreground(now + 15_000), fg(tool, args))
         }
     }
 
     @Test
     fun preconditionFailuresStayNotAttendedWithTheReason() {
-        for (reason in listOf(McpInstallOpDecision.FG_LOCKED, McpInstallOpDecision.FG_NO_OVERLAY)) {
+        for (reason in listOf(McpInstallOpDecision.FG_NO_OVERLAY, McpInstallOpDecision.FG_START_FAILED)) {
             val out = fg(facts = Facts(rnLive = false, blocker = reason)) as McpInstallOpDecision.Outcome.Answer
             assertEquals("not_attended", out.auditCode)
             assertEquals(reason, out.foregroundFailure)
@@ -222,15 +230,17 @@ class McpInstallOpDecisionTest {
     @Test
     fun noTimeLeftBeforeTheMarginIsNotAttendedWithoutReadingThePreconditions() {
         val facts = Facts(rnLive = false, blocker = null)
-        // 12 s old: receipt + 15 s - 3 s = now, nothing to wait for (but not yet expired).
-        val out = fg(ageMs = 12_000, facts = facts) as McpInstallOpDecision.Outcome.Answer
+        // 297 s old: receipt + 300 s - 3 s = now, nothing to wait for (but not yet expired).
+        val out = fg(ageMs = 297_000, facts = facts) as McpInstallOpDecision.Outcome.Answer
         assertEquals("not_attended", out.auditCode)
         assertEquals(McpInstallOpDecision.FG_NO_TIME, out.foregroundFailure)
         assertEquals(listOf("epoch", "exec", "rnLive"), facts.reads)
-        // 11.999 s old: 1 ms to wait.
-        assertEquals(McpInstallOpDecision.Outcome.Foreground(now + 1), fg(ageMs = 11_999))
+        // 296.999 s old: 1 ms to wait.
+        assertEquals(McpInstallOpDecision.Outcome.Foreground(now + 1), fg(ageMs = 296_999))
         // A stale request (6 s) while RN is paused is still brought forward: the RN-live rule applies later.
-        assertEquals(McpInstallOpDecision.Outcome.Foreground(now + 6_000), fg(ageMs = 6_000))
+        assertEquals(McpInstallOpDecision.Outcome.Foreground(now + 15_000), fg(ageMs = 6_000))
+        // 290 s old: the margin caps the wait.
+        assertEquals(McpInstallOpDecision.Outcome.Foreground(now + 7_000), fg(ageMs = 290_000))
     }
 
     @Test
@@ -244,10 +254,10 @@ class McpInstallOpDecisionTest {
 
     @Test
     fun waitEndsAtTheEarlierOfFifteenSecondsAndTheDeadlineMinusTheMargin() {
-        assertEquals(now + 12_000, McpInstallOpDecision.foregroundWaitUntil(now, now))
+        assertEquals(now + 15_000, McpInstallOpDecision.foregroundWaitUntil(now, now))
         // A receipt in the "future" (clock skew) cannot stretch the wait past 15 s.
         assertEquals(now + 15_000, McpInstallOpDecision.foregroundWaitUntil(now + 10_000, now))
-        assertEquals(now + 2_000, McpInstallOpDecision.foregroundWaitUntil(now - 10_000, now))
+        assertEquals(now + 2_000, McpInstallOpDecision.foregroundWaitUntil(now - 295_000, now))
     }
 
     private fun poll(ageMs: Long, waitUntil: Long, rnLiveSince: Long?, facts: Facts = Facts(rnLive = false, blocker = null), tool: String = McpInstallOpDecision.OP_DELIVERY_SCRIPT) =
@@ -275,12 +285,12 @@ class McpInstallOpDecisionTest {
         assertEquals(McpInstallOpDecision.Outcome.Wait, poll(11_999, now + 1, null))
         // Past the pre-approval deadline (a stalled worker): RN's timeout, even if RN came up.
         for (since in listOf(null, now)) {
-            val expired = poll(15_000, now + 1_000, since) as McpInstallOpDecision.Outcome.Answer
+            val expired = poll(300_000, now + 1_000, since) as McpInstallOpDecision.Outcome.Answer
             assertEquals("timeout", expired.auditCode)
             assertEquals("{\"ok\":true,\"data\":{\"status\":\"timeout\"}}", expired.result)
             assertEquals(McpInstallOpDecision.FG_RN_NOT_LIVE, expired.foregroundFailure)
         }
-        val cfg = poll(15_000, now + 1_000, null, tool = McpInstallOpDecision.OP_PIPELINE_CONFIG) as McpInstallOpDecision.Outcome.Answer
+        val cfg = poll(300_000, now + 1_000, null, tool = McpInstallOpDecision.OP_PIPELINE_CONFIG) as McpInstallOpDecision.Outcome.Answer
         assertEquals(McpInstallOpDecision.timeoutResult(McpInstallOpDecision.OP_PIPELINE_CONFIG), cfg.result)
         // The epoch ended while waiting: revoked, nothing else read.
         val facts = Facts(epoch = false, rnLive = false, blocker = null)
@@ -295,6 +305,7 @@ class McpInstallOpDecisionTest {
             for (reason in listOf(
                 McpInstallOpDecision.FG_LOCKED, McpInstallOpDecision.FG_NO_OVERLAY, McpInstallOpDecision.FG_START_FAILED,
                 McpInstallOpDecision.FG_RN_NOT_LIVE, McpInstallOpDecision.FG_NO_TIME, McpInstallOpDecision.FG_HANDOFF_WINDOW,
+                McpInstallOpDecision.FG_NO_FULL_SCREEN_INTENT, McpInstallOpDecision.FG_NOTIFICATIONS_OFF, McpInstallOpDecision.FG_NO_DECISION,
             )) {
                 val json = McpInstallOpDecision.auditJson(tool, principal, "foreground_failed", reason)
                 val line = IngressAuditWriter.buildMcpLine(now, null, json) ?: throw AssertionError("$tool $reason refused by the writer")
@@ -305,5 +316,69 @@ class McpInstallOpDecisionTest {
             assertNull(IngressAuditWriter.buildMcpLine(now, null, McpInstallOpDecision.auditJson(tool, principal, "not_attended", "locked")))
             assertNull(IngressAuditWriter.buildMcpLine(now, null, McpInstallOpDecision.auditJson(tool, principal, "foreground_failed", "Bad Reason")))
         }
+    }
+
+    // -- Lock-screen approval --
+
+    @Test
+    fun lockedWithFullScreenIntentOpensTheLockScreenPromptUntilTheDeadlineMargin() {
+        for ((tool, args) in listOf(
+            McpInstallOpDecision.OP_DELIVERY_SCRIPT to delivery,
+            McpInstallOpDecision.OP_PIPELINE_CONFIG to pipeline,
+            McpInstallOpDecision.OP_STAGE_INSTALL to apk,
+        )) {
+            val facts = Facts(rnLive = false, lockBlocker = null)
+            assertEquals(tool, McpInstallOpDecision.Outcome.LockScreen(now - 10_000 + 297_000), fg(tool, args, 10_000, facts))
+        }
+        // Not offered when RN is live, or when the phone is unlocked (the foreground step instead).
+        assertEquals(McpInstallOpDecision.Outcome.Handoff, fg(facts = Facts(rnLive = true, lockBlocker = null)))
+        val unlocked = Facts(rnLive = false, blocker = null, lockBlocker = null)
+        assertTrue(fg(facts = unlocked) is McpInstallOpDecision.Outcome.Foreground)
+        assertTrue("lock" !in unlocked.reads)
+        // No overlay grant while unlocked: not the lock-screen prompt either.
+        val noOverlay = fg(facts = Facts(rnLive = false, blocker = McpInstallOpDecision.FG_NO_OVERLAY, lockBlocker = null)) as McpInstallOpDecision.Outcome.Answer
+        assertEquals(McpInstallOpDecision.FG_NO_OVERLAY, noOverlay.foregroundFailure)
+    }
+
+    @Test
+    fun lockScreenBlockersStayNotAttended() {
+        for (reason in listOf(McpInstallOpDecision.FG_NO_FULL_SCREEN_INTENT, McpInstallOpDecision.FG_NOTIFICATIONS_OFF)) {
+            val out = fg(facts = Facts(rnLive = false, lockBlocker = reason)) as McpInstallOpDecision.Outcome.Answer
+            assertEquals("not_attended", out.auditCode)
+            assertEquals(reason, out.foregroundFailure)
+        }
+    }
+
+    private fun lockPoll(state: McpLockScreenApproval.State, ageMs: Long = 10_000, waitUntil: Long = now + 100_000,
+                         tool: String = McpInstallOpDecision.OP_DELIVERY_SCRIPT, facts: Facts = Facts(rnLive = false)) =
+        McpInstallOpDecision.afterLockScreen(req(tool, if (tool == McpInstallOpDecision.OP_STAGE_INSTALL) apk else delivery, ageMs), facts, now, waitUntil, state)
+
+    @Test
+    fun afterLockScreenHandsOffOnlyAnApproval() {
+        assertEquals(McpInstallOpDecision.Outcome.Wait, lockPoll(McpLockScreenApproval.State.PENDING))
+        assertEquals(McpInstallOpDecision.Outcome.Wait, lockPoll(McpLockScreenApproval.State.AUTHENTICATING))
+        assertEquals(McpInstallOpDecision.Outcome.Handoff, lockPoll(McpLockScreenApproval.State.APPROVED))
+        // RN's deny, per tool.
+        val denied = lockPoll(McpLockScreenApproval.State.DENIED) as McpInstallOpDecision.Outcome.Answer
+        assertEquals("denied", denied.auditCode)
+        assertEquals("{\"ok\":false,\"error\":\"denied by user (or timed out waiting for a response)\",\"code\":\"denied\"}", denied.result)
+        val stageDenied = lockPoll(McpLockScreenApproval.State.DENIED, tool = McpInstallOpDecision.OP_STAGE_INSTALL) as McpInstallOpDecision.Outcome.Answer
+        assertEquals("{\"ok\":false,\"error\":\"denied by user (or timed out waiting for a response)\"}", stageDenied.result)
+        // No decision by the wait's end (or the machine expired): not_attended.
+        for (out in listOf(
+            lockPoll(McpLockScreenApproval.State.PENDING, waitUntil = now),
+            lockPoll(McpLockScreenApproval.State.AUTHENTICATING, waitUntil = now),
+            lockPoll(McpLockScreenApproval.State.EXPIRED),
+        )) {
+            out as McpInstallOpDecision.Outcome.Answer
+            assertEquals("not_attended", out.auditCode)
+            assertEquals(McpInstallOpDecision.FG_NO_DECISION, out.foregroundFailure)
+        }
+        // Past the approval deadline even an approval is RN's timeout.
+        val late = lockPoll(McpLockScreenApproval.State.APPROVED, ageMs = 300_000) as McpInstallOpDecision.Outcome.Answer
+        assertEquals("timeout", late.auditCode)
+        // The epoch ended: revoked, whatever was decided.
+        val revoked = lockPoll(McpLockScreenApproval.State.APPROVED, facts = Facts(epoch = false, rnLive = false)) as McpInstallOpDecision.Outcome.Answer
+        assertEquals("revoked", revoked.auditCode)
     }
 }

@@ -466,8 +466,8 @@ async function dropWithMtime(input: ReturnType<typeof argsFor>, receipt: number,
 }
 
 it.each([
-  [260_000, 'times out when its result window expires'],
-  [259_999, 'swaps while its result window is still open'],
+  [470_000, 'times out when its result window expires'],
+  [469_999, 'swaps while its result window is still open'],
 ] as const)('a queued call %s ms after file publication: %s', async (elapsed, _outcome) => {
   const receivedAt = Date.now();
   const signedReceipt = new Date(receivedAt).toISOString();
@@ -481,7 +481,7 @@ it.each([
   let queued: Awaited<ReturnType<typeof requestApproval>> | undefined;
   const next = config([updated]);
   const backup = 'existing backup after the predecessor';
-  const expired = elapsed === 260_000;
+  const expired = elapsed === 470_000;
   try {
     // Keep the target digest stable so the queued swap can pass its CAS check.
     writeFileSync(staged, config());
@@ -519,7 +519,7 @@ it.each([
 
 it('refuses at shell startup when only the device clock has reached the deadline', async () => {
   const receipt = realNow() - 42_000;
-  const mtime = receipt - 259_999;
+  const mtime = receipt - 469_999;
   const clock = jest.spyOn(Date, 'now').mockReturnValue(receipt);
   const { pending } = await dropWithMtime(argsFor(config([updated]), [{ agentId: 'agent-1', pipelineId: a.id }]), receipt, mtime, clock);
   useMcpApprovalStore.getState().respond(current()!.id, 'once');
@@ -540,7 +540,7 @@ it('refuses at shell startup 500 ms after a fractional-second deadline', async (
   exec.mockImplementation((command, timeout) => runBash(
     isSwap(command) ? `date() { printf '%s\\n' '${deviceSeconds}'; }\n${command}` : command, timeout,
   ));
-  const { pending } = await dropWithMtime(argsFor(config([updated])), receipt, deadline - 260_000, clock);
+  const { pending } = await dropWithMtime(argsFor(config([updated])), receipt, deadline - 470_000, clock);
   useMcpApprovalStore.getState().respond(current()!.id, 'once');
   expect(await pending).toMatchObject({ ok: false, code: 'timeout' });
   expect(exec.mock.calls.some(([command]) => isSwap(command))).toBe(true);
@@ -553,7 +553,7 @@ it('audits committed work when the deadline expires between rebuilds', async () 
   const receipt = realNow();
   const clock = jest.spyOn(Date, 'now').mockReturnValue(receipt);
   update.mockImplementationOnce(async (id) => {
-    clock.mockReturnValue(receipt + 260_000);
+    clock.mockReturnValue(receipt + 470_000);
     return { id } as Agent;
   });
   const { pending } = await requestApproval(argsFor(config([updated]), [
@@ -585,7 +585,7 @@ it.each(['timeout', 'cancelled: pending MCP requests were revoked'])(
     const runBash = exec.getMockImplementation()!;
     exec.mockImplementation(async (script, timeout) => {
       if (script !== command) return runBash(script, timeout);
-      clock.mockReturnValue(receipt + 260_000);
+      clock.mockReturnValue(receipt + 470_000);
       return { exitCode: 1, stdout: '', stderr };
     });
     update.mockImplementationOnce(async (id, _patch, runCommand) => {

@@ -169,8 +169,8 @@ describe('the Kotlin decision names the same constants and messages as the TS so
   });
 
   it('constants', () => {
-    expect(bridgeSrc).toContain('const INSTALL_CLASS_PRE_APPROVAL_MS = 15_000;');
-    expect(src).toContain('const val PRE_APPROVAL_MS = 15_000L');
+    expect(bridgeSrc).toContain('const INSTALL_CLASS_PRE_APPROVAL_MS = 300_000;');
+    expect(src).toContain('const val PRE_APPROVAL_MS = 300_000L');
     expect(ARTICLE_PIPELINE_FILE_MAX_BYTES).toBe(262_144);
     expect(src).toContain('const val PIPELINE_MAX_BYTES = 262_144L');
     expect(src).toContain('const val DELIVERY_MAX_BYTES = 1_048_576L');
@@ -324,7 +324,7 @@ describe('foreground for approval (native only; source invariants)', () => {
     expect(poll).toContain('McpApprovalForeground.hide(w.overlay)');
   });
 
-  it('timeouts: 15 s wait, 3 s before the pre-approval deadline, 200 ms polls', () => {
+  it('timeouts: 15 s wait, 3 s before the approval deadline, 200 ms polls', () => {
     expect(decision).toContain('const val FOREGROUND_WAIT_MS = 15_000L');
     expect(decision).toContain('const val FOREGROUND_DEADLINE_MARGIN_MS = 3_000L');
     expect(decision).toContain('const val FOREGROUND_POLL_MS = 200L');

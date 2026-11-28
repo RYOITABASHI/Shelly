@@ -58,6 +58,19 @@
       android:taskAffinity=""
       android:theme="@style/ShellyLockPromptTheme" />
 
+    <!-- MCP lock-screen approval (McpLockScreenApprovalActivity.kt, owner
+         decision 2026-11-29): opened over the keyguard only by Shelly's own
+         full-screen notification (immutable PendingIntent). Not exported,
+         its own empty task affinity, not in recents. Module manifest so a
+         clean expo prebuild keeps it. -->
+    <activity
+      android:name=".McpLockScreenApprovalActivity"
+      android:excludeFromRecents="true"
+      android:exported="false"
+      android:noHistory="true"
+      android:taskAffinity=""
+      android:theme="@style/ShellyLockPromptTheme" />
+
     <!-- Run result from the Shelly-trusted ClosePaw variant (`shelly closepaw
          wait`). Exported so ai.closepaw can reach it by explicit component;
          ClosePawResultReceiver ignores everything except a pinned-cert

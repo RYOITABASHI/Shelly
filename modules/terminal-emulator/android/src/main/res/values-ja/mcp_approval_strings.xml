@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="mcp_approval_foreground_overlay">Shelly: 承認が必要です</string>
+
+  <string name="mcp_lock_channel_name">ロック画面での MCP 承認</string>
+  <string name="mcp_lock_channel_description">MCP クライアントから、承認が必要な更新の依頼が届きました</string>
+  <string name="mcp_lock_summary_stage_install">MCP経由でAPKをインストールしますか？</string>
+  <string name="mcp_lock_summary_update_delivery_script">MCP経由で配達スクリプトを更新しますか？</string>
+  <string name="mcp_lock_summary_update_pipeline_config">MCP経由で記事パイプライン設定を更新しますか？</string>
+  <string name="mcp_lock_detail_update_pipeline_config">%1$s（%2$s バイト）\n変更するパイプライン: %3$s\n再構築するエージェント: %4$s</string>
+  <string name="mcp_lock_pipelines_after_approval">（承認後に Shelly が確認します）</string>
+  <string name="mcp_lock_origin">出所: 外部（MCP）</string>
+  <string name="mcp_lock_principal">クライアントのトークン ID: %1$s</string>
+  <string name="mcp_lock_auth_note">承認するとロック解除を求めます。解除するまで何も変更されません。</string>
+  <string name="mcp_lock_deny">拒否</string>
+  <string name="mcp_lock_approve">承認</string>
 </resources>

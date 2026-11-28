@@ -296,3 +296,47 @@ export async function signMcpRequest<T extends Record<string, unknown>>(
 ): Promise<T & { mac: string }> {
   return { ...unsigned, mac: await mcpRequestMac(bridgeKey, unsigned, sha256) };
 }
+
+// -- Lock-screen approvals (owner decision 2026-11-29) --
+//
+// For update_pipeline_config / update_delivery_script / stage_install, the
+// native lock-screen approval (McpLockScreenApprovalActivity.kt) records an
+// approval the owner gave on the lock screen (after the keyguard was
+// dismissed) as `lock-approvals/<callId>` =
+// `<expiresAtMs>.<hex HMAC(bridgeKey, domain + callId + ":" + tool + ":" + expiresAtMs)>`
+// (McpLockScreenApproval.kt). RN accepts it instead of showing its dialog
+// only when it verifies for this callId and tool, has not expired, does not
+// outlive the request's approval deadline, and was not used before (the file
+// is deleted before the check and the callId recorded).
+export const MCP_LOCK_APPROVAL_DOMAIN = 'shelly-mcp-lock-approval-v1:';
+const LOCK_APPROVAL_RE = /^([0-9]{13})\.([0-9a-f]{64})$/;
+
+export function mcpLockApprovalMac(bridgeKey: string, callId: string, tool: string, expiresAtMs: number, sha256: Sha256): Promise<string> {
+  return hmacSha256Hex(utf8(bridgeKey), utf8(`${MCP_LOCK_APPROVAL_DOMAIN}${callId}:${tool}:${expiresAtMs}`), sha256);
+}
+
+/** Constant-time check of a lock-approval file's content (single use is the caller's: delete + record). */
+export async function verifyMcpLockApproval(
+  content: unknown,
+  bridgeKey: string | null,
+  callId: string,
+  tool: string,
+  deadlineMs: number,
+  nowMs: number,
+  sha256: Sha256,
+): Promise<boolean> {
+  if (!bridgeKey || !MCP_BRIDGE_KEY_RE.test(bridgeKey)) return false;
+  if (typeof content !== 'string') return false;
+  const m = LOCK_APPROVAL_RE.exec(content.trim());
+  if (!m) return false;
+  const expiresAtMs = Number(m[1]);
+  if (!Number.isSafeInteger(expiresAtMs) || nowMs >= expiresAtMs || !(expiresAtMs <= deadlineMs)) return false;
+  return timingSafeEqualHex(await mcpLockApprovalMac(bridgeKey, callId, tool, expiresAtMs, sha256), m[2]);
+}
+
+/** Records that the lock-screen approval for callId was used. False when it already was. */
+export function recordMcpLockApprovalConsumed(callId: string, receivedAtMs: number, nowMs: number = Date.now()): boolean {
+  const key = `lock:${callId}`;
+  if (consumedHandoffs.has(key)) return false;
+  return consumedHandoffs.admit(key, receivedAtMs, nowMs);
+}

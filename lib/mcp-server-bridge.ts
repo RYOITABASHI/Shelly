@@ -68,7 +68,7 @@ import { t } from '@/lib/i18n';
 import { logError, logInfo } from '@/lib/debug-logger';
 import { getDebugLogEntries } from '@/lib/debug-log-buffer';
 import { redactSecretsText } from '@/lib/redact-secrets';
-import { canonicalJson, recordMcpHandoffConsumed, verifyMcpHandoffToken, verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
+import { canonicalJson, recordMcpHandoffConsumed, recordMcpLockApprovalConsumed, verifyMcpHandoffToken, verifyMcpLockApproval, verifyMcpRequest, type McpVerifiedRequest } from '@/lib/mcp-request-auth';
 import {
   addMcpAlwaysAllowRule,
   findAlwaysAllowMatch,
@@ -170,6 +170,57 @@ async function approveRawTool(
   _callId: string,
 ): Promise<McpApprovalDecision> {
   return requestApproval(request);
+}
+
+/**
+ * The approval step of update_pipeline_config / update_delivery_script /
+ * stage_install (approval every time; no rule, no "Skip all approvals").
+ * An approval the owner already gave on the lock screen for THIS callId
+ * (McpLockScreenApprovalActivity.kt -> `lock-approvals/<callId>`, verified,
+ * single use) is honoured without a second tap and audited
+ * `approved_on_lock_screen`; otherwise the dialog is shown, waiting up to the
+ * request's approval deadline (INSTALL_CLASS_PRE_APPROVAL_MS from receipt).
+ */
+async function approveInstallClassTool(
+  request: Omit<ApprovalRequestInput, 'alwaysAllowable'>,
+  callId: string,
+  deadlineMs: number,
+  audit: (code: string) => Promise<void>,
+): Promise<McpApprovalDecision> {
+  if (await consumeLockScreenApproval(callId, request.kind, deadlineMs)) {
+    await audit('approved_on_lock_screen');
+    return 'once';
+  }
+  const remaining = Number.isFinite(deadlineMs) ? deadlineMs - Date.now() : installApprovalTimeoutMs;
+  return (await requestApprovalDetailed(request, remaining, installApprovalTimeoutMs)).decision;
+}
+
+/** When a tap for an install-class op stops counting: the approval deadline. */
+function installApprovalExpiresAt(deadlineMs: number): number {
+  return Number.isFinite(deadlineMs) ? deadlineMs : Date.now() + installApprovalTimeoutMs;
+}
+
+export const LOCK_APPROVALS_DIR = `${QUEUE_DIR}/lock-approvals`;
+
+async function consumeLockScreenApproval(callId: string, tool: string, deadlineMs: number): Promise<boolean> {
+  if (!Number.isFinite(deadlineMs)) return false;
+  const uri = `${LOCK_APPROVALS_DIR}/${callId}`;
+  let content: string;
+  try {
+    content = await FileSystem.readAsStringAsync(uri);
+  } catch {
+    return false; // none (the usual case)
+  }
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    return false; // not consumed: refuse rather than leave it reusable
+  }
+  if (!(await verifyMcpLockApproval(content, bridgeKey, callId, tool, deadlineMs, Date.now(), requestSha256))) {
+    logError('MCPBridge', `ignored an invalid lock-screen approval for call ${callId.slice(0, 8)}`);
+    return false;
+  }
+  return recordMcpLockApprovalConsumed(callId, deadlineMs - INSTALL_CLASS_PRE_APPROVAL_MS);
 }
 
 const DIAGNOSTICS_DISABLED_ERROR = 'is disabled (Settings → Agents → MCP: Allow diagnostics)';
@@ -615,10 +666,14 @@ type ToolResult = { ok: true; data: unknown } | { ok: false; error: string; code
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 90_000;
 let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
+// update_pipeline_config / update_delivery_script / stage_install: the dialog
+// waits up to the request's approval deadline (owner decision 2026-11-29: 5 min).
+let installApprovalTimeoutMs = 300_000;
 
 /** Test hook: a shorter approval timeout (null restores the default). */
 export function __setMCPApprovalTimeoutForTests(ms: number | null): void {
   approvalTimeoutMs = ms ?? DEFAULT_APPROVAL_TIMEOUT_MS;
+  installApprovalTimeoutMs = ms ?? INSTALL_CLASS_PRE_APPROVAL_MS;
 }
 
 type ApprovalRequestInput = {
@@ -643,6 +698,7 @@ async function requestApproval(request: Omit<ApprovalRequestInput, 'alwaysAllowa
 function requestApprovalDetailed(
   request: ApprovalRequestInput,
   timeoutMs: number = approvalTimeoutMs,
+  capMs: number = approvalTimeoutMs,
 ): Promise<{ decision: McpApprovalDecision; timedOut: boolean }> {
   return new Promise((resolve) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -661,7 +717,7 @@ function requestApprovalDetailed(
     const timer = setTimeout(() => {
       settle('deny', true);
       useMcpApprovalStore.getState().respond(id, 'deny');
-    }, Math.max(0, Math.min(approvalTimeoutMs, timeoutMs)));
+    }, Math.max(0, Math.min(capMs, timeoutMs)));
     useMcpApprovalStore.getState().enqueue({
       ...request,
       origin: { principal: request.origin.principal, clientNameSelfReported: request.origin.clientNameSelfReported },
@@ -1105,14 +1161,14 @@ async function stageInstallTool(
     if (Date.now() >= approvalDeadline) return timeout();
     if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
     // The omission switches are implemented by the native raw/agent consumers.
-    // This signed RN queue operation always requests a tap through the raw approval path.
-    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
-    const decision = await approveRawTool({
+    // This signed RN queue operation always requests a tap (or a lock-screen approval).
+    const approvalExpiresAt = installApprovalExpiresAt(approvalDeadline);
+    const decision = await approveInstallClassTool({
       kind: 'stage_install',
       summary: t('mcp.approval_stage_install'),
       detail: resolved.path,
       origin: ingress,
-    }, callId);
+    }, callId, approvalDeadline, audit);
     if (epoch !== queueEpoch) return refuse('revoked', REVOKED_ERROR);
     if (decision === 'deny' || Date.now() >= approvalExpiresAt) return refuse('denied', 'denied by user (or timed out waiting for a response)');
     if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
@@ -1217,13 +1273,13 @@ async function updateDeliveryScriptTool(
     if (Date.now() >= deadlineMs) return timeout();
     if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
     const targetName = '.env.article-delivery.js';
-    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
-    const decision = await approveRawTool({
+    const approvalExpiresAt = installApprovalExpiresAt(deadlineMs);
+    const decision = await approveInstallClassTool({
       kind: 'update_delivery_script',
       summary: t('mcp.approval_update_delivery_script'),
       detail: `${stagedPath} → ${targetName}`,
       origin: ingress,
-    }, callId);
+    }, callId, deadlineMs, audit);
     if (epoch !== queueEpoch) return revoked();
     if (decision === 'deny' || Date.now() >= approvalExpiresAt) return refuse('denied', 'denied by user (or timed out waiting for a response)');
     if (!execEnabled()) return refuse('disabled', EXEC_DISABLED_ERROR);
@@ -1750,9 +1806,13 @@ async function streamFeedTool(
 
 const PIPELINE_CONFIG_NAME = 'article-pipelines.json';
 const PIPELINE_CONFIG_AUDIT = 'mcp_update_pipeline_config';
-const INSTALL_CLASS_PRE_APPROVAL_MS = 15_000;
+// The approval deadline (from receipt) of update_pipeline_config /
+// update_delivery_script / stage_install: the tap (RN's dialog, or the
+// lock-screen approval) must come before it (owner decision 2026-11-29: 5 min).
+// KEEP IN SYNC: McpInstallOpDecision.kt PRE_APPROVAL_MS.
+const INSTALL_CLASS_PRE_APPROVAL_MS = 300_000;
 // Matches STAGE_INSTALL_RESULT_TIMEOUT_MS in shelly-mcp-server.js.
-const PIPELINE_CONFIG_RESULT_TIMEOUT_MS = 260_000;
+const PIPELINE_CONFIG_RESULT_TIMEOUT_MS = 470_000;
 
 type PipelineConfigFailureCode = 'timeout' | 'revoked' | 'agent_not_found' | 'other';
 
@@ -2057,8 +2117,8 @@ async function updatePipelineConfigTool(
     if (epoch !== queueEpoch) return revoked();
     if (Date.now() >= deadlineMs) return timeout();
     if (!execEnabled()) return refuseConfig('disabled', EXEC_DISABLED_ERROR);
-    const approvalExpiresAt = Date.now() + approvalTimeoutMs;
-    const decision = await approveRawTool({
+    const approvalExpiresAt = installApprovalExpiresAt(deadlineMs);
+    const decision = await approveInstallClassTool({
       kind: 'update_pipeline_config',
       summary: t('mcp.approval_update_pipeline_config'),
       detail: t('mcp.approval_update_pipeline_config_detail', {
@@ -2068,7 +2128,7 @@ async function updatePipelineConfigTool(
         agents: rebuilds.map(({ agentId }) => agentId).join(', ') || '—',
       }),
       origin: ingress,
-    }, callId);
+    }, callId, deadlineMs, audit);
     if (epoch !== queueEpoch) return revoked();
     if (decision === 'deny' || Date.now() >= approvalExpiresAt) {
       return refuseConfig('denied', 'denied by user (or timed out waiting for a response)');

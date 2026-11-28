@@ -1,5 +1,5 @@
 {
-  "note": "Shared by __tests__/mcp-install-op-native-parity.test.ts (drives the real RN ladder) and McpInstallOpDecisionTest (JVM). handoff and not_attended are both the point where RN shows its tap dialog: native hands the request to RN only while RN is live and the request is fresh, else answers notAttended. answer = RN's exact result and its single audit line code. Dummy values only. stage_install (same native path since the foreground-for-approval change): RN's refuse() carries no code except for digest_changed / revoked, and its path / digest checks run before anything else (no epoch check first). The foreground-for-approval step is native only: these cases model it as unavailable (phone locked), so RN paused is not_attended.",
+  "note": "Shared by __tests__/mcp-install-op-native-parity.test.ts (drives the real RN ladder) and McpInstallOpDecisionTest (JVM). handoff and not_attended are both the point where RN shows its tap dialog: native hands the request to RN only while RN is live and the request is fresh, else answers notAttended. answer = RN's exact result and its single audit line code. Dummy values only. stage_install (same native path since the foreground-for-approval change): RN's refuse() carries no code except for digest_changed / revoked, and its path / digest checks run before anything else (no epoch check first). The approval deadline is 5 min from receipt (owner decision 2026-11-29). The foreground-for-approval step and the lock-screen approval are native only: these cases model both as unavailable (phone locked, no full-screen intent), so RN paused is not_attended.",
   "principal": "0123456789abcdef0123456789abcdef",
   "notAttended": {
     "code": "not_attended",
@@ -58,7 +58,7 @@
       }
     },
     {
-      "name": "update_delivery_script: valid, 16 s old -> pre-approval timeout",
+      "name": "update_delivery_script: valid, 300 s old -> pre-approval timeout",
       "tool": "update_delivery_script",
       "args": {
         "stagedPath": "/sdcard/Download/delivery.js",
@@ -68,7 +68,7 @@
       "facts": {
         "exec": true,
         "rnLive": false,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -82,7 +82,7 @@
       }
     },
     {
-      "name": "update_delivery_script: valid, 16 s old, RN live -> timeout too",
+      "name": "update_delivery_script: valid, 300 s old, RN live -> timeout too",
       "tool": "update_delivery_script",
       "args": {
         "stagedPath": "/sdcard/Download/delivery.js",
@@ -92,7 +92,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -162,7 +162,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -1003,7 +1003,7 @@
       }
     },
     {
-      "name": "update_pipeline_config: valid, 16 s old -> pre-approval timeout",
+      "name": "update_pipeline_config: valid, 300 s old -> pre-approval timeout",
       "tool": "update_pipeline_config",
       "args": {
         "stagedPath": "/sdcard/Download/config.json",
@@ -1014,7 +1014,7 @@
       "facts": {
         "exec": true,
         "rnLive": false,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -1027,7 +1027,7 @@
       }
     },
     {
-      "name": "update_pipeline_config: valid, 16 s old, RN live -> timeout too",
+      "name": "update_pipeline_config: valid, 300 s old, RN live -> timeout too",
       "tool": "update_pipeline_config",
       "args": {
         "stagedPath": "/sdcard/Download/config.json",
@@ -1038,7 +1038,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -1110,7 +1110,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -2217,7 +2217,7 @@
       }
     },
     {
-      "name": "stage_install: valid, 16 s old -> pre-approval timeout",
+      "name": "stage_install: valid, 300 s old -> pre-approval timeout",
       "tool": "stage_install",
       "args": {
         "path": "/storage/emulated/0/Download/app.apk",
@@ -2226,7 +2226,7 @@
       "facts": {
         "exec": true,
         "rnLive": false,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -2240,7 +2240,7 @@
       }
     },
     {
-      "name": "stage_install: valid, 16 s old, RN live -> timeout too",
+      "name": "stage_install: valid, 300 s old, RN live -> timeout too",
       "tool": "stage_install",
       "args": {
         "path": "/storage/emulated/0/Download/app.apk",
@@ -2249,7 +2249,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
@@ -2312,7 +2312,7 @@
       "facts": {
         "exec": true,
         "rnLive": true,
-        "ageMs": 16000
+        "ageMs": 300000
       },
       "expect": {
         "outcome": "answer",
