@@ -37,6 +37,13 @@ class BootCompletedReceiver : BroadcastReceiver() {
         val action = intent.action
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext
+        if (action == Intent.ACTION_BOOT_COMPLETED) {
+            // Residency evidence (independent of the autostart flag): a `boot`
+            // line per supervised service and the 10-minute tick re-armed (a
+            // reboot cleared it). Bounded by the broadcast's goAsync window.
+            val pending = runCatching { goAsync() }.getOrNull()
+            ResidencyLedger.onBoot(app) { runCatching { pending?.finish() } }
+        }
         if (!AgentAlarmScheduler.bootAutostartEnabled(app)) {
             Log.i(TAG, "$action received; autostart disabled via override flag, nothing to re-arm")
             return

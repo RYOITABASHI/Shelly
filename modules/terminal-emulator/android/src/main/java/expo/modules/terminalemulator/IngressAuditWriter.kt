@@ -403,6 +403,39 @@ object IngressAuditWriter {
         return append(context, null, MCP_AGENTLESS_FILE, line)
     }
 
+    // ---- Residency / overlay guard lines (ResidencyLedger, OverlayGuard; native-only, pure) ----
+
+    const val RESIDENCY_GUARD_KIND = "residency_guard"
+    private val RESIDENCY_GUARD_EVENTS = setOf("overlay", "residency")
+
+    /**
+     * One `residency_guard` line, written only natively: [event] `overlay`
+     * (Settings.Global overlay_display_devices set to a display, code
+     * `overlay_detected`, [valueLength] the setting's length only — never its
+     * value) or `residency` (the ledger's own checks, [serviceId] a registered
+     * id). Null when any field is off.
+     */
+    fun buildResidencyGuardLine(ts: Long, event: String, code: String, serviceId: String?, valueLength: Int?): String? {
+        if (event !in RESIDENCY_GUARD_EVENTS || !CODE_RE.matches(code)) return null
+        if (serviceId != null && ManagedServices.spec(serviceId) == null) return null
+        if (valueLength != null && valueLength !in 0..100_000) return null
+        return try {
+            val out = JSONObject().put("ts", isoUtc(ts)).put("kind", RESIDENCY_GUARD_KIND).put("event", event)
+                .put("action", event).put("code", code)
+            if (serviceId != null) out.put("serviceId", serviceId)
+            if (valueLength != null) out.put("valueLength", valueLength)
+            out.toString()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Appends a [buildResidencyGuardLine] line to `audits/mcp-ingress-audit.jsonl`. */
+    fun appendResidencyGuardLine(context: Context, event: String, code: String, serviceId: String?, valueLength: Int?): Boolean {
+        val line = buildResidencyGuardLine(System.currentTimeMillis(), event, code, serviceId, valueLength) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
     // ---- Stream feed lines (put_stream_feed: StreamFeedStore, McpTypedOpConsumer, RN; pure) ----
 
     const val STREAM_FEED_KIND = "mcp_stream_feed"

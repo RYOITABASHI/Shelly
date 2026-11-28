@@ -506,7 +506,7 @@ Shelly は、スマホの上で動くローカルファーストの実行と同�
 
 | グループ | ツール | スイッチ |
 |---|---|---|
-| 読み取り専用 | `device_status`、`list_agents`、`list_repos`、`git_status`、`read_agent_audit`、`read_article_history`、`list_drafts`、`read_draft`、`read_chat_requests` | サーバー自体のほかに無し |
+| 読み取り専用 | `device_status`、`list_agents`、`list_repos`、`git_status`、`read_agent_audit`、`read_article_history`、`list_drafts`、`read_draft`、`read_chat_requests`、`read_residency` | サーバー自体のほかに無し |
 | 読み取り専用 | `read_terminal_output` | "MCP: Allow reading terminal output" |
 | 読み取り専用 | `read_logs`、`get_settings`（秘密情報は返しません） | "MCP: Allow diagnostics (logs, settings)" |
 | 型付き操作 | `run_agent`、`get_run_result`、`put_stream_feed` | "MCP: Allow typed operations (run agents)" |

@@ -231,13 +231,30 @@ object ManagedServiceSupervisor {
      * bytes are read before giving up. The answer is
      * ManagedServices.healthResponseOk (200 + JSON `ok` the boolean true).
      */
-    private fun pollHealth(port: Int, timeoutMs: Long): Boolean {
+    private fun pollHealth(port: Int, timeoutMs: Long): Boolean =
+        pollHealthRaw(port, timeoutMs)?.let { ManagedServices.healthResponseOk(it) } ?: false
+
+    /**
+     * The residency ledger's view of one /health poll (same request, same
+     * bounds, no auth): ok, the `cliSeatKinds` it reports when ok, and how long
+     * it took. Called on the ledger thread, never under a supervisor lock.
+     */
+    private fun pollHealthDetail(port: Int, timeoutMs: Long): ResidencyLedgerCore.Health {
+        val t0 = System.currentTimeMillis()
+        val raw = pollHealthRaw(port, timeoutMs)
+        val ok = raw != null && ManagedServices.healthResponseOk(raw)
+        val seats = if (ok && raw != null) ResidencyLedgerCore.cliSeatKinds(ResidencyLedgerCore.httpBody(raw)) else null
+        return ResidencyLedgerCore.Health(ok, seats, (System.currentTimeMillis() - t0).coerceAtLeast(0L))
+    }
+
+    /** The raw response of one bounded GET /health (see [pollHealth]), or null. */
+    private fun pollHealthRaw(port: Int, timeoutMs: Long): ByteArray? {
         val deadline = System.currentTimeMillis() + timeoutMs
         fun left(): Int = (deadline - System.currentTimeMillis()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         return try {
             java.net.Socket(java.net.Proxy.NO_PROXY).use { sock ->
                 val addr = java.net.InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
-                if (left() <= 0) return false
+                if (left() <= 0) return null
                 sock.connect(java.net.InetSocketAddress(addr, port), left())
                 sock.getOutputStream().apply {
                     write("GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
@@ -249,17 +266,17 @@ object ManagedServiceSupervisor {
                 var n = 0
                 while (n <= cap) {
                     val t = left()
-                    if (t <= 0) return false
+                    if (t <= 0) return null
                     sock.soTimeout = t
                     val r = input.read(buf, n, buf.size - n)
                     if (r < 0) break
                     n += r
                 }
-                if (n > cap) return false
-                ManagedServices.healthResponseOk(buf.copyOf(n))
+                if (n > cap) return null
+                buf.copyOf(n)
             }
         } catch (e: Exception) {
-            false
+            null
         }
     }
 
@@ -279,6 +296,62 @@ object ManagedServiceSupervisor {
         if (!IngressAuditWriter.appendServiceControlLine(context, principal, action, spec.id, code)) {
             Log.w(TAG, "audit line not written (${spec.id} $action $code)")
         }
+        recordResidency(context, spec, ResidencyLedgerCore.reasonForAudit(action, code), code)
+    }
+
+    // ── Residency ledger (ResidencyLedger) ─────────────────────────────────
+
+    /**
+     * One ledger line for this supervisor event. Only queued here: the sample
+     * (/proc reads) and the write run on the ledger thread, so no supervisor
+     * lock is held for them. [exited]: the run that just ended (its pid and
+     * starttime are recorded, alive false). Never throws.
+     */
+    private fun recordResidency(
+        context: Context, spec: ManagedServices.Spec, reason: String, code: String?, exited: Running? = null,
+    ) {
+        try {
+            val app = context.applicationContext
+            ResidencyLedger.record(app, spec.id) { sampleOf(app, spec, reason, code, withHealth = false, exited = exited) }
+            if (code != null && code.endsWith("started")) ResidencyLedger.ensureArmedLater(app)
+        } catch (e: Throwable) {
+            Log.w(TAG, "residency line not queued (${spec.id} $reason) type=${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * A ledger sample of [svc] now (boot / tick lines), from its resolved
+     * Spec. [withHealth]: poll /health for a health-checked service (ticks).
+     * Ledger thread only.
+     */
+    fun residencySample(context: Context, svc: String, reason: String, code: String?, withHealth: Boolean): ResidencyLedgerCore.Sample? {
+        val base = ManagedServices.spec(svc) ?: return null
+        val app = context.applicationContext
+        return sampleOf(app, resolvedSpec(app, base), reason, code, withHealth, exited = null)
+    }
+
+    private fun sampleOf(
+        context: Context, spec: ManagedServices.Spec, reason: String, code: String?, withHealth: Boolean, exited: Running?,
+    ): ResidencyLedgerCore.Sample {
+        val s0 = ResidencyLedger.base(context, spec.id, reason, code)
+        val beat = spec.heartbeat?.let { hb -> ManagedServices.parseBeat(readSmall(File(home(context), hb.file))) }
+        if (exited != null) {
+            return s0.copy(
+                pid = exited.pid, startTicks = ResidencyLedgerCore.startTicksOrNull(exited.startTime),
+                startedAt = exited.startedAt, alive = false, heartbeatAt = beat?.at,
+            )
+        }
+        val record = readRecord(context, spec.id)
+        val live = findLive(context, spec, record, beat)
+        val health = if (withHealth) spec.health?.let { pollHealthDetail(it.port, it.timeoutMs) } else null
+        return s0.copy(
+            pid = live?.pid,
+            startTicks = live?.let { ResidencyLedgerCore.startTicksOrNull(startOf(it.pid)) },
+            startedAt = live?.startedAt ?: record?.startedAt,
+            alive = live != null,
+            heartbeatAt = beat?.at,
+            health = health,
+        )
     }
 
     // ── Status ─────────────────────────────────────────────────────────────
@@ -527,6 +600,7 @@ object ManagedServiceSupervisor {
         // A stop writes stoppedAt itself; an exit by itself leaves it unset (= dead).
         // Only this run's record: a newer start's record is never overwritten.
         updateRecord(context, spec.id, r.pid, r.startTime) { it.copy(exitedAt = now, exitCode = code) }
+        recordResidency(context, spec, "exit", if (code >= 0) "exit_$code" else "exit_unknown", exited = r)
         if (!r.stopping) runCatching { scheduleRestart(context, spec, r, now) }
             .onFailure { Log.e(TAG, "${spec.id}: restart not scheduled: ${it.javaClass.simpleName}") }
     }

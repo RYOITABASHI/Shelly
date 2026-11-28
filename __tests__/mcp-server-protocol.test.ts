@@ -753,7 +753,7 @@ describe('review follow-ups: era detection, origin, session cap', () => {
 describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS)', () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name);
   // device_status has no switch: it is listed whenever the server runs.
-  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'read_chat_requests', 'stage_install_result'];
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'read_chat_requests', 'read_residency', 'stage_install_result'];
 
   it('availableTools: read-only set by default, each switch adds its tools', () => {
     expect(names(mcp.availableTools({}))).toEqual(READ_ONLY);
@@ -872,7 +872,7 @@ describe('tools hidden by their settings (SHELLY_MCP_EXEC / SHELLY_MCP_READ_TERM
 
 describe('typed operations run_agent / get_run_result (SHELLY_MCP_TYPED_OPS)', () => {
   const names = (tools: { name: string }[]) => tools.map((t) => t.name);
-  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'read_chat_requests', 'stage_install_result'];
+  const READ_ONLY = ['git_status', 'list_agents', 'list_repos', 'device_status', 'read_agent_audit', 'read_article_history', 'list_drafts', 'read_draft', 'read_chat_requests', 'read_residency', 'stage_install_result'];
   const HANDLE = `mr_${'a'.repeat(32)}`;
 
   it('listed only with typedOps (exec alone does not list them; typedOps alone does not list raw exec)', async () => {
