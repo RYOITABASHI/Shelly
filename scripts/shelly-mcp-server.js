@@ -669,7 +669,12 @@ function cleanClientName(raw) {
 // ingress, phase A): native answers a rule / "Skip all approvals" match and
 // `not_attended` itself, and hands the dialog case to RN only while it is live
 // (McpTypedOpConsumer + ServiceControlDecision.kt).
-const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed', 'service_control', 'request_pipeline_refire']);
+// update_delivery_script and update_pipeline_config too (phase B-2): they
+// always need the tap, so native answers the refusals before it, the
+// pre-approval timeout and `not_attended` (RN paused) itself, and hands the
+// rest to RN while it is live (McpInstallOpDecision.kt); RN then runs its
+// whole ladder and the write, unchanged.
+const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed', 'service_control', 'request_pipeline_refire', 'update_delivery_script', 'update_pipeline_config']);
 // Raw tools (run_command / write_file) likewise go to their own directory,
 // drained ONLY by the native McpRawToolConsumer. It is the one place that
 // decides, per callId, how the call is answered: with the owner's native

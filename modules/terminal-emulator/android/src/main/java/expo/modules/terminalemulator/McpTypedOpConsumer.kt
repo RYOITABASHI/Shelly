@@ -481,6 +481,11 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             processServiceOp(request, name, claimed, now)
             return
         }
+        // update_delivery_script / update_pipeline_config (McpInstallOpDecision; phase B-2).
+        if (request.tool in McpInstallOpDecision.OPS) {
+            processInstallOp(request, name, claimed, now)
+            return
+        }
         when (val outcome = McpTypedOpDecision.decide(request, steps, now)) {
             is McpTypedOpDecision.Outcome.Refuse -> {
                 refuse(request, claimed, outcome.refusal, outcome.agentId, outcome.taint)
@@ -580,12 +585,14 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         agentId: String?,
         feed: Boolean = false,
         svc: ServiceControlDecision.Args? = null,
+        install: Boolean = false,
     ) {
         val dest = File(requestsDir, name)
         val token = File(handoffsDir, request.callId)
         // The line first: a line without a move is harmless, a move without a line is not.
         when {
             svc != null -> svcAudit(svc.op, request.principal, svc, "handed_off")
+            install -> installAudit(request, "handed_off")
             feed -> feedAudit(request.principal, "handed_off")
             else -> audit("mcp_typed_op_handed_off", agentId, request.principal, null)
         }
@@ -602,6 +609,7 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         Log.w(TAG, "handoff move failed code=$why errno=$errno route=$route")
         when {
             svc != null -> svcAudit(svc.op, request.principal, svc, "handoff_failed")
+            install -> installAudit(request, "handoff_failed")
             feed -> feedAudit(request.principal, "handoff_failed")
             else -> audit("mcp_typed_op_handoff_failed", agentId, request.principal, why)
         }
@@ -613,6 +621,8 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
                 // The handoff_failed line was just written: answer without a second one.
                 svc != null -> svcAnswer(request, claimed, ServiceControlDecision.errorResult(
                     ServiceControlDecision.Refusal(refusal.code, ServiceControlDecision.HANDOFF_FAILED_MESSAGE)))
+                install -> svcAnswer(request, claimed, McpInstallOpDecision.errorResult(
+                    McpInstallOpDecision.Refusal(refusal.code, McpInstallOpDecision.HANDOFF_FAILED_MESSAGE)))
                 feed -> feedRefuse(request, claimed, refusal)
                 else -> refuse(request, claimed, refusal, agentId, false)
             }
@@ -893,6 +903,48 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             }
         }
         if (!ok) Log.w(TAG, "audit line not written ($op $code)")
+    }
+
+    // ── update_delivery_script / update_pipeline_config (McpInstallOpDecision) ──
+
+    /**
+     * RN's ladder up to its tap (see McpInstallOpDecision): a refusal, the
+     * pre-approval timeout or `not_attended` is answered here with RN's result
+     * JSON and audit line; the tap case is handed to RN only while it is live,
+     * and RN runs its whole ladder (content checks, dialog, write) again.
+     * Nothing here writes the script or the config.
+     */
+    private fun processInstallOp(request: McpTypedOpDecision.Request, name: String, claimed: File, now: Long) {
+        val outcome = try {
+            McpInstallOpDecision.decide(request, installSteps, now)
+        } catch (e: Exception) {
+            Log.w(TAG, "${request.tool} decision failed type=${e.javaClass.simpleName}")
+            null
+        }
+        when (outcome) {
+            is McpInstallOpDecision.Outcome.Answer -> {
+                installAudit(request, outcome.auditCode)
+                val (extra, result) = McpInstallOpDecision.afterAudit(request.tool, outcome, isCurrent())
+                if (extra != null) installAudit(request, extra)
+                svcAnswer(request, claimed, result)
+                Log.i(TAG, "${request.tool} answered natively (${outcome.auditCode})")
+            }
+            McpInstallOpDecision.Outcome.Handoff -> handOff(request, name, claimed, null, install = true)
+            // Fail closed and silent: the client times out; nothing ran.
+            null -> delete(claimed)
+        }
+    }
+
+    /** The op's own line (`mcp_update_delivery_script` / `mcp_update_pipeline_config`), RN's shape. */
+    private fun installAudit(request: McpTypedOpDecision.Request, code: String) {
+        val ok = IngressAuditWriter.appendMcpLine(app, null, McpInstallOpDecision.auditJson(request.tool, request.principal, code))
+        if (!ok) Log.w(TAG, "audit line not written (${request.tool} $code)")
+    }
+
+    private val installSteps = object : McpInstallOpDecision.Steps {
+        override fun epochCurrent(): Boolean = isCurrent()
+        override fun execOn(): Boolean = svcSteps.execOn()
+        override fun rnLive(): Boolean = steps.rnLive()
     }
 
     private val svcSteps = object : ServiceControlDecision.Steps {
