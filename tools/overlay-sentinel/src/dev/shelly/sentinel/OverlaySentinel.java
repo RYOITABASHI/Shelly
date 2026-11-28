@@ -28,9 +28,11 @@ import java.util.Locale;
  *   CLASSPATH=/data/local/tmp/overlay-sentinel.dex app_process / \
  *     dev.shelly.sentinel.OverlaySentinel [--key <global key>] [--log <file>]
  *
- * It watches one Settings.Global key (default overlay_display_devices) with a
- * ContentObserver (no polling) and deletes any value other than null / "" /
- * "none" as soon as it changes. The shell uid holds WRITE_SECURE_SETTINGS; the
+ * It watches one Settings.Global key (default overlay_display_devices) and
+ * deletes any value other than null / "" / "none". It tries a ContentObserver
+ * first; Android 17 refuses observers from an app_process, so then it polls
+ * (`cmd settings get`, --poll-ms, default 1000). Shelly's own observer
+ * (detection only) catches a write at once. The shell uid holds WRITE_SECURE_SETTINGS; the
  * delete runs the platform `settings` command, so no hidden write API is used.
  * It also checks once at start, because the value survives a reboot.
  *
@@ -47,9 +49,11 @@ public final class OverlaySentinel {
 
     public static void main(String[] args) throws Exception {
         String logPath = null;
+        long pollMs = 1000;
         for (int i = 0; i < args.length; i++) {
             if ("--key".equals(args[i]) && i + 1 < args.length) key = args[++i];
             else if ("--log".equals(args[i]) && i + 1 < args.length) logPath = args[++i];
+            else if ("--poll-ms".equals(args[i]) && i + 1 < args.length) pollMs = Math.max(250, Long.parseLong(args[++i]));
         }
         if (!key.matches("[a-z0-9_]{1,64}")) throw new IllegalArgumentException("bad key");
         if (logPath != null) log = new PrintStream(new FileOutputStream(logPath, true), true, "UTF-8");
@@ -70,9 +74,31 @@ public final class OverlaySentinel {
         // not register anything on device (dumpsys content showed no observer,
         // 2026-11-28). Register with the content service directly, so a refusal
         // surfaces as an exception instead of silence.
-        registerDirect(uri, observer);
-        line("watching " + uri);
+        // On Android 17 (One UI) the content service refuses observers from a
+        // process ActivityManager does not know ("Failed to find PID"), which is
+        // what an app_process is. Then fall back to polling the provider with
+        // `cmd settings get` (one short process per poll). With an observer, a
+        // slow safety poll still runs.
+        boolean observed;
+        try {
+            registerDirect(uri, observer);
+            observed = true;
+            line("watching " + uri + " (observer)");
+        } catch (Throwable t) {
+            Throwable c = t.getCause() != null ? t.getCause() : t;
+            observed = false;
+            line("observer refused (" + c.getClass().getSimpleName() + ": " + c.getMessage() + "); polling every " + pollMs + " ms");
+        }
+        final long interval = observed ? 30_000 : pollMs;
+        final Handler h = new Handler(Looper.getMainLooper());
         check(cr, "start");
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                check(cr, "poll");
+                h.postDelayed(this, interval);
+            }
+        }, interval);
         Looper.loop();
     }
 
@@ -80,7 +106,7 @@ public final class OverlaySentinel {
         long t0 = SystemClock.elapsedRealtime();
         String v = read(cr);
         if (isClear(v)) {
-            line(why + " clear");
+            if (!"poll".equals(why)) line(why + " clear");
             return;
         }
         line(why + " detected len=" + v.length());
@@ -101,13 +127,13 @@ public final class OverlaySentinel {
      * platform `settings` command instead. Only runs on a change notification.
      */
     private static String read(ContentResolver cr) {
-        String out = exec(new String[] {"settings", "get", "global", key}).trim();
+        String out = exec(new String[] {"cmd", "settings", "get", "global", key}).trim();
         if (out.startsWith("ERROR")) return null;
         return "null".equals(out) ? null : out;
     }
 
     private static boolean delete() {
-        String out = exec(new String[] {"settings", "delete", "global", key});
+        String out = exec(new String[] {"cmd", "settings", "delete", "global", key});
         return !out.startsWith("ERROR");
     }
 
