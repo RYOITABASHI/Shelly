@@ -41,6 +41,9 @@ class ExternalSpecTest {
         assertEquals("1", env["COUNCIL_PAIRING_ARM"])
         assertEquals("codex_exec", env["COUNCIL_CODEX_COMMAND"]) // fixed, not from the file
         assertEquals("--skip-git-repo-check -", env["COUNCIL_CODEX_ARGS"]) // fixed, not from the file
+        assertEquals("claude_exec", env["COUNCIL_CLAUDE_COMMAND"]) // fixed, not from the file
+        assertFalse(env.containsKey("COUNCIL_CLAUDE_ARGS")) // council-tool's claude preset (-p)
+        assertFalse(launch.extraEnv.any { it.name == "CLAUDE_CODE_OAUTH_TOKEN" }) // the runner loads it, never this env
 
         val secret = launch.extraEnv.filterIsInstance<ManagedServices.EnvVar.FromFile>().single()
         assertEquals("COUNCIL_HTTP_TOKEN", secret.name)
@@ -153,6 +156,10 @@ class ExternalSpecTest {
             """{"v":1,"root":"council-spike","script":"dist/http/server.js","env":{"COUNCIL_HTTP_TOKEN":{"fromFile":true},"COUNCIL_HOME":"h","COUNCIL_PAIRING_ARM":"1","COUNCIL_CODEX_COMMAND":"rm -rf /"}}""",
             home,
         ).reason)
+        assertEquals("unknown_env_key", ExternalSpec.parse(
+            """{"v":1,"root":"council-spike","script":"dist/http/server.js","env":{"COUNCIL_HTTP_TOKEN":{"fromFile":true},"COUNCIL_HOME":"h","COUNCIL_PAIRING_ARM":"1","COUNCIL_CLAUDE_COMMAND":"sh"}}""",
+            home,
+        ).reason)
         assertEquals("missing_env_key", ExternalSpec.parse(
             """{"v":1,"root":"council-spike","script":"dist/http/server.js","env":{"COUNCIL_HOME":"h","COUNCIL_PAIRING_ARM":"1"}}""",
             home,
@@ -203,6 +210,7 @@ class ExternalSpecTest {
         val cmd = ManagedServices.hostCommand(launch, home, "/data/lib", "$home/.shelly/services/council-facade/output.log")
         assertTrue(cmd.contains("cd '$home/council-spike' || exit 126\n"))
         assertTrue(cmd.contains("export COUNCIL_CODEX_COMMAND='codex_exec'\n"))
+        assertTrue(cmd.contains("export COUNCIL_CLAUDE_COMMAND='claude_exec'\n"))
         assertTrue(cmd.contains("export COUNCIL_PAIRING_ARM='1'\n"))
         val tokenPath = "'$home/council-spike-home/.http-token'"
         assertTrue(cmd.contains("[ -f $tokenPath ] || exit 127\n"))
