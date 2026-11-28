@@ -252,9 +252,12 @@ describe('native source contract', () => {
   });
 
   it('the module checks STOP-ALL, then the opt-in (read only), then asks the recovery script', () => {
+    // The module and the headless typed-op drain both run McpPipelineRefire.request.
     const module = read('TerminalEmulatorModule.kt');
     const fn = module.slice(module.indexOf('AsyncFunction("requestPipelineRefire") Coroutine'));
-    const body = fn.slice(0, fn.indexOf('\n        }\n'));
+    expect(fn.slice(0, fn.indexOf('\n        }\n'))).toContain('McpPipelineRefire.request(requireReactContext(), pipelineId, principal)');
+    const shared = read('McpPipelineRefire.kt');
+    const body = shared.slice(shared.indexOf('fun request('));
     const halted = body.indexOf('StopAllSwitches.halted(context)');
     const optIn = body.indexOf('WebSearchOptInStore.optedInAgentForPipeline(');
     const script = body.indexOf('RunRecovery.requestRefire(');

@@ -121,7 +121,7 @@ object McpServerSupervisor {
     private var serviceRestores = 0
     /**
      * The one McpTypedOpConsumer (PR 6): exists exactly while a server with
-     * typed ops is wanted, bound to that server's bridge key (app-started or
+     * typed ops or exec is wanted (consumerWanted), bound to that server's bridge key (app-started or
      * headless — the script routes run_agent to typed-requests/ either way and
      * RN never reads it). Replaced / stopped only under [lock]; read without
      * it (volatile) by the consumer's own epoch check, so the consumer never
@@ -144,6 +144,17 @@ object McpServerSupervisor {
 
     /** The wanted server has typed ops on (McpTypedOpConsumer step 1, with the mirror). */
     fun typedOpsWanted(): Boolean = desired?.typedOps == true
+
+    /** The wanted server has exec on (service_control's setting in McpTypedOpConsumer, with the mirror). */
+    fun execWanted(): Boolean = desired?.exec == true
+
+    /**
+     * The typed-op consumer also drains service_control (an exec tool) and
+     * request_pipeline_refire (a typed op), so it runs while either switch is
+     * on; each op checks its own switch per request (run_agent and the other
+     * typed ops refuse disabled when typed ops are off).
+     */
+    private fun consumerWanted(d: Desired): Boolean = d.typedOps || d.exec
 
     /** McpTypedOpConsumer's native epoch: [c] is still the live consumer. */
     fun isCurrentTypedOpConsumer(c: McpTypedOpConsumer): Boolean = typedOpConsumer === c
@@ -170,7 +181,7 @@ object McpServerSupervisor {
             // A new bridge key is the native queueEpoch: the old consumer stops
             // (waiting for its request in progress) and its pending typed
             // requests are cleared before the new server can write any.
-            retireStaleTypedOpConsumerLocked(bridgeKey, typedOps)
+            retireStaleTypedOpConsumerLocked(bridgeKey, typedOps || exec)
             retireStaleRawToolConsumerLocked(bridgeKey, token, exec)
             val request = Desired(token, exec, readTerminal, diagnostics, typedOps, bridgeKey, fromApp = true)
             val started = spawnWithFingerprint(app, request) == true
@@ -293,7 +304,7 @@ object McpServerSupervisor {
                 return false
             }
             val key = newBridgeKey()
-            retireStaleTypedOpConsumerLocked(key, cfg.typedOps)
+            retireStaleTypedOpConsumerLocked(key, cfg.typedOps || cfg.exec)
             retireStaleRawToolConsumerLocked(key, cfg.token, cfg.exec)
             val request = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, key, fromApp = false)
             val ok = spawnWithFingerprint(app, request) ?: return false
@@ -402,7 +413,7 @@ object McpServerSupervisor {
                 use = Desired(cfg.token, cfg.exec, cfg.readTerminal, cfg.diagnostics, cfg.typedOps, d.bridgeKey, fromApp = false)
             }
             prepareRuntime(app, "watchdog restart")
-            retireStaleTypedOpConsumerLocked(use.bridgeKey, use.typedOps)
+            retireStaleTypedOpConsumerLocked(use.bridgeKey, use.typedOps || use.exec)
             retireStaleRawToolConsumerLocked(use.bridgeKey, use.token, use.exec)
             val ok = spawnWithFingerprint(app, use)
             if (ok == null) {
@@ -449,9 +460,9 @@ object McpServerSupervisor {
      * to another key (or any consumer when typed ops will be off) and clear
      * the pending typed requests.
      */
-    private fun retireStaleTypedOpConsumerLocked(newKey: String, typedOps: Boolean) {
+    private fun retireStaleTypedOpConsumerLocked(newKey: String, wanted: Boolean) {
         val c = typedOpConsumer ?: return
-        if (typedOps && c.hasKey(newKey)) return
+        if (wanted && c.hasKey(newKey)) return
         typedOpConsumer = null
         c.stop(clearPending = true)
     }
@@ -465,12 +476,12 @@ object McpServerSupervisor {
     private fun syncTypedOpConsumerLocked(app: Context) {
         val d = desired
         val current = typedOpConsumer
-        if (d != null && d.typedOps && current != null && current.hasKey(d.bridgeKey)) return
+        if (d != null && consumerWanted(d) && current != null && current.hasKey(d.bridgeKey)) return
         if (current != null) {
             typedOpConsumer = null
             current.stop(clearPending = true)
         }
-        if (d != null && d.typedOps) {
+        if (d != null && consumerWanted(d)) {
             val c = McpTypedOpConsumer(app, d.bridgeKey)
             typedOpConsumer = c
             c.start()

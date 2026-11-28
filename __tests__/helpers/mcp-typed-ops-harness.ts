@@ -274,7 +274,8 @@ export async function callTool(
   const callId = nodeCrypto.randomUUID();
   // run_agent reaches requests/ only by the native consumer's handoff (PR 6),
   // which leaves a single-use token; simulate it unless told otherwise.
-  const handoff = opts.handoff ?? (tool === 'run_agent' ? 'valid' : 'none');
+  // service_control / request_pipeline_refire likewise (background ingress, phase A).
+  const handoff = opts.handoff ?? (['run_agent', 'service_control', 'request_pipeline_refire'].includes(tool) ? 'valid' : 'none');
   if (handoff !== 'none') {
     const token = handoff === 'valid' ? await mcpHandoffToken(TEST_BRIDGE_KEY, callId, nodeSha256) : 'b'.repeat(64);
     h.files.set(`${HANDOFFS}/${callId}`, token);

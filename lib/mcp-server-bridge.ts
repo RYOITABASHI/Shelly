@@ -2772,8 +2772,17 @@ async function processRequestFile(name: string): Promise<void> {
       // Leave the rest of the server's 260s queue wait for approval and execution.
       deadlineMs = request.receivedAtMs + INSTALL_CLASS_PRE_APPROVAL_MS;
     } else if (request.tool === 'service_control' || request.tool === 'request_pipeline_refire') {
+      // These reach requests/ only by the native typed-op consumer's handoff
+      // (ServiceControlDecision.kt: no rule / "Skip all approvals" matched and
+      // RN is live). Its single-use token is consumed first, so a copied
+      // signed request (native owns or ran the original) is never run here.
+      if (!(await consumeHandoffToken(request.callId, request.receivedAtMs))) {
+        logError('MCPBridge', `rejected typed request file ${name} (no valid handoff token)`);
+        return;
+      }
       // The server answers within RESULT_TIMEOUT_MS (= TYPED_REQUEST_DEADLINE_MS)
-      // of signing: never show the tap or act on the service after that.
+      // of signing: never show the tap or act on the service after that. The
+      // tool itself answers `timeout` past it (unchanged).
       deadlineMs = request.receivedAtMs + TYPED_REQUEST_DEADLINE_MS;
     } else if (RAW_REQUEST_TOOLS.has(request.tool)) {
       // A raw tool reaches requests/ only by the native raw consumer's handoff

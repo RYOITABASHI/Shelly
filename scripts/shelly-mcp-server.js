@@ -162,6 +162,15 @@ function pausedBridgeReadError(toolName) {
   };
 }
 
+/** A non-read tool that only RN can answer, while the RN bridge is not live. */
+function bridgeNotLiveError(toolName) {
+  return {
+    ok: false,
+    code: 'bridge_not_live',
+    error: `${toolName} cannot be answered right now: Shelly is in the background and its bridge is paused (open Shelly and try again)`,
+  };
+}
+
 function rnLiveFromHeartbeat(queueDir, nowMs) {
   const heartbeatPath = path.join(queueDir, 'bridge-heartbeat');
   let fd;
@@ -638,7 +647,11 @@ function cleanClientName(raw) {
 // into requests/ when the RN bridge is live). RN never reads typed-requests/.
 // The choice is made once per callId from the tool name; nothing here ever
 // writes the same callId to both directories or re-enqueues on a timeout.
-const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed']);
+// service_control and request_pipeline_refire go there too (background
+// ingress, phase A): native answers a rule / "Skip all approvals" match and
+// `not_attended` itself, and hands the dialog case to RN only while it is live
+// (McpTypedOpConsumer + ServiceControlDecision.kt).
+const TYPED_REQUEST_TOOLS = new Set(['run_agent', 'put_stream_feed', 'get_launcher_submission', 'list_launcher_submissions', 'mark_launcher_submission_consumed', 'service_control', 'request_pipeline_refire']);
 // Raw tools (run_command / write_file) likewise go to their own directory,
 // drained ONLY by the native McpRawToolConsumer. It is the one place that
 // decides, per callId, how the call is answered: with the owner's native
@@ -821,8 +834,16 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
       if (refused) return Promise.resolve(refused);
     }
     const isRead = QUEUE_READ_TOOLS.has(toolName) || DIRECT_READ_TOOLS.has(toolName);
+    const dirName = requestDirName(toolName);
     if (isRead && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
       return Promise.resolve(pausedBridgeReadError(toolName));
+    }
+    // Only RN drains requests/, and it does not while Shelly is in the
+    // background (its timers stop; its heartbeat reads 0 or goes stale):
+    // answer at once instead of letting the client wait out the timeout.
+    // Missing heartbeat (never written) is not judged, as for reads.
+    if (!isRead && dirName === 'requests' && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
+      return Promise.resolve(bridgeNotLiveError(toolName));
     }
     const override = opts?.timeoutMs;
     const timeoutMs = Number.isFinite(override) && override > 0
@@ -844,7 +865,7 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
       },
       receivedAt: new Date().toISOString(),
     };
-    const file = path.join(queueDir, requestDirName(toolName), `${callId}.json`);
+    const file = path.join(queueDir, dirName, `${callId}.json`);
     const serialized = JSON.stringify({ ...unsigned, mac: requestMac(bridgeKey, unsigned) });
     if (toolName === 'put_stream_feed') {
       const tooLarge = streamFeedRequestTooLarge(serialized);

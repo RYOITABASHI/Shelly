@@ -105,6 +105,13 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### MCP の背面 ingress — Phase A（service_control / request_pipeline_refire のネイティブ処理）実装済み・実機 / JVM テスト未検証、Phase B 未着手（2026-11-28、ブランチ `feat/mcp-native-service-control`、P1）
+
+- **Phase A（実装済み）**: スクリプトが `service_control` と `request_pipeline_refire` を `typed-requests/` に送り、`McpTypedOpConsumer` が `ServiceControlDecision.kt` で RN と同じ順・同じコード・同じ文言で判定する（引数 → epoch → 設定（service_control は exec、再実行は typed ops）→ 期限 → STOP-ALL → 常時許可ルール → 「すべての承認を省略」→ RN が live なら RN へ handoff（ダイアログ）、そうでなければ即 `not_attended`）。exec の設定は既存の Keystore ミラー（`McpAutostartStore` の `exec`、RN が変更時と起動時に書く）とサーバーのスイッチの両方。typed-op consumer は typed ops か exec のどちらかが ON の間動く。`requests/` に行く RN 専用ツールは、心拍が RN の停止を示すときに即 `bridge_not_live` を返す（100 秒待たない、読み取りは従来どおり）。RN は handoff トークンが無い service_control / request_pipeline_refire を実行しない。共有 fixture `__tests__/fixtures/mcp-service-control-ladder-cases.json` を RN のラダー（Jest）と Kotlin（`ServiceControlDecisionTest`、CI では JVM テストは走らない）の両方で確認。
+- **未検証**: 実機（背面・画面ロック中にルール / スイッチで start・stop・status・再実行が即答されること、前面で handoff → ダイアログ）、JVM テスト（Gradle がローカルに無い）。
+- **Phase B（未着手）**: RN の状態を要する op はまだ前面でしか答えられない（背面では `bridge_not_live` を即返すようになっただけ）: `update_pipeline_config`、`update_delivery_script`、`get_settings`、`read_logs`、`read_terminal_output`、`stage_install` のオーケストレーション。それぞれ RN の store / ダイアログ / ターミナルバッファに依存しており、ネイティブへのミラーか RN ヘッドレスタスクが要る。
+- **Why not now**: Phase A はネイティブだけで完結する 2 op に限定した（承認モデル・ルールの種類・taint は不変）。
+
 ### MainApplication.kt の dangerouslyForceOverride が releaseLevel を stable に固定（2026-11-27、P2）
 
 - **指摘**: Codex レビュー（PR #226、2回目）。`onCreate()` は `BuildConfig.REACT_NATIVE_RELEASE_LEVEL`（`-PreactNativeReleaseLevel` が無指定なら `"stable"`）から `DefaultNewArchitectureEntryPoint.releaseLevel` を設定し `loadReactNative(this)` を呼ぶが、直後の `dangerouslyForceOverride` は常に `ReactNativeFeatureFlagsOverrides_RNOSS_Stable_Android` を包む。`-PreactNativeReleaseLevel=experimental`/`canary` でビルドした場合、loadReactNative が入れた non-stable プロバイダがこの override で stable 相当に差し替えられてしまう。

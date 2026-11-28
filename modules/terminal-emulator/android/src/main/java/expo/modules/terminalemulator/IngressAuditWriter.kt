@@ -279,6 +279,16 @@ object IngressAuditWriter {
     }
 
     /**
+     * The headless drain's lines for this op (McpTypedOpConsumer: the same
+     * stages and codes RN writes through appendMcpIngressAudit). Action and
+     * serviceId are null only for `invalid_params`, as RN's.
+     */
+    fun appendServiceControlDrainLine(context: Context, principal: String?, action: String?, serviceId: String?, code: String): Boolean {
+        val line = buildServiceControlLine(System.currentTimeMillis(), principal, action, serviceId, code) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
+    }
+
+    /**
      * RN's lines for this op (approval stages, refusals before the native call)
      * arrive as JSON through appendMcpIngressAudit: rebuilt here from the same
      * closed fields, or refused (null).
@@ -330,6 +340,12 @@ object IngressAuditWriter {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** The headless drain's request_pipeline_refire lines (same stages and codes as RN's). */
+    fun appendPipelineRefireLine(context: Context, principal: String?, pipelineId: String?, code: String, requestId: String?): Boolean {
+        val line = buildPipelineRefireLine(System.currentTimeMillis(), principal, pipelineId, code, requestId) ?: return false
+        return append(context, null, MCP_AGENTLESS_FILE, line)
     }
 
     /** RN's lines for request_pipeline_refire, rebuilt from the closed fields, or refused (null). */
