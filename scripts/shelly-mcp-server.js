@@ -852,8 +852,11 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
       if (refused) return Promise.resolve(refused);
     }
     const isRead = QUEUE_READ_TOOLS.has(toolName) || DIRECT_READ_TOOLS.has(toolName);
-    const dirName = requestDirName(toolName);
-    if (isRead && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
+    // Background ingress phase B-1: createDirectReadCallTool asks for the
+    // native consumer (typed-requests/) only for a read it answers without RN.
+    const nativeRead = opts?.nativeRead === true && NATIVE_READ_TOOLS.has(toolName);
+    const dirName = nativeRead ? 'typed-requests' : requestDirName(toolName);
+    if (isRead && !nativeRead && rnLiveFromHeartbeat(queueDir, Date.now()) === false) {
       return Promise.resolve(pausedBridgeReadError(toolName));
     }
     // Only RN drains requests/, and it does not while Shelly is in the
@@ -924,8 +927,10 @@ function createFileQueueCallTool(queueDir, bridgeKey) {
 //     snapshot; null = a bundle older than the fingerprint).
 // The snapshot carries an HMAC keyed by the bearer token, so a file planted
 // in the queue dir by anything that doesn't hold the token is ignored and
-// the call falls back to the queue (the old behaviour). read_terminal_output,
-// read_logs, get_settings, run_command and write_file always go through the queue.
+// the call falls back to the queue (the old behaviour). run_command and
+// write_file always go through the queue; read_terminal_output, read_logs and
+// get_settings do while RN is live (see "Background reads" below for the
+// answers while it is not).
 // stage_install_result uses the signed latest-result mirror when RN is not live
 // or a queued read fails.
 //   read_agent_audit / read_article_history — two fixed files under
@@ -1244,14 +1249,248 @@ function defaultPayloadLibDir(homeDir) {
   return gitLibDir() || path.join(path.dirname(homeDir), 'termux-libs');
 }
 
+// ── Background reads (ingress phase B-1) ─────────────────────────────────
+//
+// read_logs, get_settings and read_terminal_output used to be answered only
+// by RN, so while Shelly was in the background they failed. With the bridge
+// heartbeat saying RN is NOT live (false; a missing heartbeat is not judged
+// and keeps the queue path, as everywhere else) they are answered without RN;
+// with RN live nothing changes. The tool switches are the ones this process
+// was started with (SHELLY_MCP_READ_TERMINAL / SHELLY_MCP_DIAGNOSTICS, from
+// RN's settings or, headless, the Keystore mirror) — a disabled tool never
+// reaches here — and every answer below is gated a second time:
+//   read_logs source "logcat" — logcat run by this process (the app's uid;
+//     same tag set, line filter, caps and redaction as RN's readLogs);
+//   read_logs source "app" — the snapshot's `appLog` section: the tail of
+//     RN's in-memory log RN captured (already redacted, redacted again here),
+//     published only while "MCP: Allow diagnostics" is on, returned with
+//     stale: true, capturedAt and ageMs; none → the paused-bridge error with
+//     code bridge_not_live;
+//   get_settings — the snapshot's `settings` section: RN's
+//     redactSettingsForMcp output, published only while diagnostics is on,
+//     filtered again here, with stale: true, capturedAt and ageMs; none → the
+//     same error as before;
+//   read_terminal_output — the snapshot's `terminal` section (session ids
+//     only, published only while "MCP: Allow reading terminal output" is on)
+//     resolves the requested / active session to its native id; the request
+//     then goes to typed-requests/, where McpTypedOpConsumer reads the
+//     transcript (McpNativeReadDecision: the setting again, from the
+//     Keystore mirror, fail closed). No terminal section → the paused-bridge
+//     error.
+// The snapshot is HMAC-verified as for every other direct read.
+
+const BACKGROUND_READ_TOOLS = new Set(['read_logs', 'get_settings', 'read_terminal_output']);
+// Answered by McpTypedOpConsumer when createDirectReadCallTool asks for it.
+const NATIVE_READ_TOOLS = new Set(['read_terminal_output']);
+
+// KEEP IN SYNC: lib/mcp-server-bridge.ts READ_LOGS_* / LOGCAT_TAGS / filterLogcatLines.
+const READ_LOGS_DEFAULT_LIMIT = 200;
+const READ_LOGS_MAX_LIMIT = 1000;
+const READ_LOGS_DEFAULT_BYTES = 32 * 1024;
+const READ_LOGS_MAX_BYTES = 64 * 1024;
+const LOGCAT_TIMEOUT_MS = 10_000;
+const LOGCAT_TAGS = [
+  'ReactNativeJS:V',
+  'AndroidRuntime:E',
+  'MCPBridge:V',
+  'HomeInitializer:V',
+  'LibExtractor:V',
+  'ShellyExec:V',
+  'ShellyPTY:V',
+  'TerminalEmulator:V',
+  'TerminalSessionService:V',
+  'AgentRuntime:V',
+  'DeviceStatusBridge:V',
+  'AppInfoSnapshot:V',
+];
+// Bounds on the snapshot sections read here (RN publishes far less).
+const SNAPSHOT_TERMINAL_MAX_SESSIONS = 64;
+const SNAPSHOT_SESSION_ID_MAX_CHARS = 128;
+const SETTINGS_MAX_DEPTH = 8;
+// KEEP IN SYNC: SETTINGS_DENYLIST_RE in lib/mcp-server-bridge.ts.
+const SETTINGS_DENYLIST_RE = /token|key|secret|pass[\s_.-]*w|pwd|passphrase|credential|auth|cookie|bearer/i;
+
+/** The read_logs argument checks of RN's readLogs, in its order. */
+function readLogsArgs(args) {
+  const source = args.source === undefined ? 'app' : args.source;
+  if (source !== 'app' && source !== 'logcat') return { ok: false, error: 'source must be "app" or "logcat"' };
+  return {
+    ok: true,
+    source,
+    limit: clampIntArg(args.limit, READ_LOGS_DEFAULT_LIMIT, 1, READ_LOGS_MAX_LIMIT),
+    maxBytes: clampIntArg(args.maxBytes, READ_LOGS_DEFAULT_BYTES, 256, READ_LOGS_MAX_BYTES),
+  };
+}
+
+/** filterLogcatLines (lib/mcp-server-bridge.ts): the Shelly lines of `logcat -v threadtime`, redacted. */
+function filterLogcatLines(raw) {
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith('--------- beginning of')) continue;
+    // threadtime: "MM-DD HH:MM:SS.mmm  PID  TID L TAG     : message"
+    const m = /^\S+\s+\S+\s+\d+\s+\d+\s+[VDIWEF]\s+(.+?)\s*:\s(.*)$/.exec(line);
+    if (!m) continue;
+    const tag = m[1];
+    if (tag === 'ReactNativeJS' && !m[2].startsWith('[Shelly][') && !m[2].startsWith("'[Shelly][")) continue;
+    if (!LOGCAT_TAGS.some((t) => t.slice(0, t.indexOf(':')) === tag)) continue;
+    out.push(redactForMcp(line));
+  }
+  return out;
+}
+
+/** The argv of RN's readLogs (`logcat -d -v threadtime -t N -s TAGS…`). */
+function logcatArgv(limit) {
+  return ['-d', '-v', 'threadtime', '-t', String(Math.min(limit * 4, 4000)), '-s', ...LOGCAT_TAGS];
+}
+
+/** Runs logcat as this process (the app's uid: its own lines, no READ_LOGS). */
+function defaultRunLogcat(argv) {
+  const bin = fs.existsSync('/system/bin/logcat') ? '/system/bin/logcat' : 'logcat';
+  return new Promise((resolve) => {
+    execFile(bin, argv, { timeout: LOGCAT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (err && typeof err.code !== 'number') {
+        resolve({ spawnError: err.killed ? `timed out after ${LOGCAT_TIMEOUT_MS}ms` : (err.message || String(err)) });
+        return;
+      }
+      resolve({ exitCode: err ? err.code : 0, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
+/** read_logs source "logcat" without RN: RN's readLogs, same messages. */
+async function readLogcatDirect(parsed, runLogcat) {
+  let r;
+  try {
+    r = await runLogcat(logcatArgv(parsed.limit));
+  } catch (e) {
+    r = { spawnError: e && e.message ? e.message : String(e) };
+  }
+  if (!r || typeof r.spawnError === 'string') {
+    return { ok: false, error: `logcat is not readable from the app: ${redactForMcp(r ? r.spawnError : 'no result')}` };
+  }
+  if (r.exitCode !== 0) {
+    return { ok: false, error: `logcat is not readable from the app (exit ${r.exitCode}): ${redactForMcp(String(r.stderr || '').slice(0, 300))}` };
+  }
+  const capped = capLogLines(filterLogcatLines(String(r.stdout || '')), parsed.limit, parsed.maxBytes);
+  return { ok: true, data: { source: 'logcat', lines: capped.returned, truncated: capped.truncated, text: capped.text } };
+}
+
+/** ms since a snapshot section's capturedAt, or null when it is not a usable time. */
+function sectionAgeMs(capturedAt, nowMs) {
+  if (typeof capturedAt !== 'string') return null;
+  const t = Date.parse(capturedAt);
+  if (!Number.isFinite(t) || t - nowMs > DEVICE_FUTURE_SKEW_MS) return null;
+  return Math.max(0, nowMs - t);
+}
+
+function noSavedCopyError(toolName) {
+  return { ...pausedBridgeReadError(toolName), code: 'bridge_not_live' };
+}
+
+/** read_logs source "app" from the snapshot's appLog section (RN's capture, marked stale). */
+function appLogFromSnapshot(snap, parsed, nowMs) {
+  const section = snap && snap.appLog;
+  if (!isPlainObject(section) || !Array.isArray(section.lines)
+      || section.lines.length > READ_LOGS_MAX_LIMIT || !section.lines.every((l) => typeof l === 'string')) {
+    return noSavedCopyError('read_logs');
+  }
+  const ageMs = sectionAgeMs(section.capturedAt, nowMs);
+  if (ageMs === null) return noSavedCopyError('read_logs');
+  const capped = capLogLines(section.lines.map((l) => redactForMcp(l)), parsed.limit, parsed.maxBytes);
+  return {
+    ok: true,
+    data: {
+      source: 'app',
+      lines: capped.returned,
+      truncated: capped.truncated || section.truncated === true,
+      text: capped.text,
+      stale: true,
+      capturedAt: section.capturedAt,
+      ageMs,
+    },
+  };
+}
+
+/** redactSettingsForMcp (lib/mcp-server-bridge.ts), applied again to the published copy. */
+function redactSettingsForMcp(settings) {
+  const withheld = [];
+  const walk = (value, pathPrefix, depth) => {
+    if (typeof value === 'string') return redactForMcp(value);
+    if (value === null || typeof value !== 'object') return value;
+    if (depth >= SETTINGS_MAX_DEPTH) return '[omitted: too deep]';
+    if (Array.isArray(value)) return value.map((v, i) => walk(v, `${pathPrefix}[${i}]`, depth + 1));
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const keyPath = pathPrefix ? `${pathPrefix}.${k}` : k;
+      if (SETTINGS_DENYLIST_RE.test(k)) {
+        withheld.push(keyPath);
+        continue;
+      }
+      const w = walk(v, keyPath, depth + 1);
+      if (w !== undefined) out[k] = w;
+    }
+    return out;
+  };
+  const result = walk(settings, '', 0);
+  return { settings: isPlainObject(result) ? result : {}, withheldKeys: withheld.sort() };
+}
+
+/** get_settings from the snapshot's settings section (RN's filtered copy, marked stale). */
+function settingsFromSnapshot(snap, nowMs) {
+  const section = snap && snap.settings;
+  if (!isPlainObject(section) || !isPlainObject(section.settings) || !Array.isArray(section.withheldKeys)
+      || !section.withheldKeys.every((k) => typeof k === 'string')) {
+    return pausedBridgeReadError('get_settings');
+  }
+  const ageMs = sectionAgeMs(section.capturedAt, nowMs);
+  if (ageMs === null) return pausedBridgeReadError('get_settings');
+  const again = redactSettingsForMcp(section.settings);
+  const withheldKeys = [...new Set([...section.withheldKeys, ...again.withheldKeys])].sort();
+  return { ok: true, data: { settings: again.settings, withheldKeys, stale: true, capturedAt: section.capturedAt, ageMs } };
+}
+
+/**
+ * read_terminal_output's session choice (RN: the requested id, else the
+ * active one, matched against the logical or the native id) from the
+ * snapshot's terminal section. { ok, args } with the native id, or an error.
+ */
+function resolveTerminalSession(snap, args) {
+  const section = snap && snap.terminal;
+  const isId = (v) => typeof v === 'string' && v.length <= SNAPSHOT_SESSION_ID_MAX_CHARS;
+  if (!isPlainObject(section) || !isId(section.activeSessionId) || !Array.isArray(section.sessions)
+      || section.sessions.length > SNAPSHOT_TERMINAL_MAX_SESSIONS
+      || !section.sessions.every((s) => isPlainObject(s) && isId(s.id) && isId(s.nativeSessionId))) {
+    return pausedBridgeReadError('read_terminal_output');
+  }
+  const requestedId = typeof args.sessionId === 'string' && args.sessionId ? args.sessionId : section.activeSessionId;
+  const session = section.sessions.find((s) => s.id === requestedId || s.nativeSessionId === requestedId);
+  if (!session || !session.nativeSessionId) return { ok: false, error: `no such terminal session: ${requestedId}` };
+  return { ok: true, args: { sessionId: session.nativeSessionId, maxLines: typeof args.maxLines === 'number' ? args.maxLines : 200 } };
+}
+
 /**
  * Wraps the queue-backed callTool: answers the direct-read tools from the
  * verified snapshot, and falls back to the queue when there is no valid
  * snapshot (RN never published one, or it was signed with an older token)
  * or git can't be spawned from here.
  */
-function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, log = () => {}, now = () => Date.now(), homeDir = path.dirname(queueDir), libDir = defaultPayloadLibDir(homeDir), logIo = DEFAULT_LOG_IO }) {
+function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultRunGit, runLogcat = defaultRunLogcat, log = () => {}, now = () => Date.now(), homeDir = path.dirname(queueDir), libDir = defaultPayloadLibDir(homeDir), logIo = DEFAULT_LOG_IO }) {
   const withProvenance = (res) => withPayloads(res, homeDir, libDir);
+  /** read_logs / get_settings / read_terminal_output while the RN bridge is paused (phase B-1). */
+  async function backgroundRead(toolName, args, ingress) {
+    if (toolName === 'read_logs') {
+      const parsed = readLogsArgs(args);
+      if (!parsed.ok) return parsed;
+      if (parsed.source === 'logcat') return readLogcatDirect(parsed, runLogcat);
+      return appLogFromSnapshot(readVerifiedSnapshot(queueDir, token), parsed, now());
+    }
+    if (toolName === 'get_settings') return settingsFromSnapshot(readVerifiedSnapshot(queueDir, token), now());
+    // read_terminal_output: the native consumer reads the transcript; the
+    // snapshot maps the requested (or active) session to its native id.
+    const resolved = resolveTerminalSession(readVerifiedSnapshot(queueDir, token), args);
+    if (!resolved.ok) return resolved;
+    return fallback(toolName, resolved.args, ingress, { nativeRead: true });
+  }
   return async function callTool(toolName, args, ingress) {
     if (toolName === 'stage_install_result') {
       let auditedReadFailure = false;
@@ -1296,6 +1535,11 @@ function createDirectReadCallTool({ queueDir, token, fallback, runGit = defaultR
         return unavailable();
       }
       return fromMirror() ?? (queued?.ok === false ? queued : unavailable());
+    }
+    if (BACKGROUND_READ_TOOLS.has(toolName)) {
+      // RN live (or never judged: no heartbeat file yet) — today's path.
+      if (rnLiveFromHeartbeat(queueDir, now()) !== false) return fallback(toolName, args, ingress);
+      return backgroundRead(toolName, isPlainObject(args) ? args : {}, ingress);
     }
     if (!DIRECT_READ_TOOLS.has(toolName)) return fallback(toolName, args, ingress);
     // Drafts need nothing from the app: what may be read comes from the
@@ -3521,6 +3765,13 @@ if (require.main === module) {
   module.exports = {
     createMcpHandler,
     createDirectReadCallTool,
+    BACKGROUND_READ_TOOLS,
+    NATIVE_READ_TOOLS,
+    filterLogcatLines,
+    logcatArgv,
+    redactSettingsForMcp,
+    LOGCAT_TAGS,
+    SETTINGS_DENYLIST_RE,
     payloadProvenance,
     createFileQueueCallTool,
     rnLiveFromHeartbeat,

@@ -471,6 +471,11 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
             processSubmissionReader(request, claimed)
             return
         }
+        // read_terminal_output while RN is not live (McpNativeReadDecision; phase B-1).
+        if (request.tool in McpNativeReadDecision.OPS) {
+            processNativeRead(request, claimed)
+            return
+        }
         // service_control / request_pipeline_refire (ServiceControlDecision; phase A).
         if (request.tool in ServiceControlDecision.OPS) {
             processServiceOp(request, name, claimed, now)
@@ -726,6 +731,40 @@ class McpTypedOpConsumer(context: Context, private val bridgeKey: String) {
         override fun epochCurrent(): Boolean = isCurrent()
         // Strict (only ENOENT is "off"; any other lstat failure is STOP-ALL), as put_stream_feed.
         override fun halted(): Boolean = StreamFeedStore.haltedStrict(app)
+    }
+
+    // ── read_terminal_output (McpNativeReadDecision, phase B-1) ──────────
+
+    /**
+     * The transcript straight from the native session registry: no approval,
+     * no handoff, no audit line (RN writes none for reads). One result, the
+     * claimed file deleted. Never the text in a log line.
+     */
+    private fun processNativeRead(request: McpTypedOpDecision.Request, claimed: File) {
+        val result = McpNativeReadDecision.answerTerminal(request.args, nativeReadSteps)
+        writeResult(request.callId, result)
+        delete(claimed)
+        Log.i(TAG, "${request.tool} answered natively")
+    }
+
+    private val nativeReadSteps = object : McpNativeReadDecision.Steps {
+        // RN's settings.mcpReadTerminalEnabled: the wanted server's switch and
+        // the Keystore mirror (McpAutostartStore; missing / unreadable = OFF).
+        override fun readTerminalOn(): Boolean = try {
+            McpServerSupervisor.readTerminalWanted() && (McpAutostartStore.read(app)?.readTerminal == true)
+        } catch (e: Exception) {
+            false
+        }
+
+        override fun epochCurrent(): Boolean = isCurrent()
+
+        // The registry is a plain map the module also touches; read one entry.
+        override fun transcript(sessionId: String, maxLines: Int): String? {
+            val session = synchronized(TerminalSessionService.sessionRegistry) {
+                TerminalSessionService.sessionRegistry[sessionId]
+            } ?: return null
+            return session.getTranscriptText(maxLines)
+        }
     }
 
     // ── service_control / request_pipeline_refire (ServiceControlDecision) ──
