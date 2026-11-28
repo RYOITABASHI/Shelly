@@ -123,6 +123,21 @@ public final class OverlaySentinel {
         Field current = at.getDeclaredField("sCurrentActivityThread");
         current.setAccessible(true);
         current.set(null, thread);
+        // Samsung's CompatSandbox reads ActivityThread.mConfigurationController
+        // while the system context is created; a bare ActivityThread leaves it
+        // null (NPE on device, 2026-11-28). Fill it as scrcpy's Workarounds do.
+        try {
+            Class<?> ccClass = Class.forName("android.app.ConfigurationController");
+            Class<?> atiClass = Class.forName("android.app.ActivityThreadInternal");
+            Constructor<?> ccCtor = ccClass.getDeclaredConstructor(atiClass);
+            ccCtor.setAccessible(true);
+            Object cc = ccCtor.newInstance(thread);
+            Field ccField = at.getDeclaredField("mConfigurationController");
+            ccField.setAccessible(true);
+            ccField.set(thread, cc);
+        } catch (Throwable t) {
+            line("configuration controller not filled: " + t);
+        }
         Method getSystemContext = at.getDeclaredMethod("getSystemContext");
         return (Context) getSystemContext.invoke(thread);
     }
