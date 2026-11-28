@@ -76,7 +76,7 @@ public final class OverlaySentinel {
         long t0 = SystemClock.elapsedRealtime();
         String v = read(cr);
         if (isClear(v)) {
-            if (!"change".equals(why)) line(why + " clear");
+            line(why + " clear");
             return;
         }
         line(why + " detected len=" + v.length());
@@ -90,12 +90,16 @@ public final class OverlaySentinel {
         return v == null || v.isEmpty() || "none".equals(v);
     }
 
+    /**
+     * Always the provider's current value: Settings.Global.getString keeps a
+     * per-process cache that an app_process does not see invalidated (on device
+     * it kept returning null after a write, 2026-11-28), so read through the
+     * platform `settings` command instead. Only runs on a change notification.
+     */
     private static String read(ContentResolver cr) {
-        try {
-            return Settings.Global.getString(cr, key);
-        } catch (Throwable t) {
-            return exec(new String[] {"settings", "get", "global", key}).trim().replace("null", "");
-        }
+        String out = exec(new String[] {"settings", "get", "global", key}).trim();
+        if (out.startsWith("ERROR")) return null;
+        return "null".equals(out) ? null : out;
     }
 
     private static boolean delete() {
