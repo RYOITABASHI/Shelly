@@ -1,0 +1,2172 @@
+{
+  "note": "Shared by __tests__/mcp-install-op-native-parity.test.ts (drives the real RN ladder) and McpInstallOpDecisionTest (JVM). handoff and not_attended are both the point where RN shows its tap dialog: native hands the request to RN only while RN is live and the request is fresh, else answers notAttended. answer = RN's exact result and its single audit line code. Dummy values only.",
+  "principal": "0123456789abcdef0123456789abcdef",
+  "notAttended": {
+    "code": "not_attended",
+    "message": "Shelly is not in the foreground on the phone, and this update needs an approval tap there; nobody can approve it now (open Shelly and try again)"
+  },
+  "ladder": [
+    {
+      "name": "update_delivery_script: valid, RN live, fresh -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_delivery_script: valid, RN paused -> not_attended",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "update_delivery_script: valid, RN live, 6 s old (past the handoff window, before the deadline) -> not_attended",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 6000
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "update_delivery_script: valid, 16 s old -> pre-approval timeout",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": true,
+          "data": {
+            "status": "timeout"
+          }
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: valid, 16 s old, RN live -> timeout too",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": true,
+          "data": {
+            "status": "timeout"
+          }
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: exec off -> disabled",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+          "code": "disabled"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: exec off beats invalid arguments",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/etc/passwd",
+        "expectedSha256": "x",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+          "code": "disabled"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: invalid arguments beat the deadline",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/sub/x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath subdirectory -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/sub/x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath dot-dot in the name -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/a..b.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath trailing newline -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/x.js\n",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath control character -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/x\u0001.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath other extension -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath leading dot -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/.x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath leading dash -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/-x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath space -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/a b.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath other root -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/storage/emulated/0/Download/x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath non-ASCII letter -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/é.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath number -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": 123,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath null -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": null,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath missing -> invalid_path",
+      "tool": "update_delivery_script",
+      "args": {
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: stagedPath with dash/dot/underscore inside -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/A-b_c.d.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 uppercase -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 63 digits -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 65 digits -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 trailing newline -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 non-hex -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 number -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": 1,
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedSha256 missing -> invalid_digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes zero -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 0
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes negative -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": -1
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes fraction -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1.5
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes max + 1 -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1048577
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes string -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": "12"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes null -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": null
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes missing -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes boolean -> invalid_size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": true
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 1048576",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes max -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1048576
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_delivery_script: expectedBytes 1 -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_delivery_script: path beats digest",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "x",
+        "expectedSha256": "x",
+        "expectedBytes": 25
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .js file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: digest beats size",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "x",
+        "expectedBytes": 0
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_delivery_script: an unknown extra argument is ignored -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25,
+        "extra": "x"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_delivery_script: a rebuild argument is ignored -> handoff",
+      "tool": "update_delivery_script",
+      "args": {
+        "stagedPath": "/sdcard/Download/delivery.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 25,
+        "rebuild": "a"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: valid, RN live, fresh -> handoff",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: valid, RN paused -> not_attended",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "update_pipeline_config: valid, RN live, 6 s old (past the handoff window, before the deadline) -> not_attended",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 6000
+      },
+      "expect": {
+        "outcome": "not_attended"
+      }
+    },
+    {
+      "name": "update_pipeline_config: valid, 16 s old -> pre-approval timeout",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": false,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": false,
+          "error": "timed out: the result window expired before the update could be applied",
+          "code": "timeout"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: valid, 16 s old, RN live -> timeout too",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "timeout",
+        "result": {
+          "ok": false,
+          "error": "timed out: the result window expired before the update could be applied",
+          "code": "timeout"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: exec off -> disabled",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+          "code": "disabled"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: exec off beats invalid arguments",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/etc/passwd",
+        "expectedSha256": "x",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": false,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "disabled",
+        "result": {
+          "ok": false,
+          "error": "exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)",
+          "code": "disabled"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: invalid arguments beat the deadline",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/sub/x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 16000
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath subdirectory -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/sub/x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath dot-dot in the name -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/a..b.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath trailing newline -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/x.json\n",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath control character -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/x\u0001.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath other extension -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/x.js",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath leading dot -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/.x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath leading dash -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/-x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath space -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/a b.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath other root -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/storage/emulated/0/Download/x.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath non-ASCII letter -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/é.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath number -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": 123,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath null -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": null,
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath missing -> invalid_path",
+      "tool": "update_pipeline_config",
+      "args": {
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: stagedPath with dash/dot/underscore inside -> handoff",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/A-b_c.d.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 uppercase -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 63 digits -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 65 digits -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 trailing newline -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 non-hex -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 number -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": 1,
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedSha256 missing -> invalid_digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes zero -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 0,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes negative -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": -1,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes fraction -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1.5,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes max + 1 -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 262145,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes string -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": "12",
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes null -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": null,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes missing -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes boolean -> invalid_size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": true,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes max -> handoff",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 262144,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: expectedBytes 1 -> handoff",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 1,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: path beats digest",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "x",
+        "expectedSha256": "x",
+        "expectedBytes": 300,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_path",
+        "result": {
+          "ok": false,
+          "error": "stagedPath must name a .json file directly under /sdcard/Download",
+          "code": "invalid_path"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: digest beats size",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "x",
+        "expectedBytes": 0,
+        "rebuild": []
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_digest",
+        "result": {
+          "ok": false,
+          "error": "expectedSha256 must be 64 lowercase hex digits",
+          "code": "invalid_digest"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: an unknown extra argument is ignored -> handoff",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": [],
+        "extra": "x"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "handoff"
+      }
+    },
+    {
+      "name": "update_pipeline_config: rebuild missing -> invalid_rebuild",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_rebuild",
+        "result": {
+          "ok": false,
+          "error": "rebuild must be an array of agentId and pipelineId pairs",
+          "code": "invalid_rebuild"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: rebuild an object -> invalid_rebuild",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": {}
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_rebuild",
+        "result": {
+          "ok": false,
+          "error": "rebuild must be an array of agentId and pipelineId pairs",
+          "code": "invalid_rebuild"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: rebuild a string -> invalid_rebuild",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": "a"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_rebuild",
+        "result": {
+          "ok": false,
+          "error": "rebuild must be an array of agentId and pipelineId pairs",
+          "code": "invalid_rebuild"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: 34 rebuild pairs -> invalid_rebuild",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 300,
+        "rebuild": [
+          {
+            "agentId": "a0",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a1",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a2",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a3",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a4",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a5",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a6",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a7",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a8",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a9",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a10",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a11",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a12",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a13",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a14",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a15",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a16",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a17",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a18",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a19",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a20",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a21",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a22",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a23",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a24",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a25",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a26",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a27",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a28",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a29",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a30",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a31",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a32",
+            "pipelineId": "x"
+          },
+          {
+            "agentId": "a33",
+            "pipelineId": "x"
+          }
+        ]
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_rebuild",
+        "result": {
+          "ok": false,
+          "error": "rebuild must contain at most 33 pairs",
+          "code": "invalid_rebuild"
+        }
+      }
+    },
+    {
+      "name": "update_pipeline_config: size beats rebuild",
+      "tool": "update_pipeline_config",
+      "args": {
+        "stagedPath": "/sdcard/Download/config.json",
+        "expectedSha256": "abababababababababababababababababababababababababababababababab",
+        "expectedBytes": 0,
+        "rebuild": "a"
+      },
+      "facts": {
+        "exec": true,
+        "rnLive": true,
+        "ageMs": 0
+      },
+      "expect": {
+        "outcome": "answer",
+        "audit": "invalid_size",
+        "result": {
+          "ok": false,
+          "error": "expectedBytes must be an integer from 1 to 262144",
+          "code": "invalid_size"
+        }
+      }
+    }
+  ]
+}

@@ -264,7 +264,7 @@ describe('script routing', () => {
   it.each(['0', String(Date.now() - 10_000)])('an RN-only tool is answered bridge_not_live at once when the heartbeat is %s', async (hb) => {
     fs.writeFileSync(path.join(dir, 'bridge-heartbeat'), hb);
     const callTool2 = server.createFileQueueCallTool(dir, TEST_BRIDGE_KEY);
-    for (const tool of ['stage_install', 'update_delivery_script', 'update_pipeline_config']) {
+    for (const tool of ['stage_install']) {
       const started = Date.now();
       const r = await callTool2(tool, {}, ingress);
       expect(r).toMatchObject({ ok: false, code: 'bridge_not_live' });

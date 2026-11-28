@@ -225,8 +225,8 @@ describe('read_terminal_output while RN is paused', () => {
   });
 });
 
-describe('Phase A RN-only ops stay bridge_not_live at enqueue (production chain)', () => {
-  it.each(['update_pipeline_config', 'update_delivery_script', 'stage_install'])('%s', async (tool) => {
+describe('RN-only ops stay bridge_not_live at enqueue (production chain)', () => {
+  it.each(['stage_install'])('%s', async (tool) => {
     heartbeat('0');
     const chain = mcp.createRunResultCallTool({
       queueDir: dir,
