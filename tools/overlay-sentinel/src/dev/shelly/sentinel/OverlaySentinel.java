@@ -66,7 +66,11 @@ public final class OverlaySentinel {
                 check(cr, "change");
             }
         };
-        cr.registerContentObserver(uri, false, observer);
+        // ContentResolver.registerContentObserver from a bare system context did
+        // not register anything on device (dumpsys content showed no observer,
+        // 2026-11-28). Register with the content service directly, so a refusal
+        // surfaces as an exception instead of silence.
+        registerDirect(uri, observer);
         line("watching " + uri);
         check(cr, "start");
         Looper.loop();
@@ -116,6 +120,30 @@ public final class OverlaySentinel {
         } catch (Exception e) {
             return "ERROR " + e;
         }
+    }
+
+    /** IContentService.registerContentObserver(uri, false, observer.getContentObserver(), user 0, targetSdk). */
+    private static void registerDirect(Uri uri, ContentObserver observer) throws Exception {
+        Method getTransport = ContentObserver.class.getDeclaredMethod("getContentObserver");
+        getTransport.setAccessible(true);
+        Object transport = getTransport.invoke(observer);
+        Method getService = ContentResolver.class.getDeclaredMethod("getContentService");
+        getService.setAccessible(true);
+        Object service = getService.invoke(null);
+        Method reg = null;
+        for (Method m : service.getClass().getMethods()) {
+            if (m.getName().equals("registerContentObserver")) { reg = m; break; }
+        }
+        if (reg == null) throw new NoSuchMethodException("IContentService.registerContentObserver");
+        Class<?>[] p = reg.getParameterTypes();
+        line("registerContentObserver params=" + p.length);
+        Object[] a = new Object[p.length];
+        a[0] = uri;
+        a[1] = false;
+        a[2] = transport;
+        if (p.length > 3) a[3] = 0;                                  // userHandle: USER_SYSTEM
+        if (p.length > 4) a[4] = android.os.Build.VERSION.SDK_INT;   // targetSdkVersion
+        reg.invoke(service, a);
     }
 
     /** The system context, as scrcpy's Workarounds obtains it for a shell-uid app_process. */
