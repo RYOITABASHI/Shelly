@@ -1,0 +1,12 @@
+#!/bin/bash
+# Starts the overlay sentinel on the phone (shell uid, app_process) unless one is running.
+# Called after every adb (re)connect by the PC's adb watcher; safe to run any time.
+export MSYS_NO_PATHCONV=1
+A="adb -s ${ANDROID_SERIAL:-100.83.52.23:5555}"
+$A shell '
+  if pgrep -f "^app_process / dev[.]shelly[.]sentinel[.]OverlaySentinel --log" >/dev/null; then echo "sentinel running pid=$(pgrep -f "^app_process / dev[.]shelly[.]sentinel[.]OverlaySentinel --log")"; exit 0; fi
+  [ -f /data/local/tmp/overlay-sentinel.dex ] || { echo "sentinel dex missing"; exit 2; }
+  CLASSPATH=/data/local/tmp/overlay-sentinel.dex setsid nohup app_process / dev.shelly.sentinel.OverlaySentinel --log /data/local/tmp/overlay-sentinel.log >/data/local/tmp/overlay-sentinel.out 2>&1 &
+  sleep 2
+  echo "sentinel started pid=$(pgrep -f "^app_process / dev[.]shelly[.]sentinel[.]OverlaySentinel --log")"; tail -4 /data/local/tmp/overlay-sentinel.log
+'

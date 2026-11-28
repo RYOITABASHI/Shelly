@@ -1,0 +1,40 @@
+#!/bin/bash
+# shelly-vd: the sanctioned background virtual display for phone work
+# (shelly-hayato-bridge #6 item 1). Never use overlay_display_devices.
+#   shelly-vd open [package]   start scrcpy --new-display (default dev.shelly.terminal); prints display + SurfaceFlinger ids
+#   shelly-vd close            stop only the scrcpy this script started (other seats may have their own VD)
+#   shelly-vd status           list scrcpy displays on the phone and the overlay value
+# Take the device lease first (node ~/.claude/device-lease.js acquire <holder> <min> <purpose>).
+set -u
+SERIAL="${ANDROID_SERIAL:-100.83.52.23:5555}"
+STATE="$HOME/.shelly-guard/vd"
+mkdir -p "$STATE"
+export MSYS_NO_PATHCONV=1
+count_vd() { adb -s "$SERIAL" shell 'dumpsys display | grep -c "DisplayDeviceInfo{.scrcpy"'; }
+case "${1:-}" in
+  open)
+    pkg="${2:-dev.shelly.terminal}"
+    log="$STATE/scrcpy.log"
+    : > "$log"
+    scrcpy -s "$SERIAL" --new-display=2160x1856/464 --no-vd-system-decorations --start-app="$pkg" \
+      --display-ime-policy=local --no-audio --window-title=ShellyVD --max-size=1080 >"$log" 2>&1 &
+    echo $! > "$STATE/scrcpy.pid"
+    for _ in $(seq 1 30); do grep -q "New display" "$log" && break; sleep 1; done
+    id=$(grep -o "New display: [^ ]* (id=[0-9]*" "$log" | grep -o "[0-9]*$")
+    [ -n "$id" ] || { echo "shelly-vd: no display (see $log)" >&2; exit 1; }
+    sf=$(adb -s "$SERIAL" shell "dumpsys SurfaceFlinger --display-id" | grep scrcpy | awk '{print $2}' | tail -1)
+    echo "display=$id surfaceflinger=$sf"
+    echo "input:      adb -s $SERIAL shell input -d $id ..."
+    echo "screenshot: adb -s $SERIAL shell screencap -p -d $sf /sdcard/Download/x.png (then pull and rm)"
+    ;;
+  close)
+    if [ -f "$STATE/scrcpy.pid" ]; then kill "$(cat "$STATE/scrcpy.pid")" 2>/dev/null; rm -f "$STATE/scrcpy.pid"; fi
+    sleep 2
+    echo "scrcpy displays left on the phone (all seats): $(count_vd)"
+    ;;
+  status)
+    echo "scrcpy displays on the phone (all seats): $(count_vd)"
+    echo "overlay_display_devices: $(adb -s "$SERIAL" shell settings get global overlay_display_devices)"
+    ;;
+  *) sed -n '2,8p' "$0"; exit 64 ;;
+esac

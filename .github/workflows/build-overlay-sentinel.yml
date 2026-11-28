@@ -1,13 +1,13 @@
 name: Build overlay sentinel
 
-# Builds tools/overlay-sentinel into one dex (shelly-hayato-bridge #6 item 1).
+# Builds tools/overlay-guard/sentinel into one dex (shelly-hayato-bridge #6 item 1).
 # The dex runs on the phone as the shell uid via app_process; it is not part
 # of the APK.
 on:
   workflow_dispatch:
   push:
     paths:
-      - 'tools/overlay-sentinel/**'
+      - 'tools/overlay-guard/sentinel/**'
       - '.github/workflows/build-overlay-sentinel.yml'
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
           echo "platform=$PLAT build-tools=$BT"
           mkdir -p out/classes out/dex
           javac --release 11 -cp "$PLAT/android.jar" -d out/classes \
-            $(find tools/overlay-sentinel/src -name '*.java')
+            $(find tools/overlay-guard/sentinel/src -name '*.java')
           "$BT/d8" --release --min-api 33 --lib "$PLAT/android.jar" --output out/dex \
             $(find out/classes -name '*.class')
           mv out/dex/classes.dex out/overlay-sentinel.dex
