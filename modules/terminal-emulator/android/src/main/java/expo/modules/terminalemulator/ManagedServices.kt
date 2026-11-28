@@ -677,9 +677,9 @@ object ManagedServices {
  *
  * Closed by construction: every top-level and env key is from a fixed set;
  * `root` / `script` / `COUNCIL_HOME` are single safe path segments (no `.`,
- * no `/`, no `..`); COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS are fixed
+ * no `/`, no `..`); COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS / COUNCIL_CLAUDE_COMMAND are fixed
  * constants this object sets, never read from the file (so the file cannot
- * steer what codex command the facade shells out to); the one secret key
+ * steer what codex or claude command the facade shells out to); the one secret key
  * (COUNCIL_HTTP_TOKEN) accepts only the literal marker `{"fromFile":true}` —
  * a literal string value for it is refused, never read into a Kotlin string.
  */
@@ -703,7 +703,7 @@ object ExternalSpec {
     /** One minute to bind the port and answer /health after the process starts. */
     const val HEALTH_STALE_MS = 60_000L
 
-    /** Owner-settable keys. COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS are not here: fixed, never from the file. */
+    /** Owner-settable keys. COUNCIL_CODEX_COMMAND / COUNCIL_CODEX_ARGS / COUNCIL_CLAUDE_COMMAND are not here: fixed, never from the file. */
     private val ENV_KEYS: Set<String> = setOf(
         "COUNCIL_HTTP_TOKEN", "COUNCIL_PRINCIPAL", "COUNCIL_HUMAN_PRINCIPALS",
         "COUNCIL_HOME", "COUNCIL_HTTP_PORT", "COUNCIL_PAIRING_ARM",
@@ -782,6 +782,11 @@ object ExternalSpec {
             // Fixed, never from the file: the file cannot steer what codex command runs.
             ManagedServices.EnvVar.Literal("COUNCIL_CODEX_COMMAND", "codex_exec"),
             ManagedServices.EnvVar.Literal("COUNCIL_CODEX_ARGS", "--skip-git-repo-check -"),
+            // The claude seat (#6 Step 3), fixed the same way: claude_exec runs the
+            // musl Claude Code through ~/.shelly-claude-musl-run.sh, which loads the
+            // subscription token itself (~/.claude-token.env, inside the subshell
+            // that starts claude). No token in this env; council-tool's preset adds -p.
+            ManagedServices.EnvVar.Literal("COUNCIL_CLAUDE_COMMAND", "claude_exec"),
             // The secret: read by the shell at run time, never a literal here.
             ManagedServices.EnvVar.FromFile("COUNCIL_HTTP_TOKEN", "$councilHomeAbs/$TOKEN_FILE_NAME"),
         )
@@ -791,7 +796,8 @@ object ExternalSpec {
             env = ManagedServices.DEFAULT_ENV,
             workDir = root,
             extraEnv = extraEnv,
-            // node spawns COUNCIL_CODEX_COMMAND (codex_exec, an app-data ELF) itself.
+            // node spawns COUNCIL_CODEX_COMMAND / COUNCIL_CLAUDE_COMMAND (codex_exec /
+            // claude_exec, app-data ELFs) itself.
             execWrapper = true,
         )
         val health = ManagedServices.HealthCheck(port = port, timeoutMs = HEALTH_TIMEOUT_MS, staleMs = HEALTH_STALE_MS)
